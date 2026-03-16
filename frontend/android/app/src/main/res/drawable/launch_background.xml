@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- RiseUp splash screen background -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Dark background matching AppColors.bgDark (#0F0E17) -->
+    <item android:drawable="@android:color/black" />
+    <!-- Optional: Add your launch icon here once you have one
+    <item>
+        <bitmap
+            android:gravity="center"
+            android:src="@mipmap/ic_launcher" />
+    </item>
+    -->
+</layer-list>

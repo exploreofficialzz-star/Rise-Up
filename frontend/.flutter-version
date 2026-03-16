@@ -1,0 +1,12 @@
+{
+  "channel": "stable",
+  "environment": {
+    "sdk": ">=3.3.0 <4.0.0"
+  },
+  "framework": {
+    "channel": "stable",
+    "repositoryUrl": "https://github.com/flutter/flutter.git",
+    "frameworkRevision": "stable",
+    "frameworkCommitDate": "2024-01-01 00:00:00 +0000"
+  }
+}

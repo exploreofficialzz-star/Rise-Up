@@ -1,0 +1,23 @@
+include: package:flutter_lints/flutter.yaml
+
+linter:
+  rules:
+    avoid_print: false
+    prefer_const_constructors: true
+    prefer_const_literals_to_create_immutables: true
+    use_key_in_widget_constructors: false
+    prefer_single_quotes: true
+    sort_child_properties_last: true
+    avoid_unnecessary_containers: true
+    sized_box_for_whitespace: true
+
+analyzer:
+  errors:
+    todo: ignore
+    dead_code: warning
+    unused_import: warning
+    unused_local_variable: warning
+  exclude:
+    - lib/**.g.dart
+    - lib/**.freezed.dart
+    - build/**
