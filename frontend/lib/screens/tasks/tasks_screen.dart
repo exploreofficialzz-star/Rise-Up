@@ -4,6 +4,7 @@ import 'package:iconsax/iconsax.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 import '../../widgets/gradient_button.dart';
+import '../../services/ad_service.dart';
 
 class TasksScreen extends StatefulWidget {
   const TasksScreen({super.key});
@@ -62,12 +63,14 @@ class _TasksScreenState extends State<TasksScreen> with SingleTickerProviderStat
     await _load();
     if (mounted && earned != null && earned! > 0) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('🎉 Earning logged! Keep it up!'),
+        content: const Text('🎉 Earning logged! Keep it up!'),
         backgroundColor: AppColors.success,
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ));
     }
+    // Show interstitial every 3rd task completion
+    await adService.showInterstitialIfReady();
   }
 
   @override

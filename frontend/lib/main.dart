@@ -26,14 +26,38 @@ void main() async {
     anonKey: kSupabaseAnonKey,
   );
 
-  // Init AdMob
+  // Init AdMob (preloads rewarded, interstitial, and app-open ads)
   await adService.initialize();
 
   runApp(const ProviderScope(child: RiseUpApp()));
 }
 
-class RiseUpApp extends StatelessWidget {
+class RiseUpApp extends StatefulWidget {
   const RiseUpApp({super.key});
+  @override
+  State<RiseUpApp> createState() => _RiseUpAppState();
+}
+
+class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  /// Show app-open ad when app is resumed from background
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      adService.showAppOpenAdIfAvailable();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

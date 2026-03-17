@@ -48,6 +48,9 @@ Go to: **GitHub Repo → Settings → Secrets and variables → Actions → New 
 |---|---|
 | `ADMOB_APP_ID` | [apps.admob.com](https://apps.admob.com) → App settings |
 | `ADMOB_REWARDED_UNIT` | AdMob → Ad units → Rewarded ad unit ID |
+| `ADMOB_BANNER_UNIT` | AdMob → Ad units → Banner ad unit ID (shown on Dashboard & Skills) |
+| `ADMOB_INTERSTITIAL_UNIT` | AdMob → Ad units → Interstitial ad unit ID (shown after task completion) |
+| `ADMOB_APP_OPEN_UNIT` | AdMob → Ad units → App open ad unit ID (shown on app launch) |
 
 ### Flutter App Config
 | Secret Name | Value |

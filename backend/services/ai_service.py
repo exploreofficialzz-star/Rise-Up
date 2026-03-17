@@ -84,10 +84,22 @@ When you have enough information, output a JSON summary with key: "PROFILE_COMPL
 # ============================================================
 
 class GroqClient:
-    """Groq API — FREE tier, fast, uses Llama 3.1"""
+    """Groq API — FREE tier, fast. Tries multiple Llama/Mixtral models with fallback."""
     NAME = "groq"
-    MODEL = "llama-3.1-70b-versatile"
     FREE = True
+
+    # Ordered list of models to try — newest & best first (all FREE on Groq)
+    MODELS = [
+        "llama-3.3-70b-versatile",            # Best quality, free, 128k ctx
+        "deepseek-r1-distill-llama-70b",      # DeepSeek R1 distilled — excellent reasoning
+        "llama-3.1-70b-versatile",            # Fallback large llama
+        "llama3-70b-8192",                    # Stable llama3 fallback
+        "mixtral-8x7b-32768",                 # Mixtral — great long-context
+        "gemma2-9b-it",                       # Google Gemma 2 — fast & capable
+        "llama-3.1-8b-instant",               # Fast lightweight
+        "llama3-8b-8192",                     # Ultra-fast last resort
+        "llama-guard-3-8b",                   # Safety model fallback
+    ]
 
     def __init__(self):
         self._client = None
@@ -103,14 +115,92 @@ class GroqClient:
         if not client:
             raise ValueError("Groq API key not configured")
 
+        # Use configured model or default to first in list
+        preferred = getattr(settings, "GROQ_MODEL", self.MODELS[0])
+        models_to_try = [preferred] + [m for m in self.MODELS if m != preferred]
+
         formatted = [{"role": "system", "content": system}] + messages
-        response = await client.chat.completions.create(
-            model=self.MODEL,
-            messages=formatted,
-            max_tokens=max_tokens,
-            temperature=0.7,
-        )
-        return response.choices[0].message.content
+        last_err = None
+        for model in models_to_try:
+            try:
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=formatted,
+                    max_tokens=max_tokens,
+                    temperature=0.7,
+                )
+                logger.info(f"Groq responded with model: {model}")
+                return response.choices[0].message.content
+            except Exception as e:
+                logger.warning(f"Groq model {model} failed: {e}")
+                last_err = e
+                continue
+        raise last_err or ValueError("All Groq models failed")
+
+
+class OpenRouterClient:
+    """
+    OpenRouter — Unified API for 200+ models including many FREE options.
+    Free models: mistralai/mistral-7b-instruct:free, huggingfaceh4/zephyr-7b-beta:free,
+                 openchat/openchat-7b:free, nousresearch/nous-capybara-7b:free
+    Get key: https://openrouter.ai/keys
+    """
+    NAME = "openrouter"
+    FREE = True  # Has many free models
+
+    # Free models available on OpenRouter
+    FREE_MODELS = [
+        "mistralai/mistral-7b-instruct:free",
+        "huggingfaceh4/zephyr-7b-beta:free",
+        "openchat/openchat-7b:free",
+        "nousresearch/nous-capybara-7b:free",
+        "google/gemma-2-9b-it:free",
+        "meta-llama/llama-3.2-3b-instruct:free",
+        "qwen/qwen-2-7b-instruct:free",
+    ]
+    API_BASE = "https://openrouter.ai/api/v1"
+
+    def __init__(self):
+        self._client = None
+
+    def get_client(self):
+        if not self._client and settings.OPENROUTER_API_KEY:
+            from openai import AsyncOpenAI
+            self._client = AsyncOpenAI(
+                api_key=settings.OPENROUTER_API_KEY,
+                base_url=self.API_BASE,
+            )
+        return self._client
+
+    async def chat(self, messages: list, system: str, max_tokens: int = 1024) -> str:
+        client = self.get_client()
+        if not client:
+            raise ValueError("OpenRouter API key not configured")
+
+        preferred = getattr(settings, "OPENROUTER_MODEL", self.FREE_MODELS[0])
+        models_to_try = [preferred] + [m for m in self.FREE_MODELS if m != preferred]
+
+        formatted = [{"role": "system", "content": system}] + messages
+        last_err = None
+        for model in models_to_try:
+            try:
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=formatted,
+                    max_tokens=max_tokens,
+                    temperature=0.7,
+                    extra_headers={
+                        "HTTP-Referer": "https://riseup.app",
+                        "X-Title": "RiseUp AI Wealth Mentor",
+                    },
+                )
+                logger.info(f"OpenRouter responded with model: {model}")
+                return response.choices[0].message.content
+            except Exception as e:
+                logger.warning(f"OpenRouter model {model} failed: {e}")
+                last_err = e
+                continue
+        raise last_err or ValueError("All OpenRouter models failed")
 
 
 class GeminiClient:

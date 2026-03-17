@@ -3,6 +3,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
+import '../../services/ad_service.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -18,12 +19,17 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 
   Future<void> _navigate() async {
-    await Future.delayed(const Duration(milliseconds: 2200));
+    // Show splash for at least 2.8 seconds, then show app-open ad if available
+    await Future.delayed(const Duration(milliseconds: 2800));
     if (!mounted) return;
+
+    // Attempt app-open ad (non-blocking)
+    await adService.showAppOpenAdIfAvailable();
+    if (!mounted) return;
+
     final isAuth = await api.isAuthenticated();
     if (!mounted) return;
     if (isAuth) {
-      // Check if onboarding done
       try {
         final profile = await api.getProfile();
         final onboarded = profile['profile']?['onboarding_completed'] ?? false;
@@ -41,59 +47,156 @@ class _SplashScreenState extends State<SplashScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.bgDark,
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // Logo
-            Container(
-              width: 100, height: 100,
+      body: Stack(
+        children: [
+          // Subtle radial glow background
+          Center(
+            child: Container(
+              width: 320,
+              height: 320,
               decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [AppColors.primary, AppColors.accent],
-                  begin: Alignment.topLeft, end: Alignment.bottomRight,
+                shape: BoxShape.circle,
+                gradient: RadialGradient(
+                  colors: [
+                    AppColors.primary.withOpacity(0.15),
+                    Colors.transparent,
+                  ],
                 ),
-                borderRadius: BorderRadius.circular(28),
-                boxShadow: AppShadows.glow,
               ),
-              child: const Icon(Icons.trending_up_rounded, color: Colors.white, size: 52),
-            ).animate().scale(duration: 600.ms, curve: Curves.elasticOut),
+            ),
+          ),
 
-            const SizedBox(height: 24),
+          // Main content
+          Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                // ── Logo ──────────────────────────────────────
+                Container(
+                  width: 120,
+                  height: 120,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(32),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.primary.withOpacity(0.35),
+                        blurRadius: 40,
+                        spreadRadius: 4,
+                      ),
+                      BoxShadow(
+                        color: const Color(0xFFFF6B00).withOpacity(0.2),
+                        blurRadius: 60,
+                        spreadRadius: -4,
+                      ),
+                    ],
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(32),
+                    child: Image.asset(
+                      'assets/images/riseup_logo.jpg',
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                            colors: [AppColors.primary, AppColors.accent],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                          borderRadius: BorderRadius.circular(32),
+                        ),
+                        child: const Icon(Icons.trending_up_rounded,
+                            color: Colors.white, size: 60),
+                      ),
+                    ),
+                  ),
+                )
+                    .animate()
+                    .scale(duration: 700.ms, curve: Curves.elasticOut)
+                    .fadeIn(duration: 400.ms),
 
-            Text('RiseUp', style: AppTextStyles.h1.copyWith(
-              fontSize: 40,
-              foreground: Paint()..shader = const LinearGradient(
-                colors: [AppColors.primary, AppColors.accent],
-              ).createShader(const Rect.fromLTWH(0, 0, 200, 50)),
-            )).animate().fadeIn(delay: 400.ms, duration: 600.ms).slideY(begin: 0.3),
+                const SizedBox(height: 28),
 
-            const SizedBox(height: 8),
+                // ── App Name ──────────────────────────────────
+                ShaderMask(
+                  shaderCallback: (bounds) => const LinearGradient(
+                    colors: [Color(0xFFFF6B00), Color(0xFFFFD700), Color(0xFF6C5CE7)],
+                    stops: [0.0, 0.5, 1.0],
+                  ).createShader(bounds),
+                  child: Text(
+                    'RiseUp',
+                    style: AppTextStyles.h1.copyWith(
+                      fontSize: 48,
+                      fontWeight: FontWeight.w900,
+                      color: Colors.white,
+                      letterSpacing: -1,
+                    ),
+                  ),
+                )
+                    .animate()
+                    .fadeIn(delay: 350.ms, duration: 600.ms)
+                    .slideY(begin: 0.3, curve: Curves.easeOut),
 
-            Text(
-              'Your AI Wealth Mentor',
-              style: AppTextStyles.label,
-            ).animate().fadeIn(delay: 700.ms, duration: 500.ms),
+                const SizedBox(height: 6),
 
-            const SizedBox(height: 60),
+                Text(
+                  'Your AI Wealth Mentor',
+                  style: AppTextStyles.label.copyWith(
+                    fontSize: 14,
+                    letterSpacing: 1.5,
+                    color: AppColors.textSecondary,
+                  ),
+                ).animate().fadeIn(delay: 600.ms, duration: 500.ms),
 
-            SizedBox(
-              width: 40,
-              child: LinearProgressIndicator(
-                backgroundColor: AppColors.bgCard,
-                valueColor: const AlwaysStoppedAnimation(AppColors.primary),
-                borderRadius: BorderRadius.circular(4),
-              ),
-            ).animate().fadeIn(delay: 1000.ms),
+                const SizedBox(height: 64),
 
-            const SizedBox(height: 60),
+                // ── Progress indicator ─────────────────────────
+                SizedBox(
+                  width: 48,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: const LinearProgressIndicator(
+                      backgroundColor: Color(0xFF1F1F3A),
+                      valueColor: AlwaysStoppedAnimation(Color(0xFFFF6B00)),
+                      minHeight: 3,
+                    ),
+                  ),
+                ).animate().fadeIn(delay: 900.ms),
+              ],
+            ),
+          ),
 
-            Text(
-              'ChAs Tech Group',
-              style: AppTextStyles.caption.copyWith(letterSpacing: 2),
+          // ── Bottom brand footer ────────────────────────────
+          Positioned(
+            bottom: 36,
+            left: 0,
+            right: 0,
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      'Made with ',
+                      style: AppTextStyles.caption.copyWith(
+                        fontSize: 12,
+                        color: AppColors.textMuted,
+                      ),
+                    ),
+                    const Text('❤️', style: TextStyle(fontSize: 12)),
+                    Text(
+                      ' by ChAs Tech Group',
+                      style: AppTextStyles.caption.copyWith(
+                        fontSize: 12,
+                        color: AppColors.textMuted,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ).animate().fadeIn(delay: 1200.ms),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

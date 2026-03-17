@@ -16,7 +16,22 @@ const String kAdMobAppId = String.fromEnvironment(
 );
 const String kRewardedAdUnit = String.fromEnvironment(
   'ADMOB_REWARDED_UNIT',
-  defaultValue: 'ca-app-pub-3940256099942544/5224354917', // test id
+  defaultValue: 'ca-app-pub-3940256099942544/5224354917', // test rewarded
+);
+// Banner ad — shown on Dashboard & Skills screens
+const String kBannerAdUnit = String.fromEnvironment(
+  'ADMOB_BANNER_UNIT',
+  defaultValue: 'ca-app-pub-3940256099942544/6300978111', // test banner
+);
+// Interstitial ad — shown after task completion
+const String kInterstitialAdUnit = String.fromEnvironment(
+  'ADMOB_INTERSTITIAL_UNIT',
+  defaultValue: 'ca-app-pub-3940256099942544/1033173712', // test interstitial
+);
+// App Open ad — shown when app is brought to foreground
+const String kAppOpenAdUnit = String.fromEnvironment(
+  'ADMOB_APP_OPEN_UNIT',
+  defaultValue: 'ca-app-pub-3940256099942544/9257395921', // test app-open
 );
 
 // ── Colors ───────────────────────────────────────────

@@ -20,6 +20,8 @@ services:
         sync: false
       - key: GROQ_API_KEY
         sync: false
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
       - key: GEMINI_API_KEY
         sync: false
       - key: COHERE_API_KEY
@@ -35,6 +37,16 @@ services:
       - key: FLUTTERWAVE_ENCRYPTION_KEY
         sync: false
       - key: FLUTTERWAVE_WEBHOOK_HASH
+        sync: false
+      - key: ADMOB_APP_ID
+        sync: false
+      - key: ADMOB_REWARDED_AD_UNIT
+        sync: false
+      - key: ADMOB_BANNER_AD_UNIT
+        sync: false
+      - key: ADMOB_INTERSTITIAL_AD_UNIT
+        sync: false
+      - key: ADMOB_APP_OPEN_AD_UNIT
         sync: false
       - key: APP_SECRET_KEY
         generateValue: true

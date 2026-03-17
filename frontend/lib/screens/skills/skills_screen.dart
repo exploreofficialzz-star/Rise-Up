@@ -80,17 +80,32 @@ class _ModuleGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Interleave a banner ad after every 4th skill card
+    final int totalItems = modules.length + (modules.length ~/ 4);
+    int moduleIndex = 0;
+
     return RefreshIndicator(
       onRefresh: onRefresh,
       color: AppColors.primary,
       child: ListView.builder(
         padding: const EdgeInsets.all(16),
-        itemCount: modules.length,
-        itemBuilder: (_, i) => _ModuleCard(
-          module: modules[i],
-          isPremium: isPremium,
-          onRefresh: onRefresh,
-        ).animate().fadeIn(delay: Duration(milliseconds: i * 60)).slideY(begin: 0.1),
+        itemCount: totalItems,
+        itemBuilder: (_, i) {
+          // Insert banner after positions 4, 9, 14 … (every 5th slot)
+          if ((i + 1) % 5 == 0) {
+            return const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Center(child: BannerAdWidget()),
+            );
+          }
+          if (moduleIndex >= modules.length) return const SizedBox.shrink();
+          final idx = moduleIndex++;
+          return _ModuleCard(
+            module: modules[idx],
+            isPremium: isPremium,
+            onRefresh: onRefresh,
+          ).animate().fadeIn(delay: Duration(milliseconds: idx * 60)).slideY(begin: 0.1);
+        },
       ),
     );
   }

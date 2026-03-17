@@ -8,6 +8,7 @@ import '../../widgets/stat_card.dart';
 import '../../widgets/stage_badge.dart';
 import '../../widgets/task_preview_card.dart';
 import '../../widgets/gradient_button.dart';
+import '../../services/ad_service.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -254,6 +255,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         const SizedBox(height: 24),
                         _PremiumBanner().animate().fadeIn(delay: 400.ms),
                       ],
+
+                      // ── Banner Ad ──────────────────────────
+                      const SizedBox(height: 24),
+                      const Center(child: BannerAdWidget())
+                          .animate().fadeIn(delay: 500.ms),
 
                       const SizedBox(height: 80),
                     ],
