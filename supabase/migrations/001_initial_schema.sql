@@ -469,3 +469,65 @@ INSERT INTO public.skill_modules (title, description, category, duration_days, d
     ARRAY['affiliate', 'passive income', 'marketing', 'beginner']
   )
 ON CONFLICT DO NOTHING;
+
+-- ============================================================
+-- SECURITY: Row Level Security (RLS) Policies
+-- ============================================================
+
+ALTER TABLE public.profiles           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.conversations       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.messages            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.income_tasks        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.skill_enrollments   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.earnings_log        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.payments            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.feature_unlocks     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.wealth_roadmaps     ENABLE ROW LEVEL SECURITY;
+
+-- Users can only read/write their OWN data
+CREATE POLICY "Users own their profile"
+  ON public.profiles FOR ALL USING (auth.uid() = id);
+
+CREATE POLICY "Users own their conversations"
+  ON public.conversations FOR ALL USING (auth.uid() = user_id);
+
+CREATE POLICY "Users own their messages"
+  ON public.messages FOR ALL USING (auth.uid() = user_id);
+
+CREATE POLICY "Users own their tasks"
+  ON public.income_tasks FOR ALL USING (auth.uid() = user_id);
+
+CREATE POLICY "Users own their enrollments"
+  ON public.skill_enrollments FOR ALL USING (auth.uid() = user_id);
+
+CREATE POLICY "Users own their earnings"
+  ON public.earnings_log FOR ALL USING (auth.uid() = user_id);
+
+CREATE POLICY "Users own their payments"
+  ON public.payments FOR ALL USING (auth.uid() = user_id);
+
+CREATE POLICY "Users own their unlocks"
+  ON public.feature_unlocks FOR ALL USING (auth.uid() = user_id);
+
+CREATE POLICY "Users own their roadmaps"
+  ON public.wealth_roadmaps FOR ALL USING (auth.uid() = user_id);
+
+-- Community posts: public read, own write
+CREATE POLICY "Public can read visible posts"
+  ON public.community_posts FOR SELECT USING (is_visible = true);
+
+CREATE POLICY "Users own their posts"
+  ON public.community_posts FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their own posts"
+  ON public.community_posts FOR UPDATE USING (auth.uid() = user_id);
+
+-- ============================================================
+-- PERFORMANCE: Indexes
+-- ============================================================
+
+CREATE INDEX IF NOT EXISTS idx_conversations_user ON public.conversations(user_id);
+CREATE INDEX IF NOT EXISTS idx_messages_conv      ON public.messages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_user_status  ON public.income_tasks(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_earnings_user      ON public.earnings_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_posts_visible      ON public.community_posts(is_visible, created_at DESC);

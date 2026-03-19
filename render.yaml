@@ -56,3 +56,41 @@ services:
         value: auto
     healthCheckPath: /health
     autoDeploy: true
+
+  # ── Web App (Flutter Web — static site) ──────────────────────
+  - type: web
+    name: riseup-web
+    env: static
+    region: oregon
+    plan: free
+    buildCommand: >
+      cd frontend &&
+      curl -fsSL https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.22.0-stable.tar.xz | tar xJ -C /tmp &&
+      export PATH="$PATH:/tmp/flutter/bin" &&
+      flutter pub get &&
+      flutter build web --release --web-renderer canvaskit
+        --dart-define=API_BASE_URL=$API_BASE_URL
+        --dart-define=SUPABASE_URL=$SUPABASE_URL
+        --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
+    staticPublishPath: frontend/build/web
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: no-cache
+      - path: /flutter.js
+        name: Cache-Control
+        value: public, max-age=604800
+      - path: /assets/**
+        name: Cache-Control
+        value: public, max-age=2592000
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: API_BASE_URL
+        value: https://riseup-api.onrender.com/api/v1
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
@@ -23,8 +24,8 @@ class _SplashScreenState extends State<SplashScreen> {
     await Future.delayed(const Duration(milliseconds: 2800));
     if (!mounted) return;
 
-    // Attempt app-open ad (non-blocking)
-    await adService.showAppOpenAdIfAvailable();
+    // Attempt app-open ad on mobile only
+    if (!kIsWeb) await adService.showAppOpenAdIfAvailable();
     if (!mounted) return;
 
     final isAuth = await api.isAuthenticated();

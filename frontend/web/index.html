@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+  <!-- SEO & Social -->
+  <title>RiseUp — AI Wealth Mentor</title>
+  <meta name="description" content="Your AI-powered wealth mentor. Go from survival mode to financial freedom with personalised income tasks, skill building & a wealth roadmap. By ChAs Tech Group.">
+  <meta name="keywords" content="wealth building, income, AI mentor, financial freedom, Nigeria, skills, freelancing">
+  <meta name="author" content="ChAs Tech Group">
+  <meta name="theme-color" content="#6C5CE7">
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="RiseUp — AI Wealth Mentor">
+  <meta property="og:description" content="Go from survival mode to financial freedom with your AI wealth mentor.">
+  <meta property="og:image" content="icons/Icon-512.png">
+  <meta property="og:type" content="website">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="RiseUp — AI Wealth Mentor">
+  <meta name="twitter:description" content="AI-powered income tasks, skill building & wealth roadmaps.">
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" href="icons/Icon-192.png">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- ══════════════════════════════════════════════════════
+       GOOGLE ADSENSE
+       Replace ca-pub-XXXXXXXXXXXXXXXX with your Publisher ID
+       from: https://adsense.google.com → Account → Publisher ID
+       ══════════════════════════════════════════════════════ -->
+  <script async
+    src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX"
+    crossorigin="anonymous">
+  </script>
+
+  <!-- AdSense Auto Ads — Google automatically finds best placements -->
+  <script>
+    (adsbygoogle = window.adsbygoogle || []).push({
+      google_ad_client: "ca-pub-XXXXXXXXXXXXXXXX",
+      enable_page_level_ads: true,
+      overlays: { bottom: true }   // sticky bottom ad on mobile web
+    });
+  </script>
+
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      height: 100%;
+      background-color: #0F0E17;
+      overflow: hidden;
+    }
+
+    /* ── Top leaderboard banner (728x90 desktop / 320x50 mobile) ── */
+    #ad-top {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      background: #0F0E17;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 50px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    #ad-top .adsbygoogle {
+      display: block;
+      width: 728px;
+      height: 90px;
+    }
+    @media (max-width: 768px) {
+      #ad-top .adsbygoogle {
+        width: 320px;
+        height: 50px;
+      }
+    }
+
+    /* ── Bottom anchor banner ── */
+    #ad-bottom {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      background: #0F0E17;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 50px;
+      border-top: 1px solid rgba(255,255,255,0.05);
+    }
+    #ad-bottom .adsbygoogle {
+      display: block;
+      width: 728px;
+      height: 90px;
+    }
+    @media (max-width: 768px) {
+      #ad-bottom .adsbygoogle {
+        width: 320px;
+        height: 50px;
+      }
+    }
+
+    /* Push Flutter canvas away from ad bars */
+    #flutter-app {
+      position: fixed;
+      top: 50px;       /* height of top ad */
+      bottom: 50px;    /* height of bottom ad */
+      left: 0;
+      right: 0;
+    }
+    /* If ads fail to load, canvas takes full screen */
+    #flutter-app.no-ads {
+      top: 0;
+      bottom: 0;
+    }
+
+    /* ── Loading screen ── */
+    #loading {
+      position: fixed;
+      inset: 0;
+      background: #0F0E17;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      transition: opacity 0.4s ease;
+    }
+    #loading.hide { opacity: 0; pointer-events: none; }
+    #loading img {
+      width: 96px;
+      height: 96px;
+      border-radius: 24px;
+      box-shadow: 0 0 40px rgba(108,92,231,0.5);
+      animation: pulse 1.8s ease-in-out infinite;
+    }
+    #loading h1 {
+      margin-top: 20px;
+      font-size: 36px;
+      font-weight: 900;
+      background: linear-gradient(135deg, #FF6B00, #FFD700, #6C5CE7);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      font-family: system-ui, -apple-system, sans-serif;
+      letter-spacing: -1px;
+    }
+    #loading p {
+      margin-top: 8px;
+      color: #B2B2CC;
+      font-size: 14px;
+      letter-spacing: 1.5px;
+      font-family: system-ui, sans-serif;
+    }
+    #loading .bar {
+      margin-top: 40px;
+      width: 48px;
+      height: 3px;
+      background: #1F1F3A;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    #loading .bar-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #FF6B00, #FFD700);
+      border-radius: 3px;
+      animation: load 2.4s ease-in-out forwards;
+    }
+    #loading .brand {
+      position: absolute;
+      bottom: 32px;
+      color: #6B6B8A;
+      font-size: 12px;
+      font-family: system-ui, sans-serif;
+    }
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); box-shadow: 0 0 40px rgba(108,92,231,0.5); }
+      50%       { transform: scale(1.04); box-shadow: 0 0 60px rgba(255,107,0,0.4); }
+    }
+    @keyframes load {
+      0%   { width: 0%; }
+      100% { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── Top Ad Banner ─────────────────────────────────── -->
+  <div id="ad-top">
+    <ins class="adsbygoogle"
+         data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+         data-ad-slot="XXXXXXXXXX"
+         data-ad-format="horizontal"
+         data-full-width-responsive="true">
+    </ins>
+    <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+  </div>
+
+  <!-- ── Flutter App Canvas (sandwiched between ads) ─────── -->
+  <div id="flutter-app">
+    <!-- Flutter renders here -->
+  </div>
+
+  <!-- ── Bottom Ad Banner ──────────────────────────────── -->
+  <div id="ad-bottom">
+    <ins class="adsbygoogle"
+         data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+         data-ad-slot="XXXXXXXXXX"
+         data-ad-format="horizontal"
+         data-full-width-responsive="true">
+    </ins>
+    <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+  </div>
+
+  <!-- ── Loading screen ────────────────────────────────── -->
+  <div id="loading">
+    <img src="icons/Icon-192.png" alt="RiseUp Logo">
+    <h1>RiseUp</h1>
+    <p>Your AI Wealth Mentor</p>
+    <div class="bar"><div class="bar-fill"></div></div>
+    <span class="brand">Made with ❤️ by ChAs Tech Group</span>
+  </div>
+
+  <script>
+    // Collapse ad bars if no ads loaded (keeps full-screen UX clean)
+    window.addEventListener('load', function () {
+      setTimeout(function () {
+        var topAd  = document.querySelector('#ad-top  .adsbygoogle');
+        var botAd  = document.querySelector('#ad-bottom .adsbygoogle');
+        var app    = document.getElementById('flutter-app');
+        var adsLoaded = (topAd && topAd.getAttribute('data-adsbygoogle-status') === 'done');
+        if (!adsLoaded) {
+          document.getElementById('ad-top').style.display    = 'none';
+          document.getElementById('ad-bottom').style.display = 'none';
+          if (app) app.classList.add('no-ads');
+        }
+      }, 3000);
+    });
+
+    // Hide loading screen once Flutter first frame fires
+    window.addEventListener('flutter-first-frame', function () {
+      var el = document.getElementById('loading');
+      if (el) {
+        el.classList.add('hide');
+        setTimeout(function () { el.remove(); }, 500);
+      }
+    });
+
+    // Tell Flutter where to render (inside #flutter-app div)
+    window._flutter = {
+      loader: { serviceWorkerSettings: { serviceWorkerVersion: null } }
+    };
+  </script>
+
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

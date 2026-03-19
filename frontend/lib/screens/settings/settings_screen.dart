@@ -6,6 +6,8 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -172,6 +174,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 icon: Iconsax.logout,
                 label: 'Sign Out',
                 labelColor: AppColors.error,
+                onTap: () => context.go('/privacy'),
+              ),
+              _SettingsTile(
+                icon: Icons.article_outlined,
+                iconColor: AppColors.accent,
+                title: 'Terms of Service',
+                onTap: () => context.go('/terms'),
+              ),
+              _SettingsTile(
+                icon: Icons.share_rounded,
+                iconColor: AppColors.success,
+                title: 'Share RiseUp with Friends',
+                subtitle: 'Help someone else rise up!',
+                onTap: () => Share.share(
+                  '🚀 I'm using RiseUp — an AI wealth mentor that helps you earn more, build skills, and reach financial freedom! Check it out: https://chastech.ng/riseup',
+                  subject: 'Check out RiseUp!',
+                ),
+              ),
+              const Divider(height: 1, color: Color(0xFF1F1F3A)),
+              _SettingsTile(
+                icon: Icons.delete_outline_rounded,
+                iconColor: AppColors.error,
+                title: 'Delete Account',
+                subtitle: 'Permanently remove all your data',
+                onTap: () => _confirmDeleteAccount(context),
+              ),
+              const Divider(height: 1, color: Color(0xFF1F1F3A)),
+              _SettingsTile(
+                icon: Icons.logout_rounded,
+                iconColor: AppColors.error,
+                title: 'Sign Out',
                 onTap: _signOut,
               ),
             ]).animate().fadeIn(delay: 300.ms),
@@ -325,6 +358,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _openUrl(String url) async {
     final uri = Uri.parse(url);
     if (await canLaunchUrl(uri)) await launchUrl(uri);
+  }
+
+  Future<void> _confirmDeleteAccount(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A2E),
+        title: const Text('Delete Account?', style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'This will permanently delete your account and all data. This cannot be undone.',
+          style: TextStyle(color: Colors.grey),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFE17055)),
+            child: const Text('Delete Forever'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await api.signOut();
+      if (mounted) context.go('/login');
+    }
   }
 
   Future<void> _signOut() async {

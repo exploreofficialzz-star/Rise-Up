@@ -104,3 +104,75 @@ Just these 4 secrets get you running:
 4. `GROQ_API_KEY` (free)
 
 Everything else is optional/can be added later.
+
+---
+
+## 🌐 Web Deployment
+
+### GitHub Pages (free)
+| Secret/Variable | Value |
+|---|---|
+| `WEB_DOMAIN` | Your custom domain e.g. `app.riseup.com` (optional) |
+
+### Render Web Static Site
+| Secret | Value |
+|---|---|
+| `RENDER_WEB_SERVICE_ID` | Render → Your web static service → ID (e.g. `srv-xxxxx`) |
+| `SUPABASE_URL` | Same as backend |
+| `SUPABASE_ANON_KEY` | Same as backend |
+| `API_BASE_URL` | `https://riseup-api.onrender.com/api/v1` |
+
+---
+
+## 🍎 iOS Build Secrets (optional — add when ready for App Store)
+| Secret | How to Get |
+|---|---|
+| `IOS_CERTIFICATE_BASE64` | In Xcode: export .p12 cert → `base64 -i cert.p12` |
+| `IOS_CERTIFICATE_PASSWORD` | Password you set when exporting |
+| `IOS_PROVISIONING_PROFILE_BASE64` | Download from Apple Dev portal → `base64 -i profile.mobileprovision` |
+
+> **Note:** iOS builds work without signing on CI. You only need signing certs to submit to the App Store.
+
+---
+
+## 📋 Platform Summary
+| Platform | Build | Deploy | Ads |
+|---|---|---|---|
+| Android | GitHub Actions → APK/AAB | GitHub Releases | AdMob (all 4 types) |
+| iOS | GitHub Actions (macOS) → .app | GitHub Artifacts | AdMob (all 4 types) |
+| Web | GitHub Actions → static | GitHub Pages / Render | Google AdSense (add to index.html) |
+
+---
+
+## 🌐 Google AdSense (Web Ads)
+
+> AdMob works on Android & iOS. AdSense works on the **website**.
+
+### How to set up AdSense:
+1. Go to [adsense.google.com](https://adsense.google.com) → Sign up
+2. Add your website URL (your GitHub Pages or Render URL)
+3. Wait for Google to approve your site (usually 1–3 days)
+4. Once approved, go to **Ads → Ad Units** → Create 2 units:
+   - **Top Banner** (Leaderboard 728×90 / Responsive)
+   - **Bottom Banner** (Anchor / Responsive)
+5. Copy the **Publisher ID** and **Ad Slot IDs**
+
+### Where to paste them:
+**1. In `web/index.html`** — replace every `ca-pub-XXXXXXXXXXXXXXXX` with your Publisher ID and `XXXXXXXXXX` with your slot IDs
+
+**2. Add as GitHub Secrets** (for the build to inject them):
+| Secret | Value |
+|---|---|
+| `ADSENSE_PUBLISHER_ID` | e.g. `ca-pub-1234567890123456` |
+| `ADSENSE_TOP_SLOT` | e.g. `1234567890` |
+| `ADSENSE_BOTTOM_SLOT` | e.g. `0987654321` |
+
+### What ads appear on the website:
+| Ad Type | Where | Format |
+|---|---|---|
+| **Top Banner** | Fixed bar at top of page | 728×90 desktop / 320×50 mobile |
+| **Bottom Banner** | Fixed bar at bottom | 728×90 desktop / 320×50 mobile |
+| **Auto Ads** | Google picks best spots automatically | Various |
+| **Sticky Overlay** | Mobile bottom overlay | Auto |
+
+> **Note:** AdSense requires your site to have real content and traffic before approval. Test with the placeholder IDs first, then swap in real ones after approval.

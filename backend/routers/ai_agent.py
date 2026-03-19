@@ -3,7 +3,8 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from middleware.rate_limit import limiter, AI_LIMIT, GENERAL_LIMIT
 
 from models.schemas import ChatRequest, ChatResponse, GenerateTasksRequest
 from services.ai_service import ai_service, RISEUP_SYSTEM_PROMPT, ONBOARDING_PROMPT
@@ -15,7 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest, user: dict = Depends(get_current_user)):
+@limiter.limit(AI_LIMIT)
+async def chat(req: ChatRequest, request: Request, user: dict = Depends(get_current_user)):
     """Main AI chat endpoint — handles all conversation modes"""
     user_id = user["id"]
 
@@ -94,7 +96,8 @@ async def chat(req: ChatRequest, user: dict = Depends(get_current_user)):
 
 
 @router.post("/generate-tasks")
-async def generate_tasks(req: GenerateTasksRequest, user: dict = Depends(get_current_user)):
+@limiter.limit(AI_LIMIT)
+async def generate_tasks(req: GenerateTasksRequest, request: Request, user: dict = Depends(get_current_user)):
     """Generate fresh AI-powered income tasks"""
     user_id = user["id"]
     profile = await supabase_service.get_profile(user_id)
@@ -114,7 +117,8 @@ async def generate_tasks(req: GenerateTasksRequest, user: dict = Depends(get_cur
 
 
 @router.post("/generate-roadmap")
-async def generate_roadmap(user: dict = Depends(get_current_user)):
+@limiter.limit(AI_LIMIT)
+async def generate_roadmap(request: Request, user: dict = Depends(get_current_user)):
     """Generate personalized 3-stage wealth roadmap"""
     user_id = user["id"]
     profile = await supabase_service.get_profile(user_id)

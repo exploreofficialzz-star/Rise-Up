@@ -34,6 +34,21 @@ const String kAppOpenAdUnit = String.fromEnvironment(
   defaultValue: 'ca-app-pub-3940256099942544/9257395921', // test app-open
 );
 
+
+// Google AdSense (Web only — set in web/index.html too)
+const String kAdSensePublisherId = String.fromEnvironment(
+  'ADSENSE_PUBLISHER_ID',
+  defaultValue: 'ca-pub-XXXXXXXXXXXXXXXX', // replace with your Publisher ID
+);
+const String kAdSenseTopSlotId = String.fromEnvironment(
+  'ADSENSE_TOP_SLOT',
+  defaultValue: 'XXXXXXXXXX', // top banner slot
+);
+const String kAdSenseBottomSlotId = String.fromEnvironment(
+  'ADSENSE_BOTTOM_SLOT',
+  defaultValue: 'XXXXXXXXXX', // bottom banner slot
+);
+
 // ── Colors ───────────────────────────────────────────
 class AppColors {
   // Primary brand

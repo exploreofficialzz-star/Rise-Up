@@ -5,6 +5,7 @@ import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 import '../../widgets/gradient_button.dart';
 import '../../services/ad_service.dart';
+import '../../utils/app_review_service.dart';
 
 class TasksScreen extends StatefulWidget {
   const TasksScreen({super.key});
@@ -71,6 +72,8 @@ class _TasksScreenState extends State<TasksScreen> with SingleTickerProviderStat
     }
     // Show interstitial every 3rd task completion
     await adService.showInterstitialIfReady();
+    // Prompt for app rating after enough completions
+    if (mounted) await appReviewService.onTaskCompleted(context);
   }
 
   @override

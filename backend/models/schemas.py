@@ -4,15 +4,59 @@ from datetime import datetime
 
 
 # ── Auth ──────────────────────────────────────────────
+from pydantic import field_validator
+import re
+
 class SignUpRequest(BaseModel):
     email: EmailStr
     password: str
     full_name: Optional[str] = None
 
+    @field_validator('password')
+    @classmethod
+    def password_strength(cls, v):
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters')
+        if len(v) > 128:
+            raise ValueError('Password too long')
+        return v
+
+    @field_validator('full_name')
+    @classmethod
+    def sanitize_name(cls, v):
+        if v and len(v) > 100:
+            raise ValueError('Name too long')
+        return v.strip() if v else v
+
 
 class SignInRequest(BaseModel):
     email: EmailStr
     password: str
+
+
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordUpdateRequest(BaseModel):
+    access_token: str
+    new_password: str
+
+    @field_validator('new_password')
+    @classmethod
+    def password_strength(cls, v):
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters')
+        if len(v) > 128:
+            raise ValueError('Password too long')
+        return v
+
+
+class VersionCheckResponse(BaseModel):
+    current_version: str
+    min_required_version: str
+    update_required: bool
+    update_message: Optional[str] = None
 
 
 class AuthResponse(BaseModel):
@@ -54,8 +98,17 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     conversation_id: Optional[str] = None
-    mode: Optional[str] = "general"  # general | onboarding | task_gen | roadmap
+    mode: Optional[str] = "general"
     preferred_model: Optional[str] = None
+
+    @field_validator('message')
+    @classmethod
+    def message_length(cls, v):
+        if not v or not v.strip():
+            raise ValueError('Message cannot be empty')
+        if len(v) > 4000:
+            raise ValueError('Message too long (max 4000 characters)')
+        return v.strip()
 
 
 class ChatResponse(BaseModel):

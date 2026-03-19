@@ -1,13 +1,13 @@
 import 'package:dio/dio.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../config/app_constants.dart';
+import '../utils/storage_service.dart';
 
 class ApiService {
   static final ApiService _instance = ApiService._internal();
   factory ApiService() => _instance;
 
   late Dio _dio;
-  final _storage = const FlutterSecureStorage();
+  // uses global storageService
 
   ApiService._internal() {
     _dio = Dio(BaseOptions(
@@ -20,7 +20,7 @@ class ApiService {
     // Auth interceptor
     _dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) async {
-        final token = await _storage.read(key: 'access_token');
+        final token = await storageService.read(key: 'access_token');
         if (token != null) {
           options.headers['Authorization'] = 'Bearer $token';
         }
@@ -31,7 +31,7 @@ class ApiService {
           // Try token refresh
           final refreshed = await _refreshToken();
           if (refreshed) {
-            final token = await _storage.read(key: 'access_token');
+            final token = await storageService.read(key: 'access_token');
             error.requestOptions.headers['Authorization'] = 'Bearer $token';
             final retryRes = await _dio.fetch(error.requestOptions);
             return handler.resolve(retryRes);
@@ -44,11 +44,11 @@ class ApiService {
 
   Future<bool> _refreshToken() async {
     try {
-      final refresh = await _storage.read(key: 'refresh_token');
+      final refresh = await storageService.read(key: 'refresh_token');
       if (refresh == null) return false;
       final res = await _dio.post('/auth/refresh', data: {'refresh_token': refresh});
-      await _storage.write(key: 'access_token', value: res.data['access_token']);
-      await _storage.write(key: 'refresh_token', value: res.data['refresh_token']);
+      await storageService.write(key: 'access_token', value: res.data['access_token']);
+      await storageService.write(key: 'refresh_token', value: res.data['refresh_token']);
       return true;
     } catch (_) { return false; }
   }
@@ -66,18 +66,18 @@ class ApiService {
       'email': email, 'password': password
     });
     final data = res.data;
-    await _storage.write(key: 'access_token', value: data['access_token']);
-    await _storage.write(key: 'refresh_token', value: data['refresh_token']);
-    await _storage.write(key: 'user_id', value: data['user_id']);
+    await storageService.write(key: 'access_token', value: data['access_token']);
+    await storageService.write(key: 'refresh_token', value: data['refresh_token']);
+    await storageService.write(key: 'user_id', value: data['user_id']);
     return data;
   }
 
   Future<void> signOut() async {
-    await _storage.deleteAll();
+    await storageService.deleteAll();
   }
 
-  Future<String?> getToken() => _storage.read(key: 'access_token');
-  Future<String?> getUserId() => _storage.read(key: 'user_id');
+  Future<String?> getToken() => storageService.read(key: 'access_token');
+  Future<String?> getUserId() => storageService.read(key: 'user_id');
   Future<bool> isAuthenticated() async => (await getToken()) != null;
 
   // ── AI Chat ──────────────────────────────────────────
@@ -251,6 +251,23 @@ class ApiService {
     return res.data;
   }
 }
+
+  // ── Password Reset ───────────────────────────────────────
+  Future<Map> forgotPassword(String email) async {
+    final res = await _dio.post('/auth/forgot-password', data: {'email': email});
+    return res.data;
+  }
+
+  Future<Map> resendVerification(String email) async {
+    final res = await _dio.post('/auth/resend-verification', data: {'email': email});
+    return res.data;
+  }
+
+  // ── Version Check ────────────────────────────────────────
+  Future<Map> checkVersion(String appVersion) async {
+    final res = await _dio.get('/auth/version', queryParameters: {'app_version': appVersion});
+    return res.data;
+  }
 
 // Global instance
 final api = ApiService();
