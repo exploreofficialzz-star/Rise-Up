@@ -57,7 +57,8 @@ class _TasksScreenState extends State<TasksScreen> with SingleTickerProviderStat
     double? earned;
     await showModalBottomSheet(
       context: context, backgroundColor: AppColors.bgCard,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (_) => _EarningsModal(onSave: (v) => earned = v),
     );
     await api.updateTask(id, status: 'completed', earnings: earned);
@@ -70,9 +71,7 @@ class _TasksScreenState extends State<TasksScreen> with SingleTickerProviderStat
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ));
     }
-    // Show interstitial every 3rd task completion
     await adService.showInterstitialIfReady();
-    // Prompt for app rating after enough completions
     if (mounted) await appReviewService.onTaskCompleted(context);
   }
 
@@ -133,7 +132,8 @@ class _TasksScreenState extends State<TasksScreen> with SingleTickerProviderStat
         onPressed: _generating ? null : _generateTasks,
         backgroundColor: AppColors.primary,
         icon: _generating
-            ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+            ? const SizedBox(width: 20, height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
             : const Icon(Icons.add_rounded),
         label: Text(_generating ? 'Generating...' : 'New Tasks'),
       ),
@@ -146,7 +146,7 @@ class _TaskList extends StatelessWidget {
   final String emptyTitle, emptySubtitle;
   final Widget? emptyAction;
   final Function(String)? onAccept, onComplete;
-  final Function() onRefresh;
+  final Future<void> Function() onRefresh; // ← Fixed: was Function()
   final bool isCompleted;
 
   const _TaskList({
@@ -169,11 +169,13 @@ class _TaskList extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(isCompleted ? Iconsax.medal : Iconsax.task, size: 64, color: AppColors.textMuted),
+              Icon(isCompleted ? Iconsax.medal : Iconsax.task,
+                  size: 64, color: AppColors.textMuted),
               const SizedBox(height: 16),
               Text(emptyTitle, style: AppTextStyles.h4, textAlign: TextAlign.center),
               const SizedBox(height: 8),
-              Text(emptySubtitle, style: AppTextStyles.bodySmall, textAlign: TextAlign.center),
+              Text(emptySubtitle,
+                  style: AppTextStyles.bodySmall, textAlign: TextAlign.center),
               if (emptyAction != null) ...[const SizedBox(height: 24), emptyAction!],
             ],
           ),
@@ -192,7 +194,9 @@ class _TaskList extends StatelessWidget {
           onAccept: onAccept,
           onComplete: onComplete,
           isCompleted: isCompleted,
-        ).animate().fadeIn(delay: Duration(milliseconds: i * 60)).slideY(begin: 0.1),
+        ).animate()
+            .fadeIn(delay: Duration(milliseconds: i * 60))
+            .slideY(begin: 0.1),
       ),
     );
   }
@@ -202,15 +206,20 @@ class _TaskCard extends StatelessWidget {
   final Map task;
   final Function(String)? onAccept, onComplete;
   final bool isCompleted;
-  const _TaskCard({required this.task, this.onAccept, this.onComplete, this.isCompleted = false});
+  const _TaskCard({
+    required this.task,
+    this.onAccept,
+    this.onComplete,
+    this.isCompleted = false,
+  });
 
   Color get _categoryColor {
     switch (task['category']) {
       case 'freelance': return AppColors.primary;
-      case 'content': return AppColors.accent;
-      case 'digital': return AppColors.gold;
-      case 'gig': return AppColors.success;
-      default: return AppColors.info;
+      case 'content':   return AppColors.accent;
+      case 'digital':   return AppColors.gold;
+      case 'gig':       return AppColors.success;
+      default:          return AppColors.info;
     }
   }
 
@@ -222,78 +231,95 @@ class _TaskCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppColors.bgCard,
         borderRadius: AppRadius.lg,
-        border: Border.all(color: isCompleted ? AppColors.success.withOpacity(0.2) : AppColors.bgSurface),
+        border: Border.all(
+            color: isCompleted
+                ? AppColors.success.withOpacity(0.2)
+                : AppColors.bgSurface),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(color: _categoryColor.withOpacity(0.15), borderRadius: AppRadius.pill),
-                child: Text(task['category'] ?? '', style: AppTextStyles.caption.copyWith(color: _categoryColor, fontWeight: FontWeight.w600)),
-              ),
-              if (task['difficulty'] != null) ...[
-                const SizedBox(width: 6),
-                Text(_diffLabel(task['difficulty']), style: AppTextStyles.caption),
-              ],
-              const Spacer(),
-              if (isCompleted) const Icon(Icons.check_circle, color: AppColors.success, size: 18),
+          Row(children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                  color: _categoryColor.withOpacity(0.15),
+                  borderRadius: AppRadius.pill),
+              child: Text(task['category'] ?? '',
+                  style: AppTextStyles.caption.copyWith(
+                      color: _categoryColor, fontWeight: FontWeight.w600)),
+            ),
+            if (task['difficulty'] != null) ...[
+              const SizedBox(width: 6),
+              Text(_diffLabel(task['difficulty']), style: AppTextStyles.caption),
             ],
-          ),
+            const Spacer(),
+            if (isCompleted)
+              const Icon(Icons.check_circle, color: AppColors.success, size: 18),
+          ]),
           const SizedBox(height: 10),
-          Text(task['title'] ?? '', style: AppTextStyles.h4.copyWith(fontSize: 15)),
+          Text(task['title'] ?? '',
+              style: AppTextStyles.h4.copyWith(fontSize: 15)),
           const SizedBox(height: 4),
-          Text(task['description'] ?? '', style: AppTextStyles.bodySmall, maxLines: 2, overflow: TextOverflow.ellipsis),
+          Text(task['description'] ?? '',
+              style: AppTextStyles.bodySmall,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis),
           const SizedBox(height: 10),
-          Row(
-            children: [
-              const Icon(Icons.attach_money, color: AppColors.success, size: 14),
-              Text(
-                task['actual_earnings'] != null && (task['actual_earnings'] as num) > 0
-                    ? 'Earned: ${task['currency'] ?? 'NGN'} ${task['actual_earnings']}'
-                    : 'Potential: ${task['currency'] ?? 'NGN'} ${task['estimated_earnings'] ?? '~'}',
-                style: AppTextStyles.caption.copyWith(color: AppColors.success),
-              ),
-              if (task['platform'] != null) ...[
-                const Spacer(),
-                const Icon(Iconsax.global, size: 12, color: AppColors.textMuted),
-                const SizedBox(width: 4),
-                Text(task['platform'], style: AppTextStyles.caption),
-              ],
+          Row(children: [
+            const Icon(Icons.attach_money, color: AppColors.success, size: 14),
+            Text(
+              task['actual_earnings'] != null &&
+                      (task['actual_earnings'] as num) > 0
+                  ? 'Earned: ${task['currency'] ?? 'NGN'} ${task['actual_earnings']}'
+                  : 'Potential: ${task['currency'] ?? 'NGN'} ${task['estimated_earnings'] ?? '~'}',
+              style: AppTextStyles.caption.copyWith(color: AppColors.success),
+            ),
+            if (task['platform'] != null) ...[
+              const Spacer(),
+              const Icon(Iconsax.global, size: 12, color: AppColors.textMuted),
+              const SizedBox(width: 4),
+              Text(task['platform'], style: AppTextStyles.caption),
             ],
-          ),
+          ]),
           if (!isCompleted && (task['steps'] as List?)?.isNotEmpty == true) ...[
             const SizedBox(height: 8),
             _StepsPreview(steps: (task['steps'] as List).cast<String>()),
           ],
           if (!isCompleted) ...[
             const SizedBox(height: 12),
-            Row(
-              children: [
-                if (onAccept != null) Expanded(
+            Row(children: [
+              if (onAccept != null)
+                Expanded(
                   child: ElevatedButton(
                     onPressed: () => onAccept!(task['id']),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.primary, padding: const EdgeInsets.symmetric(vertical: 10),
-                      shape: RoundedRectangleBorder(borderRadius: AppRadius.md),
+                      backgroundColor: AppColors.primary,
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: AppRadius.md),
                     ),
-                    child: Text('Start Task ⚡', style: AppTextStyles.label.copyWith(color: Colors.white)),
+                    child: Text('Start Task ⚡',
+                        style: AppTextStyles.label
+                            .copyWith(color: Colors.white)),
                   ),
                 ),
-                if (onComplete != null) Expanded(
+              if (onComplete != null)
+                Expanded(
                   child: ElevatedButton(
                     onPressed: () => onComplete!(task['id']),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.success, padding: const EdgeInsets.symmetric(vertical: 10),
-                      shape: RoundedRectangleBorder(borderRadius: AppRadius.md),
+                      backgroundColor: AppColors.success,
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: AppRadius.md),
                     ),
-                    child: Text('Mark Complete ✓', style: AppTextStyles.label.copyWith(color: Colors.white)),
+                    child: Text('Mark Complete ✓',
+                        style: AppTextStyles.label
+                            .copyWith(color: Colors.white)),
                   ),
                 ),
-              ],
-            ),
+            ]),
           ],
         ],
       ),
@@ -302,10 +328,10 @@ class _TaskCard extends StatelessWidget {
 
   String _diffLabel(String d) {
     switch (d) {
-      case 'easy': return '🟢 Easy';
+      case 'easy':   return '🟢 Easy';
       case 'medium': return '🟡 Medium';
-      case 'hard': return '🔴 Hard';
-      default: return d;
+      case 'hard':   return '🔴 Hard';
+      default:       return d;
     }
   }
 }
@@ -319,16 +345,27 @@ class _StepsPreview extends StatelessWidget {
     final preview = steps.take(2).toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: preview.asMap().entries.map((e) => Padding(
-        padding: const EdgeInsets.only(bottom: 3),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('${e.key + 1}. ', style: AppTextStyles.caption.copyWith(color: AppColors.primary, fontWeight: FontWeight.w700)),
-            Expanded(child: Text(e.value, style: AppTextStyles.caption, maxLines: 1, overflow: TextOverflow.ellipsis)),
-          ],
-        ),
-      )).toList(),
+      children: preview
+          .asMap()
+          .entries
+          .map((e) => Padding(
+                padding: const EdgeInsets.only(bottom: 3),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('${e.key + 1}. ',
+                        style: AppTextStyles.caption.copyWith(
+                            color: AppColors.primary,
+                            fontWeight: FontWeight.w700)),
+                    Expanded(
+                        child: Text(e.value,
+                            style: AppTextStyles.caption,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis)),
+                  ],
+                ),
+              ))
+          .toList(),
     );
   }
 }
@@ -346,14 +383,16 @@ class _EarningsModalState extends State<_EarningsModal> {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: EdgeInsets.fromLTRB(24, 24, 24, MediaQuery.of(context).viewInsets.bottom + 24),
+      padding: EdgeInsets.fromLTRB(
+          24, 24, 24, MediaQuery.of(context).viewInsets.bottom + 24),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text('🎉 Amazing! How much did you earn?', style: AppTextStyles.h4),
           const SizedBox(height: 6),
-          Text('Log your earnings to track your progress', style: AppTextStyles.bodySmall),
+          Text('Log your earnings to track your progress',
+              style: AppTextStyles.bodySmall),
           const SizedBox(height: 20),
           TextField(
             controller: _ctrl,
@@ -362,32 +401,38 @@ class _EarningsModalState extends State<_EarningsModal> {
             decoration: InputDecoration(
               hintText: 'Amount earned (optional)',
               prefixText: '₦ ',
-              prefixStyle: AppTextStyles.body.copyWith(color: AppColors.success),
+              prefixStyle:
+                  AppTextStyles.body.copyWith(color: AppColors.success),
             ),
           ),
           const SizedBox(height: 20),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () { widget.onSave(null); Navigator.pop(context); },
-                  style: OutlinedButton.styleFrom(side: const BorderSide(color: AppColors.bgSurface), padding: const EdgeInsets.symmetric(vertical: 12)),
-                  child: const Text('Skip'),
-                ),
+          Row(children: [
+            Expanded(
+              child: OutlinedButton(
+                onPressed: () {
+                  widget.onSave(null);
+                  Navigator.pop(context);
+                },
+                style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: AppColors.bgSurface),
+                    padding: const EdgeInsets.symmetric(vertical: 12)),
+                child: const Text('Skip'),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () {
-                    widget.onSave(double.tryParse(_ctrl.text));
-                    Navigator.pop(context);
-                  },
-                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.success, padding: const EdgeInsets.symmetric(vertical: 12)),
-                  child: const Text('Log Earning 💰'),
-                ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: ElevatedButton(
+                onPressed: () {
+                  widget.onSave(double.tryParse(_ctrl.text));
+                  Navigator.pop(context);
+                },
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.success,
+                    padding: const EdgeInsets.symmetric(vertical: 12)),
+                child: const Text('Log Earning 💰'),
               ),
-            ],
-          ),
+            ),
+          ]),
         ],
       ),
     );
