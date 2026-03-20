@@ -3,11 +3,10 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
-import 'package:share_plus/share_plus.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -123,12 +122,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _SettingTile(
                 icon: Iconsax.shield_tick,
                 label: 'Privacy Policy',
-                onTap: () => _openUrl('https://riseupapp.com/privacy'),
+                onTap: () => context.go('/privacy'),
               ),
               _SettingTile(
                 icon: Iconsax.document,
                 label: 'Terms of Service',
-                onTap: () => _openUrl('https://riseupapp.com/terms'),
+                onTap: () => context.go('/terms'),
               ),
               _SettingTile(
                 icon: Iconsax.security_safe,
@@ -171,40 +170,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 8),
             _SettingGroup(tiles: [
               _SettingTile(
-                icon: Iconsax.logout,
-                label: 'Sign Out',
-                labelColor: AppColors.error,
-                onTap: () => context.go('/privacy'),
-              ),
-              _SettingsTile(
-                icon: Icons.article_outlined,
-                iconColor: AppColors.accent,
-                title: 'Terms of Service',
-                onTap: () => context.go('/terms'),
-              ),
-              _SettingsTile(
                 icon: Icons.share_rounded,
-                iconColor: AppColors.success,
-                title: 'Share RiseUp with Friends',
+                label: 'Share RiseUp with Friends',
                 subtitle: 'Help someone else rise up!',
+                trailingColor: AppColors.success,
                 onTap: () => Share.share(
-                  '🚀 I'm using RiseUp — an AI wealth mentor that helps you earn more, build skills, and reach financial freedom! Check it out: https://chastech.ng/riseup',
+                  '🚀 I\'m using RiseUp - an AI wealth mentor that helps you earn more, build skills, and reach financial freedom! Check it out: https://chastech.ng/riseup',
                   subject: 'Check out RiseUp!',
                 ),
               ),
-              const Divider(height: 1, color: Color(0xFF1F1F3A)),
-              _SettingsTile(
+              _SettingTile(
                 icon: Icons.delete_outline_rounded,
-                iconColor: AppColors.error,
-                title: 'Delete Account',
+                label: 'Delete Account',
                 subtitle: 'Permanently remove all your data',
+                labelColor: AppColors.error,
                 onTap: () => _confirmDeleteAccount(context),
               ),
-              const Divider(height: 1, color: Color(0xFF1F1F3A)),
-              _SettingsTile(
+              _SettingTile(
                 icon: Icons.logout_rounded,
-                iconColor: AppColors.error,
-                title: 'Sign Out',
+                label: 'Sign Out',
+                labelColor: AppColors.error,
                 onTap: _signOut,
               ),
             ]).animate().fadeIn(delay: 300.ms),
@@ -365,7 +350,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: const Color(0xFF1A1A2E),
-        title: const Text('Delete Account?', style: TextStyle(color: Colors.white)),
+        title: const Text('Delete Account?',
+            style: TextStyle(color: Colors.white)),
         content: const Text(
           'This will permanently delete your account and all data. This cannot be undone.',
           style: TextStyle(color: Colors.grey),
@@ -373,11 +359,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            child:
+                const Text('Cancel', style: TextStyle(color: Colors.grey)),
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFE17055)),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFE17055)),
             child: const Text('Delete Forever'),
           ),
         ],
@@ -395,8 +383,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (_) => AlertDialog(
         backgroundColor: AppColors.bgCard,
         title: Text('Sign Out?', style: AppTextStyles.h4),
-        content: Text('You can sign back in anytime.',
-            style: AppTextStyles.body),
+        content:
+            Text('You can sign back in anytime.', style: AppTextStyles.body),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
@@ -444,8 +432,11 @@ class _SettingGroup extends StatelessWidget {
           return Column(children: [
             e.value,
             if (e.key < tiles.length - 1)
-              Divider(height: 1, color: AppColors.bgSurface,
-                  indent: 52, endIndent: 16),
+              Divider(
+                  height: 1,
+                  color: AppColors.bgSurface,
+                  indent: 52,
+                  endIndent: 16),
           ]);
         }).toList(),
       ),
@@ -478,9 +469,7 @@ class _SettingTile extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
         child: Row(children: [
-          Icon(icon,
-              size: 20,
-              color: labelColor ?? AppColors.textSecondary),
+          Icon(icon, size: 20, color: labelColor ?? AppColors.textSecondary),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
@@ -491,14 +480,14 @@ class _SettingTile extends StatelessWidget {
                         color: labelColor ?? AppColors.textPrimary)),
                 if (subtitle != null)
                   Text(subtitle!,
-                      style: AppTextStyles.caption, maxLines: 1,
+                      style: AppTextStyles.caption,
+                      maxLines: 1,
                       overflow: TextOverflow.ellipsis),
               ],
             ),
           ),
           Icon(Icons.chevron_right_rounded,
-              size: 18,
-              color: trailingColor ?? AppColors.textMuted),
+              size: 18, color: trailingColor ?? AppColors.textMuted),
         ]),
       ),
     );
