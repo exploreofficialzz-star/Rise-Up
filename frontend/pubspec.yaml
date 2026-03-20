@@ -64,9 +64,6 @@ dependencies:
   image_picker: ^1.1.2
   share_plus: ^10.0.0
 
-  # In-app review (native rating dialog)
-  in_app_review: ^2.0.9
-
   # Crash reporting
   sentry_flutter: ^8.8.0
 
@@ -109,4 +106,4 @@ flutter:
     - assets/animations/
     - assets/icons/
 
-  # Fonts: using Google Fonts package (no local
+  # Fonts: using Google Fonts package (no local font files needed)
