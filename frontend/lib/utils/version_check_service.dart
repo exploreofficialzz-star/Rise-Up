@@ -25,9 +25,9 @@ class VersionCheckService {
   void _showUpdateDialog(BuildContext context, Map data) {
     showDialog(
       context: context,
-      barrierDismissible: false,  // Force update — can't dismiss
-      builder: (_) => WillPopScope(
-        onWillPop: () async => false,
+      barrierDismissible: false,
+      builder: (_) => PopScope(
+        canPop: false,
         child: Dialog(
           backgroundColor: AppColors.bgCard,
           shape: RoundedRectangleBorder(borderRadius: AppRadius.xl),

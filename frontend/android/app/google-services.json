@@ -1,0 +1,32 @@
+{
+  "__comment": "PLACEHOLDER — Replace this file with your real google-services.json from Firebase Console.",
+  "__howto": "Firebase Console → Project Settings → Your Android app → Download google-services.json",
+  "__ci": "In GitHub Actions, store the base64-encoded file as secret GOOGLE_SERVICES_JSON",
+  "project_info": {
+    "project_number": "000000000000",
+    "project_id": "riseup-placeholder",
+    "storage_bucket": "riseup-placeholder.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:000000000000:android:0000000000000000",
+        "android_client_info": {
+          "package_name": "com.chastech.riseup"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "REPLACE_WITH_YOUR_FIREBASE_API_KEY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

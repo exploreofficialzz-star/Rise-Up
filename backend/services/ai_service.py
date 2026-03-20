@@ -332,11 +332,12 @@ class AnthropicClient:
 class AIService:
     """
     Smart multi-model AI service.
-    Priority: Groq (free) → Gemini (free) → Cohere (free) → OpenAI → Anthropic
+    Priority: Groq (free) → OpenRouter (free) → Gemini (free) → Cohere (free) → OpenAI → Anthropic
     """
 
     def __init__(self):
         self.groq = GroqClient()
+        self.openrouter = OpenRouterClient()
         self.gemini = GeminiClient()
         self.cohere = CohereClient()
         self.openai = OpenAIClient()
@@ -351,28 +352,30 @@ class AIService:
         pref = settings.AI_PREFERENCE.lower()
 
         if pref == "auto":
-            # Free models first
+            # Free models first, then paid
             candidates = [
-                (self.groq, settings.GROQ_API_KEY),
-                (self.gemini, settings.GEMINI_API_KEY),
-                (self.cohere, settings.COHERE_API_KEY),
-                (self.openai, settings.OPENAI_API_KEY),
-                (self.anthropic, settings.ANTHROPIC_API_KEY),
+                (self.groq,       settings.GROQ_API_KEY),
+                (self.openrouter, settings.OPENROUTER_API_KEY),
+                (self.gemini,     settings.GEMINI_API_KEY),
+                (self.cohere,     settings.COHERE_API_KEY),
+                (self.openai,     settings.OPENAI_API_KEY),
+                (self.anthropic,  settings.ANTHROPIC_API_KEY),
             ]
         else:
             model_map = {
-                "groq": self.groq, "gemini": self.gemini,
-                "cohere": self.cohere, "openai": self.openai,
-                "anthropic": self.anthropic
+                "groq": self.groq, "openrouter": self.openrouter,
+                "gemini": self.gemini, "cohere": self.cohere,
+                "openai": self.openai, "anthropic": self.anthropic
             }
             preferred = model_map.get(pref)
             candidates = [(preferred, True)] if preferred else []
             for m, k in [
-                (self.groq, settings.GROQ_API_KEY),
-                (self.gemini, settings.GEMINI_API_KEY),
-                (self.cohere, settings.COHERE_API_KEY),
-                (self.openai, settings.OPENAI_API_KEY),
-                (self.anthropic, settings.ANTHROPIC_API_KEY),
+                (self.groq,       settings.GROQ_API_KEY),
+                (self.openrouter, settings.OPENROUTER_API_KEY),
+                (self.gemini,     settings.GEMINI_API_KEY),
+                (self.cohere,     settings.COHERE_API_KEY),
+                (self.openai,     settings.OPENAI_API_KEY),
+                (self.anthropic,  settings.ANTHROPIC_API_KEY),
             ]:
                 if m != preferred:
                     candidates.append((m, k))
@@ -398,9 +401,9 @@ class AIService:
 
         if preferred_model:
             model_map = {
-                "groq": self.groq, "gemini": self.gemini,
-                "cohere": self.cohere, "openai": self.openai,
-                "anthropic": self.anthropic
+                "groq": self.groq, "openrouter": self.openrouter,
+                "gemini": self.gemini, "cohere": self.cohere,
+                "openai": self.openai, "anthropic": self.anthropic
             }
             m = model_map.get(preferred_model)
             if m:

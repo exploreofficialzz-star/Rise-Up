@@ -54,3 +54,23 @@ async def get_leaderboard(period: str = "monthly", limit: int = 10):
         .limit(limit) \
         .execute()
     return {"leaderboard": res.data or [], "period": period}
+
+
+class ShareLog(BaseModel):
+    share_type: str
+    platform: str
+
+
+@router.post("/share")
+async def log_share(req: ShareLog, user: dict = Depends(get_current_user)):
+    """Log a social share event + unlock share achievement"""
+    supabase_service.db.table("share_logs").insert({
+        "user_id":    user["id"],
+        "share_type": req.share_type,
+        "platform":   req.platform,
+    }).execute()
+    # Unlock achievement
+    supabase_service.db.rpc("unlock_achievement", {
+        "uid": user["id"], "ach_key": "shared_win"
+    }).execute()
+    return {"success": True}

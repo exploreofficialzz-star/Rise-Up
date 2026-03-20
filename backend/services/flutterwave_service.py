@@ -142,11 +142,11 @@ class FlutterwaveService:
             return True  # skip in dev
 
         expected = hmac.new(
-            settings.FLUTTERWAVE_WEBHOOK_HASH.encode(),
+            settings.FLUTTERWAVE_WEBHOOK_HASH.encode("utf-8"),
             payload,
             hashlib.sha256
         ).hexdigest()
-        return hmac.compare_digest(expected, signature)
+        return hmac.compare_digest(expected, signature or "")
 
     def get_price_for_currency(self, plan: str, currency: str) -> float:
         """Get subscription price in appropriate currency"""

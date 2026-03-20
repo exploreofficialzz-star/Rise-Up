@@ -16,7 +16,7 @@ anthropic==0.29.0
 # Payments
 requests==2.32.3
 
-# Security
+# Security & Auth
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 python-multipart==0.0.9
@@ -26,8 +26,9 @@ tenacity==8.3.0
 python-dateutil==2.9.0
 ujson==5.10.0
 
-# Security & Rate Limiting
+# Rate Limiting (in-memory — upgrade to Redis for multi-instance)
 slowapi==0.1.9
 limits==3.13.0
-redis==5.0.8
-python-multipart==0.0.9
+
+# Firebase Admin (optional — for server-side push notifications)
+firebase-admin==6.5.0

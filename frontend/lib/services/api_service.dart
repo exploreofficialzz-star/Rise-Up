@@ -7,7 +7,6 @@ class ApiService {
   factory ApiService() => _instance;
 
   late Dio _dio;
-  // uses global storageService
 
   ApiService._internal() {
     _dio = Dio(BaseOptions(
@@ -17,7 +16,7 @@ class ApiService {
       headers: {'Content-Type': 'application/json'},
     ));
 
-    // Auth interceptor
+    // Auth interceptor — attaches token and handles 401 refresh
     _dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) async {
         final token = await storageService.read(key: 'access_token');
@@ -28,13 +27,16 @@ class ApiService {
       },
       onError: (error, handler) async {
         if (error.response?.statusCode == 401) {
-          // Try token refresh
           final refreshed = await _refreshToken();
           if (refreshed) {
             final token = await storageService.read(key: 'access_token');
             error.requestOptions.headers['Authorization'] = 'Bearer $token';
-            final retryRes = await _dio.fetch(error.requestOptions);
-            return handler.resolve(retryRes);
+            try {
+              final retryRes = await _dio.fetch(error.requestOptions);
+              return handler.resolve(retryRes);
+            } catch (_) {
+              return handler.next(error);
+            }
           }
         }
         return handler.next(error);
@@ -50,21 +52,21 @@ class ApiService {
       await storageService.write(key: 'access_token', value: res.data['access_token']);
       await storageService.write(key: 'refresh_token', value: res.data['refresh_token']);
       return true;
-    } catch (_) { return false; }
+    } catch (_) {
+      return false;
+    }
   }
 
-  // ── Auth ────────────────────────────────────────────
+  // ── Auth ────────────────────────────────────────────────────
   Future<Map> signUp(String email, String password, String? name) async {
-    final res = await _dio.post('/auth/signup', data: {
-      'email': email, 'password': password, 'full_name': name
-    });
+    final res = await _dio.post('/auth/signup',
+        data: {'email': email, 'password': password, 'full_name': name});
     return res.data;
   }
 
   Future<Map> signIn(String email, String password) async {
-    final res = await _dio.post('/auth/signin', data: {
-      'email': email, 'password': password
-    });
+    final res = await _dio.post('/auth/signin',
+        data: {'email': email, 'password': password});
     final data = res.data;
     await storageService.write(key: 'access_token', value: data['access_token']);
     await storageService.write(key: 'refresh_token', value: data['refresh_token']);
@@ -73,14 +75,34 @@ class ApiService {
   }
 
   Future<void> signOut() async {
+    try {
+      await _dio.post('/auth/signout');
+    } catch (_) {}
     await storageService.deleteAll();
+  }
+
+  Future<Map> forgotPassword(String email) async {
+    final res = await _dio.post('/auth/forgot-password', data: {'email': email});
+    return res.data;
+  }
+
+  Future<Map> resendVerification(String email) async {
+    final res =
+        await _dio.post('/auth/resend-verification', data: {'email': email});
+    return res.data;
+  }
+
+  Future<Map> checkVersion(String appVersion) async {
+    final res = await _dio.get('/auth/version',
+        queryParameters: {'app_version': appVersion});
+    return res.data;
   }
 
   Future<String?> getToken() => storageService.read(key: 'access_token');
   Future<String?> getUserId() => storageService.read(key: 'user_id');
   Future<bool> isAuthenticated() async => (await getToken()) != null;
 
-  // ── AI Chat ──────────────────────────────────────────
+  // ── AI Chat ─────────────────────────────────────────────────
   Future<Map> chat({
     required String message,
     String? conversationId,
@@ -115,7 +137,8 @@ class ApiService {
   }
 
   Future<List> getMessages(String conversationId) async {
-    final res = await _dio.get('/ai/conversations/$conversationId/messages');
+    final res =
+        await _dio.get('/ai/conversations/$conversationId/messages');
     return res.data['messages'] as List;
   }
 
@@ -124,15 +147,15 @@ class ApiService {
     return res.data['models'] as List;
   }
 
-  // ── Tasks ────────────────────────────────────────────
+  // ── Tasks ────────────────────────────────────────────────────
   Future<List> getTasks({String? status}) async {
-    final res = await _dio.get('/tasks/', queryParameters: {
-      if (status != null) 'status': status
-    });
+    final res = await _dio.get('/tasks/',
+        queryParameters: {if (status != null) 'status': status});
     return res.data['tasks'] as List;
   }
 
-  Future<Map> updateTask(String taskId, {String? status, double? earnings}) async {
+  Future<Map> updateTask(String taskId,
+      {String? status, double? earnings}) async {
     final res = await _dio.patch('/tasks/$taskId', data: {
       if (status != null) 'status': status,
       if (earnings != null) 'actual_earnings': earnings,
@@ -145,14 +168,15 @@ class ApiService {
     return res.data;
   }
 
-  // ── Skills ────────────────────────────────────────────
+  // ── Skills ───────────────────────────────────────────────────
   Future<Map> getSkillModules() async {
     final res = await _dio.get('/skills/modules');
     return res.data;
   }
 
   Future<Map> enrollSkill(String moduleId) async {
-    final res = await _dio.post('/skills/enroll', data: {'module_id': moduleId});
+    final res =
+        await _dio.post('/skills/enroll', data: {'module_id': moduleId});
     return res.data;
   }
 
@@ -176,15 +200,16 @@ class ApiService {
     return res.data;
   }
 
-  // ── Payments ──────────────────────────────────────────
-  Future<Map> initiatePayment({String plan = 'monthly', String currency = 'NGN'}) async {
-    final res = await _dio.post('/payments/initiate', data: {
-      'plan': plan, 'currency': currency
-    });
+  // ── Payments ─────────────────────────────────────────────────
+  Future<Map> initiatePayment(
+      {String plan = 'monthly', String currency = 'NGN'}) async {
+    final res = await _dio.post('/payments/initiate',
+        data: {'plan': plan, 'currency': currency});
     return res.data;
   }
 
-  Future<Map> verifyPayment({required String txRef, String? transactionId}) async {
+  Future<Map> verifyPayment(
+      {required String txRef, String? transactionId}) async {
     final res = await _dio.post('/payments/verify', data: {
       'tx_ref': txRef,
       if (transactionId != null) 'transaction_id': transactionId,
@@ -192,9 +217,15 @@ class ApiService {
     return res.data;
   }
 
-  Future<Map> unlockViaAd({required String featureKey, required String adUnitId, int hours = 1}) async {
+  Future<Map> unlockViaAd({
+    required String featureKey,
+    required String adUnitId,
+    int hours = 1,
+  }) async {
     final res = await _dio.post('/payments/ad-unlock', data: {
-      'feature_key': featureKey, 'ad_unit_id': adUnitId, 'duration_hours': hours,
+      'feature_key': featureKey,
+      'ad_unit_id': adUnitId,
+      'duration_hours': hours,
     });
     return res.data;
   }
@@ -209,7 +240,7 @@ class ApiService {
     return res.data;
   }
 
-  // ── Progress ──────────────────────────────────────────
+  // ── Progress ─────────────────────────────────────────────────
   Future<Map> getStats() async {
     final res = await _dio.get('/progress/stats');
     return res.data;
@@ -243,31 +274,156 @@ class ApiService {
     String currency = 'NGN',
   }) async {
     final res = await _dio.post('/progress/log-earning', data: {
-      'amount': amount, 'source_type': sourceType,
+      'amount': amount,
+      'source_type': sourceType,
       if (sourceId != null) 'source_id': sourceId,
       if (description != null) 'description': description,
       'currency': currency,
     });
     return res.data;
   }
-}
 
-  // ── Password Reset ───────────────────────────────────────
-  Future<Map> forgotPassword(String email) async {
-    final res = await _dio.post('/auth/forgot-password', data: {'email': email});
+  // ── Streaks ──────────────────────────────────────────────────
+  Future<Map> checkIn() async {
+    final res = await _dio.post('/streaks/check-in');
     return res.data;
   }
 
-  Future<Map> resendVerification(String email) async {
-    final res = await _dio.post('/auth/resend-verification', data: {'email': email});
+  Future<Map> getStreak() async {
+    final res = await _dio.get('/streaks/');
     return res.data;
   }
 
-  // ── Version Check ────────────────────────────────────────
-  Future<Map> checkVersion(String appVersion) async {
-    final res = await _dio.get('/auth/version', queryParameters: {'app_version': appVersion});
+  // ── Goals ────────────────────────────────────────────────────
+  Future<Map> getGoals({String? status}) async {
+    final res = await _dio.get('/goals/', queryParameters: {
+      if (status != null) 'status': status,
+    });
     return res.data;
   }
 
-// Global instance
+  Future<Map> createGoal(Map<String, dynamic> data) async {
+    final res = await _dio.post('/goals/', data: data);
+    return res.data;
+  }
+
+  Future<Map> updateGoal(String goalId, Map<String, dynamic> data) async {
+    final res = await _dio.patch('/goals/$goalId', data: data);
+    return res.data;
+  }
+
+  Future<Map> contributeToGoal(String goalId, double amount, {String? description}) async {
+    final res = await _dio.post('/goals/$goalId/contribute', data: {
+      'amount': amount,
+      if (description != null) 'description': description,
+    });
+    return res.data;
+  }
+
+  Future<Map> deleteGoal(String goalId) async {
+    final res = await _dio.delete('/goals/$goalId');
+    return res.data;
+  }
+
+  Future<Map> suggestGoals() async {
+    final res = await _dio.post('/goals/ai-suggest');
+    return res.data;
+  }
+
+  // ── Expenses ─────────────────────────────────────────────────
+  Future<Map> getExpenses({String? month, String? category}) async {
+    final res = await _dio.get('/expenses/', queryParameters: {
+      if (month != null) 'month': month,
+      if (category != null) 'category': category,
+    });
+    return res.data;
+  }
+
+  Future<Map> logExpense(Map<String, dynamic> data) async {
+    final res = await _dio.post('/expenses/', data: data);
+    return res.data;
+  }
+
+  Future<Map> deleteExpense(String expenseId) async {
+    final res = await _dio.delete('/expenses/$expenseId');
+    return res.data;
+  }
+
+  Future<Map> getBudgets({String? month}) async {
+    final res = await _dio.get('/expenses/budgets', queryParameters: {
+      if (month != null) 'month': month,
+    });
+    return res.data;
+  }
+
+  Future<Map> setBudget(Map<String, dynamic> data) async {
+    final res = await _dio.post('/expenses/budgets', data: data);
+    return res.data;
+  }
+
+  Future<Map> getMonthlySummary({String? month}) async {
+    final res = await _dio.get('/expenses/summary', queryParameters: {
+      if (month != null) 'month': month,
+    });
+    return res.data;
+  }
+
+  // ── Achievements ──────────────────────────────────────────────
+  Future<Map> getAchievements() async {
+    final res = await _dio.get('/achievements/');
+    return res.data;
+  }
+
+  Future<Map> getMyAchievements() async {
+    final res = await _dio.get('/achievements/my');
+    return res.data;
+  }
+
+  Future<Map> checkAchievements() async {
+    final res = await _dio.post('/achievements/check');
+    return res.data;
+  }
+
+  // ── Referrals ─────────────────────────────────────────────────
+  Future<Map> getMyReferralCode() async {
+    final res = await _dio.get('/referrals/my-code');
+    return res.data;
+  }
+
+  Future<Map> applyReferralCode(String code) async {
+    final res = await _dio.post('/referrals/apply', data: {'referral_code': code});
+    return res.data;
+  }
+
+  // ── Notifications ─────────────────────────────────────────────
+  Future<Map> registerFcmToken(String token, String platform) async {
+    final res = await _dio.post('/notifications/register-token', data: {
+      'token': token, 'platform': platform,
+    });
+    return res.data;
+  }
+
+  Future<Map> getNotifications({int limit = 30}) async {
+    final res = await _dio.get('/notifications/', queryParameters: {'limit': limit});
+    return res.data;
+  }
+
+  Future<Map> markNotificationsRead({List<String>? ids}) async {
+    final res = await _dio.post('/notifications/mark-read', data: {
+      if (ids != null) 'notification_ids': ids,
+    });
+    return res.data;
+  }
+
+  Future<Map> logShare(String shareType, String platform) async {
+    try {
+      final res = await _dio.post('/community/share', data: {
+        'share_type': shareType, 'platform': platform,
+      });
+      return res.data;
+    } catch (_) { return {}; }
+  }
+} // end ApiService
+
+// Global singleton instance
 final api = ApiService();

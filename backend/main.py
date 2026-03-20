@@ -6,14 +6,13 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from config import settings
 from middleware.security import SecurityHeadersMiddleware
 from middleware.rate_limit import limiter, rate_limit_exceeded_handler
-from routers import auth, ai_agent, tasks, skills, payments, progress, community
+from routers import auth, ai_agent, tasks, skills, payments, progress, community, streaks, goals, expenses, achievements, referrals, notifications, admin
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,7 +67,14 @@ app.include_router(tasks.router,     prefix="/api/v1")
 app.include_router(skills.router,    prefix="/api/v1")
 app.include_router(payments.router,  prefix="/api/v1")
 app.include_router(progress.router,  prefix="/api/v1")
-app.include_router(community.router, prefix="/api/v1")
+app.include_router(community.router,      prefix="/api/v1")
+app.include_router(streaks.router,        prefix="/api/v1")
+app.include_router(goals.router,          prefix="/api/v1")
+app.include_router(expenses.router,       prefix="/api/v1")
+app.include_router(achievements.router,   prefix="/api/v1")
+app.include_router(referrals.router,      prefix="/api/v1")
+app.include_router(notifications.router,  prefix="/api/v1")
+app.include_router(admin.router,          prefix="/api/v1")
 
 
 # ── Root & Health ─────────────────────────────────────────────

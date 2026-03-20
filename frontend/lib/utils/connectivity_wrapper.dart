@@ -24,7 +24,9 @@ class _ConnectivityWrapperState extends State<ConnectivityWrapper> {
   }
 
   Future<void> _checkInitial() async {
-    final result = await Connectivity().checkConnectivity();
+    // connectivity_plus v6+ returns List<ConnectivityResult>
+    final results = await Connectivity().checkConnectivity();
+    final result = results.isNotEmpty ? results.first : ConnectivityResult.none;
     _handleResult(result);
   }
 

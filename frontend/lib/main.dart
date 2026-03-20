@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'config/app_constants.dart';
 import 'config/router.dart';
 import 'services/ad_service.dart';
+import 'services/notification_service.dart';
 import 'utils/storage_service.dart';
 import 'utils/connectivity_wrapper.dart';
 import 'utils/version_check_service.dart';
@@ -13,7 +14,7 @@ import 'utils/version_check_service.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Init platform-safe storage first
+  // Platform-safe storage (must be first)
   storageService.init();
 
   if (!kIsWeb) {
@@ -28,13 +29,36 @@ void main() async {
     ]);
   }
 
+  // Supabase — required
   await Supabase.initialize(url: kSupabaseUrl, anonKey: kSupabaseAnonKey);
-  await adService.initialize();
 
-  // Global Flutter error handler — catch all unhandled errors
+  // Firebase — optional (graceful fail so app works without google-services.json)
+  if (!kIsWeb) {
+    try {
+      // Firebase is only needed for FCM push notifications.
+      // If google-services.json / GoogleService-Info.plist are not set up,
+      // the app continues normally without push notifications.
+      // Uncomment and add firebase_core/firebase_messaging imports when ready:
+      // await Firebase.initializeApp(
+      //   options: DefaultFirebaseOptions.currentPlatform,
+      // );
+      await notificationService.initialize();
+    } catch (e) {
+      debugPrint('[RiseUp] Firebase/notifications init skipped: $e');
+    }
+  }
+
+  // Ads — graceful fail
+  try {
+    await adService.initialize();
+  } catch (e) {
+    debugPrint('[RiseUp] Ads init error: $e');
+  }
+
+  // Global Flutter error handler
   FlutterError.onError = (details) {
     FlutterError.presentError(details);
-    // TODO: Add Sentry.captureException(details.exception) when you add Sentry
+    // TODO: Add crash reporting (e.g. Sentry) here
   };
 
   runApp(const ProviderScope(child: RiseUpApp()));
@@ -51,13 +75,21 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     if (!kIsWeb) WidgetsBinding.instance.addObserver(this);
-    // Run version check after first frame
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (router.routerDelegate.currentConfiguration.matches.isNotEmpty) {
-        final ctx = router.routerDelegate.navigatorKey.currentContext;
-        if (ctx != null) versionCheckService.checkAndPrompt(ctx);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _runVersionCheck());
+  }
+
+  Future<void> _runVersionCheck() async {
+    try {
+      final matches =
+          router.routerDelegate.currentConfiguration.matches;
+      if (matches.isNotEmpty) {
+        final ctx =
+            router.routerDelegate.navigatorKey.currentContext;
+        if (ctx != null && ctx.mounted) {
+          versionCheckService.checkAndPrompt(ctx);
+        }
       }
-    });
+    } catch (_) {}
   }
 
   @override
@@ -69,7 +101,9 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (!kIsWeb && state == AppLifecycleState.resumed) {
-      adService.showAppOpenAdIfAvailable();
+      try {
+        adService.showAppOpenAdIfAvailable();
+      } catch (_) {}
     }
   }
 
@@ -81,7 +115,6 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
         debugShowCheckedModeBanner: false,
         theme: AppTheme.dark,
         routerConfig: router,
-        // Global error widget for uncaught widget errors
         builder: (context, child) {
           ErrorWidget.builder = (details) => _GlobalErrorWidget(details: details);
           return child ?? const SizedBox.shrink();
@@ -91,7 +124,7 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
   }
 }
 
-// ── Global error widget ───────────────────────────────────────
+// ── Global error widget ─────────────────────────────────────
 class _GlobalErrorWidget extends StatelessWidget {
   final FlutterErrorDetails details;
   const _GlobalErrorWidget({required this.details});
@@ -108,15 +141,24 @@ class _GlobalErrorWidget extends StatelessWidget {
             children: [
               const Text('😕', style: TextStyle(fontSize: 56)),
               const SizedBox(height: 16),
-              const Text('Something went wrong',
-                  style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+              const Text(
+                'Something went wrong',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold),
+              ),
               const SizedBox(height: 8),
-              const Text('Please restart the app.',
-                  style: TextStyle(color: Colors.grey), textAlign: TextAlign.center),
+              const Text(
+                'Please restart the app.',
+                style: TextStyle(color: Colors.grey),
+                textAlign: TextAlign.center,
+              ),
               const SizedBox(height: 32),
               ElevatedButton(
-                onPressed: () => context.go('/home'),
-                style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
+                onPressed: () => router.go('/home'),
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary),
                 child: const Text('Go Home'),
               ),
             ],

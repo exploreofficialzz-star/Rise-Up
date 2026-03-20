@@ -9,6 +9,7 @@ import '../../widgets/stage_badge.dart';
 import '../../widgets/task_preview_card.dart';
 import '../../widgets/gradient_button.dart';
 import '../../services/ad_service.dart';
+import 'package:share_plus/share_plus.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -27,13 +28,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _load();
   }
 
+  Map _streak = {};
+
   Future<void> _load() async {
     try {
-      final stats = await api.getStats();
-      final tasksData = await api.getTasks(status: 'suggested');
+      final results = await Future.wait([
+        api.getStats(),
+        api.getTasks(status: 'suggested'),
+        api.getStreak(),
+      ]);
       setState(() {
-        _stats = stats;
-        _tasks = (tasksData as List).take(3).toList();
+        _stats  = results[0] as Map;
+        _tasks  = (results[1] as List).take(3).toList();
+        _streak = results[2] as Map;
         _loading = false;
       });
     } catch (_) {

@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # CORS
     ALLOWED_ORIGINS: str = "http://localhost:3000"
 
+    # Firebase (for server-side push notifications)
+    FIREBASE_SERVICE_ACCOUNT_JSON: Optional[str] = None
+
+    # Admin
+    ADMIN_SECRET_KEY: Optional[str] = None
+
     @property
     def allowed_origins_list(self) -> List[str]:
         return [o.strip() for o in self.ALLOWED_ORIGINS.split(",")]
@@ -54,3 +60,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+

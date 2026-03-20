@@ -1,4 +1,5 @@
 services:
+  # ── Backend API (FastAPI on Render) ──────────────────────────
   - type: web
     name: riseup-api
     env: python
@@ -22,6 +23,10 @@ services:
         sync: false
       - key: GROQ_MODEL
         value: llama-3.3-70b-versatile
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        value: mistralai/mistral-7b-instruct:free
       - key: GEMINI_API_KEY
         sync: false
       - key: COHERE_API_KEY
@@ -30,6 +35,8 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: AI_PREFERENCE
+        value: auto
       - key: FLUTTERWAVE_PUBLIC_KEY
         sync: false
       - key: FLUTTERWAVE_SECRET_KEY
@@ -38,6 +45,10 @@ services:
         sync: false
       - key: FLUTTERWAVE_WEBHOOK_HASH
         sync: false
+      - key: SUBSCRIPTION_MONTHLY_USD
+        value: "15.99"
+      - key: SUBSCRIPTION_YEARLY_USD
+        value: "99.99"
       - key: ADMOB_APP_ID
         sync: false
       - key: ADMOB_REWARDED_AD_UNIT
@@ -51,38 +62,50 @@ services:
       - key: APP_SECRET_KEY
         generateValue: true
       - key: ALLOWED_ORIGINS
-        value: https://yourdomain.com
-      - key: AI_PREFERENCE
-        value: auto
+        value: https://riseup-web.onrender.com,https://yourdomain.com
+      - key: FRONTEND_URL
+        value: https://riseup-web.onrender.com
+      - key: ADMIN_SECRET_KEY
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        value: mistralai/mistral-7b-instruct:free
     healthCheckPath: /health
     autoDeploy: true
 
-  # ── Web App (Flutter Web — static site) ──────────────────────
+  # ── Flutter Web (Static Site on Render) ──────────────────────
   - type: web
     name: riseup-web
     env: static
     region: oregon
     plan: free
-    buildCommand: >
+    buildCommand: >-
       cd frontend &&
-      curl -fsSL https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.22.0-stable.tar.xz | tar xJ -C /tmp &&
+      curl -fsSL https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.22.3-stable.tar.xz | tar xJ -C /tmp &&
       export PATH="$PATH:/tmp/flutter/bin" &&
+      flutter config --no-analytics &&
       flutter pub get &&
-      flutter build web --release --web-renderer canvaskit
-        --dart-define=API_BASE_URL=$API_BASE_URL
-        --dart-define=SUPABASE_URL=$SUPABASE_URL
-        --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
+      flutter build web --release --web-renderer canvaskit --dart-define=API_BASE_URL=$API_BASE_URL --dart-define=SUPABASE_URL=$SUPABASE_URL --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
     staticPublishPath: frontend/build/web
     headers:
       - path: /*
         name: Cache-Control
-        value: no-cache
+        value: no-cache, no-store, must-revalidate
       - path: /flutter.js
         name: Cache-Control
-        value: public, max-age=604800
+        value: public, max-age=604800, immutable
+      - path: /main.dart.js
+        name: Cache-Control
+        value: public, max-age=604800, immutable
       - path: /assets/**
         name: Cache-Control
-        value: public, max-age=2592000
+        value: public, max-age=2592000, immutable
+      - path: /canvaskit/**
+        name: Cache-Control
+        value: public, max-age=2592000, immutable
     routes:
       - type: rewrite
         source: /*

@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'app_constants.dart';
+import '../config/app_constants.dart';
 
 // ── AppTextField ──────────────────────────────────────
 class AppTextField extends StatefulWidget {

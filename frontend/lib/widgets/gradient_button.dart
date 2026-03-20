@@ -2,7 +2,7 @@
 // Reusable Widgets — gradient_button.dart
 // ============================================================
 import 'package:flutter/material.dart';
-import 'config/app_constants.dart';
+import '../config/app_constants.dart';
 
 class GradientButton extends StatelessWidget {
   final String text;

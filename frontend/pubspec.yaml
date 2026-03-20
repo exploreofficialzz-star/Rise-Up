@@ -28,10 +28,6 @@ dependencies:
   shared_preferences: ^2.2.3
   flutter_secure_storage: ^9.0.0
 
-  # Hive (mobile only — skip on web for now)
-  hive_flutter: ^1.1.0
-  hive: ^2.2.3
-
   # UI & Design
   google_fonts: ^6.2.1
   flutter_animate: ^4.5.0
@@ -71,6 +67,13 @@ dependencies:
   # In-app review (native rating dialog)
   in_app_review: ^2.0.9
 
+  # Crash reporting
+  sentry_flutter: ^8.8.0
+
+  # PDF generation (skill certificates)
+  pdf: ^3.11.1
+  printing: ^5.13.2
+
   # Icons
   iconsax: ^0.0.8
   font_awesome_flutter: ^10.7.0
@@ -81,7 +84,6 @@ dev_dependencies:
   flutter_lints: ^4.0.0
   riverpod_generator: ^2.4.3
   build_runner: ^2.4.12
-  hive_generator: ^2.0.1
   json_serializable: ^6.8.0
   json_annotation: ^4.9.0
   flutter_launcher_icons: ^0.14.1
