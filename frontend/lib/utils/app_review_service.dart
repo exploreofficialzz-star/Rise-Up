@@ -1,6 +1,5 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:in_app_review/in_app_review.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../config/app_constants.dart';
@@ -14,12 +13,10 @@ class AppReviewService {
   factory AppReviewService() => _i;
   AppReviewService._();
 
-  final _inAppReview = InAppReview.instance;
-
   Future<void> onTaskCompleted(BuildContext context) async {
     if (kIsWeb) return;
-    final prefs  = await SharedPreferences.getInstance();
-    final shown  = prefs.getBool(_keyReviewShown) ?? false;
+    final prefs = await SharedPreferences.getInstance();
+    final shown = prefs.getBool(_keyReviewShown) ?? false;
     if (shown) return;
 
     final count = (prefs.getInt(_keyTaskCount) ?? 0) + 1;
@@ -28,20 +25,12 @@ class AppReviewService {
     if (count < _triggerCount || !context.mounted) return;
     await prefs.setBool(_keyReviewShown, true);
 
-    // Small delay so it feels natural, not immediate
+    // Small delay so it feels natural
     await Future.delayed(const Duration(milliseconds: 800));
     if (!context.mounted) return;
 
-    // Try native in-app review first (won't always show — OS decides)
-    try {
-      if (await _inAppReview.isAvailable()) {
-        await _inAppReview.requestReview();
-        return;
-      }
-    } catch (_) {}
-
-    // Fallback: show custom dialog
-    if (context.mounted) _showFallbackDialog(context);
+    // Show custom dialog directly (no in_app_review dependency)
+    _showFallbackDialog(context);
   }
 
   void _showFallbackDialog(BuildContext context) {
