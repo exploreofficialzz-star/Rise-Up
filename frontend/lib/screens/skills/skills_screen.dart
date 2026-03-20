@@ -14,7 +14,8 @@ class SkillsScreen extends StatefulWidget {
   State<SkillsScreen> createState() => _SkillsScreenState();
 }
 
-class _SkillsScreenState extends State<SkillsScreen> with SingleTickerProviderStateMixin {
+class _SkillsScreenState extends State<SkillsScreen>
+    with SingleTickerProviderStateMixin {
   late TabController _tabs;
   List _modules = [];
   List _enrollments = [];
@@ -39,7 +40,9 @@ class _SkillsScreenState extends State<SkillsScreen> with SingleTickerProviderSt
         _enrollments = enrollData;
         _loading = false;
       });
-    } catch (_) { setState(() => _loading = false); }
+    } catch (_) {
+      setState(() => _loading = false);
+    }
   }
 
   @override
@@ -60,11 +63,15 @@ class _SkillsScreenState extends State<SkillsScreen> with SingleTickerProviderSt
         ),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+          ? const Center(
+              child: CircularProgressIndicator(color: AppColors.primary))
           : TabBarView(
               controller: _tabs,
               children: [
-                _ModuleGrid(modules: _modules, isPremium: _isPremium, onRefresh: _load),
+                _ModuleGrid(
+                    modules: _modules,
+                    isPremium: _isPremium,
+                    onRefresh: _load),
                 _MyLearning(enrollments: _enrollments, onRefresh: _load),
               ],
             ),
@@ -75,12 +82,14 @@ class _SkillsScreenState extends State<SkillsScreen> with SingleTickerProviderSt
 class _ModuleGrid extends StatelessWidget {
   final List modules;
   final bool isPremium;
-  final VoidCallback onRefresh;
-  const _ModuleGrid({required this.modules, required this.isPremium, required this.onRefresh});
+  final Future<void> Function() onRefresh; // ← Fixed
+  const _ModuleGrid(
+      {required this.modules,
+      required this.isPremium,
+      required this.onRefresh});
 
   @override
   Widget build(BuildContext context) {
-    // Interleave a banner ad after every 4th skill card
     final int totalItems = modules.length + (modules.length ~/ 4);
     int moduleIndex = 0;
 
@@ -91,7 +100,6 @@ class _ModuleGrid extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         itemCount: totalItems,
         itemBuilder: (_, i) {
-          // Insert banner after positions 4, 9, 14 … (every 5th slot)
           if ((i + 1) % 5 == 0) {
             return const Padding(
               padding: EdgeInsets.symmetric(vertical: 8),
@@ -104,7 +112,10 @@ class _ModuleGrid extends StatelessWidget {
             module: modules[idx],
             isPremium: isPremium,
             onRefresh: onRefresh,
-          ).animate().fadeIn(delay: Duration(milliseconds: idx * 60)).slideY(begin: 0.1);
+          )
+              .animate()
+              .fadeIn(delay: Duration(milliseconds: idx * 60))
+              .slideY(begin: 0.1);
         },
       ),
     );
@@ -114,20 +125,30 @@ class _ModuleGrid extends StatelessWidget {
 class _ModuleCard extends StatelessWidget {
   final Map module;
   final bool isPremium;
-  final VoidCallback onRefresh;
-  const _ModuleCard({required this.module, required this.isPremium, required this.onRefresh});
+  final Future<void> Function() onRefresh; // ← Fixed
+  const _ModuleCard(
+      {required this.module,
+      required this.isPremium,
+      required this.onRefresh});
 
   bool get _isLocked => module['is_premium'] == true && !isPremium;
 
   Color get _categoryColor {
     switch (module['category']) {
-      case 'digital_marketing': return AppColors.primary;
-      case 'design': return AppColors.accent;
-      case 'writing': return AppColors.gold;
-      case 'video': return AppColors.error;
-      case 'digital_products': return AppColors.success;
-      case 'affiliate_marketing': return AppColors.info;
-      default: return AppColors.primary;
+      case 'digital_marketing':
+        return AppColors.primary;
+      case 'design':
+        return AppColors.accent;
+      case 'writing':
+        return AppColors.gold;
+      case 'video':
+        return AppColors.error;
+      case 'digital_products':
+        return AppColors.success;
+      case 'affiliate_marketing':
+        return AppColors.info;
+      default:
+        return AppColors.primary;
     }
   }
 
@@ -136,7 +157,9 @@ class _ModuleCard extends StatelessWidget {
       await showModalBottomSheet(
         context: context,
         backgroundColor: AppColors.bgCard,
-        shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+        shape: const RoundedRectangleBorder(
+            borderRadius:
+                BorderRadius.vertical(top: Radius.circular(20))),
         builder: (_) => _UnlockModal(
           featureKey: FeatureKeys.premiumSkills,
           onUnlocked: onRefresh,
@@ -154,16 +177,18 @@ class _ModuleCard extends StatelessWidget {
           content: const Text('🎉 Enrolled! Start learning to earn more!'),
           backgroundColor: AppColors.success,
           behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         ));
       }
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('${e.toString()}'),
+          content: Text(e.toString()),
           backgroundColor: AppColors.error,
           behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         ));
       }
     }
@@ -179,65 +204,88 @@ class _ModuleCard extends StatelessWidget {
         decoration: BoxDecoration(
           color: AppColors.bgCard,
           borderRadius: AppRadius.lg,
-          border: Border.all(color: _isLocked ? AppColors.gold.withOpacity(0.2) : AppColors.bgSurface),
+          border: Border.all(
+              color: _isLocked
+                  ? AppColors.gold.withOpacity(0.2)
+                  : AppColors.bgSurface),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(color: _categoryColor.withOpacity(0.15), borderRadius: AppRadius.pill),
-                  child: Text(
-                    _formatCategory(module['category']),
-                    style: AppTextStyles.caption.copyWith(color: _categoryColor, fontWeight: FontWeight.w600),
-                  ),
+            Row(children: [
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                    color: _categoryColor.withOpacity(0.15),
+                    borderRadius: AppRadius.pill),
+                child: Text(
+                  _formatCategory(module['category']),
+                  style: AppTextStyles.caption.copyWith(
+                      color: _categoryColor, fontWeight: FontWeight.w600),
                 ),
-                const Spacer(),
-                if (_isLocked)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(color: AppColors.gold.withOpacity(0.15), borderRadius: AppRadius.pill),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.workspace_premium, color: AppColors.gold, size: 12),
-                        const SizedBox(width: 4),
-                        Text('Premium', style: AppTextStyles.caption.copyWith(color: AppColors.gold, fontWeight: FontWeight.w600)),
-                      ],
-                    ),
-                  )
-                else
-                  Text('${module['duration_days']} days', style: AppTextStyles.caption),
-              ],
-            ),
+              ),
+              const Spacer(),
+              if (_isLocked)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                      color: AppColors.gold.withOpacity(0.15),
+                      borderRadius: AppRadius.pill),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.workspace_premium,
+                          color: AppColors.gold, size: 12),
+                      const SizedBox(width: 4),
+                      Text('Premium',
+                          style: AppTextStyles.caption.copyWith(
+                              color: AppColors.gold,
+                              fontWeight: FontWeight.w600)),
+                    ],
+                  ),
+                )
+              else
+                Text('${module['duration_days']} days',
+                    style: AppTextStyles.caption),
+            ]),
             const SizedBox(height: 10),
-            Text(module['title'] ?? '', style: AppTextStyles.h4.copyWith(fontSize: 15)),
+            Text(module['title'] ?? '',
+                style: AppTextStyles.h4.copyWith(fontSize: 15)),
             const SizedBox(height: 4),
-            Text(module['description'] ?? '', style: AppTextStyles.bodySmall, maxLines: 2, overflow: TextOverflow.ellipsis),
+            Text(module['description'] ?? '',
+                style: AppTextStyles.bodySmall,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis),
             const SizedBox(height: 10),
-            Row(
-              children: [
-                const Icon(Icons.attach_money, color: AppColors.success, size: 14),
-                Text(module['income_potential'] ?? '', style: AppTextStyles.caption.copyWith(color: AppColors.success)),
-                const Spacer(),
-                Text('${module['difficulty']}', style: AppTextStyles.caption.copyWith(color: _diffColor(module['difficulty']))),
-              ],
-            ),
+            Row(children: [
+              const Icon(Icons.attach_money,
+                  color: AppColors.success, size: 14),
+              Text(module['income_potential'] ?? '',
+                  style: AppTextStyles.caption
+                      .copyWith(color: AppColors.success)),
+              const Spacer(),
+              Text('${module['difficulty']}',
+                  style: AppTextStyles.caption
+                      .copyWith(color: _diffColor(module['difficulty']))),
+            ]),
             const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
                 onPressed: () => _enroll(context),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: _isLocked ? AppColors.gold : AppColors.primary,
+                  backgroundColor:
+                      _isLocked ? AppColors.gold : AppColors.primary,
                   padding: const EdgeInsets.symmetric(vertical: 10),
-                  shape: RoundedRectangleBorder(borderRadius: AppRadius.md),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: AppRadius.md),
                 ),
                 child: Text(
                   _isLocked ? '🔒 Unlock & Enroll' : 'Enroll Now →',
-                  style: AppTextStyles.label.copyWith(color: Colors.white),
+                  style:
+                      AppTextStyles.label.copyWith(color: Colors.white),
                 ),
               ),
             ),
@@ -247,14 +295,25 @@ class _ModuleCard extends StatelessWidget {
     );
   }
 
-  String _formatCategory(String cat) => cat.replaceAll('_', ' ').split(' ').map((w) => w.isEmpty ? '' : w[0].toUpperCase() + w.substring(1)).join(' ');
-  Color _diffColor(String? d) => d == 'beginner' ? AppColors.success : d == 'intermediate' ? AppColors.warning : AppColors.error;
+  String _formatCategory(String cat) => cat
+      .replaceAll('_', ' ')
+      .split(' ')
+      .map((w) =>
+          w.isEmpty ? '' : w[0].toUpperCase() + w.substring(1))
+      .join(' ');
+
+  Color _diffColor(String? d) => d == 'beginner'
+      ? AppColors.success
+      : d == 'intermediate'
+          ? AppColors.warning
+          : AppColors.error;
 }
 
 class _MyLearning extends StatelessWidget {
   final List enrollments;
-  final VoidCallback onRefresh;
-  const _MyLearning({required this.enrollments, required this.onRefresh});
+  final Future<void> Function() onRefresh; // ← Fixed
+  const _MyLearning(
+      {required this.enrollments, required this.onRefresh});
 
   @override
   Widget build(BuildContext context) {
@@ -267,7 +326,8 @@ class _MyLearning extends StatelessWidget {
             const SizedBox(height: 16),
             Text('No courses yet', style: AppTextStyles.h4),
             const SizedBox(height: 8),
-            Text('Enroll in a skill to start earning while learning', style: AppTextStyles.bodySmall),
+            Text('Enroll in a skill to start earning while learning',
+                style: AppTextStyles.bodySmall),
           ],
         ),
       );
@@ -286,19 +346,25 @@ class _MyLearning extends StatelessWidget {
           return Container(
             margin: const EdgeInsets.only(bottom: 12),
             padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(color: AppColors.bgCard, borderRadius: AppRadius.lg),
+            decoration: BoxDecoration(
+                color: AppColors.bgCard, borderRadius: AppRadius.lg),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(module['title'] ?? '', style: AppTextStyles.h4.copyWith(fontSize: 15)),
+                Text(module['title'] ?? '',
+                    style: AppTextStyles.h4.copyWith(fontSize: 15)),
                 const SizedBox(height: 4),
-                Text('Lesson ${e['current_lesson']} of ${(module['lessons'] as List?)?.length ?? '?'}', style: AppTextStyles.bodySmall),
+                Text(
+                    'Lesson ${e['current_lesson']} of ${(module['lessons'] as List?)?.length ?? '?'}',
+                    style: AppTextStyles.bodySmall),
                 const SizedBox(height: 12),
                 LinearPercentIndicator(
                   lineHeight: 8,
                   percent: progress.clamp(0.0, 1.0),
                   backgroundColor: AppColors.bgSurface,
-                  progressColor: progress >= 1.0 ? AppColors.success : AppColors.primary,
+                  progressColor: progress >= 1.0
+                      ? AppColors.success
+                      : AppColors.primary,
                   barRadius: const Radius.circular(4),
                   padding: EdgeInsets.zero,
                 ),
@@ -306,11 +372,17 @@ class _MyLearning extends StatelessWidget {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text('${(progress * 100).toInt()}% complete', style: AppTextStyles.caption.copyWith(color: AppColors.primary)),
+                    Text('${(progress * 100).toInt()}% complete',
+                        style: AppTextStyles.caption
+                            .copyWith(color: AppColors.primary)),
                     if (e['status'] == 'completed')
-                      Text('✅ Completed!', style: AppTextStyles.caption.copyWith(color: AppColors.success))
+                      Text('✅ Completed!',
+                          style: AppTextStyles.caption
+                              .copyWith(color: AppColors.success))
                     else
-                      Text('Earned: ₦${e['earnings_from_skill'] ?? 0}', style: AppTextStyles.caption.copyWith(color: AppColors.success)),
+                      Text('Earned: ₦${e['earnings_from_skill'] ?? 0}',
+                          style: AppTextStyles.caption
+                              .copyWith(color: AppColors.success)),
                   ],
                 ),
               ],
@@ -326,7 +398,10 @@ class _UnlockModal extends StatelessWidget {
   final String featureKey;
   final VoidCallback onUnlocked;
   final VoidCallback onSubscribe;
-  const _UnlockModal({required this.featureKey, required this.onUnlocked, required this.onSubscribe});
+  const _UnlockModal(
+      {required this.featureKey,
+      required this.onUnlocked,
+      required this.onSubscribe});
 
   @override
   Widget build(BuildContext context) {
@@ -337,9 +412,13 @@ class _UnlockModal extends StatelessWidget {
         children: [
           const Text('🔒', style: TextStyle(fontSize: 48)),
           const SizedBox(height: 12),
-          Text('Premium Content', style: AppTextStyles.h3, textAlign: TextAlign.center),
+          Text('Premium Content',
+              style: AppTextStyles.h3, textAlign: TextAlign.center),
           const SizedBox(height: 8),
-          Text('This course requires Premium. Unlock it by watching a short ad or upgrading.', style: AppTextStyles.body, textAlign: TextAlign.center),
+          Text(
+              'This course requires Premium. Unlock it by watching a short ad or upgrading.',
+              style: AppTextStyles.body,
+              textAlign: TextAlign.center),
           const SizedBox(height: 24),
           GradientButton(
             text: '📺 Watch Ad to Unlock (1 hour)',
@@ -356,9 +435,17 @@ class _UnlockModal extends StatelessWidget {
           SizedBox(
             width: double.infinity,
             child: ElevatedButton(
-              onPressed: () { Navigator.pop(context); onSubscribe(); },
-              style: ElevatedButton.styleFrom(backgroundColor: AppColors.gold, padding: const EdgeInsets.symmetric(vertical: 14)),
-              child: const Text('👑 Upgrade to Premium · \$15.99/mo', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+              onPressed: () {
+                Navigator.pop(context);
+                onSubscribe();
+              },
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.gold,
+                  padding: const EdgeInsets.symmetric(vertical: 14)),
+              child: const Text(
+                  '👑 Upgrade to Premium · \$15.99/mo',
+                  style: TextStyle(
+                      color: Colors.white, fontWeight: FontWeight.w600)),
             ),
           ),
         ],
