@@ -1,0 +1,84 @@
+name: Web Build & Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/web.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-web:
+    name: Build Flutter Web
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.3'
+          channel: 'stable'
+          cache: true
+
+      - name: Disable Flutter analytics
+        run: flutter config --no-analytics
+
+      - name: Get dependencies
+        working-directory: frontend
+        run: flutter pub get
+
+      - name: Build web
+        working-directory: frontend
+        env:
+          API_BASE_URL:      ${{ secrets.API_BASE_URL }}
+          SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          flutter build web \
+            --release \
+            --web-renderer canvaskit \
+            --dart-define=API_BASE_URL=$API_BASE_URL \
+            --dart-define=SUPABASE_URL=$SUPABASE_URL \
+            --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
+
+      - name: Upload web artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: riseup-web
+          path: frontend/build/web
+          retention-days: 14
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/build/web
+
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    needs: build-web
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
