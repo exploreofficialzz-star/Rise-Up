@@ -28,8 +28,8 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace "com.chastech.riseup"
-    compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    compileSdk 35
+    ndkVersion flutter.ndkVersion
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -46,8 +46,8 @@ android {
 
     defaultConfig {
         applicationId "com.chastech.riseup"
-        minSdk = 21
-        targetSdk = flutter.targetSdkVersion
+        minSdk 21
+        targetSdk 35
         versionCode = flutterVersionCode.toInteger()
         versionName = flutterVersionName
         multiDexEnabled true
@@ -56,7 +56,7 @@ android {
         manifestPlaceholders["ADMOB_APP_ID"] = System.getenv("ADMOB_APP_ID") ?: "ca-app-pub-3940256099942544~3347511713"
 
         // Build config fields (injected via CI/CD)
-        buildConfigField "String", "API_BASE_URL", "\"${System.getenv('API_BASE_URL') ?: 'https://riseup-api.onrender.com/api/v1'}\""
+        buildConfigField "String", "API_BASE_URL", "\"${System.getenv('API_BASE_URL') ?: 'https://rise-up-zkcj.onrender.com/api/v1'}\""
         buildConfigField "String", "SUPABASE_URL", "\"${System.getenv('SUPABASE_URL') ?: ''}\""
         buildConfigField "String", "SUPABASE_ANON_KEY", "\"${System.getenv('SUPABASE_ANON_KEY') ?: ''}\""
     }
