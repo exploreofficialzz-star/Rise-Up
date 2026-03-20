@@ -12,7 +12,7 @@ dependencies:
 
   # State Management
   flutter_riverpod: ^2.5.1
-  riverpod_annotation: ^2.3.5
+  riverpod_annotation: ^2.3.3
 
   # Navigation
   go_router: ^14.1.4
@@ -82,8 +82,8 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
-  riverpod_generator: ^2.4.3
-  build_runner: ^2.4.12
+  riverpod_generator: ^2.3.5
+  build_runner: ^2.4.9
   json_serializable: ^6.8.0
   json_annotation: ^4.9.0
   flutter_launcher_icons: ^0.14.1
@@ -109,4 +109,4 @@ flutter:
     - assets/animations/
     - assets/icons/
 
-  # Fonts: using Google Fonts package (no local font files needed)
+  # Fonts: using Google Fonts package (no local
