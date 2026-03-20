@@ -39,7 +39,11 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const Scaffold(body: Center(child: CircularProgressIndicator(color: AppColors.primary)));
+    if (_loading) {
+      return const Scaffold(
+          body: Center(
+              child: CircularProgressIndicator(color: AppColors.primary)));
+    }
 
     final profile = _stats['profile'] as Map? ?? {};
     final tasksData = _stats['tasks'] as Map? ?? {};
@@ -49,8 +53,9 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     final stage = profile['stage']?.toString() ?? 'survival';
     final stageInfo = StageInfo.get(stage);
 
-    // Sample weekly earnings for chart (replace with real data)
-    final weeklyData = [12000.0, 18500.0, 9000.0, 25000.0, 15000.0, 31000.0, 22000.0];
+    final weeklyData = [
+      12000.0, 18500.0, 9000.0, 25000.0, 15000.0, 31000.0, 22000.0
+    ];
 
     return Scaffold(
       backgroundColor: AppColors.bgDark,
@@ -69,7 +74,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Stage progress card
+              // ── Stage progress card ───────────────────────
               Container(
                 padding: const EdgeInsets.all(18),
                 decoration: BoxDecoration(
@@ -78,38 +83,45 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                     AppColors.bgCard,
                   ]),
                   borderRadius: AppRadius.lg,
-                  border: Border.all(color: (stageInfo['color'] as Color).withOpacity(0.3)),
+                  border: Border.all(
+                      color:
+                          (stageInfo['color'] as Color).withOpacity(0.3)),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        Text('${stageInfo['emoji']}', style: const TextStyle(fontSize: 28)),
-                        const SizedBox(width: 10),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(stageInfo['label'] as String, style: AppTextStyles.h4.copyWith(color: stageInfo['color'] as Color)),
-                            Text(stageInfo['description'] as String, style: AppTextStyles.caption),
-                          ],
-                        ),
-                        const Spacer(),
-                        Text(
-                          '$currency ${_formatNum(totalEarned.toDouble())}',
-                          style: AppTextStyles.h3.copyWith(color: AppColors.success),
-                        ),
-                      ],
-                    ),
+                    Row(children: [
+                      Text('${stageInfo['emoji']}',
+                          style: const TextStyle(fontSize: 28)),
+                      const SizedBox(width: 10),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(stageInfo['label'] as String,
+                              style: AppTextStyles.h4.copyWith(
+                                  color: stageInfo['color'] as Color)),
+                          Text(stageInfo['description'] as String,
+                              style: AppTextStyles.caption),
+                        ],
+                      ),
+                      const Spacer(),
+                      Text(
+                        '$currency ${_formatNum(totalEarned.toDouble())}',
+                        style: AppTextStyles.h3
+                            .copyWith(color: AppColors.success),
+                      ),
+                    ]),
                     const SizedBox(height: 14),
-                    Text('Next milestone: ${stageInfo['target']}', style: AppTextStyles.caption.copyWith(color: (stageInfo['color'] as Color))),
+                    Text('Next milestone: ${stageInfo['target']}',
+                        style: AppTextStyles.caption.copyWith(
+                            color: stageInfo['color'] as Color)),
                   ],
                 ),
               ).animate().fadeIn(),
 
               const SizedBox(height: 20),
 
-              // Quick stats grid
+              // ── Quick stats grid ──────────────────────────
               Text('Overview', style: AppTextStyles.h4),
               const SizedBox(height: 12),
               GridView.count(
@@ -120,16 +132,24 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                 mainAxisSpacing: 12,
                 childAspectRatio: 1.6,
                 children: [
-                  _StatTile('Tasks Completed', '${tasksData['completed'] ?? 0}', Iconsax.tick_circle, AppColors.success),
-                  _StatTile('Active Tasks', '${tasksData['active'] ?? 0}', Iconsax.play_circle, AppColors.accent),
-                  _StatTile('Skills Enrolled', '${skillsData['enrolled'] ?? 0}', Iconsax.book, AppColors.primary),
-                  _StatTile('Skills Completed', '${skillsData['completed'] ?? 0}', Iconsax.medal, AppColors.gold),
+                  _StatTile('Tasks Completed',
+                      '${tasksData['completed'] ?? 0}',
+                      Iconsax.tick_circle, AppColors.success),
+                  _StatTile('Active Tasks',
+                      '${tasksData['active'] ?? 0}',
+                      Iconsax.play_circle, AppColors.accent),
+                  _StatTile('Skills Enrolled',
+                      '${skillsData['enrolled'] ?? 0}',
+                      Iconsax.book, AppColors.primary),
+                  _StatTile('Skills Completed',
+                      '${skillsData['completed'] ?? 0}',
+                      Iconsax.medal, AppColors.gold),
                 ],
               ).animate().fadeIn(delay: 100.ms),
 
               const SizedBox(height: 24),
 
-              // Earnings chart
+              // ── Earnings chart ────────────────────────────
               Text('Weekly Earnings', style: AppTextStyles.h4),
               const SizedBox(height: 6),
               Text('Last 7 days (sample)', style: AppTextStyles.caption),
@@ -137,17 +157,22 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
               Container(
                 height: 200,
                 padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(color: AppColors.bgCard, borderRadius: AppRadius.lg),
+                decoration: BoxDecoration(
+                    color: AppColors.bgCard,
+                    borderRadius: AppRadius.lg),
                 child: BarChart(
                   BarChartData(
                     alignment: BarChartAlignment.spaceAround,
                     maxY: weeklyData.reduce((a, b) => a > b ? a : b) * 1.2,
                     barTouchData: BarTouchData(
                       touchTooltipData: BarTouchTooltipData(
-                        tooltipBgColor: AppColors.bgSurface,
-                        getTooltipItem: (group, groupIndex, rod, rodIndex) => BarTooltipItem(
+                        // ← Fixed: was tooltipBgColor
+                        getTooltipColor: (_) => AppColors.bgSurface,
+                        getTooltipItem: (group, groupIndex, rod, rodIndex) =>
+                            BarTooltipItem(
                           '₦${_formatNum(rod.toY)}',
-                          AppTextStyles.caption.copyWith(color: AppColors.primary),
+                          AppTextStyles.caption
+                              .copyWith(color: AppColors.primary),
                         ),
                       ),
                     ),
@@ -157,81 +182,115 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                         sideTitles: SideTitles(
                           showTitles: true,
                           getTitlesWidget: (v, _) {
-                            const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-                            return Text(days[v.toInt() % 7], style: AppTextStyles.caption);
+                            const days = [
+                              'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'
+                            ];
+                            return Text(days[v.toInt() % 7],
+                                style: AppTextStyles.caption);
                           },
                         ),
                       ),
-                      leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                      topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                      rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                      leftTitles: const AxisTitles(
+                          sideTitles: SideTitles(showTitles: false)),
+                      topTitles: const AxisTitles(
+                          sideTitles: SideTitles(showTitles: false)),
+                      rightTitles: const AxisTitles(
+                          sideTitles: SideTitles(showTitles: false)),
                     ),
                     gridData: FlGridData(
                       show: true,
                       drawVerticalLine: false,
-                      getDrawingHorizontalLine: (_) => FlLine(color: AppColors.bgSurface, strokeWidth: 1),
+                      getDrawingHorizontalLine: (_) => FlLine(
+                          color: AppColors.bgSurface, strokeWidth: 1),
                     ),
                     borderData: FlBorderData(show: false),
-                    barGroups: weeklyData.asMap().entries.map((e) => BarChartGroupData(
-                      x: e.key,
-                      barRods: [
-                        BarChartRodData(
-                          toY: e.value,
-                          gradient: LinearGradient(
-                            colors: [AppColors.primary, AppColors.accent],
-                            begin: Alignment.bottomCenter,
-                            end: Alignment.topCenter,
-                          ),
-                          width: 24,
-                          borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
-                        ),
-                      ],
-                    )).toList(),
+                    barGroups: weeklyData.asMap().entries
+                        .map((e) => BarChartGroupData(
+                              x: e.key,
+                              barRods: [
+                                BarChartRodData(
+                                  toY: e.value,
+                                  gradient: const LinearGradient(
+                                    colors: [
+                                      AppColors.primary,
+                                      AppColors.accent
+                                    ],
+                                    begin: Alignment.bottomCenter,
+                                    end: Alignment.topCenter,
+                                  ),
+                                  width: 24,
+                                  borderRadius: const BorderRadius.vertical(
+                                      top: Radius.circular(6)),
+                                ),
+                              ],
+                            ))
+                        .toList(),
                   ),
                 ),
               ).animate().fadeIn(delay: 200.ms),
 
               const SizedBox(height: 24),
 
-              // Income breakdown donut
+              // ── Income breakdown donut ─────────────────────
               Text('Income by Source', style: AppTextStyles.h4),
               const SizedBox(height: 12),
               Container(
                 height: 180,
                 padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(color: AppColors.bgCard, borderRadius: AppRadius.lg),
-                child: Row(
-                  children: [
-                    SizedBox(
-                      width: 140,
-                      child: PieChart(
-                        PieChartData(
-                          sectionsSpace: 2,
-                          centerSpaceRadius: 45,
-                          sections: [
-                            PieChartSectionData(value: 45, color: AppColors.primary, title: '45%', radius: 30, titleStyle: AppTextStyles.caption.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
-                            PieChartSectionData(value: 30, color: AppColors.accent, title: '30%', radius: 30, titleStyle: AppTextStyles.caption.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
-                            PieChartSectionData(value: 25, color: AppColors.gold, title: '25%', radius: 30, titleStyle: AppTextStyles.caption.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 20),
-                    Expanded(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _LegendItem('Freelance Tasks', AppColors.primary),
-                          const SizedBox(height: 10),
-                          _LegendItem('Skills / Courses', AppColors.accent),
-                          const SizedBox(height: 10),
-                          _LegendItem('Other Income', AppColors.gold),
+                decoration: BoxDecoration(
+                    color: AppColors.bgCard,
+                    borderRadius: AppRadius.lg),
+                child: Row(children: [
+                  SizedBox(
+                    width: 140,
+                    child: PieChart(
+                      PieChartData(
+                        sectionsSpace: 2,
+                        centerSpaceRadius: 45,
+                        sections: [
+                          PieChartSectionData(
+                              value: 45,
+                              color: AppColors.primary,
+                              title: '45%',
+                              radius: 30,
+                              titleStyle: AppTextStyles.caption.copyWith(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700)),
+                          PieChartSectionData(
+                              value: 30,
+                              color: AppColors.accent,
+                              title: '30%',
+                              radius: 30,
+                              titleStyle: AppTextStyles.caption.copyWith(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700)),
+                          PieChartSectionData(
+                              value: 25,
+                              color: AppColors.gold,
+                              title: '25%',
+                              radius: 30,
+                              titleStyle: AppTextStyles.caption.copyWith(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700)),
                         ],
                       ),
                     ),
-                  ],
-                ),
+                  ),
+                  const SizedBox(width: 20),
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _LegendItem('Freelance Tasks', AppColors.primary),
+                        const SizedBox(height: 10),
+                        _LegendItem('Skills / Courses', AppColors.accent),
+                        const SizedBox(height: 10),
+                        _LegendItem('Other Income', AppColors.gold),
+                      ],
+                    ),
+                  ),
+                ]),
               ).animate().fadeIn(delay: 300.ms),
 
               const SizedBox(height: 80),
@@ -268,15 +327,16 @@ class _StatTile extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Row(
-            children: [
-              Icon(icon, color: color, size: 16),
-              const Spacer(),
-              Text(value, style: AppTextStyles.h3.copyWith(color: color)),
-            ],
-          ),
+          Row(children: [
+            Icon(icon, color: color, size: 16),
+            const Spacer(),
+            Text(value, style: AppTextStyles.h3.copyWith(color: color)),
+          ]),
           const SizedBox(height: 4),
-          Text(label, style: AppTextStyles.caption, maxLines: 1, overflow: TextOverflow.ellipsis),
+          Text(label,
+              style: AppTextStyles.caption,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis),
         ],
       ),
     );
@@ -290,12 +350,14 @@ class _LegendItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Container(width: 10, height: 10, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-        const SizedBox(width: 8),
-        Expanded(child: Text(label, style: AppTextStyles.caption)),
-      ],
-    );
+    return Row(children: [
+      Container(
+          width: 10,
+          height: 10,
+          decoration:
+              BoxDecoration(color: color, shape: BoxShape.circle)),
+      const SizedBox(width: 8),
+      Expanded(child: Text(label, style: AppTextStyles.caption)),
+    ]);
   }
 }
