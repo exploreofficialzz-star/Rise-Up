@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../screens/auth/splash_screen.dart';
@@ -29,7 +30,7 @@ import '../screens/streak/streak_screen.dart';
 import '../main_shell.dart';
 
 final router = GoRouter(
-  initialLocation: '/splash',
+  initialLocation: kIsWeb ? '/login' : '/splash',
   errorBuilder: (context, state) =>
       _ErrorPage(error: state.error?.toString()),
   routes: [
