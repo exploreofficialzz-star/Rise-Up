@@ -4,7 +4,6 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
-import '../../services/ad_service.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -20,27 +19,29 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 
   Future<void> _navigate() async {
-    // Show splash for at least 2.8 seconds, then show app-open ad if available
-    await Future.delayed(const Duration(milliseconds: 2800));
-    if (!mounted) return;
+    try {
+      await Future.delayed(const Duration(milliseconds: 2800));
+      if (!mounted) return;
 
-    // Attempt app-open ad on mobile only
-    if (!kIsWeb) await adService.showAppOpenAdIfAvailable();
-    if (!mounted) return;
+      final isAuth = await api.isAuthenticated();
+      if (!mounted) return;
 
-    final isAuth = await api.isAuthenticated();
-    if (!mounted) return;
-    if (isAuth) {
-      try {
-        final profile = await api.getProfile();
-        final onboarded = profile['profile']?['onboarding_completed'] ?? false;
-        if (!mounted) return;
-        context.go(onboarded ? '/home' : '/onboarding');
-      } catch (_) {
-        if (mounted) context.go('/home');
+      if (isAuth) {
+        try {
+          final profile = await api.getProfile();
+          final onboarded =
+              profile['profile']?['onboarding_completed'] ?? false;
+          if (!mounted) return;
+          context.go(onboarded ? '/home' : '/onboarding');
+        } catch (_) {
+          if (mounted) context.go('/home');
+        }
+      } else {
+        context.go('/login');
       }
-    } else {
-      context.go('/login');
+    } catch (e) {
+      debugPrint('[RiseUp] Splash navigation error: $e');
+      if (mounted) context.go('/login');
     }
   }
 
@@ -72,7 +73,7 @@ class _SplashScreenState extends State<SplashScreen> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // ── Logo ──────────────────────────────────────
+                // ── Logo ────────────────────────────────────
                 Container(
                   width: 120,
                   height: 120,
@@ -117,10 +118,14 @@ class _SplashScreenState extends State<SplashScreen> {
 
                 const SizedBox(height: 28),
 
-                // ── App Name ──────────────────────────────────
+                // ── App Name ────────────────────────────────
                 ShaderMask(
                   shaderCallback: (bounds) => const LinearGradient(
-                    colors: [Color(0xFFFF6B00), Color(0xFFFFD700), Color(0xFF6C5CE7)],
+                    colors: [
+                      Color(0xFFFF6B00),
+                      Color(0xFFFFD700),
+                      Color(0xFF6C5CE7)
+                    ],
                     stops: [0.0, 0.5, 1.0],
                   ).createShader(bounds),
                   child: Text(
@@ -150,14 +155,15 @@ class _SplashScreenState extends State<SplashScreen> {
 
                 const SizedBox(height: 64),
 
-                // ── Progress indicator ─────────────────────────
+                // ── Progress indicator ───────────────────────
                 SizedBox(
                   width: 48,
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(4),
                     child: const LinearProgressIndicator(
                       backgroundColor: Color(0xFF1F1F3A),
-                      valueColor: AlwaysStoppedAnimation(Color(0xFFFF6B00)),
+                      valueColor:
+                          AlwaysStoppedAnimation(Color(0xFFFF6B00)),
                       minHeight: 3,
                     ),
                   ),
@@ -166,7 +172,7 @@ class _SplashScreenState extends State<SplashScreen> {
             ),
           ),
 
-          // ── Bottom brand footer ────────────────────────────
+          // ── Bottom brand footer ──────────────────────────
           Positioned(
             bottom: 36,
             left: 0,
