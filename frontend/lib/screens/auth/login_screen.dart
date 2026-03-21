@@ -3,6 +3,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
+import '../../utils/storage_service.dart';
 import '../../widgets/gradient_button.dart';
 import '../../widgets/app_text_field.dart';
 
@@ -19,7 +20,11 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _error;
 
   @override
-  void dispose() { _emailCtrl.dispose(); _passCtrl.dispose(); super.dispose(); }
+  void dispose() {
+    _emailCtrl.dispose();
+    _passCtrl.dispose();
+    super.dispose();
+  }
 
   Future<void> _login() async {
     final email = _emailCtrl.text.trim();
@@ -32,18 +37,30 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final data = await api.signIn(email, pass);
       if (!mounted) return;
+
       // If email not confirmed, send to verify screen
       if (data['email_confirmed'] == false) {
         context.go('/verify-email?email=${Uri.encodeComponent(email)}');
         return;
       }
-      final profile  = await api.getProfile();
-      final onboarded = profile['profile']?['onboarding_completed'] ?? false;
-      if (!mounted) return;
-      context.go(onboarded ? '/home' : '/onboarding');
+
+      // Check onboarding status and save to storage
+      try {
+        final profile = await api.getProfile();
+        final onboarded =
+            profile['profile']?['onboarding_completed'] ?? false;
+        // Save onboarding status to storage for splash screen
+        await storageService.write(
+            key: 'onboarding_completed',
+            value: onboarded.toString());
+        if (!mounted) return;
+        context.go(onboarded ? '/home' : '/onboarding');
+      } catch (_) {
+        if (mounted) context.go('/home');
+      }
     } catch (e) {
       setState(() {
-        _error   = 'Invalid email or password. Please try again.';
+        _error = 'Invalid email or password. Please try again.';
         _loading = false;
       });
     }
@@ -61,30 +78,41 @@ class _LoginScreenState extends State<LoginScreen> {
             children: [
               const SizedBox(height: 40),
 
-              // Logo
               Row(children: [
                 ClipRRect(
                   borderRadius: BorderRadius.circular(12),
-                  child: Image.asset('assets/images/riseup_logo.jpg',
-                      width: 44, height: 44, fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Container(
-                        width: 44, height: 44,
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: const Icon(Icons.trending_up_rounded, color: Colors.white, size: 24),
-                      )),
+                  child: Image.asset(
+                    'assets/images/riseup_logo.jpg',
+                    width: 44,
+                    height: 44,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                            colors: [AppColors.primary, AppColors.accent]),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(Icons.trending_up_rounded,
+                          color: Colors.white, size: 24),
+                    ),
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Text('RiseUp', style: AppTextStyles.h3),
               ]).animate().fadeIn(duration: 500.ms),
 
               const SizedBox(height: 48),
-              Text('Welcome back 👋', style: AppTextStyles.h2).animate().fadeIn(delay: 100.ms).slideY(begin: 0.2),
+              Text('Welcome back 👋', style: AppTextStyles.h2)
+                  .animate()
+                  .fadeIn(delay: 100.ms)
+                  .slideY(begin: 0.2),
               const SizedBox(height: 8),
-              Text('Sign in to continue your wealth journey', style: AppTextStyles.label)
-                  .animate().fadeIn(delay: 200.ms),
+              Text('Sign in to continue your wealth journey',
+                      style: AppTextStyles.label)
+                  .animate()
+                  .fadeIn(delay: 200.ms),
 
               const SizedBox(height: 40),
 
@@ -95,13 +123,17 @@ class _LoginScreenState extends State<LoginScreen> {
                   decoration: BoxDecoration(
                     color: AppColors.error.withOpacity(0.15),
                     borderRadius: AppRadius.md,
-                    border: Border.all(color: AppColors.error.withOpacity(0.3)),
+                    border:
+                        Border.all(color: AppColors.error.withOpacity(0.3)),
                   ),
                   child: Row(children: [
-                    const Icon(Icons.error_outline, color: AppColors.error, size: 16),
+                    const Icon(Icons.error_outline,
+                        color: AppColors.error, size: 16),
                     const SizedBox(width: 8),
-                    Expanded(child: Text(_error!,
-                        style: AppTextStyles.bodySmall.copyWith(color: AppColors.error))),
+                    Expanded(
+                        child: Text(_error!,
+                            style: AppTextStyles.bodySmall
+                                .copyWith(color: AppColors.error))),
                   ]),
                 ).animate().fadeIn().shake(),
 
@@ -126,14 +158,14 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 12),
 
-              // Forgot password link
               Align(
                 alignment: Alignment.centerRight,
                 child: GestureDetector(
                   onTap: () => context.go('/forgot-password'),
                   child: Text('Forgot password?',
                       style: AppTextStyles.label.copyWith(
-                          color: AppColors.primary, fontWeight: FontWeight.w600)),
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w600)),
                 ),
               ).animate().fadeIn(delay: 450.ms),
 
@@ -150,21 +182,24 @@ class _LoginScreenState extends State<LoginScreen> {
               Center(
                 child: GestureDetector(
                   onTap: () => context.go('/register'),
-                  child: RichText(text: TextSpan(
+                  child: RichText(
+                      text: TextSpan(
                     text: "Don't have an account? ",
                     style: AppTextStyles.label,
-                    children: [TextSpan(
-                      text: 'Sign Up Free',
-                      style: AppTextStyles.label.copyWith(
-                          color: AppColors.primary, fontWeight: FontWeight.w600),
-                    )],
+                    children: [
+                      TextSpan(
+                        text: 'Sign Up Free',
+                        style: AppTextStyles.label.copyWith(
+                            color: AppColors.primary,
+                            fontWeight: FontWeight.w600),
+                      )
+                    ],
                   )),
                 ),
               ).animate().fadeIn(delay: 600.ms),
 
               const SizedBox(height: 32),
 
-              // Legal links
               Center(
                 child: Wrap(
                   alignment: WrapAlignment.center,
@@ -176,14 +211,16 @@ class _LoginScreenState extends State<LoginScreen> {
                       onTap: () => context.go('/terms'),
                       child: Text('Terms',
                           style: AppTextStyles.caption.copyWith(
-                              color: AppColors.primary, decoration: TextDecoration.underline)),
+                              color: AppColors.primary,
+                              decoration: TextDecoration.underline)),
                     ),
                     Text('and', style: AppTextStyles.caption),
                     GestureDetector(
                       onTap: () => context.go('/privacy'),
                       child: Text('Privacy Policy',
                           style: AppTextStyles.caption.copyWith(
-                              color: AppColors.primary, decoration: TextDecoration.underline)),
+                              color: AppColors.primary,
+                              decoration: TextDecoration.underline)),
                     ),
                   ],
                 ),
