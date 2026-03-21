@@ -37,6 +37,10 @@ jobs:
       - name: Disable Flutter analytics
         run: flutter config --no-analytics
 
+      - name: Clean Flutter build cache
+        working-directory: frontend
+        run: flutter clean
+
       - name: Get dependencies
         working-directory: frontend
         run: flutter pub get
@@ -51,6 +55,7 @@ jobs:
           flutter build web \
             --release \
             --web-renderer canvaskit \
+            --no-tree-shake-icons \
             --dart-define=API_BASE_URL=$API_BASE_URL \
             --dart-define=SUPABASE_URL=$SUPABASE_URL \
             --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
