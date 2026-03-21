@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
@@ -21,13 +22,20 @@ class _SplashScreenState extends State<SplashScreen> {
     await Future.delayed(const Duration(milliseconds: 2800));
     if (!mounted) return;
 
+    // Web — go straight to login
+    if (kIsWeb) {
+      context.go('/login');
+      return;
+    }
+
+    // Mobile — check token from secure storage
     try {
       final token = await storageService.read(key: 'access_token');
       if (!mounted) return;
       if (token != null && token.isNotEmpty) {
-        // User is logged in — check onboarding status
         try {
-          final prefs = await storageService.read(key: 'onboarding_completed');
+          final prefs =
+              await storageService.read(key: 'onboarding_completed');
           if (!mounted) return;
           context.go(prefs == 'true' ? '/home' : '/onboarding');
         } catch (_) {
