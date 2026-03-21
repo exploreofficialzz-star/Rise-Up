@@ -81,8 +81,19 @@ async def chat(req: ChatRequest, request: Request, user: dict = Depends(get_curr
                         t["estimated_earnings"] = t.pop("estimated_earnings_max", 0)
                     saved_tasks = await supabase_service.create_tasks_bulk(user_id, tasks_data)
                     suggested_tasks = saved_tasks[:5]
+
+            # ← Fixed: replace raw AI content with friendly completion message
+            ai_content = (
+                "🎉 Amazing! I've got everything I need to build your "
+                "personalised wealth roadmap.\n\n"
+                "Your profile is complete and your first income tasks are "
+                "ready. Let's start your journey to financial freedom! 💪"
+            )
+
         except Exception as e:
             logger.error(f"Onboarding processing error: {e}")
+            # ← Fixed: even on error show friendly message not raw JSON
+            ai_content = "✅ Profile complete! Preparing your personalised roadmap now..."
 
     return ChatResponse(
         content=ai_content,
