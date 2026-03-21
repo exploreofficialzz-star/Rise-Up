@@ -27,7 +27,10 @@ async def signup(req: SignUpRequest, request: Request):
         res = _client().auth.sign_up({
             "email": req.email,
             "password": req.password,
-            "options": {"data": {"full_name": req.full_name or ""}}
+            "options": {
+                "data": {"full_name": req.full_name or ""},
+                "email_redirect_to": f"{settings.FRONTEND_URL}/login"
+            }
         })
         if not res.user:
             raise HTTPException(400, "Signup failed. Please try again.")
@@ -104,7 +107,7 @@ async def signout(request: Request):
     try:
         _client().auth.sign_out()
     except Exception:
-        pass  # Always succeed signout from client's perspective
+        pass
     return {"message": "Signed out successfully"}
 
 
@@ -120,7 +123,6 @@ async def forgot_password(req: PasswordResetRequest, request: Request):
         )
     except Exception as e:
         logger.warning(f"Password reset request for {req.email}: {e}")
-    # Always return success to prevent email enumeration attacks
     return {
         "message": "If an account exists with that email, you'll receive a reset link shortly."
     }
@@ -132,7 +134,13 @@ async def forgot_password(req: PasswordResetRequest, request: Request):
 async def resend_verification(req: PasswordResetRequest, request: Request):
     """Resend email verification"""
     try:
-        _client().auth.resend({"type": "signup", "email": req.email})
+        _client().auth.resend({
+            "type": "signup",
+            "email": req.email,
+            "options": {
+                "email_redirect_to": f"{settings.FRONTEND_URL}/login"
+            }
+        })
     except Exception as e:
         logger.warning(f"Resend verification for {req.email}: {e}")
     return {"message": "Verification email sent. Please check your inbox."}
