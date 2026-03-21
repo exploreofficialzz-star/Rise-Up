@@ -1,9 +1,7 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 import '../../config/app_constants.dart';
-import '../../services/api_service.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -19,30 +17,9 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 
   Future<void> _navigate() async {
-    try {
-      await Future.delayed(const Duration(milliseconds: 2800));
-      if (!mounted) return;
-
-      final isAuth = await api.isAuthenticated();
-      if (!mounted) return;
-
-      if (isAuth) {
-        try {
-          final profile = await api.getProfile();
-          final onboarded =
-              profile['profile']?['onboarding_completed'] ?? false;
-          if (!mounted) return;
-          context.go(onboarded ? '/home' : '/onboarding');
-        } catch (_) {
-          if (mounted) context.go('/home');
-        }
-      } else {
-        context.go('/login');
-      }
-    } catch (e) {
-      debugPrint('[RiseUp] Splash navigation error: $e');
-      if (mounted) context.go('/login');
-    }
+    await Future.delayed(const Duration(milliseconds: 2800));
+    if (!mounted) return;
+    context.go('/login');
   }
 
   @override
@@ -124,7 +101,7 @@ class _SplashScreenState extends State<SplashScreen> {
                     colors: [
                       Color(0xFFFF6B00),
                       Color(0xFFFFD700),
-                      Color(0xFF6C5CE7)
+                      Color(0xFF6C5CE7),
                     ],
                     stops: [0.0, 0.5, 1.0],
                   ).createShader(bounds),
