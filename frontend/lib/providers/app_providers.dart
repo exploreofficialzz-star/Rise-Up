@@ -6,7 +6,7 @@ final authStateProvider = FutureProvider<bool>((ref) async {
   return api.isAuthenticated();
 });
 
-// ── User Profile ──────────────────────────────────────
+// ── User Profile  ──────────────────────────────────────
 final profileProvider = FutureProvider.autoDispose<Map>((ref) async {
   final data = await api.getProfile();
   return data['profile'] as Map? ?? {};
