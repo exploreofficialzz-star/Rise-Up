@@ -32,16 +32,9 @@ void main() async {
   // Supabase — required
   await Supabase.initialize(url: kSupabaseUrl, anonKey: kSupabaseAnonKey);
 
-  // Firebase — optional (graceful fail so app works without google-services.json)
+  // Firebase / Notifications — optional, graceful fail
   if (!kIsWeb) {
     try {
-      // Firebase is only needed for FCM push notifications.
-      // If google-services.json / GoogleService-Info.plist are not set up,
-      // the app continues normally without push notifications.
-      // Uncomment and add firebase_core/firebase_messaging imports when ready:
-      // await Firebase.initializeApp(
-      //   options: DefaultFirebaseOptions.currentPlatform,
-      // );
       await notificationService.initialize();
     } catch (e) {
       debugPrint('[RiseUp] Firebase/notifications init skipped: $e');
@@ -58,7 +51,6 @@ void main() async {
   // Global Flutter error handler
   FlutterError.onError = (details) {
     FlutterError.presentError(details);
-    // TODO: Add crash reporting (e.g. Sentry) here
   };
 
   runApp(const ProviderScope(child: RiseUpApp()));
@@ -80,11 +72,9 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
 
   Future<void> _runVersionCheck() async {
     try {
-      final matches =
-          router.routerDelegate.currentConfiguration.matches;
+      final matches = router.routerDelegate.currentConfiguration.matches;
       if (matches.isNotEmpty) {
-        final ctx =
-            router.routerDelegate.navigatorKey.currentContext;
+        final ctx = router.routerDelegate.navigatorKey.currentContext;
         if (ctx != null && ctx.mounted) {
           versionCheckService.checkAndPrompt(ctx);
         }
@@ -100,11 +90,7 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (!kIsWeb && state == AppLifecycleState.resumed) {
-      try {
-        adService.showAppOpenAdIfAvailable();
-      } catch (_) {}
-    }
+    // App Open Ad disabled — caused black screen on startup
   }
 
   @override
@@ -116,7 +102,8 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
         theme: AppTheme.dark,
         routerConfig: router,
         builder: (context, child) {
-          ErrorWidget.builder = (details) => _GlobalErrorWidget(details: details);
+          ErrorWidget.builder =
+              (details) => _GlobalErrorWidget(details: details);
           return child ?? const SizedBox.shrink();
         },
       ),
@@ -124,7 +111,7 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
   }
 }
 
-// ── Global error widget ─────────────────────────────────────
+// ── Global error widget ──────────────────────────────────────
 class _GlobalErrorWidget extends StatelessWidget {
   final FlutterErrorDetails details;
   const _GlobalErrorWidget({required this.details});
