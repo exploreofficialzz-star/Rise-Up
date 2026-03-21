@@ -1,15 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-// ── API ─────────────────────────────────────────────
+// ── API ──────────────────────────────────────────────
 const String kApiBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
   defaultValue: 'https://rise-up-zkcj.onrender.com/api/v1',
 );
-const String kSupabaseUrl = String.fromEnvironment('SUPABASE_URL', defaultValue: '');
-const String kSupabaseAnonKey = String.fromEnvironment('SUPABASE_ANON_KEY', defaultValue: '');
+const String kSupabaseUrl = String.fromEnvironment(
+  'SUPABASE_URL',
+  defaultValue: '',
+);
+const String kSupabaseAnonKey = String.fromEnvironment(
+  'SUPABASE_ANON_KEY',
+  defaultValue: '',
+);
 
-// AdMob
+// ── AdMob ────────────────────────────────────────────
 const String kAdMobAppId = String.fromEnvironment(
   'ADMOB_APP_ID',
   defaultValue: 'ca-app-pub-3940256099942544~3347511713',
@@ -31,7 +37,7 @@ const String kAppOpenAdUnit = String.fromEnvironment(
   defaultValue: 'ca-app-pub-3940256099942544/9257395921',
 );
 
-// Google AdSense (Web only)
+// ── AdSense (Web) ─────────────────────────────────────
 const String kAdSensePublisherId = String.fromEnvironment(
   'ADSENSE_PUBLISHER_ID',
   defaultValue: 'ca-pub-XXXXXXXXXXXXXXXX',
@@ -45,7 +51,7 @@ const String kAdSenseBottomSlotId = String.fromEnvironment(
   defaultValue: 'XXXXXXXXXX',
 );
 
-// ── Colors ───────────────────────────────────────────
+// ── Colors ────────────────────────────────────────────
 class AppColors {
   static const Color primary = Color(0xFF6C5CE7);
   static const Color primaryLight = Color(0xFF9B8CF0);
@@ -83,7 +89,7 @@ class AppColors {
   }
 }
 
-// ── Typography ───────────────────────────────────────
+// ── Typography ────────────────────────────────────────
 class AppTextStyles {
   static TextStyle get h1 => GoogleFonts.poppins(
     fontSize: 32, fontWeight: FontWeight.w800,
@@ -128,13 +134,14 @@ class AppTextStyles {
   );
 }
 
-// ── Theme ────────────────────────────────────────────
+// ── Theme ─────────────────────────────────────────────
 class AppTheme {
+  // ── Dark theme ──────────────────────────────────────
   static ThemeData get dark => ThemeData(
     useMaterial3: true,
     brightness: Brightness.dark,
     scaffoldBackgroundColor: AppColors.bgDark,
-    colorScheme: ColorScheme.dark(
+    colorScheme: const ColorScheme.dark(
       primary: AppColors.primary,
       secondary: AppColors.accent,
       surface: AppColors.bgCard,
@@ -142,7 +149,8 @@ class AppTheme {
       onPrimary: Colors.white,
       onSurface: AppColors.textPrimary,
     ),
-    textTheme: GoogleFonts.interTextTheme(ThemeData.dark().textTheme).copyWith(
+    textTheme: GoogleFonts.interTextTheme(
+        ThemeData.dark().textTheme).copyWith(
       bodyLarge: AppTextStyles.body,
       bodyMedium: AppTextStyles.body,
       bodySmall: AppTextStyles.bodySmall,
@@ -157,7 +165,8 @@ class AppTheme {
     cardTheme: CardTheme(
       color: AppColors.bgCard,
       elevation: 0,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16)),
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
@@ -168,19 +177,24 @@ class AppTheme {
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(12),
-        borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
+        borderSide: const BorderSide(
+            color: AppColors.primary, width: 1.5),
       ),
       hintStyle: AppTextStyles.label,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      contentPadding: const EdgeInsets.symmetric(
+          horizontal: 16, vertical: 14),
     ),
     elevatedButtonTheme: ElevatedButtonThemeData(
       style: ElevatedButton.styleFrom(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
         elevation: 0,
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        textStyle: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 15),
+        padding: const EdgeInsets.symmetric(
+            horizontal: 24, vertical: 14),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12)),
+        textStyle: GoogleFonts.inter(
+            fontWeight: FontWeight.w600, fontSize: 15),
       ),
     ),
     bottomNavigationBarTheme: const BottomNavigationBarThemeData(
@@ -191,9 +205,82 @@ class AppTheme {
       elevation: 0,
     ),
   );
+
+  // ── Light theme ──────────────────────────────────────
+  static ThemeData get light => ThemeData(
+    useMaterial3: true,
+    brightness: Brightness.light,
+    scaffoldBackgroundColor: Colors.white,
+    colorScheme: const ColorScheme.light(
+      primary: AppColors.primary,
+      secondary: AppColors.accent,
+      surface: Color(0xFFF5F5F5),
+      error: AppColors.error,
+      onPrimary: Colors.white,
+      onSurface: Colors.black87,
+    ),
+    textTheme: GoogleFonts.interTextTheme(
+        ThemeData.light().textTheme).copyWith(
+      bodyLarge: AppTextStyles.body.copyWith(color: Colors.black87),
+      bodyMedium: AppTextStyles.body.copyWith(color: Colors.black87),
+      bodySmall:
+          AppTextStyles.bodySmall.copyWith(color: Colors.black54),
+    ),
+    appBarTheme: AppBarTheme(
+      backgroundColor: Colors.white,
+      elevation: 0,
+      centerTitle: true,
+      titleTextStyle:
+          AppTextStyles.h4.copyWith(color: Colors.black87),
+      iconTheme: const IconThemeData(color: Colors.black87),
+    ),
+    cardTheme: CardTheme(
+      color: const Color(0xFFF5F5F5),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16)),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: const Color(0xFFF0F0F0),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide.none,
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(
+            color: AppColors.primary, width: 1.5),
+      ),
+      hintStyle:
+          AppTextStyles.label.copyWith(color: Colors.black38),
+      contentPadding: const EdgeInsets.symmetric(
+          horizontal: 16, vertical: 14),
+    ),
+    elevatedButtonTheme: ElevatedButtonThemeData(
+      style: ElevatedButton.styleFrom(
+        backgroundColor: AppColors.primary,
+        foregroundColor: Colors.white,
+        elevation: 0,
+        padding: const EdgeInsets.symmetric(
+            horizontal: 24, vertical: 14),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12)),
+        textStyle: GoogleFonts.inter(
+            fontWeight: FontWeight.w600, fontSize: 15),
+      ),
+    ),
+    bottomNavigationBarTheme: const BottomNavigationBarThemeData(
+      backgroundColor: Colors.white,
+      selectedItemColor: AppColors.primary,
+      unselectedItemColor: Colors.black45,
+      type: BottomNavigationBarType.fixed,
+      elevation: 0,
+    ),
+  );
 }
 
-// ── Spacing ──────────────────────────────────────────
+// ── Spacing ───────────────────────────────────────────
 class AppSpacing {
   static const double xs = 4;
   static const double sm = 8;
@@ -219,26 +306,26 @@ class AppShadows {
       color: Colors.black.withOpacity(0.3),
       blurRadius: 20,
       offset: const Offset(0, 4),
-    )
+    ),
   ];
   static List<BoxShadow> get glow => [
     BoxShadow(
       color: AppColors.primary.withOpacity(0.3),
       blurRadius: 20,
       spreadRadius: -4,
-    )
+    ),
   ];
 }
 
-// ── Features ─────────────────────────────────────────
+// ── Feature Keys ─────────────────────────────────────
 class FeatureKeys {
-  static const String aiRoadmap          = 'ai_roadmap';
-  static const String taskBooster        = 'task_booster';
-  static const String skillBoost         = 'skill_boost';
-  static const String premiumSkills      = 'premium_skills';
-  static const String investmentTools    = 'investment_tools';
-  static const String mentorship         = 'mentorship';
-  static const String advancedAnalytics  = 'advanced_analytics';
+  static const String aiRoadmap         = 'ai_roadmap';
+  static const String taskBooster       = 'task_booster';
+  static const String skillBoost        = 'skill_boost';
+  static const String premiumSkills     = 'premium_skills';
+  static const String investmentTools   = 'investment_tools';
+  static const String mentorship        = 'mentorship';
+  static const String advancedAnalytics = 'advanced_analytics';
 }
 
 // ── Stage Info ────────────────────────────────────────
