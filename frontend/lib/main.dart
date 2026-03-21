@@ -8,7 +8,6 @@ import 'config/router.dart';
 import 'services/ad_service.dart';
 import 'services/notification_service.dart';
 import 'utils/storage_service.dart';
-import 'utils/connectivity_wrapper.dart';
 import 'utils/version_check_service.dart';
 
 void main() async {
@@ -28,7 +27,7 @@ void main() async {
     ]);
   }
 
-  // Supabase — guard against empty keys
+  // Supabase — guarded against empty keys
   try {
     if (kSupabaseUrl.isNotEmpty && kSupabaseAnonKey.isNotEmpty) {
       await Supabase.initialize(
@@ -100,23 +99,21 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // App Open Ad disabled
+    // App Open Ad disabled — caused black screen on startup
   }
 
   @override
   Widget build(BuildContext context) {
-    return ConnectivityWrapper(
-      child: MaterialApp.router(
-        title: 'RiseUp',
-        debugShowCheckedModeBanner: false,
-        theme: AppTheme.dark,
-        routerConfig: router,
-        builder: (context, child) {
-          ErrorWidget.builder =
-              (details) => _GlobalErrorWidget(details: details);
-          return child ?? const SizedBox.shrink();
-        },
-      ),
+    return MaterialApp.router(
+      title: 'RiseUp',
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.dark,
+      routerConfig: router,
+      builder: (context, child) {
+        ErrorWidget.builder =
+            (details) => _GlobalErrorWidget(details: details);
+        return child ?? const SizedBox.shrink();
+      },
     );
   }
 }
