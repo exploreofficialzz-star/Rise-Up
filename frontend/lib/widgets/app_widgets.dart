@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:riseup/config/app_constants.dart';
+import '../config/app_constants.dart';
 
 // ── AppTextField ──────────────────────────────────────
 class AppTextField extends StatefulWidget {
@@ -11,6 +11,7 @@ class AppTextField extends StatefulWidget {
   final IconData? prefixIcon;
   final Function(String)? onSubmitted;
   final int? maxLines;
+
   const AppTextField({
     super.key,
     required this.controller,
@@ -22,6 +23,7 @@ class AppTextField extends StatefulWidget {
     this.onSubmitted,
     this.maxLines = 1,
   });
+
   @override
   State<AppTextField> createState() => _AppTextFieldState();
 }
@@ -73,8 +75,10 @@ class _AppTextFieldState extends State<AppTextField> {
 // ── StatCard ──────────────────────────────────────────
 class StatCard extends StatelessWidget {
   final IconData icon;
-  final String label, value;
+  final String label;
+  final String value;
   final Color color;
+
   const StatCard({
     super.key,
     required this.icon,
@@ -105,7 +109,8 @@ class StatCard extends StatelessWidget {
             child: Icon(icon, color: color, size: 16),
           ),
           const SizedBox(height: 10),
-          Text(value, style: AppTextStyles.h3.copyWith(color: color)),
+          Text(value,
+              style: AppTextStyles.h3.copyWith(color: color)),
           const SizedBox(height: 2),
           Text(label, style: AppTextStyles.caption),
         ],
@@ -117,6 +122,7 @@ class StatCard extends StatelessWidget {
 // ── StageBadge ────────────────────────────────────────
 class StageBadge extends StatelessWidget {
   final String stage;
+
   const StageBadge({super.key, required this.stage});
 
   @override
@@ -124,7 +130,8 @@ class StageBadge extends StatelessWidget {
     final info = StageInfo.get(stage);
     final color = info['color'] as Color;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      padding:
+          const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
         color: color.withOpacity(0.15),
         borderRadius: AppRadius.pill,
@@ -132,8 +139,8 @@ class StageBadge extends StatelessWidget {
       ),
       child: Text(
         '${info['emoji']} ${info['label']}',
-        style: AppTextStyles.caption
-            .copyWith(color: color, fontWeight: FontWeight.w600),
+        style: AppTextStyles.caption.copyWith(
+            color: color, fontWeight: FontWeight.w600),
       ),
     );
   }
@@ -143,8 +150,12 @@ class StageBadge extends StatelessWidget {
 class TaskPreviewCard extends StatelessWidget {
   final Map<String, dynamic> task;
   final VoidCallback onTap;
-  const TaskPreviewCard(
-      {super.key, required this.task, required this.onTap});
+
+  const TaskPreviewCard({
+    super.key,
+    required this.task,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -166,8 +177,11 @@ class TaskPreviewCard extends StatelessWidget {
                 color: AppColors.primary.withOpacity(0.12),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: const Icon(Icons.task_alt_rounded,
-                  color: AppColors.primary, size: 20),
+              child: const Icon(
+                Icons.task_alt_rounded,
+                color: AppColors.primary,
+                size: 20,
+              ),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -183,8 +197,11 @@ class TaskPreviewCard extends StatelessWidget {
                   const SizedBox(height: 2),
                   Row(
                     children: [
-                      const Icon(Icons.attach_money_rounded,
-                          size: 12, color: AppColors.success),
+                      const Icon(
+                        Icons.attach_money_rounded,
+                        size: 12,
+                        color: AppColors.success,
+                      ),
                       Text(
                         '${task['currency'] ?? 'NGN'} ${task['estimated_earnings'] ?? '?'}',
                         style: AppTextStyles.caption
@@ -198,16 +215,21 @@ class TaskPreviewCard extends StatelessWidget {
                           color: AppColors.bgSurface,
                           borderRadius: AppRadius.pill,
                         ),
-                        child: Text(task['category'] ?? '',
-                            style: AppTextStyles.caption),
+                        child: Text(
+                          task['category'] ?? '',
+                          style: AppTextStyles.caption,
+                        ),
                       ),
                     ],
                   ),
                 ],
               ),
             ),
-            const Icon(Icons.arrow_forward_ios_rounded,
-                size: 14, color: AppColors.textMuted),
+            const Icon(
+              Icons.arrow_forward_ios_rounded,
+              size: 14,
+              color: AppColors.textMuted,
+            ),
           ],
         ),
       ),
@@ -219,8 +241,12 @@ class TaskPreviewCard extends StatelessWidget {
 class LoadingOverlay extends StatelessWidget {
   final bool isLoading;
   final Widget child;
-  const LoadingOverlay(
-      {super.key, required this.isLoading, required this.child});
+
+  const LoadingOverlay({
+    super.key,
+    required this.isLoading,
+    required this.child,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -232,7 +258,8 @@ class LoadingOverlay extends StatelessWidget {
             color: Colors.black.withOpacity(0.4),
             child: const Center(
               child: CircularProgressIndicator(
-                  color: AppColors.primary),
+                color: AppColors.primary,
+              ),
             ),
           ),
       ],
@@ -243,8 +270,10 @@ class LoadingOverlay extends StatelessWidget {
 // ── EmptyState ────────────────────────────────────────
 class EmptyState extends StatelessWidget {
   final IconData icon;
-  final String title, subtitle;
+  final String title;
+  final String subtitle;
   final Widget? action;
+
   const EmptyState({
     super.key,
     required this.icon,
@@ -263,13 +292,17 @@ class EmptyState extends StatelessWidget {
           children: [
             Icon(icon, size: 72, color: AppColors.textMuted),
             const SizedBox(height: 16),
-            Text(title,
-                style: AppTextStyles.h3,
-                textAlign: TextAlign.center),
+            Text(
+              title,
+              style: AppTextStyles.h3,
+              textAlign: TextAlign.center,
+            ),
             const SizedBox(height: 8),
-            Text(subtitle,
-                style: AppTextStyles.bodySmall,
-                textAlign: TextAlign.center),
+            Text(
+              subtitle,
+              style: AppTextStyles.bodySmall,
+              textAlign: TextAlign.center,
+            ),
             if (action != null) ...[
               const SizedBox(height: 24),
               action!,
@@ -286,6 +319,7 @@ class GradientText extends StatelessWidget {
   final String text;
   final TextStyle style;
   final List<Color> colors;
+
   const GradientText(
     this.text, {
     super.key,
