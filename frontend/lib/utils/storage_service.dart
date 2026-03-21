@@ -15,7 +15,6 @@ class StorageService {
 
   void init() {
     if (kIsWeb) {
-      // Web: use localStorage (not encrypted but functional)
       _storage = const FlutterSecureStorage(
         webOptions: WebOptions(
           dbName: 'riseup_secure',
@@ -25,21 +24,44 @@ class StorageService {
     } else {
       _storage = const FlutterSecureStorage(
         aOptions: AndroidOptions(encryptedSharedPreferences: true),
-        iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock),
+        iOptions: IOSOptions(
+            accessibility: KeychainAccessibility.first_unlock),
       );
     }
   }
 
-  Future<void> write({required String key, required String value}) =>
-      _storage.write(key: key, value: value);
+  Future<void> write({required String key, required String value}) async {
+    try {
+      await _storage.write(key: key, value: value);
+    } catch (e) {
+      debugPrint('[Storage] write error for $key: $e');
+    }
+  }
 
-  Future<String?> read({required String key}) =>
-      _storage.read(key: key);
+  Future<String?> read({required String key}) async {
+    try {
+      return await _storage.read(key: key);
+    } catch (e) {
+      debugPrint('[Storage] read error for $key: $e');
+      return null;
+    }
+  }
 
-  Future<void> delete({required String key}) =>
-      _storage.delete(key: key);
+  Future<void> delete({required String key}) async {
+    try {
+      await _storage.delete(key: key);
+    } catch (e) {
+      debugPrint('[Storage] delete error for $key: $e');
+    }
+  }
 
-  Future<void> deleteAll() => _storage.deleteAll();
+  Future<void> deleteAll() async {
+    try {
+      await _storage.deleteAll();
+    } catch (e) {
+      debugPrint('[Storage] deleteAll error: $e');
+    }
+  }
 }
 
 final storageService = StorageService();
