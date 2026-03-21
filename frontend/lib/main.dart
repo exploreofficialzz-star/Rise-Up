@@ -19,7 +19,7 @@ void main() async {
     SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
       statusBarIconBrightness: Brightness.light,
-      systemNavigationBarColor: AppColors.bgDark,
+      systemNavigationBarColor: Colors.transparent,
     ));
     await SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
@@ -107,7 +107,10 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
     return MaterialApp.router(
       title: 'RiseUp',
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.dark,
+      // ← Fixed: support system theme
+      theme: AppTheme.light,
+      darkTheme: AppTheme.dark,
+      themeMode: ThemeMode.system,
       routerConfig: router,
       builder: (context, child) {
         ErrorWidget.builder =
@@ -124,8 +127,10 @@ class _GlobalErrorWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Scaffold(
-      backgroundColor: AppColors.bgDark,
+      backgroundColor:
+          isDark ? AppColors.bgDark : Colors.white,
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
@@ -134,17 +139,18 @@ class _GlobalErrorWidget extends StatelessWidget {
             children: [
               const Text('😕', style: TextStyle(fontSize: 56)),
               const SizedBox(height: 16),
-              const Text(
+              Text(
                 'Something went wrong',
                 style: TextStyle(
-                    color: Colors.white,
+                    color: isDark ? Colors.white : Colors.black87,
                     fontSize: 20,
                     fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 8),
-              const Text(
+              Text(
                 'Please restart the app.',
-                style: TextStyle(color: Colors.grey),
+                style: TextStyle(
+                    color: isDark ? Colors.grey : Colors.black54),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 32),
