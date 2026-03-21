@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 import '../../config/app_constants.dart';
+import '../../utils/storage_service.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -19,7 +20,25 @@ class _SplashScreenState extends State<SplashScreen> {
   Future<void> _navigate() async {
     await Future.delayed(const Duration(milliseconds: 2800));
     if (!mounted) return;
-    context.go('/login');
+
+    try {
+      final token = await storageService.read(key: 'access_token');
+      if (!mounted) return;
+      if (token != null && token.isNotEmpty) {
+        // User is logged in — check onboarding status
+        try {
+          final prefs = await storageService.read(key: 'onboarding_completed');
+          if (!mounted) return;
+          context.go(prefs == 'true' ? '/home' : '/onboarding');
+        } catch (_) {
+          if (mounted) context.go('/home');
+        }
+      } else {
+        context.go('/login');
+      }
+    } catch (_) {
+      if (mounted) context.go('/login');
+    }
   }
 
   @override
@@ -28,7 +47,6 @@ class _SplashScreenState extends State<SplashScreen> {
       backgroundColor: AppColors.bgDark,
       body: Stack(
         children: [
-          // Subtle radial glow background
           Center(
             child: Container(
               width: 320,
@@ -45,12 +63,10 @@ class _SplashScreenState extends State<SplashScreen> {
             ),
           ),
 
-          // Main content
           Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // ── Logo ────────────────────────────────────
                 Container(
                   width: 120,
                   height: 120,
@@ -95,7 +111,6 @@ class _SplashScreenState extends State<SplashScreen> {
 
                 const SizedBox(height: 28),
 
-                // ── App Name ────────────────────────────────
                 ShaderMask(
                   shaderCallback: (bounds) => const LinearGradient(
                     colors: [
@@ -132,7 +147,6 @@ class _SplashScreenState extends State<SplashScreen> {
 
                 const SizedBox(height: 64),
 
-                // ── Progress indicator ───────────────────────
                 SizedBox(
                   width: 48,
                   child: ClipRRect(
@@ -149,7 +163,6 @@ class _SplashScreenState extends State<SplashScreen> {
             ),
           ),
 
-          // ── Bottom brand footer ──────────────────────────
           Positioned(
             bottom: 36,
             left: 0,
