@@ -133,7 +133,6 @@ final router = GoRouter(
   ],
 );
 
-// ── 404 / Error page ──────────────────────────────────
 class _ErrorPage extends StatelessWidget {
   final String? error;
   const _ErrorPage({this.error});
