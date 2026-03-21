@@ -18,16 +18,18 @@ class AdService implements AdServiceBase {
   bool _interstitialLoading = false;
   int _interstitialCount = 0;
   static const int _interstitialFreq = 3;
-  AppOpenAd? _appOpenAd;
-  bool _appOpenLoading = false;
-  DateTime? _appOpenLoadTime;
+
+  // App Open Ad disabled — caused black screen on startup
+  // AppOpenAd? _appOpenAd;
+  // bool _appOpenLoading = false;
+  // DateTime? _appOpenLoadTime;
 
   @override
   Future<void> initialize() async {
     await MobileAds.instance.initialize();
     _loadRewardedAd();
     _loadInterstitialAd();
-    _loadAppOpenAd();
+    // App Open Ad disabled
   }
 
   // ── Rewarded ─────────────────────────────────────────────
@@ -38,8 +40,13 @@ class AdService implements AdServiceBase {
       adUnitId: kRewardedAdUnit,
       request: const AdRequest(),
       rewardedAdLoadCallback: RewardedAdLoadCallback(
-        onAdLoaded: (ad) { _rewardedAd = ad; _rewardedLoading = false; },
-        onAdFailedToLoad: (_) { _rewardedLoading = false; },
+        onAdLoaded: (ad) {
+          _rewardedAd = ad;
+          _rewardedLoading = false;
+        },
+        onAdFailedToLoad: (_) {
+          _rewardedLoading = false;
+        },
       ),
     );
   }
@@ -53,21 +60,36 @@ class AdService implements AdServiceBase {
     required Function onRewarded,
     required Function onDismissed,
   }) async {
-    if (_rewardedAd == null) { _loadRewardedAd(); onDismissed(); return false; }
+    if (_rewardedAd == null) {
+      _loadRewardedAd();
+      onDismissed();
+      return false;
+    }
     _rewardedAd!.fullScreenContentCallback = FullScreenContentCallback(
       onAdDismissedFullScreenContent: (ad) {
-        ad.dispose(); _rewardedAd = null; _loadRewardedAd(); onDismissed();
+        ad.dispose();
+        _rewardedAd = null;
+        _loadRewardedAd();
+        onDismissed();
       },
       onAdFailedToShowFullScreenContent: (ad, _) {
-        ad.dispose(); _rewardedAd = null; _loadRewardedAd(); onDismissed();
+        ad.dispose();
+        _rewardedAd = null;
+        _loadRewardedAd();
+        onDismissed();
       },
     );
     await _rewardedAd!.show(
       onUserEarnedReward: (ad, reward) async {
         try {
-          await api.unlockViaAd(featureKey: featureKey, adUnitId: kRewardedAdUnit, hours: 1);
+          await api.unlockViaAd(
+              featureKey: featureKey,
+              adUnitId: kRewardedAdUnit,
+              hours: 1);
           onRewarded();
-        } catch (_) { onDismissed(); }
+        } catch (_) {
+          onDismissed();
+        }
       },
     );
     _rewardedAd = null;
@@ -82,8 +104,13 @@ class AdService implements AdServiceBase {
       adUnitId: kInterstitialAdUnit,
       request: const AdRequest(),
       adLoadCallback: InterstitialAdLoadCallback(
-        onAdLoaded: (ad) { _interstitialAd = ad; _interstitialLoading = false; },
-        onAdFailedToLoad: (_) { _interstitialLoading = false; },
+        onAdLoaded: (ad) {
+          _interstitialAd = ad;
+          _interstitialLoading = false;
+        },
+        onAdFailedToLoad: (_) {
+          _interstitialLoading = false;
+        },
       ),
     );
   }
@@ -92,47 +119,30 @@ class AdService implements AdServiceBase {
   Future<void> showInterstitialIfReady() async {
     _interstitialCount++;
     if (_interstitialCount % _interstitialFreq != 0) return;
-    if (_interstitialAd == null) { _loadInterstitialAd(); return; }
+    if (_interstitialAd == null) {
+      _loadInterstitialAd();
+      return;
+    }
     _interstitialAd!.fullScreenContentCallback = FullScreenContentCallback(
       onAdDismissedFullScreenContent: (ad) {
-        ad.dispose(); _interstitialAd = null; _loadInterstitialAd();
+        ad.dispose();
+        _interstitialAd = null;
+        _loadInterstitialAd();
       },
       onAdFailedToShowFullScreenContent: (ad, _) {
-        ad.dispose(); _interstitialAd = null; _loadInterstitialAd();
+        ad.dispose();
+        _interstitialAd = null;
+        _loadInterstitialAd();
       },
     );
     await _interstitialAd!.show();
     _interstitialAd = null;
   }
 
-  // ── App Open ─────────────────────────────────────────────
-  bool get _appOpenAvailable {
-    if (_appOpenAd == null || _appOpenLoadTime == null) return false;
-    return DateTime.now().difference(_appOpenLoadTime!).inHours < 4;
-  }
-
-  void _loadAppOpenAd() {
-    if (_appOpenLoading) return;
-    _appOpenLoading = true;
-    AppOpenAd.load(
-      adUnitId: kAppOpenAdUnit,
-      request: const AdRequest(),
-      adLoadCallback: AppOpenAdLoadCallback(
-        onAdLoaded: (ad) { _appOpenAd = ad; _appOpenLoadTime = DateTime.now(); _appOpenLoading = false; },
-        onAdFailedToLoad: (_) { _appOpenLoading = false; },
-      ),
-    );
-  }
-
+  // ── App Open — disabled ───────────────────────────────────
   @override
   Future<void> showAppOpenAdIfAvailable() async {
-    if (!_appOpenAvailable) { _loadAppOpenAd(); return; }
-    _appOpenAd!.fullScreenContentCallback = FullScreenContentCallback(
-      onAdDismissedFullScreenContent: (ad) { ad.dispose(); _appOpenAd = null; _loadAppOpenAd(); },
-      onAdFailedToShowFullScreenContent: (ad, _) { ad.dispose(); _appOpenAd = null; _loadAppOpenAd(); },
-    );
-    await _appOpenAd!.show();
-    _appOpenAd = null;
+    // Disabled — caused black screen on startup
   }
 }
 
@@ -157,14 +167,19 @@ class _BannerAdWidgetState extends State<BannerAdWidget> {
       size: AdSize.banner,
       request: const AdRequest(),
       listener: BannerAdListener(
-        onAdLoaded: (_) { if (mounted) setState(() => _loaded = true); },
+        onAdLoaded: (_) {
+          if (mounted) setState(() => _loaded = true);
+        },
         onAdFailedToLoad: (_, __) {},
       ),
     )..load();
   }
 
   @override
-  void dispose() { _ad.dispose(); super.dispose(); }
+  void dispose() {
+    _ad.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -176,7 +191,8 @@ class _BannerAdWidgetState extends State<BannerAdWidget> {
       decoration: BoxDecoration(
         color: const Color(0xFF1A1A2E),
         border: Border.symmetric(
-          horizontal: BorderSide(color: Colors.white.withOpacity(0.06), width: 1),
+          horizontal: BorderSide(
+              color: Colors.white.withOpacity(0.06), width: 1),
         ),
       ),
       child: AdWidget(ad: _ad),
