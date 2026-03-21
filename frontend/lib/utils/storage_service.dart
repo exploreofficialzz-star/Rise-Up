@@ -3,7 +3,7 @@
 //  • Mobile: flutter_secure_storage (encrypted)
 //  • Web:    flutter_secure_storage with web options (localStorage)
 // ─────────────────────────────────────────────────────────────
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 class StorageService {
