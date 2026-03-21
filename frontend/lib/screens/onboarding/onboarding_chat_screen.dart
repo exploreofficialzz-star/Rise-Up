@@ -62,19 +62,21 @@ class _OnboardingChatScreenState extends State<OnboardingChatScreen> {
       );
 
       _conversationId ??= res['conversation_id'];
+      final content = res['content'] ?? '...';
+
+      // ← Fixed: check both the flag AND content text as fallback
+      final isComplete = res['onboarding_complete'] == true ||
+          content.contains('Profile complete') ||
+          content.contains('roadmap') && content.contains('complete');
 
       setState(() {
-        _messages.add(_Message(res['content'] ?? '...', false));
+        _messages.add(_Message(content, false));
         _loading = false;
-        if (res['onboarding_complete'] == true) {
-          _complete = true;
-        }
+        if (isComplete) _complete = true;
       });
       _scrollDown();
 
-      if (_complete) {
-        // Save onboarding status to storage so splash screen
-        // can skip login next time
+      if (isComplete) {
         await storageService.write(
             key: 'onboarding_completed', value: 'true');
         await Future.delayed(const Duration(seconds: 2));
@@ -110,9 +112,18 @@ class _OnboardingChatScreenState extends State<OnboardingChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Use system theme colors
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bgColor = isDark ? AppColors.bgDark : Colors.white;
+    final cardColor = isDark ? AppColors.bgCard : const Color(0xFFF5F5F5);
+    final textColor = isDark ? AppColors.textPrimary : Colors.black87;
+    final subtextColor = isDark ? AppColors.textSecondary : Colors.black54;
+
     return Scaffold(
-      backgroundColor: AppColors.bgDark,
+      backgroundColor: bgColor,
       appBar: AppBar(
+        backgroundColor: bgColor,
+        elevation: 0,
         title: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -132,9 +143,11 @@ class _OnboardingChatScreenState extends State<OnboardingChatScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text('RiseUp AI',
-                    style: AppTextStyles.h4.copyWith(fontSize: 14)),
+                    style: AppTextStyles.h4.copyWith(
+                        fontSize: 14, color: textColor)),
                 Text('Your personal wealth mentor',
-                    style: AppTextStyles.caption),
+                    style: AppTextStyles.caption
+                        .copyWith(color: subtextColor)),
               ],
             ),
           ],
@@ -142,8 +155,8 @@ class _OnboardingChatScreenState extends State<OnboardingChatScreen> {
         actions: [
           Container(
             margin: const EdgeInsets.only(right: 12),
-            padding:
-                const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            padding: const EdgeInsets.symmetric(
+                horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
               color: AppColors.success.withOpacity(0.15),
               borderRadius: AppRadius.pill,
@@ -172,7 +185,7 @@ class _OnboardingChatScreenState extends State<OnboardingChatScreen> {
             value: _complete
                 ? 1.0
                 : (_messages.length / 20.0).clamp(0, 0.95),
-            backgroundColor: AppColors.bgCard,
+            backgroundColor: cardColor,
             valueColor:
                 const AlwaysStoppedAnimation(AppColors.primary),
           ),
@@ -185,7 +198,7 @@ class _OnboardingChatScreenState extends State<OnboardingChatScreen> {
               itemBuilder: (_, i) {
                 if (i == _messages.length) return _TypingIndicator();
                 final m = _messages[i];
-                return _ChatBubble(message: m)
+                return _ChatBubble(message: m, isDark: isDark)
                     .animate()
                     .fadeIn(duration: 300.ms)
                     .slideY(begin: 0.2);
@@ -217,7 +230,10 @@ class _OnboardingChatScreenState extends State<OnboardingChatScreen> {
 
           if (!_complete)
             _ChatInput(
-                ctrl: _ctrl, onSend: _send, loading: _loading),
+                ctrl: _ctrl,
+                onSend: _send,
+                loading: _loading,
+                isDark: isDark),
         ],
       ),
     );
@@ -226,10 +242,13 @@ class _OnboardingChatScreenState extends State<OnboardingChatScreen> {
 
 class _ChatBubble extends StatelessWidget {
   final _Message message;
-  const _ChatBubble({required this.message});
+  final bool isDark;
+  const _ChatBubble({required this.message, required this.isDark});
 
   @override
   Widget build(BuildContext context) {
+    final aiBubbleColor =
+        isDark ? AppColors.aiBubble : const Color(0xFFEEEEEE);
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(
@@ -260,7 +279,7 @@ class _ChatBubble extends StatelessWidget {
               decoration: BoxDecoration(
                 color: message.isUser
                     ? AppColors.userBubble
-                    : AppColors.aiBubble,
+                    : aiBubbleColor,
                 borderRadius: BorderRadius.only(
                   topLeft: const Radius.circular(18),
                   topRight: const Radius.circular(18),
@@ -271,11 +290,15 @@ class _ChatBubble extends StatelessWidget {
                 ),
               ),
               child: message.isUser
-                  ? Text(message.text, style: AppTextStyles.chatUser)
+                  ? Text(message.text,
+                      style: AppTextStyles.chatUser)
                   : MarkdownBody(
                       data: message.text,
                       styleSheet: MarkdownStyleSheet(
-                        p: AppTextStyles.chatAI,
+                        p: AppTextStyles.chatAI.copyWith(
+                            color: isDark
+                                ? AppColors.textPrimary
+                                : Colors.black87),
                         strong: AppTextStyles.chatAI.copyWith(
                             fontWeight: FontWeight.w700,
                             color: AppColors.primary),
@@ -319,6 +342,7 @@ class _TypingIndicatorState extends State<_TypingIndicator>
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(
@@ -339,7 +363,9 @@ class _TypingIndicatorState extends State<_TypingIndicator>
             padding: const EdgeInsets.symmetric(
                 horizontal: 16, vertical: 14),
             decoration: BoxDecoration(
-                color: AppColors.aiBubble,
+                color: isDark
+                    ? AppColors.aiBubble
+                    : const Color(0xFFEEEEEE),
                 borderRadius: AppRadius.lg),
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -415,10 +441,12 @@ class _ChatInput extends StatelessWidget {
   final TextEditingController ctrl;
   final Function([String?]) onSend;
   final bool loading;
+  final bool isDark;
   const _ChatInput(
       {required this.ctrl,
       required this.onSend,
-      required this.loading});
+      required this.loading,
+      required this.isDark});
 
   @override
   Widget build(BuildContext context) {
@@ -426,26 +454,43 @@ class _ChatInput extends StatelessWidget {
       padding: EdgeInsets.fromLTRB(
           16, 8, 16, MediaQuery.of(context).padding.bottom + 8),
       decoration: BoxDecoration(
-        color: AppColors.bgCard,
-        border: Border(top: BorderSide(color: AppColors.bgSurface)),
+        color: isDark ? AppColors.bgCard : Colors.white,
+        border: Border(
+            top: BorderSide(
+                color: isDark
+                    ? AppColors.bgSurface
+                    : Colors.grey.shade200)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, -2),
+          )
+        ],
       ),
       child: Row(
         children: [
           Expanded(
             child: TextField(
               controller: ctrl,
-              style: AppTextStyles.body,
+              style: AppTextStyles.body.copyWith(
+                  color: isDark ? AppColors.textPrimary : Colors.black87),
               maxLines: 3,
               minLines: 1,
               textCapitalization: TextCapitalization.sentences,
               decoration: InputDecoration(
                 hintText: 'Type your answer...',
-                hintStyle: AppTextStyles.label,
+                hintStyle: AppTextStyles.label.copyWith(
+                    color: isDark
+                        ? AppColors.textMuted
+                        : Colors.grey.shade400),
                 border: OutlineInputBorder(
                     borderRadius: AppRadius.lg,
                     borderSide: BorderSide.none),
                 filled: true,
-                fillColor: AppColors.bgSurface,
+                fillColor: isDark
+                    ? AppColors.bgSurface
+                    : Colors.grey.shade100,
                 contentPadding: const EdgeInsets.symmetric(
                     horizontal: 16, vertical: 12),
               ),
