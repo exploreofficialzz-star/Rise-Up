@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:dio/dio.dart';
 import '../config/app_constants.dart';
 import '../utils/storage_service.dart';
@@ -16,7 +17,6 @@ class ApiService {
       headers: {'Content-Type': 'application/json'},
     ));
 
-    // Auth interceptor — attaches token and handles 401 refresh
     _dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) async {
         final token = await storageService.read(key: 'access_token');
@@ -48,16 +48,19 @@ class ApiService {
     try {
       final refresh = await storageService.read(key: 'refresh_token');
       if (refresh == null) return false;
-      final res = await _dio.post('/auth/refresh', data: {'refresh_token': refresh});
-      await storageService.write(key: 'access_token', value: res.data['access_token']);
-      await storageService.write(key: 'refresh_token', value: res.data['refresh_token']);
+      final res = await _dio.post('/auth/refresh',
+          data: {'refresh_token': refresh});
+      await storageService.write(
+          key: 'access_token', value: res.data['access_token']);
+      await storageService.write(
+          key: 'refresh_token', value: res.data['refresh_token']);
       return true;
     } catch (_) {
       return false;
     }
   }
 
-  // ── Auth ────────────────────────────────────────────────────
+  // ── Auth ─────────────────────────────────────────────────────
   Future<Map> signUp(String email, String password, String? name) async {
     final res = await _dio.post('/auth/signup',
         data: {'email': email, 'password': password, 'full_name': name});
@@ -68,8 +71,10 @@ class ApiService {
     final res = await _dio.post('/auth/signin',
         data: {'email': email, 'password': password});
     final data = res.data;
-    await storageService.write(key: 'access_token', value: data['access_token']);
-    await storageService.write(key: 'refresh_token', value: data['refresh_token']);
+    await storageService.write(
+        key: 'access_token', value: data['access_token']);
+    await storageService.write(
+        key: 'refresh_token', value: data['refresh_token']);
     await storageService.write(key: 'user_id', value: data['user_id']);
     return data;
   }
@@ -82,13 +87,14 @@ class ApiService {
   }
 
   Future<Map> forgotPassword(String email) async {
-    final res = await _dio.post('/auth/forgot-password', data: {'email': email});
+    final res = await _dio.post('/auth/forgot-password',
+        data: {'email': email});
     return res.data;
   }
 
   Future<Map> resendVerification(String email) async {
-    final res =
-        await _dio.post('/auth/resend-verification', data: {'email': email});
+    final res = await _dio.post('/auth/resend-verification',
+        data: {'email': email});
     return res.data;
   }
 
@@ -100,9 +106,17 @@ class ApiService {
 
   Future<String?> getToken() => storageService.read(key: 'access_token');
   Future<String?> getUserId() => storageService.read(key: 'user_id');
-  Future<bool> isAuthenticated() async => (await getToken()) != null;
 
-  // ── AI Chat ─────────────────────────────────────────────────
+  // ← Fixed: wrapped in try/catch — prevents silent crash on Android release
+  Future<bool> isAuthenticated() async {
+    try {
+      return (await getToken()) != null;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // ── AI Chat ──────────────────────────────────────────────────
   Future<Map> chat({
     required String message,
     String? conversationId,
@@ -175,8 +189,8 @@ class ApiService {
   }
 
   Future<Map> enrollSkill(String moduleId) async {
-    final res =
-        await _dio.post('/skills/enroll', data: {'module_id': moduleId});
+    final res = await _dio.post('/skills/enroll',
+        data: {'module_id': moduleId});
     return res.data;
   }
 
@@ -312,7 +326,8 @@ class ApiService {
     return res.data;
   }
 
-  Future<Map> contributeToGoal(String goalId, double amount, {String? description}) async {
+  Future<Map> contributeToGoal(String goalId, double amount,
+      {String? description}) async {
     final res = await _dio.post('/goals/$goalId/contribute', data: {
       'amount': amount,
       if (description != null) 'description': description,
@@ -368,7 +383,7 @@ class ApiService {
     return res.data;
   }
 
-  // ── Achievements ──────────────────────────────────────────────
+  // ── Achievements ─────────────────────────────────────────────
   Future<Map> getAchievements() async {
     final res = await _dio.get('/achievements/');
     return res.data;
@@ -391,20 +406,21 @@ class ApiService {
   }
 
   Future<Map> applyReferralCode(String code) async {
-    final res = await _dio.post('/referrals/apply', data: {'referral_code': code});
+    final res = await _dio.post('/referrals/apply',
+        data: {'referral_code': code});
     return res.data;
   }
 
   // ── Notifications ─────────────────────────────────────────────
   Future<Map> registerFcmToken(String token, String platform) async {
-    final res = await _dio.post('/notifications/register-token', data: {
-      'token': token, 'platform': platform,
-    });
+    final res = await _dio.post('/notifications/register-token',
+        data: {'token': token, 'platform': platform});
     return res.data;
   }
 
   Future<Map> getNotifications({int limit = 30}) async {
-    final res = await _dio.get('/notifications/', queryParameters: {'limit': limit});
+    final res = await _dio.get('/notifications/',
+        queryParameters: {'limit': limit});
     return res.data;
   }
 
@@ -417,11 +433,12 @@ class ApiService {
 
   Future<Map> logShare(String shareType, String platform) async {
     try {
-      final res = await _dio.post('/community/share', data: {
-        'share_type': shareType, 'platform': platform,
-      });
+      final res = await _dio.post('/community/share',
+          data: {'share_type': shareType, 'platform': platform});
       return res.data;
-    } catch (_) { return {}; }
+    } catch (_) {
+      return {};
+    }
   }
 } // end ApiService
 
