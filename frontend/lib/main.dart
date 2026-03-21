@@ -29,15 +29,25 @@ void main() async {
     ]);
   }
 
-  // Supabase — required
-  await Supabase.initialize(url: kSupabaseUrl, anonKey: kSupabaseAnonKey);
+  // Supabase — guard against empty keys crashing silently (black screen)
+  try {
+    if (kSupabaseUrl.isNotEmpty && kSupabaseAnonKey.isNotEmpty) {
+      await Supabase.initialize(
+          url: kSupabaseUrl, anonKey: kSupabaseAnonKey);
+    } else {
+      debugPrint(
+          '[RiseUp] WARNING: Supabase keys missing — check dart-define build args');
+    }
+  } catch (e) {
+    debugPrint('[RiseUp] Supabase init error: $e');
+  }
 
   // Firebase / Notifications — optional, graceful fail
   if (!kIsWeb) {
     try {
       await notificationService.initialize();
     } catch (e) {
-      debugPrint('[RiseUp] Firebase/notifications init skipped: $e');
+      debugPrint('[RiseUp] Notifications init skipped: $e');
     }
   }
 
@@ -67,14 +77,17 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     if (!kIsWeb) WidgetsBinding.instance.addObserver(this);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _runVersionCheck());
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _runVersionCheck());
   }
 
   Future<void> _runVersionCheck() async {
     try {
-      final matches = router.routerDelegate.currentConfiguration.matches;
+      final matches =
+          router.routerDelegate.currentConfiguration.matches;
       if (matches.isNotEmpty) {
-        final ctx = router.routerDelegate.navigatorKey.currentContext;
+        final ctx =
+            router.routerDelegate.navigatorKey.currentContext;
         if (ctx != null && ctx.mounted) {
           versionCheckService.checkAndPrompt(ctx);
         }
@@ -143,7 +156,7 @@ class _GlobalErrorWidget extends StatelessWidget {
               ),
               const SizedBox(height: 32),
               ElevatedButton(
-                onPressed: () => router.go('/home'),
+                onPressed: () => router.go('/login'),
                 style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.primary),
                 child: const Text('Go Home'),
