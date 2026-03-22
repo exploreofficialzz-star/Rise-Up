@@ -1,11 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Pure black background — no icon shown before Flutter loads -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Neutral dark that looks good on both themes -->
     <item android:drawable="@android:color/black" />
-    <!-- Centered logo -->
-    <item>
-        <bitmap
-            android:gravity="center"
-            android:src="@mipmap/ic_launcher" />
-    </item>
 </layer-list>

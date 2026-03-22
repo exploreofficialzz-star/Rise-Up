@@ -30,7 +30,7 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<void> _navigate() async {
-    await Future.delayed(const Duration(milliseconds: 3000));
+    await Future.delayed(const Duration(milliseconds: 2800));
     if (!mounted) return;
 
     if (kIsWeb) {
@@ -42,11 +42,8 @@ class _SplashScreenState extends State<SplashScreen>
       final token =
           await storageService.read(key: 'access_token');
       if (!mounted) return;
-      if (token != null && token.isNotEmpty) {
-        context.go('/home');
-      } else {
-        context.go('/login');
-      }
+      context.go(
+          token != null && token.isNotEmpty ? '/home' : '/login');
     } catch (_) {
       if (mounted) context.go('/login');
     }
@@ -65,26 +62,26 @@ class _SplashScreenState extends State<SplashScreen>
       backgroundColor: bgColor,
       body: Stack(
         children: [
-          // ── Main content ────────────────────────────
+          // ── Main content — centered ──────────────────
           Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Logo — transparent PNG, no card/container
+                // Logo — bigger, no container
                 Image.asset(
                   'assets/images/riseup_logo.png',
-                  width: 120,
-                  height: 120,
+                  width: 160,   // ← bigger
+                  height: 160,  // ← bigger
                   errorBuilder: (_, __, ___) => const Icon(
                     Icons.trending_up_rounded,
                     color: Color(0xFFFF6B00),
-                    size: 80,
+                    size: 100,
                   ),
                 ),
 
-                const SizedBox(height: 16),
+                const SizedBox(height: 10), // ← closer
 
-                // RiseUp gradient text
+                // RiseUp — bigger gradient text
                 ShaderMask(
                   shaderCallback: (bounds) =>
                       const LinearGradient(
@@ -98,10 +95,10 @@ class _SplashScreenState extends State<SplashScreen>
                   child: const Text(
                     'RiseUp',
                     style: TextStyle(
-                      fontSize: 40,
+                      fontSize: 52,  // ← bigger
                       fontWeight: FontWeight.w900,
                       color: Colors.white,
-                      letterSpacing: -1,
+                      letterSpacing: -1.5,
                     ),
                   ),
                 ),
@@ -117,24 +114,16 @@ class _SplashScreenState extends State<SplashScreen>
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                _Dot(
-                    ctrl: _dotsCtrl,
-                    delay: 0.0,
+                _Dot(ctrl: _dotsCtrl, delay: 0.0,
                     color: const Color(0xFFFF9AA2)),
-                const SizedBox(width: 10),
-                _Dot(
-                    ctrl: _dotsCtrl,
-                    delay: 0.2,
+                const SizedBox(width: 12),
+                _Dot(ctrl: _dotsCtrl, delay: 0.2,
                     color: const Color(0xFF81ECEC)),
-                const SizedBox(width: 10),
-                _Dot(
-                    ctrl: _dotsCtrl,
-                    delay: 0.4,
+                const SizedBox(width: 12),
+                _Dot(ctrl: _dotsCtrl, delay: 0.4,
                     color: const Color(0xFFFFD700)),
-                const SizedBox(width: 10),
-                _Dot(
-                    ctrl: _dotsCtrl,
-                    delay: 0.6,
+                const SizedBox(width: 12),
+                _Dot(ctrl: _dotsCtrl, delay: 0.6,
                     color: const Color(0xFF74B9FF)),
               ],
             ),
@@ -184,8 +173,8 @@ class _Dot extends StatelessWidget {
         return Transform.scale(
           scale: scale,
           child: Container(
-            width: 10,
-            height: 10,
+            width: 11,
+            height: 11,
             decoration: BoxDecoration(
               color: color,
               shape: BoxShape.circle,

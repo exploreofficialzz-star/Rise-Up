@@ -33,10 +33,7 @@ class _LoginScreenState extends State<LoginScreen> {
       setState(() => _error = 'Please fill in all fields');
       return;
     }
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+    setState(() { _loading = true; _error = null; });
     try {
       final data = await api.signIn(email, pass);
       if (!mounted) return;
@@ -47,7 +44,6 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
 
-      // Save auth state and go directly to home
       try {
         final profile = await api.getProfile();
         final onboarded =
@@ -58,7 +54,6 @@ class _LoginScreenState extends State<LoginScreen> {
       } catch (_) {}
 
       if (!mounted) return;
-      // ← Always go to home — social feed is the main screen
       context.go('/home');
     } catch (e) {
       setState(() {
@@ -75,8 +70,7 @@ class _LoginScreenState extends State<LoginScreen> {
     final bgColor =
         Theme.of(context).scaffoldBackgroundColor;
     final textColor = isDark ? Colors.white : Colors.black87;
-    final subColor =
-        isDark ? Colors.white60 : Colors.black54;
+    final subColor = isDark ? Colors.white60 : Colors.black54;
 
     return Scaffold(
       backgroundColor: bgColor,
@@ -89,20 +83,20 @@ class _LoginScreenState extends State<LoginScreen> {
             children: [
               const SizedBox(height: 16),
 
-              // ── Logo + RiseUp ─────────────────────────
+              // ── Logo + RiseUp — bigger ─────────────────
               Row(
                 children: [
                   Image.asset(
                     'assets/images/riseup_logo.png',
-                    width: 40,
-                    height: 40,
+                    width: 52,   // ← bigger
+                    height: 52,  // ← bigger
                     errorBuilder: (_, __, ___) => const Icon(
                       Icons.trending_up_rounded,
                       color: Color(0xFFFF6B00),
-                      size: 40,
+                      size: 52,
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 10),
                   ShaderMask(
                     shaderCallback: (bounds) =>
                         const LinearGradient(
@@ -116,7 +110,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     child: const Text(
                       'RiseUp',
                       style: TextStyle(
-                        fontSize: 26,
+                        fontSize: 34,  // ← bigger
                         fontWeight: FontWeight.w900,
                         color: Colors.white,
                         letterSpacing: -0.5,
@@ -126,7 +120,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 ],
               ).animate().fadeIn(duration: 500.ms),
 
-              const SizedBox(height: 48),
+              const SizedBox(height: 44),
 
               Text(
                 'Welcome back 👋',
@@ -141,8 +135,8 @@ class _LoginScreenState extends State<LoginScreen> {
 
               Text(
                 'Sign in to continue your wealth journey',
-                style: TextStyle(
-                    fontSize: 14, color: subColor),
+                style:
+                    TextStyle(fontSize: 14, color: subColor),
               ).animate().fadeIn(delay: 200.ms),
 
               const SizedBox(height: 36),

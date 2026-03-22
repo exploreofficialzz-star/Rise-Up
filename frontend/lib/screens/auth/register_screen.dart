@@ -53,10 +53,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       return;
     }
 
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+    setState(() { _loading = true; _error = null; });
     try {
       await api.signUp(email, pass, name);
       if (!mounted) return;
@@ -82,8 +79,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     final bgColor =
         Theme.of(context).scaffoldBackgroundColor;
     final textColor = isDark ? Colors.white : Colors.black87;
-    final subColor =
-        isDark ? Colors.white60 : Colors.black54;
+    final subColor = isDark ? Colors.white60 : Colors.black54;
     final checkBorderColor =
         isDark ? Colors.white38 : Colors.black38;
 
@@ -98,20 +94,20 @@ class _RegisterScreenState extends State<RegisterScreen> {
             children: [
               const SizedBox(height: 16),
 
-              // ── Logo + RiseUp ─────────────────────────
+              // ── Logo + RiseUp — bigger ─────────────────
               Row(
                 children: [
                   Image.asset(
                     'assets/images/riseup_logo.png',
-                    width: 40,
-                    height: 40,
+                    width: 52,   // ← bigger
+                    height: 52,  // ← bigger
                     errorBuilder: (_, __, ___) => const Icon(
                       Icons.trending_up_rounded,
                       color: Color(0xFFFF6B00),
-                      size: 40,
+                      size: 52,
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 10),
                   ShaderMask(
                     shaderCallback: (bounds) =>
                         const LinearGradient(
@@ -125,7 +121,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     child: const Text(
                       'RiseUp',
                       style: TextStyle(
-                        fontSize: 26,
+                        fontSize: 34,  // ← bigger
                         fontWeight: FontWeight.w900,
                         color: Colors.white,
                         letterSpacing: -0.5,
@@ -135,7 +131,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 ],
               ).animate().fadeIn(),
 
-              const SizedBox(height: 40),
+              const SizedBox(height: 36),
 
               Text(
                 'Your journey starts here 🔥',
@@ -152,10 +148,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
               Text(
                 'Millions worldwide are building wealth — it\'s your turn',
                 style: TextStyle(
-                    fontSize: 14, color: subColor, height: 1.5),
+                    fontSize: 14,
+                    color: subColor,
+                    height: 1.5),
               ).animate().fadeIn(delay: 200.ms),
 
-              const SizedBox(height: 32),
+              const SizedBox(height: 28),
 
               if (_error != null)
                 Container(
@@ -261,8 +259,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                 color: subColor,
                                 fontSize: 13)),
                         GestureDetector(
-                          onTap: () =>
-                              context.go('/terms'),
+                          onTap: () => context.go('/terms'),
                           child: Text('Terms of Service',
                               style: TextStyle(
                                   color: AppColors.primary,
