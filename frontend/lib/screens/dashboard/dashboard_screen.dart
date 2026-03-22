@@ -92,8 +92,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 IconButton(icon: const Icon(Icons.notifications_none_rounded, color: Colors.white70, size: 24), onPressed: () => context.go('/notifications')),
                 const SizedBox(width: 4),
               ],
-              pinned: true,
-              backgroundColor: AppColors.bgDark,
               flexibleSpace: FlexibleSpaceBar(
                 background: Container(
                   decoration: const BoxDecoration(
@@ -540,7 +538,7 @@ class _DashboardDrawer extends StatelessWidget {
                   _DIt(Iconsax.flag, 'Goals', 'Targets', onTap: () { Navigator.pop(context); context.go('/goals'); }),
                   Divider(color: border, height: 1),
                   _DSec('ACCOUNT'),
-                  _DIt(Iconsax.trophy, 'Achievements', 'Badges', onTap: () { Navigator.pop(context); context.go('/achievements'); }),
+                  _DIt(Iconsax.award, 'Achievements', 'Badges', onTap: () { Navigator.pop(context); context.go('/achievements'); }),
                   _DIt(Iconsax.user_tag, 'Referrals', 'Invite & earn', onTap: () { Navigator.pop(context); context.go('/referrals'); }),
                   _DIt(Iconsax.setting_2, 'Settings', 'Preferences', onTap: () { Navigator.pop(context); context.go('/settings'); }),
                 ],

@@ -537,7 +537,7 @@ class _ReviewPhase extends StatelessWidget {
           if (steps.isNotEmpty) ...[
             _sectionTitle('📋 Your ${steps.length}-Step Workflow', isDark),
             const SizedBox(height: 8),
-            ...steps.take(4).asMap().entries.map((e) {
+            ...steps.take(4).toList().asMap().entries.map((e) {
               final s = e.value as Map;
               final isAuto = s['type'] == 'automated';
               return Container(

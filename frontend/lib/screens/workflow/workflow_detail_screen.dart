@@ -449,10 +449,10 @@ class _ToolCard extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: isDark ? AppColors.bgSurface : const Color(0xFFF5F5F5),
+        color: (isDark ? AppColors.bgSurface : const Color(0xFFF5F5F5))
+            .withOpacity(isFree || unlocked ? 1.0 : 0.6),
         borderRadius: AppRadius.lg,
-        border: Border.all(color: color.withOpacity(0.25)),
-        opacity: isFree || unlocked ? 1.0 : 0.6,
+        border: Border.all(color: color.withOpacity(isFree || unlocked ? 0.25 : 0.1)),
       ),
       child: Row(
         children: [

@@ -614,7 +614,7 @@ class _AppDrawer extends StatelessWidget {
                   const SizedBox(height: 4),
                   Divider(color: border, height: 1),
                   _DSection('ACCOUNT', sub),
-                  _DItem(Iconsax.trophy, 'Achievements', 'Badges & milestones', isDark, onTap: () { Navigator.pop(context); context.go('/achievements'); }),
+                  _DItem(Iconsax.award, 'Achievements', 'Badges & milestones', isDark, onTap: () { Navigator.pop(context); context.go('/achievements'); }),
                   _DItem(Iconsax.user_tag, 'Referrals', 'Invite & earn', isDark, onTap: () { Navigator.pop(context); context.go('/referrals'); }),
                   _DItem(Iconsax.setting_2, 'Settings', 'Account preferences', isDark, onTap: () { Navigator.pop(context); context.go('/settings'); }),
                 ],

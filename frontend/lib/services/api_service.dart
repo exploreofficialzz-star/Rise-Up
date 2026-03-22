@@ -1,7 +1,3 @@
-e
-
-// Global singleton instance
-final api = ApiService();
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:dio/dio.dart';
 import '../config/app_constants.dart';
@@ -664,4 +660,37 @@ class ApiService {
   // ── Live ───────────────────────────────────────────
   Future<Map> getLiveSessions() async {
     final r = await _dio.get('/live/sessions');
-    r
+    return r.data as Map;
+  }
+
+  Future<Map> startLive({required String title, required String topic, bool isPremium = false}) async {
+    final r = await _dio.post('/live/start', data: {
+      'title': title, 'topic': topic, 'is_premium': isPremium,
+    });
+    return r.data as Map;
+  }
+
+  Future<Map> endLive() async {
+    final r = await _dio.post('/live/end');
+    return r.data as Map;
+  }
+
+  Future<Map> joinLive(String sessionId) async {
+    final r = await _dio.post('/live/sessions/$sessionId/join');
+    return r.data as Map;
+  }
+
+  Future<Map> leaveLive(String sessionId) async {
+    final r = await _dio.post('/live/sessions/$sessionId/leave');
+    return r.data as Map;
+  }
+
+  Future<Map> sendCoins(String sessionId, int amount) async {
+    final r = await _dio.post('/live/sessions/$sessionId/coins', data: {'amount': amount});
+    return r.data as Map;
+  }
+
+} // end ApiService
+
+// Global singleton instance
+final api = ApiService();

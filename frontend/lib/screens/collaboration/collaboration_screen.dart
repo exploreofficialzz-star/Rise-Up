@@ -234,12 +234,6 @@ class _CollaborationScreenState extends State<CollaborationScreen>
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton(
-                        onPressed: () {
-                          Navigator.pop(ctx);
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('✅ Collaboration posted!'), backgroundColor: AppColors.success),
-                          );
-                        },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: AppColors.primary,
                           padding: const EdgeInsets.symmetric(vertical: 14),
@@ -264,6 +258,8 @@ class _CollaborationScreenState extends State<CollaborationScreen>
                             );
                           }
                         },
+                        child: const Text('Post Collaboration',
+                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 15)),
                       ),
                     ),
                   ]),
