@@ -15,8 +15,8 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final _emailCtrl = TextEditingController();
-  final _passCtrl = TextEditingController();
-  bool _loading = false;
+  final _passCtrl  = TextEditingController();
+  bool   _loading  = false;
   String? _error;
 
   @override
@@ -28,7 +28,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _login() async {
     final email = _emailCtrl.text.trim();
-    final pass = _passCtrl.text;
+    final pass  = _passCtrl.text;
     if (email.isEmpty || pass.isEmpty) {
       setState(() => _error = 'Please fill in all fields');
       return;
@@ -39,15 +39,13 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!mounted) return;
 
       if (data['email_confirmed'] == false) {
-        context.go(
-            '/verify-email?email=${Uri.encodeComponent(email)}');
+        context.go('/verify-email?email=${Uri.encodeComponent(email)}');
         return;
       }
 
       try {
         final profile = await api.getProfile();
-        final onboarded =
-            profile['profile']?['onboarding_completed'] ?? false;
+        final onboarded = profile['profile']?['onboarding_completed'] ?? false;
         await storageService.write(
             key: 'onboarding_completed',
             value: onboarded.toString());
@@ -65,10 +63,8 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isDark =
-        Theme.of(context).brightness == Brightness.dark;
-    final bgColor =
-        Theme.of(context).scaffoldBackgroundColor;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bgColor = Theme.of(context).scaffoldBackgroundColor;
     final textColor = isDark ? Colors.white : Colors.black87;
     final subColor = isDark ? Colors.white60 : Colors.black54;
 
@@ -76,30 +72,28 @@ class _LoginScreenState extends State<LoginScreen> {
       backgroundColor: bgColor,
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(
-              horizontal: 24, vertical: 20),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const SizedBox(height: 16),
 
-              // ── Logo + RiseUp — bigger ─────────────────
+              // ── Logo + RiseUp ─────────────────────────
               Row(
                 children: [
                   Image.asset(
                     'assets/images/riseup_logo.png',
-                    width: 52,   // ← bigger
-                    height: 52,  // ← bigger
+                    width: 44,
+                    height: 44,
                     errorBuilder: (_, __, ___) => const Icon(
                       Icons.trending_up_rounded,
                       color: Color(0xFFFF6B00),
-                      size: 52,
+                      size: 44,
                     ),
                   ),
                   const SizedBox(width: 10),
                   ShaderMask(
-                    shaderCallback: (bounds) =>
-                        const LinearGradient(
+                    shaderCallback: (bounds) => const LinearGradient(
                       colors: [
                         Color(0xFFFF6B00),
                         Color(0xFFFFD700),
@@ -110,7 +104,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     child: const Text(
                       'RiseUp',
                       style: TextStyle(
-                        fontSize: 34,  // ← bigger
+                        fontSize: 28,
                         fontWeight: FontWeight.w900,
                         color: Colors.white,
                         letterSpacing: -0.5,
@@ -122,10 +116,11 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 44),
 
+              // ── Welcome header ────────────────────────
               Text(
                 'Welcome back 👋',
                 style: TextStyle(
-                  fontSize: 26,
+                  fontSize: 22,
                   fontWeight: FontWeight.w800,
                   color: textColor,
                 ),
@@ -135,12 +130,12 @@ class _LoginScreenState extends State<LoginScreen> {
 
               Text(
                 'Sign in to continue your wealth journey',
-                style:
-                    TextStyle(fontSize: 14, color: subColor),
+                style: TextStyle(fontSize: 13, color: subColor),
               ).animate().fadeIn(delay: 200.ms),
 
-              const SizedBox(height: 36),
+              const SizedBox(height: 32),
 
+              // ── Error ─────────────────────────────────
               if (_error != null)
                 Container(
                   padding: const EdgeInsets.all(12),
@@ -148,22 +143,17 @@ class _LoginScreenState extends State<LoginScreen> {
                   decoration: BoxDecoration(
                     color: AppColors.error.withOpacity(0.15),
                     borderRadius: AppRadius.md,
-                    border: Border.all(
-                        color:
-                            AppColors.error.withOpacity(0.3)),
+                    border: Border.all(color: AppColors.error.withOpacity(0.3)),
                   ),
                   child: Row(children: [
-                    const Icon(Icons.error_outline,
-                        color: AppColors.error, size: 16),
+                    const Icon(Icons.error_outline, color: AppColors.error, size: 16),
                     const SizedBox(width: 8),
-                    Expanded(
-                        child: Text(_error!,
-                            style: TextStyle(
-                                color: AppColors.error,
-                                fontSize: 13))),
+                    Expanded(child: Text(_error!,
+                        style: TextStyle(color: AppColors.error, fontSize: 13))),
                   ]),
                 ).animate().fadeIn().shake(),
 
+              // ── Email ─────────────────────────────────
               AppTextField(
                 controller: _emailCtrl,
                 label: 'Email address',
@@ -174,6 +164,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 16),
 
+              // ── Password ──────────────────────────────
               AppTextField(
                 controller: _passCtrl,
                 label: 'Password',
@@ -185,23 +176,23 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 12),
 
+              // ── Forgot password ───────────────────────
               Align(
                 alignment: Alignment.centerRight,
                 child: GestureDetector(
                   onTap: () => context.go('/forgot-password'),
-                  child: Text(
-                    'Forgot password?',
-                    style: TextStyle(
-                      color: AppColors.primary,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 13,
-                    ),
-                  ),
+                  child: Text('Forgot password?',
+                      style: TextStyle(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13,
+                      )),
                 ),
               ).animate().fadeIn(delay: 450.ms),
 
               const SizedBox(height: 28),
 
+              // ── Sign In button ────────────────────────
               GradientButton(
                 text: _loading ? 'Signing in...' : 'Sign In',
                 onTap: _loading ? null : _login,
@@ -210,14 +201,14 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 24),
 
+              // ── Sign up link ──────────────────────────
               Center(
                 child: GestureDetector(
                   onTap: () => context.go('/register'),
                   child: RichText(
                     text: TextSpan(
                       text: "Don't have an account? ",
-                      style: TextStyle(
-                          color: subColor, fontSize: 14),
+                      style: TextStyle(color: subColor, fontSize: 14),
                       children: [
                         TextSpan(
                           text: 'Sign Up Free',
@@ -235,34 +226,30 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 32),
 
+              // ── Legal ─────────────────────────────────
               Center(
                 child: Wrap(
                   alignment: WrapAlignment.center,
                   spacing: 4,
                   children: [
                     Text('By continuing you agree to our',
-                        style: TextStyle(
-                            color: subColor, fontSize: 12)),
+                        style: TextStyle(color: subColor, fontSize: 12)),
                     GestureDetector(
                       onTap: () => context.go('/terms'),
                       child: Text('Terms',
                           style: TextStyle(
                               color: AppColors.primary,
                               fontSize: 12,
-                              decoration:
-                                  TextDecoration.underline)),
+                              decoration: TextDecoration.underline)),
                     ),
-                    Text('and',
-                        style: TextStyle(
-                            color: subColor, fontSize: 12)),
+                    Text('and', style: TextStyle(color: subColor, fontSize: 12)),
                     GestureDetector(
                       onTap: () => context.go('/privacy'),
                       child: Text('Privacy Policy',
                           style: TextStyle(
                               color: AppColors.primary,
                               fontSize: 12,
-                              decoration:
-                                  TextDecoration.underline)),
+                              decoration: TextDecoration.underline)),
                     ),
                   ],
                 ),
