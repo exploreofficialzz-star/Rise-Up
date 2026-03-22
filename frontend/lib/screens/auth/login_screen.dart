@@ -5,7 +5,6 @@ import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 import '../../utils/storage_service.dart';
 import '../../widgets/gradient_button.dart';
-import '../../widgets/app_text_field.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -17,6 +16,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _emailCtrl = TextEditingController();
   final _passCtrl  = TextEditingController();
   bool   _loading  = false;
+  bool   _obscure  = true;
   String? _error;
 
   @override
@@ -64,9 +64,10 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bgColor = Theme.of(context).scaffoldBackgroundColor;
+    final bgColor = isDark ? Colors.black : Colors.white;
     final textColor = isDark ? Colors.white : Colors.black87;
     final subColor = isDark ? Colors.white60 : Colors.black54;
+    final inputFill = isDark ? const Color(0xFF1A1A2E) : Colors.grey.shade100;
 
     return Scaffold(
       backgroundColor: bgColor,
@@ -78,20 +79,21 @@ class _LoginScreenState extends State<LoginScreen> {
             children: [
               const SizedBox(height: 16),
 
-              // ── Logo + RiseUp ─────────────────────────
+              // ── Logo + RiseUp — top left ───────────────
               Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   Image.asset(
                     'assets/images/riseup_logo.png',
-                    width: 44,
-                    height: 44,
+                    width: 65,
+                    height: 65,
                     errorBuilder: (_, __, ___) => const Icon(
                       Icons.trending_up_rounded,
                       color: Color(0xFFFF6B00),
-                      size: 44,
+                      size: 65,
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 7),
                   ShaderMask(
                     shaderCallback: (bounds) => const LinearGradient(
                       colors: [
@@ -104,7 +106,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     child: const Text(
                       'RiseUp',
                       style: TextStyle(
-                        fontSize: 28,
+                        fontSize: 36,
                         fontWeight: FontWeight.w900,
                         color: Colors.white,
                         letterSpacing: -0.5,
@@ -114,28 +116,28 @@ class _LoginScreenState extends State<LoginScreen> {
                 ],
               ).animate().fadeIn(duration: 500.ms),
 
-              const SizedBox(height: 44),
+              const SizedBox(height: 40),
 
-              // ── Welcome header ────────────────────────
+              // ── Welcome header ─────────────────────────
               Text(
                 'Welcome back 👋',
                 style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w800,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
                   color: textColor,
                 ),
-              ).animate().fadeIn(delay: 100.ms).slideY(begin: 0.2),
+              ).animate().fadeIn(delay: 100.ms),
 
-              const SizedBox(height: 6),
+              const SizedBox(height: 4),
 
               Text(
                 'Sign in to continue your wealth journey',
-                style: TextStyle(fontSize: 13, color: subColor),
-              ).animate().fadeIn(delay: 200.ms),
+                style: TextStyle(fontSize: 12, color: subColor),
+              ).animate().fadeIn(delay: 150.ms),
 
-              const SizedBox(height: 32),
+              const SizedBox(height: 24),
 
-              // ── Error ─────────────────────────────────
+              // ── Error ──────────────────────────────────
               if (_error != null)
                 Container(
                   padding: const EdgeInsets.all(12),
@@ -143,40 +145,100 @@ class _LoginScreenState extends State<LoginScreen> {
                   decoration: BoxDecoration(
                     color: AppColors.error.withOpacity(0.15),
                     borderRadius: AppRadius.md,
-                    border: Border.all(color: AppColors.error.withOpacity(0.3)),
+                    border: Border.all(
+                        color: AppColors.error.withOpacity(0.3)),
                   ),
                   child: Row(children: [
-                    const Icon(Icons.error_outline, color: AppColors.error, size: 16),
+                    const Icon(Icons.error_outline,
+                        color: AppColors.error, size: 16),
                     const SizedBox(width: 8),
                     Expanded(child: Text(_error!,
-                        style: TextStyle(color: AppColors.error, fontSize: 13))),
+                        style: TextStyle(
+                            color: AppColors.error, fontSize: 13))),
                   ]),
                 ).animate().fadeIn().shake(),
 
-              // ── Email ─────────────────────────────────
-              AppTextField(
+              // ── Email ──────────────────────────────────
+              Text('Email address',
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: subColor)),
+              const SizedBox(height: 6),
+              TextField(
                 controller: _emailCtrl,
-                label: 'Email address',
-                hint: 'you@example.com',
                 keyboardType: TextInputType.emailAddress,
-                prefixIcon: Icons.mail_outline_rounded,
+                style: TextStyle(fontSize: 14, color: textColor),
+                decoration: InputDecoration(
+                  hintText: 'you@example.com',
+                  hintStyle: TextStyle(color: subColor, fontSize: 14),
+                  filled: true,
+                  fillColor: inputFill,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(
+                        color: AppColors.primary, width: 1.5),
+                  ),
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 14),
+                  prefixIcon: Icon(Icons.mail_outline_rounded,
+                      color: subColor, size: 18),
+                ),
               ).animate().fadeIn(delay: 300.ms),
 
-              const SizedBox(height: 16),
+              const SizedBox(height: 14),
 
-              // ── Password ──────────────────────────────
-              AppTextField(
+              // ── Password ───────────────────────────────
+              Text('Password',
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: subColor)),
+              const SizedBox(height: 6),
+              TextField(
                 controller: _passCtrl,
-                label: 'Password',
-                hint: '••••••••',
-                obscureText: true,
-                prefixIcon: Icons.lock_outline_rounded,
+                obscureText: _obscure,
+                style: TextStyle(fontSize: 14, color: textColor),
                 onSubmitted: (_) => _login(),
+                decoration: InputDecoration(
+                  hintText: '••••••••',
+                  hintStyle: TextStyle(color: subColor, fontSize: 14),
+                  filled: true,
+                  fillColor: inputFill,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(
+                        color: AppColors.primary, width: 1.5),
+                  ),
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 14),
+                  prefixIcon: Icon(Icons.lock_outline_rounded,
+                      color: subColor, size: 18),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _obscure
+                          ? Icons.visibility_off_outlined
+                          : Icons.visibility_outlined,
+                      color: subColor,
+                      size: 18,
+                    ),
+                    onPressed: () =>
+                        setState(() => _obscure = !_obscure),
+                  ),
+                ),
               ).animate().fadeIn(delay: 400.ms),
 
-              const SizedBox(height: 12),
+              const SizedBox(height: 10),
 
-              // ── Forgot password ───────────────────────
+              // ── Forgot password ────────────────────────
               Align(
                 alignment: Alignment.centerRight,
                 child: GestureDetector(
@@ -190,18 +252,18 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
               ).animate().fadeIn(delay: 450.ms),
 
-              const SizedBox(height: 28),
+              const SizedBox(height: 24),
 
-              // ── Sign In button ────────────────────────
+              // ── Sign In button ─────────────────────────
               GradientButton(
                 text: _loading ? 'Signing in...' : 'Sign In',
                 onTap: _loading ? null : _login,
                 isLoading: _loading,
               ).animate().fadeIn(delay: 500.ms),
 
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
 
-              // ── Sign up link ──────────────────────────
+              // ── Sign up link ───────────────────────────
               Center(
                 child: GestureDetector(
                   onTap: () => context.go('/register'),
@@ -224,31 +286,34 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
               ).animate().fadeIn(delay: 600.ms),
 
-              const SizedBox(height: 32),
+              const SizedBox(height: 24),
 
-              // ── Legal ─────────────────────────────────
+              // ── Legal ──────────────────────────────────
               Center(
                 child: Wrap(
                   alignment: WrapAlignment.center,
                   spacing: 4,
                   children: [
                     Text('By continuing you agree to our',
-                        style: TextStyle(color: subColor, fontSize: 12)),
+                        style: TextStyle(
+                            color: subColor, fontSize: 11)),
                     GestureDetector(
                       onTap: () => context.go('/terms'),
                       child: Text('Terms',
                           style: TextStyle(
                               color: AppColors.primary,
-                              fontSize: 12,
+                              fontSize: 11,
                               decoration: TextDecoration.underline)),
                     ),
-                    Text('and', style: TextStyle(color: subColor, fontSize: 12)),
+                    Text('and',
+                        style:
+                            TextStyle(color: subColor, fontSize: 11)),
                     GestureDetector(
                       onTap: () => context.go('/privacy'),
                       child: Text('Privacy Policy',
                           style: TextStyle(
                               color: AppColors.primary,
-                              fontSize: 12,
+                              fontSize: 11,
                               decoration: TextDecoration.underline)),
                     ),
                   ],
