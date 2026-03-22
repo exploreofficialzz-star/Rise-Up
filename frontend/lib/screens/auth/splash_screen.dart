@@ -1,8 +1,6 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
-import '../../config/app_constants.dart';
 import '../../utils/storage_service.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -11,24 +9,35 @@ class SplashScreen extends StatefulWidget {
   State<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen> {
+class _SplashScreenState extends State<SplashScreen>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _dotsCtrl;
+
   @override
   void initState() {
     super.initState();
+    _dotsCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat();
     _navigate();
   }
 
+  @override
+  void dispose() {
+    _dotsCtrl.dispose();
+    super.dispose();
+  }
+
   Future<void> _navigate() async {
-    await Future.delayed(const Duration(milliseconds: 2800));
+    await Future.delayed(const Duration(milliseconds: 3000));
     if (!mounted) return;
 
-    // Web — go straight to login
     if (kIsWeb) {
       context.go('/login');
       return;
     }
 
-    // Mobile — check token from secure storage
     try {
       final token = await storageService.read(key: 'access_token');
       if (!mounted) return;
@@ -51,74 +60,32 @@ class _SplashScreenState extends State<SplashScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Scaffold(
-      backgroundColor: AppColors.bgDark,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: Stack(
         children: [
-          Center(
-            child: Container(
-              width: 320,
-              height: 320,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: RadialGradient(
-                  colors: [
-                    AppColors.primary.withOpacity(0.15),
-                    Colors.transparent,
-                  ],
-                ),
-              ),
-            ),
-          ),
-
+          // ── Main content ──────────────────────────────
           Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Container(
-                  width: 120,
-                  height: 120,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(32),
-                    boxShadow: [
-                      BoxShadow(
-                        color: AppColors.primary.withOpacity(0.35),
-                        blurRadius: 40,
-                        spreadRadius: 4,
-                      ),
-                      BoxShadow(
-                        color: const Color(0xFFFF6B00).withOpacity(0.2),
-                        blurRadius: 60,
-                        spreadRadius: -4,
-                      ),
-                    ],
+                // Logo — no card container
+                Image.asset(
+                  'assets/images/riseup_logo.jpg',
+                  width: 110,
+                  height: 110,
+                  errorBuilder: (_, __, ___) => const Icon(
+                    Icons.trending_up_rounded,
+                    color: Color(0xFFFF6B00),
+                    size: 80,
                   ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(32),
-                    child: Image.asset(
-                      'assets/images/riseup_logo.jpg',
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Container(
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(
-                            colors: [AppColors.primary, AppColors.accent],
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                          ),
-                          borderRadius: BorderRadius.circular(32),
-                        ),
-                        child: const Icon(Icons.trending_up_rounded,
-                            color: Colors.white, size: 60),
-                      ),
-                    ),
-                  ),
-                )
-                    .animate()
-                    .scale(duration: 700.ms, curve: Curves.elasticOut)
-                    .fadeIn(duration: 400.ms),
+                ),
 
-                const SizedBox(height: 28),
+                const SizedBox(height: 20),
 
+                // RiseUp text — orange to purple
                 ShaderMask(
                   shaderCallback: (bounds) => const LinearGradient(
                     colors: [
@@ -126,83 +93,114 @@ class _SplashScreenState extends State<SplashScreen> {
                       Color(0xFFFFD700),
                       Color(0xFF6C5CE7),
                     ],
-                    stops: [0.0, 0.5, 1.0],
+                    stops: [0.0, 0.4, 1.0],
                   ).createShader(bounds),
-                  child: Text(
+                  child: const Text(
                     'RiseUp',
-                    style: AppTextStyles.h1.copyWith(
-                      fontSize: 48,
+                    style: TextStyle(
+                      fontSize: 42,
                       fontWeight: FontWeight.w900,
                       color: Colors.white,
                       letterSpacing: -1,
                     ),
                   ),
-                )
-                    .animate()
-                    .fadeIn(delay: 350.ms, duration: 600.ms)
-                    .slideY(begin: 0.3, curve: Curves.easeOut),
-
-                const SizedBox(height: 6),
-
-                Text(
-                  'Your AI Wealth Mentor',
-                  style: AppTextStyles.label.copyWith(
-                    fontSize: 14,
-                    letterSpacing: 1.5,
-                    color: AppColors.textSecondary,
-                  ),
-                ).animate().fadeIn(delay: 600.ms, duration: 500.ms),
-
-                const SizedBox(height: 64),
-
-                SizedBox(
-                  width: 48,
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
-                    child: const LinearProgressIndicator(
-                      backgroundColor: Color(0xFF1F1F3A),
-                      valueColor:
-                          AlwaysStoppedAnimation(Color(0xFFFF6B00)),
-                      minHeight: 3,
-                    ),
-                  ),
-                ).animate().fadeIn(delay: 900.ms),
+                ),
               ],
             ),
           ),
 
+          // ── Animated dots loader ──────────────────────
           Positioned(
-            bottom: 36,
+            bottom: 100,
             left: 0,
             right: 0,
-            child: Column(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      'Made with ',
-                      style: AppTextStyles.caption.copyWith(
-                        fontSize: 12,
-                        color: AppColors.textMuted,
-                      ),
-                    ),
-                    const Text('❤️', style: TextStyle(fontSize: 12)),
-                    Text(
-                      ' by ChAs Tech Group',
-                      style: AppTextStyles.caption.copyWith(
-                        fontSize: 12,
-                        color: AppColors.textMuted,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
+                _AnimatedDot(
+                    ctrl: _dotsCtrl,
+                    delay: 0.0,
+                    color: const Color(0xFFFF9AA2)),
+                const SizedBox(width: 10),
+                _AnimatedDot(
+                    ctrl: _dotsCtrl,
+                    delay: 0.2,
+                    color: const Color(0xFF81ECEC)),
+                const SizedBox(width: 10),
+                _AnimatedDot(
+                    ctrl: _dotsCtrl,
+                    delay: 0.4,
+                    color: const Color(0xFFFFD700)),
+                const SizedBox(width: 10),
+                _AnimatedDot(
+                    ctrl: _dotsCtrl,
+                    delay: 0.6,
+                    color: const Color(0xFF74B9FF)),
               ],
-            ).animate().fadeIn(delay: 1200.ms),
+            ),
+          ),
+
+          // ── By chAs footer ────────────────────────────
+          Positioned(
+            bottom: 40,
+            left: 0,
+            right: 0,
+            child: Text(
+              'By chAs',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: isDark ? Colors.white38 : Colors.black38,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                letterSpacing: 1,
+              ),
+            ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _AnimatedDot extends StatelessWidget {
+  final AnimationController ctrl;
+  final double delay;
+  final Color color;
+
+  const _AnimatedDot({
+    required this.ctrl,
+    required this.delay,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: ctrl,
+      builder: (_, __) {
+        final phase = ((ctrl.value - delay) % 1.0).clamp(0.0, 1.0);
+        final scale = phase < 0.5
+            ? 0.7 + 0.6 * (phase * 2)
+            : 1.3 - 0.6 * ((phase - 0.5) * 2);
+        return Transform.scale(
+          scale: scale,
+          child: Container(
+            width: 10,
+            height: 10,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: color.withOpacity(0.5),
+                  blurRadius: 6,
+                  spreadRadius: 1,
+                )
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
