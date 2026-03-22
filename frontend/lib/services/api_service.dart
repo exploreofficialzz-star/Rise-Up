@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:dio/dio.dart';
 import '../config/app_constants.dart';
 import '../utils/storage_service.dart';
@@ -47,16 +48,19 @@ class ApiService {
     try {
       final refresh = await storageService.read(key: 'refresh_token');
       if (refresh == null) return false;
-      final res = await _dio.post('/auth/refresh', data: {'refresh_token': refresh});
-      await storageService.write(key: 'access_token', value: res.data['access_token']);
-      await storageService.write(key: 'refresh_token', value: res.data['refresh_token']);
+      final res = await _dio.post('/auth/refresh',
+          data: {'refresh_token': refresh});
+      await storageService.write(
+          key: 'access_token', value: res.data['access_token']);
+      await storageService.write(
+          key: 'refresh_token', value: res.data['refresh_token']);
       return true;
     } catch (_) {
       return false;
     }
   }
 
-  // ── Auth ──────────────────────────────────────────────
+  // ── Auth ─────────────────────────────────────────────────────
   Future<Map> signUp(String email, String password, String? name) async {
     final res = await _dio.post('/auth/signup',
         data: {'email': email, 'password': password, 'full_name': name});
@@ -67,37 +71,79 @@ class ApiService {
     final res = await _dio.post('/auth/signin',
         data: {'email': email, 'password': password});
     final data = res.data;
-    await storageService.write(key: 'access_token', value: data['access_token']);
-    await storageService.write(key: 'refresh_token', value: data['refresh_token']);
+    await storageService.write(
+        key: 'access_token', value: data['access_token']);
+    await storageService.write(
+        key: 'refresh_token', value: data['refresh_token']);
     await storageService.write(key: 'user_id', value: data['user_id']);
     return data;
   }
 
   Future<void> signOut() async {
-    try { await _dio.post('/auth/signout'); } catch (_) {}
+    try {
+      await _dio.post('/auth/signout');
+    } catch (_) {}
     await storageService.deleteAll();
   }
 
   Future<Map> forgotPassword(String email) async {
-    final res = await _dio.post('/auth/forgot-password', data: {'email': email});
+    final res = await _dio.post('/auth/forgot-password',
+        data: {'email': email});
     return res.data;
   }
 
   Future<Map> resendVerification(String email) async {
-    final res = await _dio.post('/auth/resend-verification', data: {'email': email});
+    final res = await _dio.post('/auth/resend-verification',
+        data: {'email': email});
     return res.data;
   }
 
   Future<Map> checkVersion(String appVersion) async {
-    final res = await _dio.get('/auth/version', queryParameters: {'app_version': appVersion});
+    final res = await _dio.get('/auth/version',
+        queryParameters: {'app_version': appVersion});
     return res.data;
   }
 
   Future<String?> getToken() => storageService.read(key: 'access_token');
   Future<String?> getUserId() => storageService.read(key: 'user_id');
-  Future<bool> isAuthenticated() async => (await getToken()) != null;
 
-  // ── AI Chat ───────────────────────────────────────────
+  // ← Fixed: wrapped in try/catch — prevents silent crash on Android release
+  Future<bool> isAuthenticated() async {
+    try {
+      return (await getToken()) != null;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // ── Generic HTTP helpers (used by Workflow Engine + new screens) ──
+  Future<dynamic> get(String path, {Map<String, dynamic>? queryParams}) async {
+    final res = await _dio.get(path, queryParameters: queryParams);
+    return res.data;
+  }
+
+  Future<dynamic> post(String path, Map<String, dynamic> data,
+      {Map<String, dynamic>? queryParams}) async {
+    final res = await _dio.post(
+      path,
+      data: data,
+      queryParameters: queryParams,
+    );
+    return res.data;
+  }
+
+  Future<dynamic> patch(String path, Map<String, dynamic> data,
+      {Map<String, dynamic>? queryParams}) async {
+    final res = await _dio.patch(path, data: data, queryParameters: queryParams);
+    return res.data;
+  }
+
+  Future<dynamic> delete(String path) async {
+    final res = await _dio.delete(path);
+    return res.data;
+  }
+
+  // ── AI Chat ──────────────────────────────────────────────────
   Future<Map> chat({
     required String message,
     String? conversationId,
@@ -132,7 +178,8 @@ class ApiService {
   }
 
   Future<List> getMessages(String conversationId) async {
-    final res = await _dio.get('/ai/conversations/$conversationId/messages');
+    final res =
+        await _dio.get('/ai/conversations/$conversationId/messages');
     return res.data['messages'] as List;
   }
 
@@ -141,14 +188,15 @@ class ApiService {
     return res.data['models'] as List;
   }
 
-  // ── Tasks ─────────────────────────────────────────────
+  // ── Tasks ────────────────────────────────────────────────────
   Future<List> getTasks({String? status}) async {
     final res = await _dio.get('/tasks/',
         queryParameters: {if (status != null) 'status': status});
     return res.data['tasks'] as List;
   }
 
-  Future<Map> updateTask(String taskId, {String? status, double? earnings}) async {
+  Future<Map> updateTask(String taskId,
+      {String? status, double? earnings}) async {
     final res = await _dio.patch('/tasks/$taskId', data: {
       if (status != null) 'status': status,
       if (earnings != null) 'actual_earnings': earnings,
@@ -161,14 +209,15 @@ class ApiService {
     return res.data;
   }
 
-  // ── Skills ────────────────────────────────────────────
+  // ── Skills ───────────────────────────────────────────────────
   Future<Map> getSkillModules() async {
     final res = await _dio.get('/skills/modules');
     return res.data;
   }
 
   Future<Map> enrollSkill(String moduleId) async {
-    final res = await _dio.post('/skills/enroll', data: {'module_id': moduleId});
+    final res = await _dio.post('/skills/enroll',
+        data: {'module_id': moduleId});
     return res.data;
   }
 
@@ -192,13 +241,16 @@ class ApiService {
     return res.data;
   }
 
-  // ── Payments ──────────────────────────────────────────
-  Future<Map> initiatePayment({String plan = 'monthly', String currency = 'USD'}) async {
-    final res = await _dio.post('/payments/initiate', data: {'plan': plan, 'currency': currency});
+  // ── Payments ─────────────────────────────────────────────────
+  Future<Map> initiatePayment(
+      {String plan = 'monthly', String currency = 'NGN'}) async {
+    final res = await _dio.post('/payments/initiate',
+        data: {'plan': plan, 'currency': currency});
     return res.data;
   }
 
-  Future<Map> verifyPayment({required String txRef, String? transactionId}) async {
+  Future<Map> verifyPayment(
+      {required String txRef, String? transactionId}) async {
     final res = await _dio.post('/payments/verify', data: {
       'tx_ref': txRef,
       if (transactionId != null) 'transaction_id': transactionId,
@@ -206,9 +258,15 @@ class ApiService {
     return res.data;
   }
 
-  Future<Map> unlockViaAd({required String featureKey, required String adUnitId, int hours = 1}) async {
+  Future<Map> unlockViaAd({
+    required String featureKey,
+    required String adUnitId,
+    int hours = 1,
+  }) async {
     final res = await _dio.post('/payments/ad-unlock', data: {
-      'feature_key': featureKey, 'ad_unit_id': adUnitId, 'duration_hours': hours,
+      'feature_key': featureKey,
+      'ad_unit_id': adUnitId,
+      'duration_hours': hours,
     });
     return res.data;
   }
@@ -223,7 +281,7 @@ class ApiService {
     return res.data;
   }
 
-  // ── Progress ──────────────────────────────────────────
+  // ── Progress ─────────────────────────────────────────────────
   Future<Map> getStats() async {
     final res = await _dio.get('/progress/stats');
     return res.data;
@@ -254,10 +312,11 @@ class ApiService {
     required String sourceType,
     String? sourceId,
     String? description,
-    String currency = 'USD',
+    String currency = 'NGN',
   }) async {
     final res = await _dio.post('/progress/log-earning', data: {
-      'amount': amount, 'source_type': sourceType,
+      'amount': amount,
+      'source_type': sourceType,
       if (sourceId != null) 'source_id': sourceId,
       if (description != null) 'description': description,
       'currency': currency,
@@ -265,7 +324,7 @@ class ApiService {
     return res.data;
   }
 
-  // ── Streaks ───────────────────────────────────────────
+  // ── Streaks ──────────────────────────────────────────────────
   Future<Map> checkIn() async {
     final res = await _dio.post('/streaks/check-in');
     return res.data;
@@ -276,9 +335,11 @@ class ApiService {
     return res.data;
   }
 
-  // ── Goals ─────────────────────────────────────────────
+  // ── Goals ────────────────────────────────────────────────────
   Future<Map> getGoals({String? status}) async {
-    final res = await _dio.get('/goals/', queryParameters: {if (status != null) 'status': status});
+    final res = await _dio.get('/goals/', queryParameters: {
+      if (status != null) 'status': status,
+    });
     return res.data;
   }
 
@@ -292,7 +353,8 @@ class ApiService {
     return res.data;
   }
 
-  Future<Map> contributeToGoal(String goalId, double amount, {String? description}) async {
+  Future<Map> contributeToGoal(String goalId, double amount,
+      {String? description}) async {
     final res = await _dio.post('/goals/$goalId/contribute', data: {
       'amount': amount,
       if (description != null) 'description': description,
@@ -310,7 +372,7 @@ class ApiService {
     return res.data;
   }
 
-  // ── Expenses ──────────────────────────────────────────
+  // ── Expenses ─────────────────────────────────────────────────
   Future<Map> getExpenses({String? month, String? category}) async {
     final res = await _dio.get('/expenses/', queryParameters: {
       if (month != null) 'month': month,
@@ -330,7 +392,9 @@ class ApiService {
   }
 
   Future<Map> getBudgets({String? month}) async {
-    final res = await _dio.get('/expenses/budgets', queryParameters: {if (month != null) 'month': month});
+    final res = await _dio.get('/expenses/budgets', queryParameters: {
+      if (month != null) 'month': month,
+    });
     return res.data;
   }
 
@@ -340,11 +404,13 @@ class ApiService {
   }
 
   Future<Map> getMonthlySummary({String? month}) async {
-    final res = await _dio.get('/expenses/summary', queryParameters: {if (month != null) 'month': month});
+    final res = await _dio.get('/expenses/summary', queryParameters: {
+      if (month != null) 'month': month,
+    });
     return res.data;
   }
 
-  // ── Achievements ──────────────────────────────────────
+  // ── Achievements ─────────────────────────────────────────────
   Future<Map> getAchievements() async {
     final res = await _dio.get('/achievements/');
     return res.data;
@@ -360,18 +426,19 @@ class ApiService {
     return res.data;
   }
 
-  // ── Referrals ─────────────────────────────────────────
+  // ── Referrals ─────────────────────────────────────────────────
   Future<Map> getMyReferralCode() async {
     final res = await _dio.get('/referrals/my-code');
     return res.data;
   }
 
   Future<Map> applyReferralCode(String code) async {
-    final res = await _dio.post('/referrals/apply', data: {'referral_code': code});
+    final res = await _dio.post('/referrals/apply',
+        data: {'referral_code': code});
     return res.data;
   }
 
-  // ── Notifications ─────────────────────────────────────
+  // ── Notifications ─────────────────────────────────────────────
   Future<Map> registerFcmToken(String token, String platform) async {
     final res = await _dio.post('/notifications/register-token',
         data: {'token': token, 'platform': platform});
@@ -379,7 +446,8 @@ class ApiService {
   }
 
   Future<Map> getNotifications({int limit = 30}) async {
-    final res = await _dio.get('/notifications/', queryParameters: {'limit': limit});
+    final res = await _dio.get('/notifications/',
+        queryParameters: {'limit': limit});
     return res.data;
   }
 
@@ -395,145 +463,90 @@ class ApiService {
       final res = await _dio.post('/community/share',
           data: {'share_type': shareType, 'platform': platform});
       return res.data;
-    } catch (_) { return {}; }
+    } catch (_) {
+      return {};
+    }
   }
 
-  // ── Feed / Posts ──────────────────────────────────────
-  Future<Map> getFeed({String tab = 'for_you', int limit = 20, int offset = 0}) async {
-    final res = await _dio.get('/posts/feed', queryParameters: {
-      'tab': tab, 'limit': limit, 'offset': offset,
+  // ── Agentic AI ────────────────────────────────────────────────
+  Future<dynamic> runAgent({
+    required String task,
+    double budget = 0,
+    double hoursPerDay = 2,
+    String currency = 'NGN',
+    String? context,
+    String? workflowId,
+  }) async {
+    return post('/agent/run', {
+      'task': task,
+      'budget': budget,
+      'hours_per_day': hoursPerDay,
+      'currency': currency,
+      if (context != null) 'context': context,
+      if (workflowId != null) 'workflow_id': workflowId,
     });
-    return res.data as Map;
   }
 
-  Future<Map> createPost({required String content, required String tag, String? mediaUrl, String? mediaType}) async {
-    final res = await _dio.post('/posts', data: {
-      'content': content, 'tag': tag,
-      if (mediaUrl != null) 'media_url': mediaUrl,
-      if (mediaType != null) 'media_type': mediaType,
+  Future<dynamic> agentChat(String message, {String? sessionId, String? workflowId}) async {
+    return post('/agent/chat', {
+      'message': message,
+      if (sessionId != null) 'session_id': sessionId,
+      if (workflowId != null) 'workflow_id': workflowId,
     });
-    return res.data as Map;
   }
 
-  Future<Map> toggleLike(String postId) async {
-    final res = await _dio.post('/posts/$postId/like');
-    return res.data as Map;
+  Future<dynamic> executeTool(String tool, Map<String, dynamic> input, {String? workflowId}) async {
+    return post('/agent/execute-tool', {
+      'tool': tool,
+      'input': input,
+      if (workflowId != null) 'workflow_id': workflowId,
+    });
   }
 
-  Future<Map> toggleSave(String postId) async {
-    final res = await _dio.post('/posts/$postId/save');
-    return res.data as Map;
+  Future<dynamic> quickAgent(String task, {String outputType = 'any'}) async {
+    return post('/agent/quick', {}, queryParams: {
+      'task': task,
+      'output_type': outputType,
+    });
   }
 
-  Future<Map> sharePost(String postId) async {
-    final res = await _dio.post('/posts/$postId/share');
-    return res.data as Map;
-  }
-
-  Future<Map> deletePost(String postId) async {
-    final res = await _dio.delete('/posts/$postId');
-    return res.data as Map;
-  }
-
-  Future<Map> getPostComments(String postId) async {
-    final res = await _dio.get('/posts/$postId/comments');
-    return res.data as Map;
-  }
-
-  Future<Map> addComment(String postId, String content, {String? parentId}) async {
-    final res = await _dio.post('/posts/$postId/comments', data: {
+  Future<dynamic> analyzeAndImprove(String content, {String goal = 'improve'}) async {
+    return post('/agent/analyze', {}, queryParams: {
       'content': content,
-      if (parentId != null) 'parent_id': parentId,
+      'goal': goal,
     });
-    return res.data as Map;
   }
 
-  Future<Map> likeComment(String commentId) async {
-    final res = await _dio.post('/posts/comments/$commentId/like');
-    return res.data as Map;
+  // ── Profile Avatar Upload ─────────────────────────────────────
+  Future<Map> uploadAvatar(String filePath) async {
+    try {
+      final token = await getToken();
+      final formData = FormData.fromMap({
+        'file': await MultipartFile.fromFile(
+          filePath,
+          filename: 'avatar.jpg',
+          contentType: DioMediaType('image', 'jpeg'),
+        ),
+      });
+      final res = await _dio.post(
+        '/progress/avatar',
+        data: formData,
+        options: Options(headers: {'Authorization': 'Bearer $token'}),
+      );
+      return res.data;
+    } catch (e) {
+      throw Exception('Avatar upload failed: $e');
+    }
   }
 
-  Future<Map> toggleFollow(String targetUserId) async {
-    final res = await _dio.post('/posts/users/$targetUserId/follow');
-    return res.data as Map;
-  }
-
-  Future<Map> getUserProfile(String userId) async {
-    final res = await _dio.get('/posts/users/$userId/profile');
-    return res.data as Map;
-  }
-
-  Future<Map> getUserPosts(String userId) async {
-    final res = await _dio.get('/posts/users/$userId/posts');
-    return res.data as Map;
-  }
-
-  // ── DM Messages ───────────────────────────────────────
-  Future<Map> getDMConversations() async {
-    final res = await _dio.get('/messages/conversations');
-    return res.data as Map;
-  }
-
-  Future<Map> getOrCreateConversation(String otherUserId) async {
-    final res = await _dio.post('/messages/conversations/with/$otherUserId');
-    return res.data as Map;
-  }
-
-  Future<Map> getConversationMessages(String conversationId, {int limit = 50}) async {
-    final res = await _dio.get('/messages/conversations/$conversationId/messages',
-        queryParameters: {'limit': limit});
-    return res.data as Map;
-  }
-
-  Future<Map> sendMessage(String conversationId, String content) async {
-    final res = await _dio.post('/messages/conversations/$conversationId/send',
-        data: {'content': content});
-    return res.data as Map;
-  }
-
-  // ── Groups ────────────────────────────────────────────
-  Future<Map> getGroups() async {
-    final res = await _dio.get('/messages/groups');
-    return res.data as Map;
-  }
-
-  Future<Map> toggleGroup(String groupId) async {
-    final res = await _dio.post('/messages/groups/$groupId/join');
-    return res.data as Map;
-  }
-
-  // ── Live ──────────────────────────────────────────────
-  Future<Map> getLiveSessions() async {
-    final res = await _dio.get('/live/sessions');
-    return res.data as Map;
-  }
-
-  Future<Map> startLive({required String title, required String topic, bool isPremium = false}) async {
-    final res = await _dio.post('/live/start', data: {
-      'title': title, 'topic': topic, 'is_premium': isPremium,
-    });
-    return res.data as Map;
-  }
-
-  Future<Map> endLive() async {
-    final res = await _dio.post('/live/end');
-    return res.data as Map;
-  }
-
-  Future<Map> joinLive(String sessionId) async {
-    final res = await _dio.post('/live/sessions/$sessionId/join');
-    return res.data as Map;
-  }
-
-  Future<Map> leaveLive(String sessionId) async {
-    final res = await _dio.post('/live/sessions/$sessionId/leave');
-    return res.data as Map;
-  }
-
-  Future<Map> sendCoins(String sessionId, int amount) async {
-    final res = await _dio.post('/live/sessions/$sessionId/coins',
-        data: {'amount': amount});
-    return res.data as Map;
+  // ── Liked Posts ───────────────────────────────────────────────
+  Future<Map> getLikedPosts(String userId) async {
+    try {
+      final res = await _dio.get('/posts/users/$userId/liked');
+      return res.data;
+    } catch (_) {
+      return {'posts': []};
+    }
   }
 
 } // end ApiService

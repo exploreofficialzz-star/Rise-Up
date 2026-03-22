@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 
@@ -169,11 +170,40 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
           decoration: BoxDecoration(color: cardColor, border: Border(top: BorderSide(color: borderColor))),
           padding: EdgeInsets.fromLTRB(16, 10, 16, MediaQuery.of(context).padding.bottom + 10),
           child: Row(children: [
-            GestureDetector(onTap: () {}, child: Container(width: 40, height: 40, decoration: BoxDecoration(color: surfaceColor, borderRadius: BorderRadius.circular(10)), child: Icon(Iconsax.image, color: subColor, size: 20))),
+            GestureDetector(
+              onTap: () async {
+                HapticFeedback.lightImpact();
+                final picker = ImagePicker();
+                final file = await picker.pickImage(source: ImageSource.gallery);
+                if (file != null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Photo selected ✅'), backgroundColor: AppColors.success, duration: Duration(seconds: 1)),
+                  );
+                }
+              },
+              child: Container(width: 40, height: 40, decoration: BoxDecoration(color: surfaceColor, borderRadius: BorderRadius.circular(10)), child: Icon(Iconsax.image, color: subColor, size: 20))),
             const SizedBox(width: 10),
-            GestureDetector(onTap: () {}, child: Container(width: 40, height: 40, decoration: BoxDecoration(color: surfaceColor, borderRadius: BorderRadius.circular(10)), child: Icon(Iconsax.video, color: subColor, size: 20))),
+            GestureDetector(
+              onTap: () async {
+                HapticFeedback.lightImpact();
+                final picker = ImagePicker();
+                final file = await picker.pickVideo(source: ImageSource.gallery);
+                if (file != null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Video selected ✅'), backgroundColor: AppColors.success, duration: Duration(seconds: 1)),
+                  );
+                }
+              },
+              child: Container(width: 40, height: 40, decoration: BoxDecoration(color: surfaceColor, borderRadius: BorderRadius.circular(10)), child: Icon(Iconsax.video, color: subColor, size: 20))),
             const SizedBox(width: 10),
-            GestureDetector(onTap: () {}, child: Container(width: 40, height: 40, decoration: BoxDecoration(color: surfaceColor, borderRadius: BorderRadius.circular(10)), child: Icon(Iconsax.chart_2, color: subColor, size: 20))),
+            GestureDetector(
+              onTap: () {
+                HapticFeedback.lightImpact();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Polls coming soon 🗳️'), duration: Duration(seconds: 1)),
+                );
+              },
+              child: Container(width: 40, height: 40, decoration: BoxDecoration(color: surfaceColor, borderRadius: BorderRadius.circular(10)), child: Icon(Iconsax.chart_2, color: subColor, size: 20))),
             const Spacer(),
             Text(
               '$remaining',

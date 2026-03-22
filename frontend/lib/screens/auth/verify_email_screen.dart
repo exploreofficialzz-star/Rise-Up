@@ -44,7 +44,7 @@ class _VerifyEmailScreenState extends State<VerifyEmailScreen> {
   Future<void> _checkVerified() async {
     try {
       final profile = await api.getProfile();
-      if (mounted) context.go('/onboarding');
+      if (mounted) context.go('/home');
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(

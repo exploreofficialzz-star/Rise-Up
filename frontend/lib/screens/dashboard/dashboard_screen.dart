@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
@@ -21,6 +22,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Map _stats = {};
   List _tasks = [];
   bool _loading = true;
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   @override
   void initState() {
@@ -57,6 +59,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     final profile = _stats['profile'] as Map? ?? {};
     final name = profile['full_name']?.toString().split(' ').first ?? 'Champion';
     final stage = profile['stage']?.toString() ?? 'survival';
@@ -68,7 +71,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final currency = profile['currency']?.toString() ?? 'NGN';
 
     return Scaffold(
+      key: _scaffoldKey,
       backgroundColor: AppColors.bgDark,
+      drawer: _DashboardDrawer(profile: profile, isPremium: isPremium),
       body: RefreshIndicator(
         onRefresh: _load,
         color: AppColors.primary,
@@ -77,6 +82,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
             // App Bar
             SliverAppBar(
               expandedHeight: 180,
+              pinned: true,
+              backgroundColor: AppColors.bgDark,
+              leading: IconButton(
+                icon: const Icon(Icons.menu_rounded, color: Colors.white70, size: 24),
+                onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+              ),
+              actions: [
+                IconButton(icon: const Icon(Icons.notifications_none_rounded, color: Colors.white70, size: 24), onPressed: () => context.go('/notifications')),
+                const SizedBox(width: 4),
+              ],
               pinned: true,
               backgroundColor: AppColors.bgDark,
               flexibleSpace: FlexibleSpaceBar(
@@ -211,6 +226,52 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ),
                         ),
                       ).animate().fadeIn(delay: 200.ms),
+
+                      const SizedBox(height: 12),
+
+                      // ── Workflow Engine CTA ──────────────────
+                      GestureDetector(
+                        onTap: () => context.push('/workflow'),
+                        child: Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: isDark ? AppColors.bgCard : const Color(0xFFF8F8F8),
+                            borderRadius: AppRadius.lg,
+                            border: Border.all(color: isDark ? AppColors.bgSurface : Colors.grey.shade200),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 44, height: 44,
+                                decoration: BoxDecoration(
+                                  color: AppColors.success.withOpacity(0.12),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Icon(Iconsax.flash, color: AppColors.success, size: 22),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(children: [
+                                      Text('Workflow Engine', style: AppTextStyles.h4.copyWith(fontSize: 14, color: isDark ? Colors.white : Colors.black87)),
+                                      const SizedBox(width: 6),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                        decoration: BoxDecoration(color: AppColors.success.withOpacity(0.15), borderRadius: BorderRadius.circular(6)),
+                                        child: const Text('NEW', style: TextStyle(fontSize: 9, color: AppColors.success, fontWeight: FontWeight.w800)),
+                                      ),
+                                    ]),
+                                    Text('AI researches & executes your income plan', style: AppTextStyles.bodySmall),
+                                  ],
+                                ),
+                              ),
+                              Icon(Icons.arrow_forward_ios_rounded, color: isDark ? Colors.white30 : Colors.black26, size: 14),
+                            ],
+                          ),
+                        ),
+                      ).animate().fadeIn(delay: 250.ms),
 
                       const SizedBox(height: 24),
 
@@ -398,6 +459,171 @@ class _PremiumBanner extends StatelessWidget {
             ),
             const Icon(Icons.arrow_forward_ios_rounded, color: AppColors.gold, size: 16),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Dashboard Drawer ──────────────────────────────────
+class _DashboardDrawer extends StatelessWidget {
+  final Map profile;
+  final bool isPremium;
+  const _DashboardDrawer({required this.profile, required this.isPremium});
+
+  @override
+  Widget build(BuildContext context) {
+    final border = AppColors.bgSurface;
+    final name = profile['full_name']?.toString() ?? 'User';
+    final stage = profile['stage']?.toString() ?? 'survival';
+    final stageInfo = StageInfo.get(stage);
+
+    return Drawer(
+      backgroundColor: Colors.black,
+      width: MediaQuery.of(context).size.width * 0.82,
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Profile header
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+              child: Row(children: [
+                Container(
+                  width: 48, height: 48,
+                  decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.15), shape: BoxShape.circle),
+                  child: Center(child: Text(name.isNotEmpty ? name[0].toUpperCase() : 'U',
+                      style: const TextStyle(color: AppColors.primary, fontSize: 20, fontWeight: FontWeight.w800))),
+                ),
+                const SizedBox(width: 12),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(name, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: Colors.white), maxLines: 1, overflow: TextOverflow.ellipsis),
+                  const SizedBox(height: 3),
+                  Row(children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                      decoration: BoxDecoration(color: (stageInfo['color'] as Color).withOpacity(0.2), borderRadius: BorderRadius.circular(8)),
+                      child: Text('${stageInfo['emoji']} ${stageInfo['label']}',
+                          style: TextStyle(fontSize: 10, color: stageInfo['color'] as Color, fontWeight: FontWeight.w600)),
+                    ),
+                    if (isPremium) ...[const SizedBox(width: 6),
+                      Container(padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                        decoration: BoxDecoration(color: AppColors.gold.withOpacity(0.15), borderRadius: BorderRadius.circular(8)),
+                        child: const Text('⭐ Pro', style: TextStyle(fontSize: 10, color: AppColors.gold, fontWeight: FontWeight.w600)))],
+                  ]),
+                ])),
+                IconButton(icon: const Icon(Icons.close_rounded, color: Colors.white38, size: 20), onPressed: () => Navigator.of(context).pop()),
+              ]),
+            ),
+            Divider(color: border, height: 1),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                children: [
+                  _DSec('INCOME TOOLS'),
+                  _DIt(Icons.auto_awesome_rounded, 'Agentic AI', 'Execute ANY income task', onTap: () { Navigator.pop(context); context.push('/agent'); }, badge: 'HEAVY', badgeColor: AppColors.accent),
+                  _DIt(Iconsax.flash, 'Workflow Engine', 'AI income execution', onTap: () { Navigator.pop(context); context.push('/workflow'); }, badge: 'NEW', badgeColor: AppColors.success),
+                  _DIt(Iconsax.task_square, 'My Tasks', 'Daily income tasks', onTap: () { Navigator.pop(context); context.go('/tasks'); }),
+                  _DIt(Iconsax.map_1, 'Wealth Roadmap', '3-stage plan', onTap: () { Navigator.pop(context); context.go('/roadmap'); }),
+                  _DIt(Iconsax.book, 'Skills', 'Earn-while-learning', onTap: () { Navigator.pop(context); context.go('/skills'); }),
+                  Divider(color: border, height: 1),
+                  _DSec('SOCIAL'),
+                  _DIt(Iconsax.home, 'Social Feed', 'Community posts', onTap: () { Navigator.pop(context); context.go('/home'); }),
+                  _DIt(Iconsax.people, 'Collaboration', 'Build together', onTap: () { Navigator.pop(context); context.push('/collaboration'); }, badge: 'NEW', badgeColor: AppColors.primary),
+                  _DIt(Iconsax.message, 'Messages', 'DMs & groups', onTap: () { Navigator.pop(context); context.go('/messages'); }),
+                  _DIt(Icons.radio_button_checked_rounded, 'Go Live', 'Stream to community', onTap: () { Navigator.pop(context); context.go('/live'); }),
+                  Divider(color: border, height: 1),
+                  _DSec('FINANCE'),
+                  _DIt(Iconsax.money_recive, 'Earnings', 'Income tracker', onTap: () { Navigator.pop(context); context.go('/earnings'); }),
+                  _DIt(Iconsax.chart_2, 'Analytics', 'Growth stats', onTap: () { Navigator.pop(context); context.go('/analytics'); }),
+                  _DIt(Iconsax.wallet_minus, 'Expenses', 'Budget tracking', onTap: () { Navigator.pop(context); context.go('/expenses'); }),
+                  _DIt(Iconsax.flag, 'Goals', 'Targets', onTap: () { Navigator.pop(context); context.go('/goals'); }),
+                  Divider(color: border, height: 1),
+                  _DSec('ACCOUNT'),
+                  _DIt(Iconsax.trophy, 'Achievements', 'Badges', onTap: () { Navigator.pop(context); context.go('/achievements'); }),
+                  _DIt(Iconsax.user_tag, 'Referrals', 'Invite & earn', onTap: () { Navigator.pop(context); context.go('/referrals'); }),
+                  _DIt(Iconsax.setting_2, 'Settings', 'Preferences', onTap: () { Navigator.pop(context); context.go('/settings'); }),
+                ],
+              ),
+            ),
+            if (!isPremium)
+              Padding(
+                padding: const EdgeInsets.all(14),
+                child: GestureDetector(
+                  onTap: () { Navigator.pop(context); context.push('/premium'); },
+                  child: Container(
+                    padding: const EdgeInsets.all(13),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: AppColors.primary.withOpacity(0.3)),
+                    ),
+                    child: const Row(children: [
+                      Text('⭐', style: TextStyle(fontSize: 18)),
+                      SizedBox(width: 10),
+                      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text('Upgrade to Premium', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.primary)),
+                        Text('Unlimited AI + all features', style: TextStyle(fontSize: 11, color: Colors.white38)),
+                      ])),
+                      Icon(Icons.arrow_forward_ios_rounded, size: 13, color: AppColors.primary),
+                    ]),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DSec extends StatelessWidget {
+  final String label;
+  const _DSec(this.label);
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(18, 12, 18, 4),
+    child: Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: Colors.white38, letterSpacing: 1.1)),
+  );
+}
+
+class _DIt extends StatelessWidget {
+  final IconData icon;
+  final String label, sub;
+  final VoidCallback onTap;
+  final String? badge;
+  final Color? badgeColor;
+  const _DIt(this.icon, this.label, this.sub, {required this.onTap, this.badge, this.badgeColor});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () { HapticFeedback.lightImpact(); onTap(); },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(children: [
+            Container(
+              width: 36, height: 36,
+              decoration: BoxDecoration(color: AppColors.bgSurface, borderRadius: BorderRadius.circular(9)),
+              child: Icon(icon, size: 17, color: Colors.white70),
+            ),
+            const SizedBox(width: 13),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Text(label, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.white)),
+                if (badge != null) ...[const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                    decoration: BoxDecoration(color: (badgeColor ?? AppColors.primary).withOpacity(0.2), borderRadius: BorderRadius.circular(5)),
+                    child: Text(badge!, style: TextStyle(fontSize: 9, color: badgeColor ?? AppColors.primary, fontWeight: FontWeight.w700)),
+                  )],
+              ]),
+              Text(sub, style: const TextStyle(fontSize: 11, color: Colors.white38)),
+            ])),
+            const Icon(Icons.chevron_right_rounded, size: 15, color: Colors.white24),
+          ]),
         ),
       ),
     );

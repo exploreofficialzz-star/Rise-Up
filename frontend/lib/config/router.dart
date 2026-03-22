@@ -9,6 +9,7 @@ import '../screens/auth/forgot_password_screen.dart';
 import '../screens/auth/verify_email_screen.dart';
 import '../screens/onboarding/onboarding_chat_screen.dart';
 import '../screens/home/home_screen.dart';
+import '../screens/dashboard/dashboard_screen.dart';
 import '../screens/chat/chat_screen.dart';
 import '../screens/explore/explore_screen.dart';
 import '../screens/create/create_post_screen.dart';
@@ -21,6 +22,8 @@ import '../screens/messages/messages_screen.dart';
 import '../screens/messages/conversation_screen.dart';
 import '../screens/live/live_screen.dart';
 import '../screens/groups/groups_screen.dart';
+import '../screens/groups/group_detail_screen.dart';
+import '../screens/live/live_viewer_screen.dart';
 import '../screens/tasks/tasks_screen.dart';
 import '../screens/skills/skills_screen.dart';
 import '../screens/skills/skill_detail_screen.dart';
@@ -35,6 +38,12 @@ import '../screens/goals/goals_screen.dart';
 import '../screens/expenses/expenses_screen.dart';
 import '../screens/referrals/referrals_screen.dart';
 import '../screens/streak/streak_screen.dart';
+import '../screens/workflow/workflow_hub_screen.dart';
+import '../screens/workflow/workflow_research_screen.dart';
+import '../screens/workflow/workflow_detail_screen.dart';
+import '../screens/collaboration/collaboration_screen.dart';
+import '../screens/agent/agent_screen.dart';
+import '../screens/profile/edit_profile_screen.dart';
 import '../main_shell.dart';
 
 final router = GoRouter(
@@ -76,14 +85,31 @@ final router = GoRouter(
       builder: (context, state, child) => MainShell(child: child),
       routes: [
         GoRoute(path: '/home',          builder: (_, __) => const HomeScreen()),
+        GoRoute(path: '/dashboard',     builder: (_, __) => const DashboardScreen()),
         GoRoute(path: '/explore',       builder: (_, __) => const ExploreScreen()),
         GoRoute(path: '/create',        builder: (_, __) => const CreatePostScreen()),
         GoRoute(path: '/messages',      builder: (_, __) => const MessagesScreen()),
         GoRoute(path: '/profile',       builder: (_, __) => const ProfileScreen()),
+        GoRoute(path: '/user-profile/:id', builder: (_, __) => const ProfileScreen()),
         GoRoute(path: '/settings',      builder: (_, __) => const SettingsScreen()),
         GoRoute(path: '/notifications', builder: (_, __) => const NotificationsScreen()),
         GoRoute(path: '/live',          builder: (_, __) => const LiveScreen()),
+        GoRoute(
+          path: '/live-viewer/:id',
+          builder: (_, s) => LiveViewerScreen(
+            sessionId: s.pathParameters['id']!,
+            host: s.uri.queryParameters['host'] ?? 'Host',
+            title: s.uri.queryParameters['title'] ?? 'Live Session',
+          ),
+        ),
         GoRoute(path: '/groups',        builder: (_, __) => const GroupsScreen()),
+        GoRoute(
+          path: '/group/:id',
+          builder: (_, s) => GroupDetailScreen(
+            groupId: s.pathParameters['id']!,
+            groupName: s.uri.queryParameters['name'] ?? 'Group',
+          ),
+        ),
 
         // AI Chat
         GoRoute(
@@ -109,6 +135,24 @@ final router = GoRouter(
         GoRoute(path: '/referrals',    builder: (_, __) => const ReferralsScreen()),
         GoRoute(path: '/streak',       builder: (_, __) => const StreakScreen()),
         GoRoute(path: '/payment',      builder: (_, s) => PaymentScreen(plan: s.uri.queryParameters['plan'] ?? 'monthly')),
+
+        // ── AI Workflow Engine ────────────────────────────────
+        GoRoute(path: '/workflow',        builder: (_, __) => const WorkflowHubScreen()),
+        GoRoute(path: '/workflow/new',    builder: (_, __) => const WorkflowResearchScreen()),
+        GoRoute(path: '/workflow/:id',    builder: (_, s) => WorkflowDetailScreen(workflowId: s.pathParameters['id']!)),
+
+        // ── Collaboration ─────────────────────────────────────
+        GoRoute(path: '/collaboration',   builder: (_, __) => const CollaborationScreen()),
+
+        // ── Agentic AI ────────────────────────────────────────
+        GoRoute(path: '/agent',            builder: (_, __) => const AgentScreen()),
+        GoRoute(
+          path: '/agent/:workflowId',
+          builder: (_, s) => AgentScreen(workflowId: s.pathParameters['workflowId']),
+        ),
+
+        // ── Edit Profile ──────────────────────────────────────
+        GoRoute(path: '/edit-profile',     builder: (_, __) => const EditProfileScreen()),
       ],
     ),
   ],

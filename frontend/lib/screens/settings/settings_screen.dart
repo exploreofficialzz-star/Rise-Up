@@ -20,6 +20,57 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _privateAccount = false;
   bool _showOnline = true;
 
+  void _showChangePassword(BuildContext ctx, bool isDark, Color text, Color sub) {
+    showDialog(context: ctx, builder: (_) => AlertDialog(
+      backgroundColor: isDark ? AppColors.bgCard : Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: Text('Change Password', style: TextStyle(fontWeight: FontWeight.w700, color: text)),
+      content: Text('To change your password, sign out and use "Forgot Password" on the login screen.', style: TextStyle(color: sub, height: 1.5)),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK', style: TextStyle(color: AppColors.primary)))],
+    ));
+  }
+
+  void _showEmailInfo(BuildContext ctx, bool isDark, Color text) {
+    showDialog(context: ctx, builder: (_) => AlertDialog(
+      backgroundColor: isDark ? AppColors.bgCard : Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: Text('Email Address', style: TextStyle(fontWeight: FontWeight.w700, color: text)),
+      content: const Text('Email changes are handled via Supabase Auth. Contact support if you need help.', style: TextStyle(height: 1.5)),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK', style: TextStyle(color: AppColors.primary)))],
+    ));
+  }
+
+  void _showHelp(BuildContext ctx, bool isDark, Color text, Color sub) {
+    final faqs = [
+      ('How does the AI work?', 'RiseUp uses multiple AI models (Groq, Gemini, Cohere, OpenAI, Anthropic). It knows your stage, income, and goals for personalised advice.'),
+      ('What is the Workflow Engine?', 'It researches your income goal, creates a step-by-step plan, finds free tools, and tracks revenue per workflow.'),
+      ('What is Agentic AI?', 'The agent handles heavy tasks — writing scripts, finding clients, making plans, research — all ready to copy-paste.'),
+      ('How do I get more AI responses?', 'Free tier: 3/day. Watch a rewarded ad for more, or upgrade to Premium for unlimited responses.'),
+      ('How does Premium work?', '\$15.99/month via Flutterwave. Unlocks unlimited AI, roadmap, all skills, and advanced analytics.'),
+    ];
+    showModalBottomSheet(context: ctx, isScrollControlled: true, backgroundColor: Colors.transparent,
+      builder: (_) => Container(
+        height: MediaQuery.of(ctx).size.height * 0.65,
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(color: isDark ? AppColors.bgCard : Colors.white, borderRadius: const BorderRadius.vertical(top: Radius.circular(20))),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Center(child: Container(width: 36, height: 4, decoration: BoxDecoration(color: Colors.grey.shade400, borderRadius: BorderRadius.circular(4)))),
+          const SizedBox(height: 20),
+          Text('Help & FAQ', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: text)),
+          const SizedBox(height: 16),
+          Expanded(child: ListView(children: faqs.map((faq) => Padding(
+            padding: const EdgeInsets.only(bottom: 16),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(faq.$1, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: text)),
+              const SizedBox(height: 4),
+              Text(faq.$2, style: TextStyle(fontSize: 12, color: sub, height: 1.5)),
+            ]),
+          )).toList())),
+        ]),
+      ),
+    );
+  }
+
   Future<void> _logout() async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final confirm = await showDialog<bool>(
@@ -76,9 +127,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           // ── Account ───────────────────────────────────
           _Section('Account', textColor),
-          _Tile(icon: Iconsax.user_edit, label: 'Edit Profile', sub: 'Name, bio, location', textColor: textColor, subColor: subColor, cardColor: cardColor, borderColor: borderColor, onTap: () {}),
-          _Tile(icon: Iconsax.lock, label: 'Change Password', sub: 'Update your password', textColor: textColor, subColor: subColor, cardColor: cardColor, borderColor: borderColor, onTap: () {}),
-          _Tile(icon: Iconsax.sms, label: 'Email Address', sub: 'Manage your email', textColor: textColor, subColor: subColor, cardColor: cardColor, borderColor: borderColor, onTap: () {}),
+          _Tile(icon: Iconsax.user_edit, label: 'Edit Profile', sub: 'Name, bio, location, photo', textColor: textColor, subColor: subColor, cardColor: cardColor, borderColor: borderColor, onTap: () => context.push('/edit-profile')),
+          _Tile(icon: Iconsax.lock, label: 'Change Password', sub: 'Update your password', textColor: textColor, subColor: subColor, cardColor: cardColor, borderColor: borderColor, onTap: () => _showChangePassword(context, isDark, textColor, subColor)),
+          _Tile(icon: Iconsax.sms, label: 'Email Address', sub: 'Manage your email', textColor: textColor, subColor: subColor, cardColor: cardColor, borderColor: borderColor, onTap: () => _showEmailInfo(context, isDark, textColor)),
           _Tile(icon: Iconsax.crown, label: 'Upgrade to Premium', sub: 'Unlock unlimited AI access', textColor: textColor, subColor: subColor, cardColor: cardColor, borderColor: borderColor, onTap: () => context.go('/premium'),
               trailing: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -106,7 +157,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           // ── Support ───────────────────────────────────
           _Section('Support', textColor),
-          _Tile(icon: Iconsax.message_question, label: 'Help & FAQ', sub: 'Get answers', textColor: textColor, subColor: subColor, cardColor: cardColor, borderColor: borderColor, onTap: () {}),
+          _Tile(icon: Iconsax.message_question, label: 'Help & FAQ', sub: 'Get answers', textColor: textColor, subColor: subColor, cardColor: cardColor, borderColor: borderColor, onTap: () => _showHelp(context, isDark, textColor, subColor)),
           _Tile(icon: Iconsax.shield_tick, label: 'Privacy Policy', sub: 'How we protect your data', textColor: textColor, subColor: subColor, cardColor: cardColor, borderColor: borderColor, onTap: () => context.go('/privacy')),
           _Tile(icon: Iconsax.document_text, label: 'Terms of Service', sub: 'Our terms', textColor: textColor, subColor: subColor, cardColor: cardColor, borderColor: borderColor, onTap: () => context.go('/terms')),
 

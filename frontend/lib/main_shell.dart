@@ -12,9 +12,9 @@ class MainShell extends StatefulWidget {
   State<MainShell> createState() => _MainShellState();
 }
 
-class _MainShellState extends State<MainShell> {
-  int _unreadMessages = 3;
-  int _unreadNotifs = 2;
+class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
+  int _unreadMessages = 0;
+  int _unreadNotifs = 0;
 
   static const _tabs = [
     _Tab('/home',     Iconsax.home,          Iconsax.home_2,          'Home'),
@@ -23,6 +23,54 @@ class _MainShellState extends State<MainShell> {
     _Tab('/messages', Iconsax.message,       Iconsax.message_2,       'Messages'),
     _Tab('/profile',  Iconsax.user,          Iconsax.user_octagon,    'Profile'),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _fetchCounts();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Refresh counts when app comes back to foreground
+    if (state == AppLifecycleState.resumed) _fetchCounts();
+  }
+
+  Future<void> _fetchCounts() async {
+    try {
+      final results = await Future.wait([
+        api.getNotifications(limit: 50),
+        api.get('/messages/conversations'),
+      ]);
+
+      final notifs = results[0] as Map;
+      final convos = results[1] as Map? ?? {};
+
+      final unreadNotifs = (notifs['notifications'] as List? ?? [])
+          .where((n) => n['is_read'] == false)
+          .length;
+
+      final unreadMsgs = (convos['conversations'] as List? ?? [])
+          .where((c) => (c['unread_count'] as int? ?? 0) > 0)
+          .fold<int>(0, (sum, c) => sum + ((c['unread_count'] as int?) ?? 0));
+
+      if (mounted) {
+        setState(() {
+          _unreadNotifs = unreadNotifs;
+          _unreadMessages = unreadMsgs;
+        });
+      }
+    } catch (_) {
+      // Silent fail — badges just stay at 0
+    }
+  }
 
   int _currentIndex(BuildContext ctx) {
     final path = GoRouterState.of(ctx).uri.path;
@@ -61,6 +109,10 @@ class _MainShellState extends State<MainShell> {
                   child: GestureDetector(
                     onTap: () {
                       HapticFeedback.lightImpact();
+                      // Refresh counts when tapping messages or profile
+                      if (tab.path == '/messages' || tab.path == '/profile') {
+                        _fetchCounts();
+                      }
                       context.go(tab.path);
                     },
                     behavior: HitTestBehavior.opaque,
@@ -85,13 +137,25 @@ class _MainShellState extends State<MainShell> {
                                     color: selected ? AppColors.primary : iconColor,
                                     size: 24,
                                   ),
-                                  // Badge for messages
+                                  // Messages badge
                                   if (tab.path == '/messages' && _unreadMessages > 0)
                                     Positioned(right: -4, top: -4, child: Container(
                                       width: 14, height: 14,
                                       decoration: const BoxDecoration(color: AppColors.error, shape: BoxShape.circle),
-                                      child: Center(child: Text(_unreadMessages > 9 ? '9+' : '$_unreadMessages',
-                                          style: const TextStyle(fontSize: 7, color: Colors.white, fontWeight: FontWeight.w700))),
+                                      child: Center(child: Text(
+                                        _unreadMessages > 9 ? '9+' : '$_unreadMessages',
+                                        style: const TextStyle(fontSize: 7, color: Colors.white, fontWeight: FontWeight.w700),
+                                      )),
+                                    )),
+                                  // Notifications badge (on Profile icon)
+                                  if (tab.path == '/profile' && _unreadNotifs > 0)
+                                    Positioned(right: -4, top: -4, child: Container(
+                                      width: 14, height: 14,
+                                      decoration: BoxDecoration(color: AppColors.primary, shape: BoxShape.circle),
+                                      child: Center(child: Text(
+                                        _unreadNotifs > 9 ? '9+' : '$_unreadNotifs',
+                                        style: const TextStyle(fontSize: 7, color: Colors.white, fontWeight: FontWeight.w700),
+                                      )),
                                     )),
                                 ],
                               ),

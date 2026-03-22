@@ -43,15 +43,6 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
 
-      try {
-        final profile = await api.getProfile();
-        final onboarded =
-            profile['profile']?['onboarding_completed'] ?? false;
-        await storageService.write(
-            key: 'onboarding_completed',
-            value: onboarded.toString());
-      } catch (_) {}
-
       if (!mounted) return;
       context.go('/home');
     } catch (e) {

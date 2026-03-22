@@ -12,8 +12,8 @@ from routers import (
     progress, community, streaks, goals,
     expenses, achievements, referrals,
     notifications, admin,
-    # ── New social routers ─────────────────────────────
     posts, messages, live,
+    workflow, agent, collaboration,
 )
 
 app = FastAPI(
@@ -31,7 +31,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # ── CORS ───────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS_LIST,
+    allow_origins=settings.allowed_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -59,6 +59,11 @@ app.include_router(admin.router,         prefix="/api/v1")
 app.include_router(posts.router,         prefix="/api/v1")
 app.include_router(messages.router,      prefix="/api/v1")
 app.include_router(live.router,          prefix="/api/v1")
+
+# ── AI Workflow Engine ─────────────────────────────────
+app.include_router(workflow.router,      prefix="/api/v1")
+app.include_router(agent.router,         prefix="/api/v1")
+app.include_router(collaboration.router, prefix="/api/v1")
 
 @app.get("/")
 async def root():

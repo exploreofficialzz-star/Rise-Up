@@ -303,7 +303,9 @@ class _FeedTab extends StatelessWidget {
               Row(
                 children: [
                   GestureDetector(
-                    onTap: () {},
+                    onTap: () {
+                      HapticFeedback.lightImpact();
+                    },
                     child: Row(
                       children: [
                         Icon(Iconsax.heart, size: 16, color: AppColors.textMuted),

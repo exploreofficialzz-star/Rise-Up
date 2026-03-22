@@ -96,6 +96,7 @@ class _HomeScreenState extends State<HomeScreen>
   final _loading = {'for_you': false, 'following': false, 'trending': false};
   final _offsets = {'for_you': 0, 'following': 0, 'trending': 0};
   final _tabs = ['for_you', 'following', 'trending'];
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   @override
   void initState() {
@@ -215,30 +216,17 @@ class _HomeScreenState extends State<HomeScreen>
 
     return Scaffold(
       backgroundColor: bgColor,
+      key: _scaffoldKey,
+      drawer: _AppDrawer(profile: _profile, isDark: isDark),
       appBar: AppBar(
         backgroundColor: cardColor,
         elevation: 0,
         surfaceTintColor: Colors.transparent,
         titleSpacing: 0,
-        leading: Row(mainAxisSize: MainAxisSize.min, children: [
-          const SizedBox(width: 8),
-          GestureDetector(
-            onTap: () => context.go('/messages'),
-            child: Stack(children: [
-              Container(width: 36, height: 36, decoration: BoxDecoration(color: isDark ? AppColors.bgSurface : Colors.grey.shade100, shape: BoxShape.circle), child: Icon(Iconsax.message, color: iconColor, size: 18)),
-            ]),
-          ),
-          const SizedBox(width: 6),
-          GestureDetector(
-            onTap: () => context.go('/live'),
-            child: Container(
-              width: 36, height: 36,
-              decoration: BoxDecoration(color: Colors.red.withOpacity(0.12), shape: BoxShape.circle),
-              child: const Icon(Icons.radio_button_checked, color: Colors.red, size: 18),
-            ),
-          ),
-        ]),
-        leadingWidth: 90,
+        leading: IconButton(
+          icon: Icon(Icons.menu_rounded, color: iconColor, size: 24),
+          onPressed: () { HapticFeedback.lightImpact(); _scaffoldKey.currentState?.openDrawer(); },
+        ),
         title: ShaderMask(
           shaderCallback: (bounds) => const LinearGradient(
             colors: [Color(0xFFFF6B00), Color(0xFFFFD700), Color(0xFF6C5CE7)],
@@ -539,6 +527,180 @@ class _ActionBtn extends StatelessWidget {
   const _ActionBtn({required this.icon, required this.label, required this.color, required this.onTap});
   @override
   Widget build(BuildContext context) => GestureDetector(onTap: onTap, child: Row(children: [Icon(icon, color: color, size: 20), const SizedBox(width: 5), Text(label, style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w500))]));
+}
+
+// ── App Drawer ────────────────────────────────────────
+class _AppDrawer extends StatelessWidget {
+  final Map profile;
+  final bool isDark;
+  const _AppDrawer({required this.profile, required this.isDark});
+
+  @override
+  Widget build(BuildContext context) {
+    final bg = isDark ? Colors.black : Colors.white;
+    final surface = isDark ? AppColors.bgSurface : Colors.grey.shade100;
+    final border = isDark ? AppColors.bgSurface : Colors.grey.shade200;
+    final sub = isDark ? Colors.white54 : Colors.black45;
+    final name = profile['full_name']?.toString() ?? 'User';
+    final stage = profile['stage']?.toString() ?? 'survival';
+    final stageInfo = StageInfo.get(stage);
+    final isPremium = profile['subscription_tier'] == 'premium';
+
+    return Drawer(
+      backgroundColor: bg,
+      width: MediaQuery.of(context).size.width * 0.82,
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Profile header
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+              child: Row(children: [
+                Container(
+                  width: 48, height: 48,
+                  decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.12), shape: BoxShape.circle),
+                  child: Center(child: Text(name.isNotEmpty ? name[0].toUpperCase() : 'U',
+                      style: const TextStyle(color: AppColors.primary, fontSize: 20, fontWeight: FontWeight.w800))),
+                ),
+                const SizedBox(width: 12),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(name, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: isDark ? Colors.white : Colors.black87), maxLines: 1, overflow: TextOverflow.ellipsis),
+                  const SizedBox(height: 3),
+                  Row(children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                      decoration: BoxDecoration(color: (stageInfo['color'] as Color).withOpacity(0.15), borderRadius: BorderRadius.circular(8)),
+                      child: Text('${stageInfo['emoji']} ${stageInfo['label']}',
+                          style: TextStyle(fontSize: 10, color: stageInfo['color'] as Color, fontWeight: FontWeight.w600)),
+                    ),
+                    if (isPremium) ...[const SizedBox(width: 6),
+                      Container(padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                        decoration: BoxDecoration(color: AppColors.gold.withOpacity(0.15), borderRadius: BorderRadius.circular(8)),
+                        child: const Text('⭐ Pro', style: TextStyle(fontSize: 10, color: AppColors.gold, fontWeight: FontWeight.w600)))],
+                  ]),
+                ])),
+                IconButton(icon: Icon(Icons.close_rounded, color: sub, size: 20), onPressed: () => Navigator.of(context).pop()),
+              ]),
+            ),
+            Divider(color: border, height: 1),
+
+            // Nav items
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                children: [
+                  _DSection('INCOME TOOLS', sub),
+                  _DItem(Iconsax.chart, 'Dashboard', 'Earnings, stats & tasks', isDark, onTap: () { Navigator.pop(context); context.go('/dashboard'); }),
+                  _DItem(Icons.auto_awesome_rounded, 'Agentic AI', 'Execute ANY income task', isDark, badge: 'HEAVY', badgeColor: AppColors.accent, onTap: () { Navigator.pop(context); context.push('/agent'); }),
+                  _DItem(Iconsax.flash, 'Workflow Engine', 'AI-powered income execution', isDark, badge: 'NEW', badgeColor: AppColors.success, onTap: () { Navigator.pop(context); context.push('/workflow'); }),
+                  _DItem(Iconsax.task_square, 'My Tasks', 'Daily income tasks', isDark, onTap: () { Navigator.pop(context); context.go('/tasks'); }),
+                  _DItem(Iconsax.map_1, 'Wealth Roadmap', '3-stage wealth plan', isDark, onTap: () { Navigator.pop(context); context.go('/roadmap'); }),
+                  _DItem(Iconsax.book, 'Skills', 'Earn-while-learning', isDark, onTap: () { Navigator.pop(context); context.go('/skills'); }),
+                  const SizedBox(height: 4),
+                  Divider(color: border, height: 1),
+                  _DSection('SOCIAL', sub),
+                  _DItem(Iconsax.people, 'Collaboration', 'Build bigger goals together', isDark, badge: 'NEW', badgeColor: AppColors.primary, onTap: () { Navigator.pop(context); context.push('/collaboration'); }),
+                  _DItem(Iconsax.message, 'Messages', 'DMs & group chats', isDark, onTap: () { Navigator.pop(context); context.go('/messages'); }),
+                  _DItem(Icons.radio_button_checked_rounded, 'Go Live', 'Stream to your community', isDark, onTap: () { Navigator.pop(context); context.go('/live'); }),
+                  _DItem(Iconsax.people, 'Groups', 'Wealth-building groups', isDark, onTap: () { Navigator.pop(context); context.go('/groups'); }),
+                  const SizedBox(height: 4),
+                  Divider(color: border, height: 1),
+                  _DSection('FINANCE', sub),
+                  _DItem(Iconsax.money_recive, 'Earnings', 'Income tracker', isDark, onTap: () { Navigator.pop(context); context.go('/earnings'); }),
+                  _DItem(Iconsax.chart_2, 'Analytics', 'Growth stats', isDark, onTap: () { Navigator.pop(context); context.go('/analytics'); }),
+                  _DItem(Iconsax.wallet_minus, 'Expenses', 'Budget tracking', isDark, onTap: () { Navigator.pop(context); context.go('/expenses'); }),
+                  _DItem(Iconsax.flag, 'Goals', 'Set & track targets', isDark, onTap: () { Navigator.pop(context); context.go('/goals'); }),
+                  const SizedBox(height: 4),
+                  Divider(color: border, height: 1),
+                  _DSection('ACCOUNT', sub),
+                  _DItem(Iconsax.trophy, 'Achievements', 'Badges & milestones', isDark, onTap: () { Navigator.pop(context); context.go('/achievements'); }),
+                  _DItem(Iconsax.user_tag, 'Referrals', 'Invite & earn', isDark, onTap: () { Navigator.pop(context); context.go('/referrals'); }),
+                  _DItem(Iconsax.setting_2, 'Settings', 'Account preferences', isDark, onTap: () { Navigator.pop(context); context.go('/settings'); }),
+                ],
+              ),
+            ),
+
+            // Premium CTA
+            if (!isPremium)
+              Padding(
+                padding: const EdgeInsets.all(14),
+                child: GestureDetector(
+                  onTap: () { Navigator.pop(context); context.push('/premium'); },
+                  child: Container(
+                    padding: const EdgeInsets.all(13),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(isDark ? 0.12 : 0.07),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: AppColors.primary.withOpacity(0.25)),
+                    ),
+                    child: Row(children: [
+                      const Text('⭐', style: TextStyle(fontSize: 18)),
+                      const SizedBox(width: 10),
+                      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        const Text('Upgrade to Premium', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.primary)),
+                        Text('Unlimited AI + all features', style: TextStyle(fontSize: 11, color: sub)),
+                      ])),
+                      const Icon(Icons.arrow_forward_ios_rounded, size: 13, color: AppColors.primary),
+                    ]),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DSection extends StatelessWidget {
+  final String label; final Color color;
+  const _DSection(this.label, this.color);
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(18, 12, 18, 4),
+    child: Text(label, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: color, letterSpacing: 1.1)),
+  );
+}
+
+class _DItem extends StatelessWidget {
+  final IconData icon; final String label, sub; final bool isDark; final VoidCallback onTap;
+  final String? badge; final Color? badgeColor;
+  const _DItem(this.icon, this.label, this.sub, this.isDark, {required this.onTap, this.badge, this.badgeColor});
+
+  @override
+  Widget build(BuildContext context) {
+    final textC = isDark ? Colors.white : Colors.black87;
+    final subC = isDark ? Colors.white54 : Colors.black45;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () { HapticFeedback.lightImpact(); onTap(); },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+          child: Row(children: [
+            Container(
+              width: 36, height: 36,
+              decoration: BoxDecoration(color: isDark ? AppColors.bgSurface : Colors.grey.shade100, borderRadius: BorderRadius.circular(9)),
+              child: Icon(icon, size: 17, color: isDark ? Colors.white70 : Colors.black54),
+            ),
+            const SizedBox(width: 13),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: textC)),
+                if (badge != null) ...[const SizedBox(width: 6),
+                  Container(padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                    decoration: BoxDecoration(color: (badgeColor ?? AppColors.primary).withOpacity(0.15), borderRadius: BorderRadius.circular(5)),
+                    child: Text(badge!, style: TextStyle(fontSize: 9, color: badgeColor ?? AppColors.primary, fontWeight: FontWeight.w700)))],
+              ]),
+              Text(sub, style: TextStyle(fontSize: 11, color: subC)),
+            ])),
+            Icon(Icons.chevron_right_rounded, size: 15, color: isDark ? Colors.white24 : Colors.black26),
+          ]),
+        ),
+      ),
+    );
+  }
 }
 
 class _StoryItem extends StatelessWidget {

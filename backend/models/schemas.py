@@ -72,6 +72,9 @@ class ProfileUpdate(BaseModel):
     phone: Optional[str] = None
     country: Optional[str] = None
     currency: Optional[str] = None
+    bio: Optional[str] = None
+    status: Optional[str] = None          # e.g. "Building my YouTube channel 🚀"
+    avatar_url: Optional[str] = None
     wealth_type: Optional[str] = None
     learning_style: Optional[str] = None
     risk_tolerance: Optional[str] = None

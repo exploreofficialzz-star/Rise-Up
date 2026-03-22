@@ -189,7 +189,7 @@ class _PremiumScreenState extends State<PremiumScreen> {
 
                   // ── CTA button ────────────────────────────
                   GestureDetector(
-                    onTap: () {},
+                    onTap: () => context.go('/payment?plan=${_yearly ? 'yearly' : 'monthly'}'),
                     child: Container(
                       width: double.infinity,
                       height: 54,

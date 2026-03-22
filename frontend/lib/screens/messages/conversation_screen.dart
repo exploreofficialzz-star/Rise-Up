@@ -1,3 +1,4 @@
+import 'package:image_picker/image_picker.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -243,8 +244,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 Text('AI Active', style: TextStyle(color: AppColors.success, fontSize: 11, fontWeight: FontWeight.w600)),
               ]),
             ),
-          IconButton(icon: Icon(Iconsax.call, color: textColor, size: 20), onPressed: () {}),
-          IconButton(icon: Icon(Iconsax.video, color: textColor, size: 20), onPressed: () {}),
+          IconButton(icon: Icon(Iconsax.call, color: textColor, size: 20), onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Voice calls coming soon 📞'), duration: Duration(seconds: 1)))),
+          IconButton(icon: Icon(Iconsax.video, color: textColor, size: 20), onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Video calls coming soon 🎥'), duration: Duration(seconds: 1)))),
         ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(1),
@@ -285,7 +286,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
           ),
           padding: EdgeInsets.fromLTRB(12, 8, 12, MediaQuery.of(context).padding.bottom + 8),
           child: Row(children: [
-            IconButton(icon: Icon(Iconsax.image, color: subColor, size: 22), onPressed: () {}),
+            IconButton(icon: Icon(Iconsax.image, color: subColor, size: 22), onPressed: () async {
+              final picker = ImagePicker();
+              final file = await picker.pickImage(source: ImageSource.gallery);
+              if (file != null) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Photo selected ✅'), backgroundColor: AppColors.success, duration: Duration(seconds: 1)),
+                );
+              }
+            }),
             Expanded(
               child: TextField(
                 controller: _ctrl,

@@ -25,7 +25,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
 
   Future<void> _load() async {
     try {
-      final data = await api.getDMConversations();
+      final data = await api.getConversations();
       if (mounted) setState(() { _convos = data['conversations'] ?? []; _loading = false; });
     } catch (_) {
       if (mounted) setState(() => _loading = false);
@@ -72,7 +72,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
         actions: [
           IconButton(
             icon: Icon(Iconsax.edit, color: textColor, size: 22),
-            onPressed: () {},
+            onPressed: () => _showNewDMSheet(context),
             tooltip: 'New message',
           ),
         ],

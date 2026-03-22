@@ -17,6 +17,7 @@ class _ProfileScreenState extends State<ProfileScreen>
   Map _profile = {};
   Map _stats = {};
   List _posts = [];
+  List _likedPosts = [];
   bool _loading = true;
 
   @override
@@ -32,11 +33,13 @@ class _ProfileScreenState extends State<ProfileScreen>
       final results = await Future.wait([
         api.getProfile(),
         api.getUserPosts(userId),
+        api.getLikedPosts(userId),
       ]);
       if (mounted) {
         setState(() {
           _profile = (results[0] as Map)['profile'] ?? {};
           _posts = (results[1] as Map)['posts'] ?? [];
+          _likedPosts = (results[2] as Map)['posts'] ?? [];
           _loading = false;
         });
       }
@@ -112,17 +115,25 @@ class _ProfileScreenState extends State<ProfileScreen>
                             gradient: const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
                             shape: BoxShape.circle,
                           ),
-                          child: Center(child: Text(
-                            name.isNotEmpty ? name[0].toUpperCase() : '👤',
-                            style: const TextStyle(fontSize: 32, color: Colors.white, fontWeight: FontWeight.w700),
-                          )),
+                          child: ClipOval(
+                            child: _profile['avatar_url'] != null && (_profile['avatar_url'] as String).isNotEmpty
+                                ? Image.network(_profile['avatar_url'].toString(), fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) => Center(child: Text(
+                                      name.isNotEmpty ? name[0].toUpperCase() : '👤',
+                                      style: const TextStyle(fontSize: 32, color: Colors.white, fontWeight: FontWeight.w700),
+                                    )))
+                                : Center(child: Text(
+                                    name.isNotEmpty ? name[0].toUpperCase() : '👤',
+                                    style: const TextStyle(fontSize: 32, color: Colors.white, fontWeight: FontWeight.w700),
+                                  )),
+                          ),
                         ),
                         Positioned(bottom: 0, right: 0, child: GestureDetector(
-                          onTap: () {},
+                          onTap: () => context.push('/edit-profile').then((_) => _load()),
                           child: Container(
                             width: 22, height: 22,
                             decoration: BoxDecoration(color: AppColors.primary, shape: BoxShape.circle, border: Border.all(color: cardColor, width: 2)),
-                            child: const Icon(Icons.add, color: Colors.white, size: 12),
+                            child: const Icon(Icons.camera_alt_rounded, color: Colors.white, size: 11),
                           ),
                         )),
                       ]),
@@ -164,6 +175,14 @@ class _ProfileScreenState extends State<ProfileScreen>
                         ]),
                         const SizedBox(height: 4),
                         Text(_profile['bio']?.toString() ?? 'Building wealth one step at a time 🚀', style: TextStyle(fontSize: 13, color: subColor)),
+                        if (_profile['status'] != null && (_profile['status'] as String).isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Row(children: [
+                            Container(width: 8, height: 8, decoration: const BoxDecoration(color: AppColors.success, shape: BoxShape.circle)),
+                            const SizedBox(width: 6),
+                            Text(_profile['status'].toString(), style: TextStyle(fontSize: 12, color: AppColors.success, fontStyle: FontStyle.italic)),
+                          ]),
+                        ],
                         const SizedBox(height: 4),
                         Row(children: [
                           Icon(Iconsax.location, size: 12, color: subColor),
@@ -176,7 +195,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                     const SizedBox(height: 14),
                     Row(children: [
                       Expanded(child: GestureDetector(
-                        onTap: () {},
+                        onTap: () => context.push('/edit-profile').then((_) => _load()),
                         child: Container(
                           padding: const EdgeInsets.symmetric(vertical: 8),
                           decoration: BoxDecoration(color: surfaceColor, borderRadius: BorderRadius.circular(10), border: Border.all(color: borderColor)),
@@ -185,7 +204,13 @@ class _ProfileScreenState extends State<ProfileScreen>
                       )),
                       const SizedBox(width: 8),
                       Expanded(child: GestureDetector(
-                        onTap: () {},
+                        onTap: () {
+                          final userId = _profile['id']?.toString() ?? '';
+                          final name2 = _profile['full_name']?.toString() ?? '';
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Share link: riseup.app/u/$userId'), backgroundColor: AppColors.primary),
+                          );
+                        },
                         child: Container(
                           padding: const EdgeInsets.symmetric(vertical: 8),
                           decoration: BoxDecoration(color: surfaceColor, borderRadius: BorderRadius.circular(10), border: Border.all(color: borderColor)),
@@ -268,8 +293,34 @@ class _ProfileScreenState extends State<ProfileScreen>
                               },
                             ),
 
-                      // Liked
-                      Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Iconsax.heart, size: 48, color: subColor), const SizedBox(height: 12), Text('No liked posts yet', style: TextStyle(color: subColor, fontSize: 14))])),
+                      // Liked posts - use _likedPosts from state
+                      _likedPosts.isEmpty
+                          ? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                              Icon(Iconsax.heart, size: 48, color: subColor),
+                              const SizedBox(height: 12),
+                              Text('No liked posts yet', style: TextStyle(color: subColor, fontSize: 14)),
+                            ]))
+                          : ListView.separated(
+                              padding: EdgeInsets.zero,
+                              itemCount: _likedPosts.length,
+                              separatorBuilder: (_, __) => Divider(height: 1, color: borderColor),
+                              itemBuilder: (_, i) {
+                                final p = _likedPosts[i];
+                                return Container(
+                                  color: cardColor,
+                                  padding: const EdgeInsets.all(16),
+                                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                    Row(children: [
+                                      Text(p['tag']?.toString() ?? '', style: const TextStyle(fontSize: 11, color: AppColors.primary, fontWeight: FontWeight.w600)),
+                                      const Spacer(),
+                                      Icon(Icons.favorite_rounded, size: 14, color: Colors.red),
+                                    ]),
+                                    const SizedBox(height: 8),
+                                    Text(p['content']?.toString() ?? '', style: TextStyle(fontSize: 14, color: textColor, height: 1.5), maxLines: 3, overflow: TextOverflow.ellipsis),
+                                  ]),
+                                );
+                              },
+                            ),
                     ],
                   ),
                 ),

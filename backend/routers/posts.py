@@ -370,3 +370,33 @@ async def get_user_posts(user_id: str, limit: int = 20, user: dict = Depends(get
         return {"posts": posts}
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+@router.get("/users/{user_id}/liked")
+async def get_user_liked_posts(user_id: str, limit: int = 20, user: dict = Depends(get_current_user)):
+    """Get posts liked by a specific user"""
+    try:
+        liked = db.table("post_likes") \
+            .select("post_id") \
+            .eq("user_id", user_id) \
+            .order("created_at", desc=True) \
+            .limit(limit) \
+            .execute()
+        post_ids = [l["post_id"] for l in (liked.data or [])]
+        if not post_ids:
+            return {"posts": []}
+        posts_res = db.table("posts") \
+            .select("*, profiles(full_name, stage, is_verified, subscription_tier), post_likes(user_id), post_saves(user_id), post_comments(count)") \
+            .in_("id", post_ids) \
+            .eq("is_visible", True) \
+            .execute()
+        posts = posts_res.data or []
+        for p in posts:
+            likes = p.get("post_likes") or []
+            saves = p.get("post_saves") or []
+            p["is_liked"] = True
+            p["likes_count"] = len(likes)
+            p["is_saved"] = any(s["user_id"] == user["id"] for s in saves)
+        return {"posts": posts}
+    except Exception as e:
+        raise HTTPException(500, str(e))
