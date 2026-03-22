@@ -4,18 +4,14 @@ import 'package:google_fonts/google_fonts.dart';
 // ── API ──────────────────────────────────────────────
 const String kApiBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
-  defaultValue: 'https://rise-up-zkcj.onrender.com/api/v1',
+  defaultValue: 'https://riseup-api.onrender.com/api/v1',
 );
 const String kSupabaseUrl = String.fromEnvironment(
-  'SUPABASE_URL',
-  defaultValue: '',
-);
+    'SUPABASE_URL', defaultValue: '');
 const String kSupabaseAnonKey = String.fromEnvironment(
-  'SUPABASE_ANON_KEY',
-  defaultValue: '',
-);
+    'SUPABASE_ANON_KEY', defaultValue: '');
 
-// ── AdMob ────────────────────────────────────────────
+// ── AdMob ─────────────────────────────────────────────
 const String kAdMobAppId = String.fromEnvironment(
   'ADMOB_APP_ID',
   defaultValue: 'ca-app-pub-3940256099942544~3347511713',
@@ -53,30 +49,43 @@ const String kAdSenseBottomSlotId = String.fromEnvironment(
 
 // ── Colors ────────────────────────────────────────────
 class AppColors {
-  static const Color primary = Color(0xFF6C5CE7);
+  // Primary brand
+  static const Color primary      = Color(0xFF6C5CE7);
   static const Color primaryLight = Color(0xFF9B8CF0);
-  static const Color primaryDark = Color(0xFF4A3ABF);
-  static const Color accent = Color(0xFF00CEC9);
+  static const Color primaryDark  = Color(0xFF4A3ABF);
+
+  // Accent
+  static const Color accent      = Color(0xFF00CEC9);
   static const Color accentLight = Color(0xFF81ECEC);
-  static const Color gold = Color(0xFFFFD700);
-  static const Color goldDark = Color(0xFFE5B800);
+  static const Color gold        = Color(0xFFFFD700);
+  static const Color goldDark    = Color(0xFFE5B800);
+
+  // Status
   static const Color success = Color(0xFF00B894);
   static const Color warning = Color(0xFFFDCB6E);
-  static const Color error = Color(0xFFE17055);
-  static const Color info = Color(0xFF74B9FF);
+  static const Color error   = Color(0xFFE17055);
+  static const Color info    = Color(0xFF74B9FF);
+
+  // Stages
   static const Color survival = Color(0xFFE17055);
-  static const Color earning = Color(0xFFFDCB6E);
-  static const Color growing = Color(0xFF00B894);
-  static const Color wealth = Color(0xFF6C5CE7);
-  static const Color bgDark = Color(0xFF000000);
-  static const Color bgCard = Color(0xFF1A1A2E);
-  static const Color bgCardLight = Color(0xFF16213E);
-  static const Color bgSurface = Color(0xFF1F1F3A);
-  static const Color textPrimary = Color(0xFFF8F8FF);
+  static const Color earning  = Color(0xFFFDCB6E);
+  static const Color growing  = Color(0xFF00B894);
+  static const Color wealth   = Color(0xFF6C5CE7);
+
+  // ── Backgrounds — pure black theme ───────────────────
+  static const Color bgDark      = Color(0xFF000000); // pure black
+  static const Color bgCard      = Color(0xFF0D0D0D); // near black
+  static const Color bgCardLight = Color(0xFF111111); // slightly lighter
+  static const Color bgSurface   = Color(0xFF1A1A1A); // surface black
+
+  // Text
+  static const Color textPrimary   = Color(0xFFF8F8FF);
   static const Color textSecondary = Color(0xFFB2B2CC);
-  static const Color textMuted = Color(0xFF6B6B8A);
+  static const Color textMuted     = Color(0xFF6B6B8A);
+
+  // Chat
   static const Color userBubble = Color(0xFF6C5CE7);
-  static const Color aiBubble = Color(0xFF1F1F3A);
+  static const Color aiBubble   = Color(0xFF1A1A1A);
 
   static Color stageColor(String stage) {
     switch (stage.toLowerCase()) {
@@ -136,7 +145,6 @@ class AppTextStyles {
 
 // ── Theme ─────────────────────────────────────────────
 class AppTheme {
-  // ── Dark theme ──────────────────────────────────────
   static ThemeData get dark => ThemeData(
     useMaterial3: true,
     brightness: Brightness.dark,
@@ -177,8 +185,8 @@ class AppTheme {
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(12),
-        borderSide: const BorderSide(
-            color: AppColors.primary, width: 1.5),
+        borderSide:
+            const BorderSide(color: AppColors.primary, width: 1.5),
       ),
       hintStyle: AppTextStyles.label,
       contentPadding: const EdgeInsets.symmetric(
@@ -206,7 +214,6 @@ class AppTheme {
     ),
   );
 
-  // ── Light theme ──────────────────────────────────────
   static ThemeData get light => ThemeData(
     useMaterial3: true,
     brightness: Brightness.light,
@@ -220,19 +227,15 @@ class AppTheme {
       onSurface: Colors.black87,
     ),
     textTheme: GoogleFonts.interTextTheme(
-        ThemeData.light().textTheme).copyWith(
-      bodyLarge: AppTextStyles.body.copyWith(color: Colors.black87),
-      bodyMedium: AppTextStyles.body.copyWith(color: Colors.black87),
-      bodySmall:
-          AppTextStyles.bodySmall.copyWith(color: Colors.black54),
-    ),
+        ThemeData.light().textTheme),
     appBarTheme: AppBarTheme(
       backgroundColor: Colors.white,
       elevation: 0,
       centerTitle: true,
       titleTextStyle:
           AppTextStyles.h4.copyWith(color: Colors.black87),
-      iconTheme: const IconThemeData(color: Colors.black87),
+      iconTheme:
+          const IconThemeData(color: Colors.black87),
     ),
     cardTheme: CardTheme(
       color: const Color(0xFFF5F5F5),
@@ -252,8 +255,8 @@ class AppTheme {
         borderSide: const BorderSide(
             color: AppColors.primary, width: 1.5),
       ),
-      hintStyle:
-          AppTextStyles.label.copyWith(color: Colors.black38),
+      hintStyle: AppTextStyles.label
+          .copyWith(color: Colors.black38),
       contentPadding: const EdgeInsets.symmetric(
           horizontal: 16, vertical: 14),
     ),
@@ -282,20 +285,20 @@ class AppTheme {
 
 // ── Spacing ───────────────────────────────────────────
 class AppSpacing {
-  static const double xs = 4;
-  static const double sm = 8;
-  static const double md = 16;
-  static const double lg = 24;
-  static const double xl = 32;
+  static const double xs  = 4;
+  static const double sm  = 8;
+  static const double md  = 16;
+  static const double lg  = 24;
+  static const double xl  = 32;
   static const double xxl = 48;
 }
 
 // ── Radius ────────────────────────────────────────────
 class AppRadius {
-  static BorderRadius get sm  => BorderRadius.circular(8);
-  static BorderRadius get md  => BorderRadius.circular(12);
-  static BorderRadius get lg  => BorderRadius.circular(16);
-  static BorderRadius get xl  => BorderRadius.circular(24);
+  static BorderRadius get sm   => BorderRadius.circular(8);
+  static BorderRadius get md   => BorderRadius.circular(12);
+  static BorderRadius get lg   => BorderRadius.circular(16);
+  static BorderRadius get xl   => BorderRadius.circular(24);
   static BorderRadius get pill => BorderRadius.circular(50);
 }
 
@@ -317,7 +320,7 @@ class AppShadows {
   ];
 }
 
-// ── Feature Keys ─────────────────────────────────────
+// ── Feature Keys ──────────────────────────────────────
 class FeatureKeys {
   static const String aiRoadmap         = 'ai_roadmap';
   static const String taskBooster       = 'task_booster';
@@ -338,7 +341,7 @@ class StageInfo {
           'emoji': '🆘',
           'color': AppColors.survival,
           'description': 'Focus on immediate income',
-          'target': '₦50,000/month',
+          'target': 'First \$500/month',
         };
       case 'earning':
         return {
@@ -346,7 +349,7 @@ class StageInfo {
           'emoji': '💪',
           'color': AppColors.earning,
           'description': 'Building consistent income',
-          'target': '₦200,000/month',
+          'target': '\$2,000/month',
         };
       case 'growing':
         return {
@@ -354,7 +357,7 @@ class StageInfo {
           'emoji': '🚀',
           'color': AppColors.growing,
           'description': 'Scaling skills & income',
-          'target': '₦500,000/month',
+          'target': '\$5,000/month',
         };
       case 'wealth':
         return {
@@ -362,7 +365,7 @@ class StageInfo {
           'emoji': '💎',
           'color': AppColors.wealth,
           'description': 'Assets & passive income',
-          'target': '₦1,000,000+/month',
+          'target': '\$10,000+/month',
         };
       default:
         return {
