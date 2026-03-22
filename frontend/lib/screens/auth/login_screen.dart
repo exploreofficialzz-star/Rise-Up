@@ -29,11 +29,14 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _login() async {
     final email = _emailCtrl.text.trim();
     final pass  = _passCtrl.text;
+
     if (email.isEmpty || pass.isEmpty) {
       setState(() => _error = 'Please fill in all fields');
       return;
     }
+
     setState(() { _loading = true; _error = null; });
+
     try {
       final data = await api.signIn(email, pass);
       if (!mounted) return;
@@ -47,8 +50,9 @@ class _LoginScreenState extends State<LoginScreen> {
         final profile = await api.getProfile();
         final onboarded = profile['profile']?['onboarding_completed'] ?? false;
         await storageService.write(
-            key: 'onboarding_completed',
-            value: onboarded.toString());
+          key: 'onboarding_completed',
+          value: onboarded.toString(),
+        );
       } catch (_) {}
 
       if (!mounted) return;
@@ -63,11 +67,15 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+
+    /// ✅ THEME-AWARE COLORS (THIS IS THE MAIN FIX)
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bgColor = isDark ? Colors.black : Colors.white;
-    final textColor = isDark ? Colors.white : Colors.black87;
-    final subColor = isDark ? Colors.white60 : Colors.black54;
-    final inputFill = isDark ? const Color(0xFF1A1A2E) : Colors.grey.shade100;
+
+    final bgColor   = isDark ? Colors.black : Colors.white;
+    final textColor = isDark ? Colors.white : Colors.black;
+    final subColor  = isDark ? Colors.white60 : Colors.black54;
+    final inputFill = isDark ? const Color(0xFF121212) : Colors.grey.shade100;
+    final borderColor = isDark ? Colors.white24 : Colors.black12;
 
     return Scaffold(
       backgroundColor: bgColor,
@@ -79,21 +87,21 @@ class _LoginScreenState extends State<LoginScreen> {
             children: [
               const SizedBox(height: 16),
 
-              // ── Logo + RiseUp — top left ───────────────
+              // ── Logo + RiseUp ─────────────────────────
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Image.asset(
                     'assets/images/riseup_logo.png',
-                    width: 65,
-                    height: 65,
-                    errorBuilder: (_, __, ___) => const Icon(
+                    width: 55,
+                    height: 55,
+                    errorBuilder: (_, __, ___) => Icon(
                       Icons.trending_up_rounded,
-                      color: Color(0xFFFF6B00),
-                      size: 65,
+                      color: textColor,
+                      size: 55,
                     ),
                   ),
-                  const SizedBox(width: 7),
+                  const SizedBox(width: 6),
                   ShaderMask(
                     shaderCallback: (bounds) => const LinearGradient(
                       colors: [
@@ -101,15 +109,13 @@ class _LoginScreenState extends State<LoginScreen> {
                         Color(0xFFFFD700),
                         Color(0xFF6C5CE7),
                       ],
-                      stops: [0.0, 0.4, 1.0],
                     ).createShader(bounds),
                     child: const Text(
                       'RiseUp',
                       style: TextStyle(
-                        fontSize: 55,
+                        fontSize: 38,
                         fontWeight: FontWeight.w900,
                         color: Colors.white,
-                        letterSpacing: -0.5,
                       ),
                     ),
                   ),
@@ -118,12 +124,12 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 40),
 
-              // ── Welcome header ─────────────────────────
+              // ── Welcome ───────────────────────────────
               Text(
                 'Welcome back 👋',
                 style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
                   color: textColor,
                 ),
               ).animate().fadeIn(delay: 100.ms),
@@ -132,39 +138,41 @@ class _LoginScreenState extends State<LoginScreen> {
 
               Text(
                 'Sign in to continue your wealth journey',
-                style: TextStyle(fontSize: 12, color: subColor),
+                style: TextStyle(fontSize: 13, color: subColor),
               ).animate().fadeIn(delay: 150.ms),
 
               const SizedBox(height: 24),
 
-              // ── Error ──────────────────────────────────
+              // ── Error ─────────────────────────────────
               if (_error != null)
                 Container(
                   padding: const EdgeInsets.all(12),
                   margin: const EdgeInsets.only(bottom: 16),
                   decoration: BoxDecoration(
-                    color: AppColors.error.withOpacity(0.15),
+                    color: Colors.red.withOpacity(0.1),
                     borderRadius: AppRadius.md,
-                    border: Border.all(
-                        color: AppColors.error.withOpacity(0.3)),
+                    border: Border.all(color: Colors.red.withOpacity(0.3)),
                   ),
                   child: Row(children: [
-                    const Icon(Icons.error_outline,
-                        color: AppColors.error, size: 16),
+                    const Icon(Icons.error_outline, color: Colors.red, size: 16),
                     const SizedBox(width: 8),
-                    Expanded(child: Text(_error!,
-                        style: TextStyle(
-                            color: AppColors.error, fontSize: 13))),
+                    Expanded(
+                      child: Text(
+                        _error!,
+                        style: const TextStyle(color: Colors.red, fontSize: 13),
+                      ),
+                    ),
                   ]),
                 ).animate().fadeIn().shake(),
 
-              // ── Email ──────────────────────────────────
+              // ── Email ────────────────────────────────
               Text('Email address',
                   style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w500,
                       color: subColor)),
               const SizedBox(height: 6),
+
               TextField(
                 controller: _emailCtrl,
                 keyboardType: TextInputType.emailAddress,
@@ -180,11 +188,8 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
-                    borderSide: const BorderSide(
-                        color: AppColors.primary, width: 1.5),
+                    borderSide: BorderSide(color: borderColor, width: 1.2),
                   ),
-                  contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 14),
                   prefixIcon: Icon(Icons.mail_outline_rounded,
                       color: subColor, size: 18),
                 ),
@@ -192,13 +197,14 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 14),
 
-              // ── Password ───────────────────────────────
+              // ── Password ─────────────────────────────
               Text('Password',
                   style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w500,
                       color: subColor)),
               const SizedBox(height: 6),
+
               TextField(
                 controller: _passCtrl,
                 obscureText: _obscure,
@@ -215,11 +221,8 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
-                    borderSide: const BorderSide(
-                        color: AppColors.primary, width: 1.5),
+                    borderSide: BorderSide(color: borderColor, width: 1.2),
                   ),
-                  contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 14),
                   prefixIcon: Icon(Icons.lock_outline_rounded,
                       color: subColor, size: 18),
                   suffixIcon: IconButton(
@@ -238,14 +241,14 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 10),
 
-              // ── Forgot password ────────────────────────
+              // ── Forgot password ──────────────────────
               Align(
                 alignment: Alignment.centerRight,
                 child: GestureDetector(
                   onTap: () => context.go('/forgot-password'),
-                  child: Text('Forgot password?',
+                  child: const Text('Forgot password?',
                       style: TextStyle(
-                        color: AppColors.primary,
+                        color: Colors.blueAccent,
                         fontWeight: FontWeight.w600,
                         fontSize: 13,
                       )),
@@ -254,7 +257,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 24),
 
-              // ── Sign In button ─────────────────────────
+              // ── Button ───────────────────────────────
               GradientButton(
                 text: _loading ? 'Signing in...' : 'Sign In',
                 onTap: _loading ? null : _login,
@@ -263,7 +266,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 20),
 
-              // ── Sign up link ───────────────────────────
+              // ── Sign up ──────────────────────────────
               Center(
                 child: GestureDetector(
                   onTap: () => context.go('/register'),
@@ -271,13 +274,12 @@ class _LoginScreenState extends State<LoginScreen> {
                     text: TextSpan(
                       text: "Don't have an account? ",
                       style: TextStyle(color: subColor, fontSize: 14),
-                      children: [
+                      children: const [
                         TextSpan(
                           text: 'Sign Up Free',
                           style: TextStyle(
-                            color: AppColors.primary,
+                            color: Colors.blueAccent,
                             fontWeight: FontWeight.w700,
-                            fontSize: 14,
                           ),
                         ),
                       ],
@@ -288,35 +290,12 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 24),
 
-              // ── Legal ──────────────────────────────────
+              // ── Legal ────────────────────────────────
               Center(
-                child: Wrap(
-                  alignment: WrapAlignment.center,
-                  spacing: 4,
-                  children: [
-                    Text('By continuing you agree to our',
-                        style: TextStyle(
-                            color: subColor, fontSize: 11)),
-                    GestureDetector(
-                      onTap: () => context.go('/terms'),
-                      child: Text('Terms',
-                          style: TextStyle(
-                              color: AppColors.primary,
-                              fontSize: 11,
-                              decoration: TextDecoration.underline)),
-                    ),
-                    Text('and',
-                        style:
-                            TextStyle(color: subColor, fontSize: 11)),
-                    GestureDetector(
-                      onTap: () => context.go('/privacy'),
-                      child: Text('Privacy Policy',
-                          style: TextStyle(
-                              color: AppColors.primary,
-                              fontSize: 11,
-                              decoration: TextDecoration.underline)),
-                    ),
-                  ],
+                child: Text(
+                  'By continuing you agree to our Terms and Privacy Policy',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: subColor, fontSize: 11),
                 ),
               ).animate().fadeIn(delay: 700.ms),
 
