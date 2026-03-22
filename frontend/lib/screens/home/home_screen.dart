@@ -8,7 +8,7 @@ import '../../services/api_service.dart';
 import '../../services/ad_service.dart';
 import '../ai/post_ai_sheet.dart';
 
-// ── Post model ────────────────────────────────────────
+// ── Post Model ────────────────────────────────────────
 class PostModel {
   final String id;
   final String name;
@@ -39,6 +39,7 @@ class PostModel {
   });
 }
 
+// ── Sample Posts ──────────────────────────────────────
 final _samplePosts = [
   PostModel(
     id: '1',
@@ -111,6 +112,7 @@ final _samplePosts = [
   ),
 ];
 
+// ── Home Screen ───────────────────────────────────────
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
   @override
@@ -134,9 +136,7 @@ class _HomeScreenState extends State<HomeScreen>
   Future<void> _loadProfile() async {
     try {
       final data = await api.getProfile();
-      if (mounted) {
-        setState(() => _profile = data['profile'] ?? {});
-      }
+      if (mounted) setState(() => _profile = data['profile'] ?? {});
     } catch (_) {}
   }
 
@@ -159,7 +159,6 @@ class _HomeScreenState extends State<HomeScreen>
     }
     final confirmed = await _showAdPrompt();
     if (!confirmed) return;
-
     await adService.showRewardedAd(
       featureKey: 'post_ai',
       onRewarded: () {
@@ -171,34 +170,29 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Future<bool> _showAdPrompt() async {
-    final isDark =
-        Theme.of(context).brightness == Brightness.dark;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return await showDialog<bool>(
           context: context,
           builder: (_) => AlertDialog(
-            backgroundColor:
-                isDark ? AppColors.bgCard : Colors.white,
+            backgroundColor: isDark ? AppColors.bgCard : Colors.white,
             shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(20)),
-            title: const Text('Watch a short ad? 🎬',
+            title: Text('Watch a short ad? 🎬',
                 style: TextStyle(
                     fontWeight: FontWeight.w700,
-                    fontSize: 18)),
+                    fontSize: 18,
+                    color: isDark ? Colors.white : Colors.black87)),
             content: Text(
               'You\'ve used your 3 free AI responses today.\n\nWatch a 30-second ad to unlock more, or upgrade to Premium for unlimited access.',
               style: TextStyle(
-                  color: isDark
-                      ? Colors.white60
-                      : Colors.black54,
+                  color: isDark ? Colors.white60 : Colors.black54,
                   height: 1.5),
             ),
             actions: [
               TextButton(
-                onPressed: () =>
-                    Navigator.pop(context, false),
+                onPressed: () => Navigator.pop(context, false),
                 child: const Text('Not now',
-                    style:
-                        TextStyle(color: AppColors.textMuted)),
+                    style: TextStyle(color: AppColors.textMuted)),
               ),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
@@ -206,8 +200,7 @@ class _HomeScreenState extends State<HomeScreen>
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10)),
                 ),
-                onPressed: () =>
-                    Navigator.pop(context, true),
+                onPressed: () => Navigator.pop(context, true),
                 child: const Text('Watch Ad',
                     style: TextStyle(color: Colors.white)),
               ),
@@ -239,207 +232,202 @@ class _HomeScreenState extends State<HomeScreen>
 
   @override
   Widget build(BuildContext context) {
-    final isDark =
-        Theme.of(context).brightness == Brightness.dark;
-    final bgColor =
-        Theme.of(context).scaffoldBackgroundColor;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bgColor = isDark ? Colors.black : Colors.white;
     final cardColor = isDark ? AppColors.bgCard : Colors.white;
     final borderColor =
         isDark ? AppColors.bgSurface : Colors.grey.shade200;
     final textColor = isDark ? Colors.white : Colors.black87;
-    final subColor =
-        isDark ? Colors.white54 : Colors.black45;
-    final iconColor =
-        isDark ? Colors.white70 : Colors.black54;
+    final subColor = isDark ? Colors.white54 : Colors.black45;
+    final iconColor = isDark ? Colors.white70 : Colors.black54;
 
     return Scaffold(
       backgroundColor: bgColor,
-      body: NestedScrollView(
-        headerSliverBuilder: (context, _) => [
-          // ── AppBar ────────────────────────────────────
-          SliverAppBar(
-            floating: true,
-            snap: true,
-            backgroundColor: cardColor,
-            elevation: 0,
-            surfaceTintColor: Colors.transparent,
-            // ── Left: Message + Task buttons ────────────
-            leading: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const SizedBox(width: 4),
-                // Message button
-                GestureDetector(
-                  onTap: () => context.go('/chat'),
-                  child: Container(
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? AppColors.bgSurface
-                          : Colors.grey.shade100,
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(Iconsax.message,
-                        color: iconColor, size: 18),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                // Task button
-                GestureDetector(
-                  onTap: () => context.go('/tasks'),
-                  child: Container(
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? AppColors.bgSurface
-                          : Colors.grey.shade100,
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(Iconsax.task_square,
-                        color: iconColor, size: 18),
-                  ),
-                ),
-              ],
-            ),
-            leadingWidth: 90,
 
-            // ── Center: RiseUp gradient ──────────────────
-            title: ShaderMask(
-              shaderCallback: (bounds) =>
-                  const LinearGradient(
-                colors: [
-                  Color(0xFFFF6B00),
-                  Color(0xFFFFD700),
-                  Color(0xFF6C5CE7),
-                ],
-                stops: [0.0, 0.4, 1.0],
-              ).createShader(bounds),
-              child: const Text(
-                'RiseUp',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w900,
-                  color: Colors.white,
-                  letterSpacing: -0.5,
+      // ── Fixed AppBar — never scrolls ─────────────────
+      appBar: AppBar(
+        backgroundColor: cardColor,
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
+        titleSpacing: 0,
+        // Left: Message + Task buttons
+        leading: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: () => context.go('/chat'),
+              child: Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: isDark
+                      ? AppColors.bgSurface
+                      : Colors.grey.shade100,
+                  shape: BoxShape.circle,
                 ),
+                child:
+                    Icon(Iconsax.message, color: iconColor, size: 18),
               ),
             ),
-            centerTitle: true,
-
-            // ── Right: AI counter + Search + Bell ────────
-            actions: [
-              if (!_isPremium)
-                Container(
-                  margin: const EdgeInsets.only(
-                      top: 12, bottom: 12),
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color:
-                        AppColors.primary.withOpacity(0.12),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    '🤖 $_aiRemaining left',
-                    style: const TextStyle(
-                        color: AppColors.primary,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600),
-                  ),
+            const SizedBox(width: 6),
+            GestureDetector(
+              onTap: () => context.go('/tasks'),
+              child: Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: isDark
+                      ? AppColors.bgSurface
+                      : Colors.grey.shade100,
+                  shape: BoxShape.circle,
                 ),
-              IconButton(
-                icon: Icon(Iconsax.search_normal,
-                    color: iconColor, size: 20),
-                onPressed: () => context.go('/explore'),
+                child: Icon(Iconsax.task_square,
+                    color: iconColor, size: 18),
               ),
-              IconButton(
-                icon: Icon(Iconsax.notification,
-                    color: iconColor, size: 20),
-                onPressed: () =>
-                    context.go('/notifications'),
-              ),
-              const SizedBox(width: 4),
+            ),
+          ],
+        ),
+        leadingWidth: 90,
+
+        // Center: RiseUp gradient
+        title: ShaderMask(
+          shaderCallback: (bounds) => const LinearGradient(
+            colors: [
+              Color(0xFFFF6B00),
+              Color(0xFFFFD700),
+              Color(0xFF6C5CE7),
             ],
-            bottom: PreferredSize(
-              preferredSize: const Size.fromHeight(1),
-              child: Divider(height: 1, color: borderColor),
-            ),
-          ),
-
-          // ── Stories ───────────────────────────────────
-          SliverToBoxAdapter(
-            child: Container(
-              color: cardColor,
-              child: Column(
-                children: [
-                  SizedBox(
-                    height: 92,
-                    child: ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
-                      itemCount: 8,
-                      itemBuilder: (_, i) => _StoryItem(
-                          index: i, isDark: isDark),
-                    ),
-                  ),
-                  Divider(height: 1, color: borderColor),
-                ],
-              ),
-            ),
-          ),
-
-          // ── Tabs ──────────────────────────────────────
-          SliverPersistentHeader(
-            pinned: true,
-            delegate: _TabDelegate(
-              TabBar(
-                controller: _tabCtrl,
-                labelColor: AppColors.primary,
-                unselectedLabelColor: subColor,
-                indicatorColor: AppColors.primary,
-                indicatorWeight: 2.5,
-                labelStyle: const TextStyle(
-                    fontSize: 13, fontWeight: FontWeight.w600),
-                tabs: const [
-                  Tab(text: 'For You'),
-                  Tab(text: 'Following'),
-                  Tab(text: 'Trending'),
-                ],
-              ),
-              cardColor: cardColor,
-              borderColor: borderColor,
-            ),
-          ),
-        ],
-        body: TabBarView(
-          controller: _tabCtrl,
-          children: List.generate(
-            3,
-            (_) => _FeedList(
-              posts: _samplePosts,
-              isDark: isDark,
-              cardColor: cardColor,
-              borderColor: borderColor,
-              textColor: textColor,
-              subColor: subColor,
-              onAskAI: (p) =>
-                  _handleAiRequest(p, isPrivate: false),
-              onPrivateChat: (p) =>
-                  _handleAiRequest(p, isPrivate: true),
-              isPremium: _isPremium,
-              aiRemaining: _aiRemaining,
+            stops: [0.0, 0.4, 1.0],
+          ).createShader(bounds),
+          child: const Text(
+            'RiseUp',
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.w900,
+              color: Colors.white,
+              letterSpacing: -0.5,
             ),
           ),
         ),
+        centerTitle: true,
+
+        // Right: AI counter + Search + Bell
+        actions: [
+          if (!_isPremium)
+            Container(
+              margin:
+                  const EdgeInsets.only(top: 12, bottom: 12),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text(
+                '🤖 $_aiRemaining left',
+                style: const TextStyle(
+                    color: AppColors.primary,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600),
+              ),
+            ),
+          IconButton(
+            icon: Icon(Iconsax.search_normal,
+                color: iconColor, size: 20),
+            onPressed: () => context.go('/explore'),
+          ),
+          IconButton(
+            icon: Icon(Iconsax.notification,
+                color: iconColor, size: 20),
+            onPressed: () => context.go('/notifications'),
+          ),
+          const SizedBox(width: 4),
+        ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Divider(height: 1, color: borderColor),
+        ),
+      ),
+
+      body: Column(
+        children: [
+          // ── Fixed Stories — never scrolls ─────────────
+          Container(
+            color: cardColor,
+            child: Column(
+              children: [
+                SizedBox(
+                  height: 92,
+                  child: ListView.builder(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 8),
+                    itemCount: 8,
+                    itemBuilder: (_, i) =>
+                        _StoryItem(index: i, isDark: isDark),
+                  ),
+                ),
+                Divider(height: 1, color: borderColor),
+              ],
+            ),
+          ),
+
+          // ── Fixed TabBar — never scrolls ──────────────
+          Container(
+            color: cardColor,
+            child: Column(
+              children: [
+                TabBar(
+                  controller: _tabCtrl,
+                  labelColor: AppColors.primary,
+                  unselectedLabelColor: subColor,
+                  indicatorColor: AppColors.primary,
+                  indicatorWeight: 2.5,
+                  labelStyle: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600),
+                  tabs: const [
+                    Tab(text: 'For You'),
+                    Tab(text: 'Following'),
+                    Tab(text: 'Trending'),
+                  ],
+                ),
+                Divider(height: 1, color: borderColor),
+              ],
+            ),
+          ),
+
+          // ── Only Feed scrolls ─────────────────────────
+          Expanded(
+            child: TabBarView(
+              controller: _tabCtrl,
+              children: List.generate(
+                3,
+                (_) => _FeedList(
+                  posts: _samplePosts,
+                  isDark: isDark,
+                  cardColor: cardColor,
+                  borderColor: borderColor,
+                  textColor: textColor,
+                  subColor: subColor,
+                  onAskAI: (p) =>
+                      _handleAiRequest(p, isPrivate: false),
+                  onPrivateChat: (p) =>
+                      _handleAiRequest(p, isPrivate: true),
+                  isPremium: _isPremium,
+                  aiRemaining: _aiRemaining,
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 }
 
-// ── Feed List ──────────────────────────────────────────
+// ── Feed List ─────────────────────────────────────────
 class _FeedList extends StatelessWidget {
   final List<PostModel> posts;
   final bool isDark, isPremium;
@@ -466,8 +454,8 @@ class _FeedList extends StatelessWidget {
     return ListView.separated(
       padding: EdgeInsets.zero,
       itemCount: posts.length,
-      separatorBuilder: (_, __) => Divider(
-          height: 8, thickness: 8, color: borderColor),
+      separatorBuilder: (_, __) =>
+          Divider(height: 8, thickness: 8, color: borderColor),
       itemBuilder: (_, i) => PostCard(
         post: posts[i],
         isDark: isDark,
@@ -479,13 +467,12 @@ class _FeedList extends StatelessWidget {
         onPrivateChat: onPrivateChat,
         isPremium: isPremium,
         aiRemaining: aiRemaining,
-      ).animate().fadeIn(
-          delay: Duration(milliseconds: i * 60)),
+      ).animate().fadeIn(delay: Duration(milliseconds: i * 60)),
     );
   }
 }
 
-// ── Post Card ──────────────────────────────────────────
+// ── Post Card ─────────────────────────────────────────
 class PostCard extends StatefulWidget {
   final PostModel post;
   final bool isDark, isPremium;
@@ -540,28 +527,26 @@ class _PostCardState extends State<PostCard> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding:
-                const EdgeInsets.fromLTRB(16, 14, 16, 0),
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // ── Header ──────────────────────────────
+                // ── Post Header ──────────────────────
                 Row(
-                  crossAxisAlignment:
-                      CrossAxisAlignment.start,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Container(
                       width: 44,
                       height: 44,
                       decoration: BoxDecoration(
-                        color: AppColors.primary
-                            .withOpacity(0.12),
+                        color:
+                            AppColors.primary.withOpacity(0.12),
                         shape: BoxShape.circle,
                       ),
                       child: Center(
                         child: Text(p.avatar,
-                            style: const TextStyle(
-                                fontSize: 22)),
+                            style:
+                                const TextStyle(fontSize: 22)),
                       ),
                     ),
                     const SizedBox(width: 10),
@@ -621,10 +606,9 @@ class _PostCardState extends State<PostCard> {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 8, vertical: 3),
                       decoration: BoxDecoration(
-                        color: AppColors.primary
-                            .withOpacity(0.1),
-                        borderRadius:
-                            BorderRadius.circular(20),
+                        color:
+                            AppColors.primary.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(20),
                       ),
                       child: Text(p.tag,
                           style: const TextStyle(
@@ -640,7 +624,7 @@ class _PostCardState extends State<PostCard> {
 
                 const SizedBox(height: 12),
 
-                // ── Content ─────────────────────────────
+                // ── Post Content ─────────────────────
                 Text(
                   p.content,
                   style: TextStyle(
@@ -655,16 +639,14 @@ class _PostCardState extends State<PostCard> {
 
                 const SizedBox(height: 14),
 
-                // ── Actions ──────────────────────────────
+                // ── Actions ──────────────────────────
                 Row(children: [
                   _ActionBtn(
                     icon: _liked
                         ? Icons.favorite_rounded
                         : Icons.favorite_border_rounded,
                     label: _fmt(_likes),
-                    color: _liked
-                        ? Colors.red
-                        : widget.subColor,
+                    color: _liked ? Colors.red : widget.subColor,
                     onTap: () {
                       HapticFeedback.lightImpact();
                       setState(() {
@@ -718,7 +700,7 @@ class _PostCardState extends State<PostCard> {
                   top: BorderSide(
                       color: widget.borderColor, width: 0.8)),
               color: widget.isDark
-                  ? AppColors.bgDark.withOpacity(0.5)
+                  ? Colors.black.withOpacity(0.3)
                   : Colors.grey.shade50,
             ),
             child: Row(children: [
@@ -727,39 +709,32 @@ class _PostCardState extends State<PostCard> {
                 child: GestureDetector(
                   onTap: () => widget.onAskAI(p),
                   child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        vertical: 9),
+                    padding:
+                        const EdgeInsets.symmetric(vertical: 9),
                     decoration: BoxDecoration(
                       color: AppColors.primary.withOpacity(
                           widget.isDark ? 0.15 : 0.08),
-                      borderRadius:
-                          BorderRadius.circular(10),
+                      borderRadius: BorderRadius.circular(10),
                       border: Border.all(
-                          color: AppColors.primary
-                              .withOpacity(0.25),
+                          color:
+                              AppColors.primary.withOpacity(0.25),
                           width: 0.8),
                     ),
                     child: Row(
-                      mainAxisAlignment:
-                          MainAxisAlignment.center,
+                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         Container(
                           width: 18,
                           height: 18,
                           decoration: BoxDecoration(
-                            gradient: const LinearGradient(
-                              colors: [
-                                AppColors.primary,
-                                AppColors.accent
-                              ],
-                            ),
-                            borderRadius:
-                                BorderRadius.circular(5),
+                            gradient: const LinearGradient(colors: [
+                              AppColors.primary,
+                              AppColors.accent
+                            ]),
+                            borderRadius: BorderRadius.circular(5),
                           ),
-                          child: const Icon(
-                              Icons.auto_awesome,
-                              color: Colors.white,
-                              size: 10),
+                          child: const Icon(Icons.auto_awesome,
+                              color: Colors.white, size: 10),
                         ),
                         const SizedBox(width: 6),
                         Text(
@@ -769,10 +744,9 @@ class _PostCardState extends State<PostCard> {
                                   ? 'Ask RiseUp AI'
                                   : 'Ask RiseUp AI 📺',
                           style: const TextStyle(
-                            fontSize: 12,
-                            color: AppColors.primary,
-                            fontWeight: FontWeight.w600,
-                          ),
+                              fontSize: 12,
+                              color: AppColors.primary,
+                              fontWeight: FontWeight.w600),
                         ),
                       ],
                     ),
@@ -782,38 +756,34 @@ class _PostCardState extends State<PostCard> {
 
               const SizedBox(width: 8),
 
-              // Private chat
+              // Chat privately
               Expanded(
                 child: GestureDetector(
                   onTap: () => widget.onPrivateChat(p),
                   child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        vertical: 9),
+                    padding:
+                        const EdgeInsets.symmetric(vertical: 9),
                     decoration: BoxDecoration(
                       color: AppColors.accent.withOpacity(
                           widget.isDark ? 0.15 : 0.08),
-                      borderRadius:
-                          BorderRadius.circular(10),
+                      borderRadius: BorderRadius.circular(10),
                       border: Border.all(
-                          color: AppColors.accent
-                              .withOpacity(0.25),
+                          color:
+                              AppColors.accent.withOpacity(0.25),
                           width: 0.8),
                     ),
                     child: Row(
-                      mainAxisAlignment:
-                          MainAxisAlignment.center,
+                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         Icon(Iconsax.lock,
-                            color: AppColors.accent,
-                            size: 14),
+                            color: AppColors.accent, size: 14),
                         const SizedBox(width: 6),
                         const Text(
                           'Chat Privately',
                           style: TextStyle(
-                            fontSize: 12,
-                            color: AppColors.accent,
-                            fontWeight: FontWeight.w600,
-                          ),
+                              fontSize: 12,
+                              color: AppColors.accent,
+                              fontWeight: FontWeight.w600),
                         ),
                       ],
                     ),
@@ -828,17 +798,18 @@ class _PostCardState extends State<PostCard> {
   }
 }
 
-// ── Action Button ──────────────────────────────────────
+// ── Action Button ─────────────────────────────────────
 class _ActionBtn extends StatelessWidget {
   final IconData icon;
   final String label;
   final Color color;
   final VoidCallback onTap;
-  const _ActionBtn(
-      {required this.icon,
-      required this.label,
-      required this.color,
-      required this.onTap});
+  const _ActionBtn({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) => GestureDetector(
@@ -855,7 +826,7 @@ class _ActionBtn extends StatelessWidget {
       );
 }
 
-// ── Story Item ─────────────────────────────────────────
+// ── Story Item ────────────────────────────────────────
 class _StoryItem extends StatelessWidget {
   final int index;
   final bool isDark;
@@ -899,8 +870,7 @@ class _StoryItem extends StatelessWidget {
                     : null,
                 border: isYou
                     ? Border.all(
-                        color:
-                            AppColors.primary.withOpacity(0.4),
+                        color: AppColors.primary.withOpacity(0.4),
                         width: 1.5)
                     : null,
               ),
@@ -945,31 +915,4 @@ class _StoryItem extends StatelessWidget {
       ),
     );
   }
-}
-
-// ── Tab Delegate ───────────────────────────────────────
-class _TabDelegate extends SliverPersistentHeaderDelegate {
-  final TabBar tabBar;
-  final Color cardColor, borderColor;
-  const _TabDelegate(this.tabBar,
-      {required this.cardColor, required this.borderColor});
-
-  @override
-  double get minExtent => tabBar.preferredSize.height + 1;
-  @override
-  double get maxExtent => tabBar.preferredSize.height + 1;
-
-  @override
-  Widget build(BuildContext context, double shrinkOffset,
-          bool overlapsContent) =>
-      Container(
-        color: cardColor,
-        child: Column(children: [
-          tabBar,
-          Divider(height: 1, color: borderColor),
-        ]),
-      );
-
-  @override
-  bool shouldRebuild(_TabDelegate old) => false;
 }
