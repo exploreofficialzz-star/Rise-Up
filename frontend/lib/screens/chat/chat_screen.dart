@@ -9,13 +9,25 @@ import '../../services/api_service.dart';
 class ChatScreen extends StatefulWidget {
   final String? conversationId;
   final String mode;
-  const ChatScreen({super.key, this.conversationId, this.mode = 'general'});
+  final String? postContext;   // ← post content passed from feed
+  final String? postAuthor;   // ← post author name
+
+  const ChatScreen({
+    super.key,
+    this.conversationId,
+    this.mode = 'general',
+    this.postContext,
+    this.postAuthor,
+  });
+
   @override
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
 class _Msg {
-  final String text; final bool isUser; final String? model;
+  final String text;
+  final bool isUser;
+  final String? model;
   _Msg(this.text, this.isUser, {this.model});
 }
 
@@ -26,6 +38,7 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _convId;
   bool _loading = false;
   String _currentModel = 'groq';
+  bool _sentPostContext = false;
 
   static const _quickActions = [
     ('💰 Income ideas', 'What are some quick income tasks I can start today?'),
@@ -38,8 +51,13 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     _convId = widget.conversationId;
-    if (_convId != null) _loadHistory();
-    else _addWelcome();
+    if (_convId != null) {
+      _loadHistory();
+    } else if (widget.postContext != null) {
+      _addPostContextWelcome();
+    } else {
+      _addWelcome();
+    }
   }
 
   void _addWelcome() {
@@ -49,23 +67,73 @@ class _ChatScreenState extends State<ChatScreen> {
     ));
   }
 
-  Future<void> _loadHistory() async {
-    final msgs = await api.getMessages(_convId!);
-    setState(() {
-      for (final m in msgs) {
-        if (m['role'] != 'system') {
-          _msgs.add(_Msg(m['content'], m['role'] == 'user', model: m['ai_model']));
-        }
+  void _addPostContextWelcome() {
+    _msgs.add(_Msg(
+      "Hey! 👋 I've read **${widget.postAuthor ?? 'that post'}**'s post.\n\nThis is your **private conversation** — everything you discuss here is only visible to you.\n\nFeel free to ask me anything about it, or explore the topic deeper. What would you like to know?",
+      false,
+    ));
+    // Auto-send post context silently
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (widget.postContext != null && !_sentPostContext) {
+        _sendPostContext();
       }
     });
-    _scrollDown();
+  }
+
+  Future<void> _sendPostContext() async {
+    _sentPostContext = true;
+    setState(() => _loading = true);
+    try {
+      final prompt =
+          '[PRIVATE CONTEXT — User came from this post on RiseUp]\n\nPost by ${widget.postAuthor ?? "a user"}:\n"${widget.postContext}"\n\nThe user wants to discuss this privately. Be ready to help them understand, apply, or go deeper on the topic of this post. Keep responses focused on wealth, income, and personal growth.';
+
+      final res = await api.chat(
+        message: prompt,
+        mode: 'general',
+      );
+      _convId ??= res['conversation_id'];
+
+      if (mounted) {
+        setState(() {
+          _msgs.add(_Msg(
+            "I've analyzed the post. I'm ready to help you go **deeper on this topic privately**.\n\nAsk me anything — strategy, how to apply it, potential income, risks, or anything else on your mind! 💡",
+            false,
+            model: res['ai_model'],
+          ));
+          _loading = false;
+        });
+        _scrollDown();
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _loadHistory() async {
+    try {
+      final msgs = await api.getMessages(_convId!);
+      if (mounted) {
+        setState(() {
+          for (final m in msgs) {
+            if (m['role'] != 'system') {
+              _msgs.add(_Msg(m['content'], m['role'] == 'user',
+                  model: m['ai_model']));
+            }
+          }
+        });
+        _scrollDown();
+      }
+    } catch (_) {}
   }
 
   Future<void> _send([String? text]) async {
     final msg = (text ?? _ctrl.text).trim();
     if (msg.isEmpty || _loading) return;
     _ctrl.clear();
-    setState(() { _msgs.add(_Msg(msg, true)); _loading = true; });
+    setState(() {
+      _msgs.add(_Msg(msg, true));
+      _loading = true;
+    });
     _scrollDown();
 
     try {
@@ -75,147 +143,273 @@ class _ChatScreenState extends State<ChatScreen> {
         mode: widget.mode,
       );
       _convId ??= res['conversation_id'];
-      setState(() {
-        _msgs.add(_Msg(res['content'] ?? '...', false, model: res['ai_model']));
-        _currentModel = res['ai_model'] ?? _currentModel;
-        _loading = false;
-      });
-      _scrollDown();
+      if (mounted) {
+        setState(() {
+          _msgs.add(_Msg(res['content'] ?? '...', false,
+              model: res['ai_model']));
+          _currentModel = res['ai_model'] ?? _currentModel;
+          _loading = false;
+        });
+        _scrollDown();
+      }
     } catch (_) {
-      setState(() {
-        _msgs.add(_Msg('Connection issue. Try again! 🔄', false));
-        _loading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _msgs.add(
+              _Msg('Connection issue. Try again! 🔄', false));
+          _loading = false;
+        });
+      }
     }
   }
 
   void _scrollDown() {
     Future.delayed(const Duration(milliseconds: 150), () {
-      if (_scroll.hasClients) _scroll.animateTo(
-        _scroll.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 300), curve: Curves.easeOut,
-      );
+      if (_scroll.hasClients) {
+        _scroll.animateTo(
+          _scroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
     });
   }
 
   @override
+  void dispose() {
+    _ctrl.dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bgColor = Theme.of(context).scaffoldBackgroundColor;
+    final cardColor = isDark ? AppColors.bgCard : Colors.white;
+    final textColor = isDark ? Colors.white : Colors.black87;
+    final subColor = isDark ? Colors.white54 : Colors.black45;
+    final surfaceColor =
+        isDark ? AppColors.bgSurface : Colors.grey.shade100;
+    final borderColor =
+        isDark ? AppColors.bgSurface : Colors.grey.shade200;
+    final isFromPost = widget.postContext != null;
+
     return Scaffold(
-      backgroundColor: AppColors.bgDark,
+      backgroundColor: bgColor,
       appBar: AppBar(
+        backgroundColor: cardColor,
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
         leading: IconButton(
-          icon: const Icon(Iconsax.arrow_left),
-          onPressed: () => context.canPop() ? context.pop() : context.go('/home'),
+          icon: Icon(Icons.arrow_back_ios_new_rounded,
+              color: textColor, size: 18),
+          onPressed: () =>
+              context.canPop() ? context.pop() : context.go('/home'),
         ),
         title: Row(
-          mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 34, height: 34,
+              width: 34,
+              height: 34,
               decoration: BoxDecoration(
-                gradient: const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
+                gradient: const LinearGradient(
+                    colors: [AppColors.primary, AppColors.accent]),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: const Icon(Icons.auto_awesome, color: Colors.white, size: 18),
+              child: const Icon(Icons.auto_awesome,
+                  color: Colors.white, size: 16),
             ),
             const SizedBox(width: 10),
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('RiseUp AI', style: AppTextStyles.h4.copyWith(fontSize: 14)),
-                Text(_modelLabel(_currentModel), style: AppTextStyles.caption.copyWith(color: AppColors.success)),
+                Text(
+                  'RiseUp AI',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: textColor,
+                  ),
+                ),
+                Row(children: [
+                  Container(
+                    width: 6,
+                    height: 6,
+                    decoration: const BoxDecoration(
+                      color: AppColors.success,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    isFromPost
+                        ? '🔒 Private · Post context'
+                        : 'Your personal wealth mentor',
+                    style: TextStyle(
+                        fontSize: 11, color: subColor),
+                  ),
+                ]),
               ],
             ),
           ],
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Iconsax.note_add, size: 20),
-            onPressed: () {
-              setState(() { _msgs.clear(); _convId = null; _addWelcome(); });
-            },
-            tooltip: 'New Chat',
-          ),
-        ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Divider(height: 1, color: borderColor),
+        ),
       ),
+
       body: Column(
         children: [
+          // ── Post context banner ──────────────────────
+          if (isFromPost)
+            Container(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 16, vertical: 10),
+              color: AppColors.accent.withOpacity(0.08),
+              child: Row(
+                children: [
+                  Icon(Iconsax.message_private,
+                      color: AppColors.accent, size: 16),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Private chat about ${widget.postAuthor ?? "this post"}\'s content',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppColors.accent,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => context.go('/home'),
+                    child: Text(
+                      'Back to feed',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: subColor,
+                        decoration: TextDecoration.underline,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+          // ── Messages ─────────────────────────────────
           Expanded(
             child: ListView.builder(
               controller: _scroll,
               padding: const EdgeInsets.all(16),
               itemCount: _msgs.length + (_loading ? 1 : 0),
               itemBuilder: (_, i) {
-                if (i == _msgs.length) return _buildTyping();
-                final m = _msgs[i];
-                return _buildBubble(m, i);
+                if (i == _msgs.length)
+                  return _buildTyping(isDark, surfaceColor);
+                return _buildBubble(
+                    _msgs[i], isDark, textColor, surfaceColor);
               },
             ),
           ),
 
-          // Quick actions (when empty)
-          if (_msgs.length == 1 && !_loading)
-            _QuickActions(actions: _quickActions, onTap: _send),
+          // ── Quick actions (empty state) ───────────────
+          if (_msgs.length == 1 && !_loading && !isFromPost)
+            _QuickActions(
+                actions: _quickActions, onTap: _send),
 
-          _InputBar(ctrl: _ctrl, onSend: _send, loading: _loading),
+          // ── Input bar ─────────────────────────────────
+          _InputBar(
+            ctrl: _ctrl,
+            onSend: _send,
+            loading: _loading,
+            isDark: isDark,
+            textColor: textColor,
+            subColor: subColor,
+            surfaceColor: surfaceColor,
+            borderColor: borderColor,
+          ),
         ],
       ),
     );
   }
 
-  String _modelLabel(String model) {
-    switch (model) {
-      case 'groq': return '⚡ Groq (Llama 3.1) · Free';
-      case 'gemini': return '✨ Gemini Flash · Free';
-      case 'cohere': return '🤖 Cohere Command R · Free';
-      case 'openai': return '🧠 GPT-4o Mini';
-      case 'anthropic': return '🎭 Claude';
-      default: return '🤖 AI Active';
-    }
-  }
+  Widget _buildBubble(_Msg m, bool isDark, Color textColor,
+      Color surfaceColor) {
+    final aiBubble =
+        isDark ? AppColors.aiBubble : Colors.grey.shade100;
 
-  Widget _buildBubble(_Msg m, int i) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(
-        mainAxisAlignment: m.isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+        mainAxisAlignment: m.isUser
+            ? MainAxisAlignment.end
+            : MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           if (!m.isUser) ...[
             Container(
-              width: 32, height: 32,
+              width: 32,
+              height: 32,
               decoration: BoxDecoration(
-                gradient: const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
+                gradient: const LinearGradient(
+                    colors: [AppColors.primary, AppColors.accent]),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: const Icon(Icons.auto_awesome, color: Colors.white, size: 16),
+              child: const Icon(Icons.auto_awesome,
+                  color: Colors.white, size: 16),
             ),
             const SizedBox(width: 8),
           ],
           Flexible(
             child: Container(
-              constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              constraints: BoxConstraints(
+                  maxWidth:
+                      MediaQuery.of(context).size.width * 0.78),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 16, vertical: 12),
               decoration: BoxDecoration(
-                color: m.isUser ? AppColors.userBubble : AppColors.aiBubble,
+                color: m.isUser ? AppColors.userBubble : aiBubble,
                 borderRadius: BorderRadius.only(
-                  topLeft: const Radius.circular(18), topRight: const Radius.circular(18),
+                  topLeft: const Radius.circular(18),
+                  topRight: const Radius.circular(18),
                   bottomLeft: Radius.circular(m.isUser ? 18 : 4),
-                  bottomRight: Radius.circular(m.isUser ? 4 : 18),
+                  bottomRight:
+                      Radius.circular(m.isUser ? 4 : 18),
                 ),
               ),
               child: m.isUser
-                  ? Text(m.text, style: AppTextStyles.chatUser)
+                  ? Text(m.text,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          height: 1.5))
                   : MarkdownBody(
                       data: m.text,
                       styleSheet: MarkdownStyleSheet(
-                        p: AppTextStyles.chatAI,
-                        strong: AppTextStyles.chatAI.copyWith(fontWeight: FontWeight.w700, color: AppColors.primaryLight),
-                        code: AppTextStyles.body.copyWith(backgroundColor: AppColors.bgDark, fontFamily: 'monospace'),
-                        blockquote: AppTextStyles.chatAI.copyWith(color: AppColors.textSecondary),
-                        h3: AppTextStyles.h4.copyWith(fontSize: 15),
-                        h4: AppTextStyles.h4.copyWith(fontSize: 14),
-                        listBullet: AppTextStyles.chatAI,
+                        p: TextStyle(
+                          color: isDark
+                              ? const Color(0xFFE8E8F0)
+                              : Colors.black87,
+                          fontSize: 14,
+                          height: 1.6,
+                        ),
+                        strong: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.primaryLight,
+                          fontSize: 14,
+                        ),
+                        listBullet: TextStyle(
+                          color: isDark
+                              ? const Color(0xFFE8E8F0)
+                              : Colors.black87,
+                        ),
+                        h3: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700),
+                        h4: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600),
                       ),
                     ),
             ),
@@ -225,30 +419,48 @@ class _ChatScreenState extends State<ChatScreen> {
     ).animate().fadeIn(duration: 250.ms).slideY(begin: 0.15);
   }
 
-  Widget _buildTyping() {
+  Widget _buildTyping(bool isDark, Color surfaceColor) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(
         children: [
           Container(
-            width: 32, height: 32,
+            width: 32,
+            height: 32,
             decoration: BoxDecoration(
-              gradient: const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
+              gradient: const LinearGradient(
+                  colors: [AppColors.primary, AppColors.accent]),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Icon(Icons.auto_awesome, color: Colors.white, size: 16),
+            child: const Icon(Icons.auto_awesome,
+                color: Colors.white, size: 16),
           ),
           const SizedBox(width: 8),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            decoration: BoxDecoration(color: AppColors.aiBubble, borderRadius: AppRadius.lg),
+            padding: const EdgeInsets.symmetric(
+                horizontal: 16, vertical: 14),
+            decoration: BoxDecoration(
+              color: isDark ? AppColors.aiBubble : surfaceColor,
+              borderRadius: AppRadius.lg,
+            ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
-              children: List.generate(3, (i) => Container(
-                margin: const EdgeInsets.symmetric(horizontal: 2),
-                width: 6, height: 6,
-                decoration: const BoxDecoration(color: AppColors.primary, shape: BoxShape.circle),
-              ).animate(onPlay: (c) => c.repeat()).fadeIn(delay: Duration(milliseconds: i * 200)).then().fadeOut()),
+              children: List.generate(
+                3,
+                (i) => Container(
+                  margin:
+                      const EdgeInsets.symmetric(horizontal: 2),
+                  width: 6,
+                  height: 6,
+                  decoration: const BoxDecoration(
+                      color: AppColors.primary,
+                      shape: BoxShape.circle),
+                )
+                    .animate(onPlay: (c) => c.repeat())
+                    .fadeIn(delay: Duration(milliseconds: i * 200))
+                    .then()
+                    .fadeOut(),
+              ),
             ),
           ),
         ],
@@ -257,6 +469,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
+// ── Quick actions ──────────────────────────────────────
 class _QuickActions extends StatelessWidget {
   final List<(String, String)> actions;
   final Function(String) onTap;
@@ -264,55 +477,95 @@ class _QuickActions extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
       child: Wrap(
-        spacing: 8, runSpacing: 8,
-        children: actions.map((a) => GestureDetector(
-          onTap: () => onTap(a.$2),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-            decoration: BoxDecoration(
-              color: AppColors.bgCard,
-              borderRadius: AppRadius.pill,
-              border: Border.all(color: AppColors.bgSurface),
-            ),
-            child: Text(a.$1, style: AppTextStyles.bodySmall),
-          ),
-        )).toList(),
+        spacing: 8,
+        runSpacing: 8,
+        children: actions
+            .map((a) => GestureDetector(
+                  onTap: () => onTap(a.$2),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 9),
+                    decoration: BoxDecoration(
+                      color: isDark
+                          ? AppColors.bgCard
+                          : Colors.grey.shade100,
+                      borderRadius: AppRadius.pill,
+                      border: Border.all(
+                        color: isDark
+                            ? AppColors.bgSurface
+                            : Colors.grey.shade200,
+                      ),
+                    ),
+                    child: Text(a.$1,
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: isDark
+                              ? Colors.white70
+                              : Colors.black54,
+                        )),
+                  ),
+                ))
+            .toList(),
       ),
     );
   }
 }
 
+// ── Input bar ──────────────────────────────────────────
 class _InputBar extends StatelessWidget {
   final TextEditingController ctrl;
   final Function([String?]) onSend;
-  final bool loading;
-  const _InputBar({required this.ctrl, required this.onSend, required this.loading});
+  final bool loading, isDark;
+  final Color textColor, subColor, surfaceColor, borderColor;
+
+  const _InputBar({
+    required this.ctrl,
+    required this.onSend,
+    required this.loading,
+    required this.isDark,
+    required this.textColor,
+    required this.subColor,
+    required this.surfaceColor,
+    required this.borderColor,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: EdgeInsets.fromLTRB(16, 8, 16, MediaQuery.of(context).padding.bottom + 8),
+      padding: EdgeInsets.fromLTRB(
+          16,
+          8,
+          16,
+          MediaQuery.of(context).padding.bottom + 8),
       decoration: BoxDecoration(
-        color: AppColors.bgCard,
-        border: Border(top: BorderSide(color: AppColors.bgSurface)),
+        color: isDark ? AppColors.bgCard : Colors.white,
+        border: Border(top: BorderSide(color: borderColor)),
       ),
       child: Row(
         children: [
           Expanded(
             child: TextField(
               controller: ctrl,
-              style: AppTextStyles.body,
-              maxLines: 4, minLines: 1,
+              style: TextStyle(fontSize: 14, color: textColor),
+              maxLines: 4,
+              minLines: 1,
               textCapitalization: TextCapitalization.sentences,
               decoration: InputDecoration(
                 hintText: 'Ask your AI mentor...',
-                hintStyle: AppTextStyles.label,
-                border: OutlineInputBorder(borderRadius: AppRadius.lg, borderSide: BorderSide.none),
-                filled: true, fillColor: AppColors.bgSurface,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                hintStyle:
+                    TextStyle(color: subColor, fontSize: 13),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: BorderSide.none,
+                ),
+                filled: true,
+                fillColor: surfaceColor,
+                contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 12),
               ),
               onSubmitted: loading ? null : (_) => onSend(),
             ),
@@ -321,14 +574,23 @@ class _InputBar extends StatelessWidget {
           GestureDetector(
             onTap: loading ? null : () => onSend(),
             child: Container(
-              width: 48, height: 48,
+              width: 48,
+              height: 48,
               decoration: BoxDecoration(
                 gradient: LinearGradient(
-                  colors: loading ? [AppColors.textMuted, AppColors.textMuted] : [AppColors.primary, AppColors.accent],
+                  colors: loading
+                      ? [Colors.grey.shade400, Colors.grey.shade400]
+                      : [AppColors.primary, AppColors.accent],
                 ),
                 borderRadius: BorderRadius.circular(14),
               ),
-              child: Icon(loading ? Icons.hourglass_empty : Icons.send_rounded, color: Colors.white, size: 20),
+              child: Icon(
+                loading
+                    ? Icons.hourglass_empty
+                    : Icons.send_rounded,
+                color: Colors.white,
+                size: 20,
+              ),
             ),
           ),
         ],
