@@ -768,7 +768,7 @@ class _PostCardState extends State<PostCard> {
                         mainAxisAlignment:
                             MainAxisAlignment.center,
                         children: [
-                          Icon(Iconsax.message_private,
+                          Icon(Iconsax.lock,
                               color: AppColors.accent, size: 15),
                           const SizedBox(width: 6),
                           const Text(

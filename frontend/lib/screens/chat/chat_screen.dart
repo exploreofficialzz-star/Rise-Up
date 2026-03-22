@@ -270,7 +270,7 @@ class _ChatScreenState extends State<ChatScreen> {
               color: AppColors.accent.withOpacity(0.08),
               child: Row(
                 children: [
-                  Icon(Iconsax.message_private,
+                  Icon(Iconsax.lock,
                       color: AppColors.accent, size: 16),
                   const SizedBox(width: 8),
                   Expanded(
