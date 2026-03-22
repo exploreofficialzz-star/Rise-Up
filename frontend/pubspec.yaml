@@ -102,7 +102,7 @@ flutter:
 
   assets:
     - assets/images/
-    - assets/images/riseup_logo.jpg
+    - assets/images/riseup_logo.png
     - assets/animations/
     - assets/icons/
 
