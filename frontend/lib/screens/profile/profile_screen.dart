@@ -11,254 +11,288 @@ class ProfileScreen extends StatefulWidget {
   State<ProfileScreen> createState() => _ProfileScreenState();
 }
 
-class _ProfileScreenState extends State<ProfileScreen> {
+class _ProfileScreenState extends State<ProfileScreen>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabCtrl;
   Map _profile = {};
   bool _loading = true;
+
+  static const _posts = [
+    ('💰', 'Just hit my first \$1K month freelancing. It\'s real, people. Pick a skill and go all in.', '2h ago', 234, '💰 Wealth'),
+    ('💡', 'Reminder: Your network is your net worth. Invest in relationships as much as money.', '1d ago', 891, '🧠 Mindset'),
+    ('🚀', 'Started with nothing. Now managing 3 income streams. Consistency > talent every time.', '3d ago', 1203, '⚡ Hustle'),
+  ];
 
   @override
   void initState() {
     super.initState();
-    _load();
+    _tabCtrl = TabController(length: 2, vsync: this);
+    _loadProfile();
   }
 
-  Future<void> _load() async {
+  Future<void> _loadProfile() async {
     try {
       final data = await api.getProfile();
-      setState(() { _profile = data['profile'] ?? {}; _loading = false; });
-    } catch (_) { setState(() => _loading = false); }
+      if (mounted) setState(() { _profile = data['profile'] ?? {}; _loading = false; });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
-  Future<void> _signOut() async {
-    await api.signOut();
-    if (mounted) context.go('/login');
+  @override
+  void dispose() {
+    _tabCtrl.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final name = _profile['full_name']?.toString() ?? 'User';
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bgColor = isDark ? Colors.black : Colors.white;
+    final cardColor = isDark ? AppColors.bgCard : Colors.white;
+    final surfaceColor = isDark ? AppColors.bgSurface : Colors.grey.shade100;
+    final borderColor = isDark ? AppColors.bgSurface : Colors.grey.shade200;
+    final textColor = isDark ? Colors.white : Colors.black87;
+    final subColor = isDark ? Colors.white54 : Colors.black45;
+    final name = _profile['full_name']?.toString() ?? 'Your Name';
     final stage = _profile['stage']?.toString() ?? 'survival';
     final stageInfo = StageInfo.get(stage);
-    final isPremium = _profile['subscription_tier'] == 'premium';
-    final totalEarned = (_profile['total_earned'] ?? 0.0) as num;
-    final currency = _profile['currency']?.toString() ?? 'NGN';
 
     return Scaffold(
-      backgroundColor: AppColors.bgDark,
+      backgroundColor: bgColor,
       appBar: AppBar(
-        title: Text('Profile', style: AppTextStyles.h3),
+        backgroundColor: cardColor,
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
+        title: Text(name,
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: textColor)),
         actions: [
           IconButton(
-            icon: const Icon(Iconsax.setting_2),
-            onPressed: () {},
-            tooltip: 'Settings',
+            icon: Icon(Iconsax.setting_2, color: textColor, size: 22),
+            onPressed: () => context.go('/settings'),
           ),
         ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Divider(height: 1, color: borderColor),
+        ),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
-          : SingleChildScrollView(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                children: [
-                  // Avatar & Name
-                  Column(
+          ? Center(child: CircularProgressIndicator(color: AppColors.primary))
+          : Column(
+              children: [
+                // ── Profile header ────────────────────────
+                Container(
+                  color: cardColor,
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
                     children: [
-                      CircleAvatar(
-                        radius: 44,
-                        backgroundColor: AppColors.primary.withOpacity(0.2),
-                        child: Text(
-                          name.isNotEmpty ? name[0].toUpperCase() : 'U',
-                          style: AppTextStyles.h1.copyWith(color: AppColors.primary),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Text(name, style: AppTextStyles.h3),
-                      const SizedBox(height: 4),
-                      Text(_profile['email']?.toString() ?? '', style: AppTextStyles.bodySmall),
-                      const SizedBox(height: 10),
                       Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: (stageInfo['color'] as Color).withOpacity(0.15),
-                              borderRadius: AppRadius.pill,
-                            ),
-                            child: Text('${stageInfo['emoji']} ${stageInfo['label']}', style: AppTextStyles.label.copyWith(color: stageInfo['color'] as Color)),
-                          ),
-                          if (isPremium) ...[
-                            const SizedBox(width: 8),
+                          // Avatar
+                          Stack(children: [
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              width: 76, height: 76,
                               decoration: BoxDecoration(
-                                gradient: const LinearGradient(colors: [AppColors.gold, AppColors.goldDark]),
-                                borderRadius: AppRadius.pill,
+                                gradient: const LinearGradient(
+                                    colors: [AppColors.primary, AppColors.accent]),
+                                shape: BoxShape.circle,
                               ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Icon(Icons.workspace_premium, color: Colors.white, size: 12),
-                                  const SizedBox(width: 4),
-                                  Text('Premium', style: AppTextStyles.caption.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
-                                ],
+                              child: Center(
+                                child: Text(
+                                  name.isNotEmpty ? name[0].toUpperCase() : '👤',
+                                  style: const TextStyle(fontSize: 32, color: Colors.white, fontWeight: FontWeight.w700),
+                                ),
                               ),
                             ),
-                          ],
+                            Positioned(
+                              bottom: 0, right: 0,
+                              child: Container(
+                                width: 22, height: 22,
+                                decoration: BoxDecoration(
+                                  color: AppColors.primary, shape: BoxShape.circle,
+                                  border: Border.all(color: cardColor, width: 2),
+                                ),
+                                child: const Icon(Icons.add, color: Colors.white, size: 12),
+                              ),
+                            ),
+                          ]),
+                          const SizedBox(width: 16),
+
+                          // Stats
+                          Expanded(
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                              children: [
+                                _StatCol('Posts', '12', textColor, subColor),
+                                _StatCol('Followers', '1.2K', textColor, subColor),
+                                _StatCol('Following', '348', textColor, subColor),
+                              ],
+                            ),
+                          ),
                         ],
                       ),
+
+                      const SizedBox(height: 12),
+
+                      // Name + stage badge
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(children: [
+                              Text(name, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: textColor)),
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: (stageInfo['color'] as Color).withOpacity(0.15),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Text(
+                                  '${stageInfo['emoji']} ${stageInfo['label']}',
+                                  style: TextStyle(fontSize: 10, color: stageInfo['color'] as Color, fontWeight: FontWeight.w600),
+                                ),
+                              ),
+                            ]),
+                            const SizedBox(height: 4),
+                            Text('Building wealth one step at a time 🚀',
+                                style: TextStyle(fontSize: 13, color: subColor)),
+                            const SizedBox(height: 4),
+                            Row(children: [
+                              Icon(Iconsax.location, size: 12, color: subColor),
+                              const SizedBox(width: 4),
+                              Text('Worldwide 🌍', style: TextStyle(fontSize: 12, color: subColor)),
+                            ]),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 14),
+
+                      // Edit profile + Share buttons
+                      Row(children: [
+                        Expanded(
+                          child: GestureDetector(
+                            onTap: () {},
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              decoration: BoxDecoration(
+                                color: surfaceColor,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: borderColor),
+                              ),
+                              child: Center(child: Text('Edit Profile',
+                                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: textColor))),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: GestureDetector(
+                            onTap: () {},
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              decoration: BoxDecoration(
+                                color: surfaceColor,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: borderColor),
+                              ),
+                              child: Center(child: Text('Share Profile',
+                                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: textColor))),
+                            ),
+                          ),
+                        ),
+                      ]),
                     ],
-                  ).animate().fadeIn(),
+                  ),
+                ),
 
-                  const SizedBox(height: 28),
+                // ── Tabs ──────────────────────────────────
+                Container(
+                  color: cardColor,
+                  child: TabBar(
+                    controller: _tabCtrl,
+                    labelColor: AppColors.primary,
+                    unselectedLabelColor: subColor,
+                    indicatorColor: AppColors.primary,
+                    indicatorWeight: 2.5,
+                    tabs: const [
+                      Tab(icon: Icon(Iconsax.grid_1, size: 20)),
+                      Tab(icon: Icon(Iconsax.heart, size: 20)),
+                    ],
+                  ),
+                ),
+                Divider(height: 1, color: borderColor),
 
-                  // Earnings
-                  Container(
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      color: AppColors.bgCard,
-                      borderRadius: AppRadius.lg,
-                      border: Border.all(color: AppColors.success.withOpacity(0.2)),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceAround,
-                      children: [
-                        _StatItem('$currency\n${_formatAmount(totalEarned.toDouble())}', 'Total Earned', AppColors.success),
-                        _Divider(),
-                        _StatItem(_profile['stage']?.toString().toUpperCase() ?? 'START', 'Stage', AppColors.primary),
-                        _Divider(),
-                        _StatItem(_profile['wealth_type']?.toString().split('_').map((w) => w[0].toUpperCase() + w.substring(1)).join(' ') ?? 'N/A', 'Type', AppColors.accent),
-                      ],
-                    ),
-                  ).animate().fadeIn(delay: 100.ms),
+                // ── Posts grid ───────────────────────────
+                Expanded(
+                  child: TabBarView(
+                    controller: _tabCtrl,
+                    children: [
+                      // My posts
+                      ListView.separated(
+                        padding: EdgeInsets.zero,
+                        itemCount: _posts.length,
+                        separatorBuilder: (_, __) => Divider(height: 1, color: borderColor),
+                        itemBuilder: (_, i) {
+                          final p = _posts[i];
+                          return Container(
+                            color: cardColor,
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(children: [
+                                  Text(p.$5, style: const TextStyle(fontSize: 11, color: AppColors.primary, fontWeight: FontWeight.w600)),
+                                  const Spacer(),
+                                  Text(p.$3, style: TextStyle(fontSize: 11, color: subColor)),
+                                ]),
+                                const SizedBox(height: 8),
+                                Text(p.$2, style: TextStyle(fontSize: 14, color: textColor, height: 1.5)),
+                                const SizedBox(height: 8),
+                                Row(children: [
+                                  Icon(Icons.favorite_border_rounded, size: 16, color: subColor),
+                                  const SizedBox(width: 4),
+                                  Text('${p.$4}', style: TextStyle(fontSize: 12, color: subColor)),
+                                ]),
+                              ],
+                            ),
+                          ).animate().fadeIn(delay: Duration(milliseconds: i * 60));
+                        },
+                      ),
 
-                  const SizedBox(height: 20),
-
-                  // Info tiles
-                  _InfoSection(title: 'My Journey', tiles: [
-                    _InfoTile(Iconsax.location, 'Location', _profile['country']?.toString() ?? 'Not set'),
-                    _InfoTile(Iconsax.wallet, 'Monthly Income', '$currency ${_profile['monthly_income'] ?? 0}'),
-                    _InfoTile(Iconsax.star, 'Skills', (_profile['current_skills'] as List?)?.join(', ') ?? 'Not set'),
-                    _InfoTile(Iconsax.flag, 'Goal', _profile['short_term_goal']?.toString() ?? 'Not set'),
-                  ]).animate().fadeIn(delay: 150.ms),
-
-                  const SizedBox(height: 16),
-
-                  // Actions
-                  _ActionList(tiles: [
-                    _ActionTile(Iconsax.edit, 'Edit Profile', AppColors.primary, () {}),
-                    _ActionTile(Iconsax.message, 'Chat with AI', AppColors.accent, () => context.go('/chat')),
-                    if (!isPremium) _ActionTile(Icons.workspace_premium, 'Upgrade to Premium', AppColors.gold, () => context.go('/payment')),
-                    _ActionTile(Iconsax.logout, 'Sign Out', AppColors.error, _signOut),
-                  ]).animate().fadeIn(delay: 200.ms),
-
-                  const SizedBox(height: 80),
-                ],
-              ),
+                      // Liked posts
+                      Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Iconsax.heart, size: 48, color: subColor),
+                            const SizedBox(height: 12),
+                            Text('No liked posts yet', style: TextStyle(color: subColor, fontSize: 14)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
     );
   }
-
-  String _formatAmount(double a) {
-    if (a >= 1000000) return '${(a / 1000000).toStringAsFixed(1)}M';
-    if (a >= 1000) return '${(a / 1000).toStringAsFixed(1)}K';
-    return a.toStringAsFixed(0);
-  }
 }
 
-class _StatItem extends StatelessWidget {
-  final String value, label;
-  final Color color;
-  const _StatItem(this.value, this.label, this.color);
+class _StatCol extends StatelessWidget {
+  final String label, value;
+  final Color textColor, subColor;
+  const _StatCol(this.label, this.value, this.textColor, this.subColor);
+
   @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      Text(value, style: AppTextStyles.h4.copyWith(color: color, fontSize: 13), textAlign: TextAlign.center),
-      const SizedBox(height: 4),
-      Text(label, style: AppTextStyles.caption),
-    ],
-  );
-}
-
-class _Divider extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) => Container(width: 1, height: 40, color: AppColors.bgSurface);
-}
-
-class _InfoSection extends StatelessWidget {
-  final String title;
-  final List<_InfoTile> tiles;
-  const _InfoSection({required this.title, required this.tiles});
-  @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Text(title, style: AppTextStyles.h4),
-      const SizedBox(height: 12),
-      Container(
-        decoration: BoxDecoration(color: AppColors.bgCard, borderRadius: AppRadius.lg),
-        child: Column(
-          children: tiles.asMap().entries.map((e) => Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                child: Row(
-                  children: [
-                    Icon(e.value.icon, size: 18, color: AppColors.textMuted),
-                    const SizedBox(width: 12),
-                    Text(e.value.label, style: AppTextStyles.label),
-                    const Spacer(),
-                    Flexible(child: Text(e.value.value, style: AppTextStyles.bodySmall, textAlign: TextAlign.right, maxLines: 1, overflow: TextOverflow.ellipsis)),
-                  ],
-                ),
-              ),
-              if (e.key < tiles.length - 1) Divider(height: 1, color: AppColors.bgSurface),
-            ],
-          )).toList(),
-        ),
-      ),
-    ],
-  );
-}
-
-class _InfoTile {
-  final IconData icon; final String label, value;
-  const _InfoTile(this.icon, this.label, this.value);
-}
-
-class _ActionList extends StatelessWidget {
-  final List<_ActionTile> tiles;
-  const _ActionList({required this.tiles});
-  @override
-  Widget build(BuildContext context) => Container(
-    decoration: BoxDecoration(color: AppColors.bgCard, borderRadius: AppRadius.lg),
-    child: Column(
-      children: tiles.asMap().entries.map((e) => Column(
-        children: [
-          InkWell(
-            onTap: e.value.onTap,
-            borderRadius: AppRadius.md,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              child: Row(
-                children: [
-                  Icon(e.value.icon, size: 20, color: e.value.color),
-                  const SizedBox(width: 12),
-                  Text(e.value.label, style: AppTextStyles.body.copyWith(color: e.value.color == AppColors.error ? AppColors.error : AppColors.textPrimary)),
-                  const Spacer(),
-                  Icon(Icons.arrow_forward_ios_rounded, size: 14, color: AppColors.textMuted),
-                ],
-              ),
-            ),
-          ),
-          if (e.key < tiles.length - 1) Divider(height: 1, color: AppColors.bgSurface),
-        ],
-      )).toList(),
-    ),
-  );
-}
-
-class _ActionTile {
-  final IconData icon; final String label; final Color color; final VoidCallback onTap;
-  const _ActionTile(this.icon, this.label, this.color, this.onTap);
+  Widget build(BuildContext context) => Column(children: [
+    Text(value, style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: textColor)),
+    const SizedBox(height: 2),
+    Text(label, style: TextStyle(fontSize: 11, color: subColor)),
+  ]);
 }
