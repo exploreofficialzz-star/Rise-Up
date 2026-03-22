@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:google_fonts/google_fonts.dart';
 import '../../utils/storage_service.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -57,31 +58,35 @@ class _SplashScreenState extends State<SplashScreen>
         Theme.of(context).scaffoldBackgroundColor;
     final footerColor =
         isDark ? Colors.white30 : Colors.black26;
+    final screenH = MediaQuery.of(context).size.height;
 
     return Scaffold(
       backgroundColor: bgColor,
       body: Stack(
         children: [
-          // ── Main content — centered ──────────────────
-          Center(
+          // ── Logo + Text ──────────────────────────────
+          Positioned(
+            top: screenH * 0.32,
+            left: 0,
+            right: 0,
             child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                // Logo — bigger, no container
+                // Logo
                 Image.asset(
                   'assets/images/riseup_logo.png',
-                  width: 160,   // ← bigger
-                  height: 160,  // ← bigger
+                  width: 115,
+                  height: 115,
                   errorBuilder: (_, __, ___) => const Icon(
                     Icons.trending_up_rounded,
                     color: Color(0xFFFF6B00),
-                    size: 100,
+                    size: 80,
                   ),
                 ),
 
-                const SizedBox(height: 10), // ← closer
+                const SizedBox(height: 6),
 
-                // RiseUp — bigger gradient text
+                // RiseUp — thick Poppins Black font
                 ShaderMask(
                   shaderCallback: (bounds) =>
                       const LinearGradient(
@@ -92,13 +97,26 @@ class _SplashScreenState extends State<SplashScreen>
                     ],
                     stops: [0.0, 0.4, 1.0],
                   ).createShader(bounds),
-                  child: const Text(
+                  child: Text(
                     'RiseUp',
-                    style: TextStyle(
-                      fontSize: 52,  // ← bigger
+                    style: GoogleFonts.poppins(
+                      fontSize: 42,
                       fontWeight: FontWeight.w900,
                       color: Colors.white,
-                      letterSpacing: -1.5,
+                      letterSpacing: -1,
+                      // Thick look via shadows
+                      shadows: [
+                        Shadow(
+                          color: Colors.black.withOpacity(0.3),
+                          blurRadius: 1,
+                          offset: const Offset(0.5, 0.5),
+                        ),
+                        Shadow(
+                          color: Colors.black.withOpacity(0.15),
+                          blurRadius: 2,
+                          offset: const Offset(1, 1),
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -116,13 +134,13 @@ class _SplashScreenState extends State<SplashScreen>
               children: [
                 _Dot(ctrl: _dotsCtrl, delay: 0.0,
                     color: const Color(0xFFFF9AA2)),
-                const SizedBox(width: 12),
+                const SizedBox(width: 10),
                 _Dot(ctrl: _dotsCtrl, delay: 0.2,
                     color: const Color(0xFF81ECEC)),
-                const SizedBox(width: 12),
+                const SizedBox(width: 10),
                 _Dot(ctrl: _dotsCtrl, delay: 0.4,
                     color: const Color(0xFFFFD700)),
-                const SizedBox(width: 12),
+                const SizedBox(width: 10),
                 _Dot(ctrl: _dotsCtrl, delay: 0.6,
                     color: const Color(0xFF74B9FF)),
               ],
@@ -173,8 +191,8 @@ class _Dot extends StatelessWidget {
         return Transform.scale(
           scale: scale,
           child: Container(
-            width: 11,
-            height: 11,
+            width: 10,
+            height: 10,
             decoration: BoxDecoration(
               color: color,
               shape: BoxShape.circle,
