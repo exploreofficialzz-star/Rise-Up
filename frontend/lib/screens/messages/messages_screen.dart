@@ -25,11 +25,20 @@ class _MessagesScreenState extends State<MessagesScreen> {
 
   Future<void> _load() async {
     try {
-      final data = await api.getConversations();
-      if (mounted) setState(() { _convos = data['conversations'] ?? []; _loading = false; });
+      final data = await api.get('/messages/conversations');
+      if (mounted) setState(() {
+        _convos = (data as Map?)?['conversations'] as List? ?? [];
+        _loading = false;
+      });
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  void _showNewDMSheet(BuildContext context) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Search for a user to start a DM'), duration: Duration(seconds: 2)),
+    );
   }
 
   List get _filtered => _query.isEmpty
