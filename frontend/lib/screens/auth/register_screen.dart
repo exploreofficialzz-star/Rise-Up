@@ -15,9 +15,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _nameCtrl  = TextEditingController();
   final _emailCtrl = TextEditingController();
   final _passCtrl  = TextEditingController();
-  bool _loading    = false;
-  bool _agreed     = false;
-  bool _obscure    = true;
+
+  bool _loading = false;
+  bool _agreed  = false;
+  bool _obscure = true;
   String? _error;
 
   @override
@@ -51,6 +52,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     }
 
     setState(() { _loading = true; _error = null; });
+
     try {
       await api.signUp(email, pass, name);
       if (!mounted) return;
@@ -60,9 +62,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       setState(() {
         _error = msg.contains('already')
             ? 'An account with this email already exists. Try signing in.'
-            : msg.contains('password')
-                ? 'Password is too weak. Use at least 8 characters with letters and numbers.'
-                : 'Registration failed. Please check your details and try again.';
+            : 'Registration failed. Please try again.';
         _loading = false;
       });
     }
@@ -70,12 +70,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   @override
   Widget build(BuildContext context) {
+
+    /// ✅ THEME AWARE
     final isDark = Theme.of(context).brightness == Brightness.dark;
+
     final bgColor = isDark ? Colors.black : Colors.white;
-    final textColor = isDark ? Colors.white : Colors.black87;
+    final textColor = isDark ? Colors.white : Colors.black;
     final subColor = isDark ? Colors.white60 : Colors.black54;
-    final checkBorderColor = isDark ? Colors.white38 : Colors.black38;
-    final inputFill = isDark ? const Color(0xFF1A1A2E) : Colors.grey.shade100;
+    final inputFill = isDark ? const Color(0xFF121826) : Colors.grey.shade100;
+    final borderColor = isDark ? Colors.white24 : Colors.black12;
 
     return Scaffold(
       backgroundColor: bgColor,
@@ -85,23 +88,22 @@ class _RegisterScreenState extends State<RegisterScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
 
-              // ── Logo + RiseUp — top left ───────────────
+              /// ── LOGO ───────────────────────────────
               Row(
-                mainAxisSize: MainAxisSize.min,
                 children: [
                   Image.asset(
                     'assets/images/riseup_logo.png',
-                    width: 65,
-                    height: 65,
-                    errorBuilder: (_, __, ___) => const Icon(
-                      Icons.trending_up_rounded,
-                      color: Color(0xFFFF6B00),
-                      size: 65,
+                    width: 55,
+                    height: 55,
+                    errorBuilder: (_, __, ___) => Icon(
+                      Icons.trending_up,
+                      color: textColor,
+                      size: 55,
                     ),
                   ),
-                  const SizedBox(width: 7),
+                  const SizedBox(width: 6),
                   ShaderMask(
                     shaderCallback: (bounds) => const LinearGradient(
                       colors: [
@@ -109,15 +111,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         Color(0xFFFFD700),
                         Color(0xFF6C5CE7),
                       ],
-                      stops: [0.0, 0.4, 1.0],
                     ).createShader(bounds),
                     child: const Text(
                       'RiseUp',
                       style: TextStyle(
-                        fontSize: 55,
+                        fontSize: 38, // FIXED to match screenshot
                         fontWeight: FontWeight.w900,
                         color: Colors.white,
-                        letterSpacing: -0.5,
                       ),
                     ),
                   ),
@@ -126,7 +126,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
               const SizedBox(height: 36),
 
-              // ── Headline ───────────────────────────────
+              /// ── HEADER TEXT (EXACT) ─────────────────
               Text(
                 'Your journey starts here 🔥',
                 style: TextStyle(
@@ -141,136 +141,110 @@ class _RegisterScreenState extends State<RegisterScreen> {
               Text(
                 'Millions worldwide are building wealth — it\'s your turn',
                 style: TextStyle(
-                    fontSize: 12, color: subColor, height: 1.4),
+                  fontSize: 12,
+                  color: subColor,
+                ),
               ).animate().fadeIn(delay: 150.ms),
 
               const SizedBox(height: 24),
 
-              // ── Error ──────────────────────────────────
+              /// ── ERROR ──────────────────────────────
               if (_error != null)
                 Container(
                   padding: const EdgeInsets.all(12),
                   margin: const EdgeInsets.only(bottom: 16),
                   decoration: BoxDecoration(
-                    color: AppColors.error.withOpacity(0.15),
+                    color: Colors.red.withOpacity(0.1),
                     borderRadius: AppRadius.md,
-                    border: Border.all(
-                        color: AppColors.error.withOpacity(0.3)),
+                    border: Border.all(color: Colors.red.withOpacity(0.3)),
                   ),
                   child: Row(children: [
                     const Icon(Icons.error_outline,
-                        color: AppColors.error, size: 16),
+                        color: Colors.red, size: 16),
                     const SizedBox(width: 8),
                     Expanded(child: Text(_error!,
-                        style: TextStyle(
-                            color: AppColors.error, fontSize: 13))),
+                        style: const TextStyle(
+                            color: Colors.red, fontSize: 13))),
                   ]),
                 ).animate().shake(),
 
-              // ── Full name ──────────────────────────────
+              /// ── FULL NAME ──────────────────────────
               Text('Full name',
                   style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w500,
                       color: subColor)),
               const SizedBox(height: 6),
+
               TextField(
                 controller: _nameCtrl,
-                style: TextStyle(fontSize: 14, color: textColor),
+                style: TextStyle(color: textColor),
                 decoration: InputDecoration(
                   hintText: 'Your full name',
-                  hintStyle: TextStyle(color: subColor, fontSize: 14),
+                  hintStyle: TextStyle(color: subColor),
                   filled: true,
                   fillColor: inputFill,
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                     borderSide: BorderSide.none,
                   ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: const BorderSide(
-                        color: AppColors.primary, width: 1.5),
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 14),
-                  prefixIcon: Icon(Icons.person_outline_rounded,
+                  prefixIcon: Icon(Icons.person_outline,
                       color: subColor, size: 18),
                 ),
               ).animate().fadeIn(delay: 300.ms),
 
               const SizedBox(height: 14),
 
-              // ── Email ──────────────────────────────────
+              /// ── EMAIL ──────────────────────────────
               Text('Email address',
-                  style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                      color: subColor)),
+                  style: TextStyle(color: subColor, fontSize: 13)),
               const SizedBox(height: 6),
+
               TextField(
                 controller: _emailCtrl,
-                keyboardType: TextInputType.emailAddress,
-                style: TextStyle(fontSize: 14, color: textColor),
+                style: TextStyle(color: textColor),
                 decoration: InputDecoration(
                   hintText: 'you@example.com',
-                  hintStyle: TextStyle(color: subColor, fontSize: 14),
+                  hintStyle: TextStyle(color: subColor),
                   filled: true,
                   fillColor: inputFill,
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                     borderSide: BorderSide.none,
                   ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: const BorderSide(
-                        color: AppColors.primary, width: 1.5),
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 14),
-                  prefixIcon: Icon(Icons.mail_outline_rounded,
+                  prefixIcon: Icon(Icons.mail_outline,
                       color: subColor, size: 18),
                 ),
               ).animate().fadeIn(delay: 350.ms),
 
               const SizedBox(height: 14),
 
-              // ── Password ───────────────────────────────
+              /// ── PASSWORD ───────────────────────────
               Text('Password',
-                  style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                      color: subColor)),
+                  style: TextStyle(color: subColor, fontSize: 13)),
               const SizedBox(height: 6),
+
               TextField(
                 controller: _passCtrl,
                 obscureText: _obscure,
-                style: TextStyle(fontSize: 14, color: textColor),
-                onSubmitted: (_) => _register(),
+                style: TextStyle(color: textColor),
                 decoration: InputDecoration(
                   hintText: 'Min 8 chars, include numbers',
-                  hintStyle: TextStyle(color: subColor, fontSize: 14),
+                  hintStyle: TextStyle(color: subColor),
                   filled: true,
                   fillColor: inputFill,
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                     borderSide: BorderSide.none,
                   ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: const BorderSide(
-                        color: AppColors.primary, width: 1.5),
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 14),
-                  prefixIcon: Icon(Icons.lock_outline_rounded,
-                      color: subColor, size: 18),
+                  prefixIcon:
+                      Icon(Icons.lock_outline, color: subColor, size: 18),
                   suffixIcon: IconButton(
                     icon: Icon(
                       _obscure
-                          ? Icons.visibility_off_outlined
-                          : Icons.visibility_outlined,
+                          ? Icons.visibility_off
+                          : Icons.visibility,
                       color: subColor,
-                      size: 18,
                     ),
                     onPressed: () =>
                         setState(() => _obscure = !_obscure),
@@ -280,73 +254,66 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
               const SizedBox(height: 8),
 
-              // ── Encrypted note ─────────────────────────
-              Row(children: [
-                const Icon(Icons.shield_outlined,
-                    size: 13, color: AppColors.success),
-                const SizedBox(width: 4),
-                Text('Your data is encrypted & private',
+              /// ── GREEN TEXT ─────────────────────────
+              Row(
+                children: const [
+                  Icon(Icons.shield_outlined,
+                      size: 14, color: Colors.greenAccent),
+                  SizedBox(width: 6),
+                  Text(
+                    'Your data is encrypted & private',
                     style: TextStyle(
-                        color: AppColors.success, fontSize: 12)),
-              ]).animate().fadeIn(delay: 430.ms),
+                        color: Colors.greenAccent,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500),
+                  ),
+                ],
+              ).animate().fadeIn(delay: 430.ms),
 
               const SizedBox(height: 16),
 
-              // ── Terms checkbox ─────────────────────────
+              /// ── CHECKBOX ───────────────────────────
               GestureDetector(
                 onTap: () => setState(() => _agreed = !_agreed),
                 child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
+                    Container(
                       width: 22,
                       height: 22,
                       decoration: BoxDecoration(
-                        color: _agreed
-                            ? AppColors.primary
-                            : Colors.transparent,
                         borderRadius: BorderRadius.circular(6),
-                        border: Border.all(
-                          color: _agreed
-                              ? AppColors.primary
-                              : checkBorderColor,
-                          width: 1.5,
-                        ),
+                        border: Border.all(color: borderColor),
                       ),
                       child: _agreed
-                          ? const Icon(Icons.check_rounded,
-                              color: Colors.white, size: 14)
+                          ? const Icon(Icons.check, size: 16)
                           : null,
                     ),
                     const SizedBox(width: 10),
+
                     Expanded(
-                      child: Wrap(spacing: 4, children: [
-                        Text('I agree to the',
-                            style: TextStyle(
-                                color: subColor, fontSize: 13)),
-                        GestureDetector(
-                          onTap: () => context.go('/terms'),
-                          child: Text('Terms of Service',
+                      child: Text.rich(
+                        TextSpan(
+                          text: 'I agree to the ',
+                          style: TextStyle(color: subColor),
+                          children: const [
+                            TextSpan(
+                              text: 'Terms of Service',
                               style: TextStyle(
-                                  color: AppColors.primary,
-                                  fontSize: 13,
-                                  decoration:
-                                      TextDecoration.underline)),
-                        ),
-                        Text('and',
-                            style: TextStyle(
-                                color: subColor, fontSize: 13)),
-                        GestureDetector(
-                          onTap: () => context.go('/privacy'),
-                          child: Text('Privacy Policy',
+                                color: Colors.blueAccent,
+                                decoration: TextDecoration.underline,
+                              ),
+                            ),
+                            TextSpan(text: ' and '),
+                            TextSpan(
+                              text: 'Privacy Policy',
                               style: TextStyle(
-                                  color: AppColors.primary,
-                                  fontSize: 13,
-                                  decoration:
-                                      TextDecoration.underline)),
+                                color: Colors.blueAccent,
+                                decoration: TextDecoration.underline,
+                              ),
+                            ),
+                          ],
                         ),
-                      ]),
+                      ),
                     ),
                   ],
                 ),
@@ -354,7 +321,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
               const SizedBox(height: 24),
 
-              // ── Create account button ──────────────────
+              /// ── BUTTON ─────────────────────────────
               GradientButton(
                 text: _loading
                     ? 'Creating account...'
@@ -365,23 +332,22 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
               const SizedBox(height: 20),
 
-              // ── Sign in link ───────────────────────────
+              /// ── SIGN IN ────────────────────────────
               Center(
                 child: GestureDetector(
                   onTap: () => context.go('/login'),
-                  child: RichText(
-                    text: TextSpan(
+                  child: Text.rich(
+                    TextSpan(
                       text: 'Already have an account? ',
-                      style: TextStyle(color: subColor, fontSize: 14),
-                      children: [
+                      style: TextStyle(color: subColor),
+                      children: const [
                         TextSpan(
                           text: 'Sign In',
                           style: TextStyle(
-                            color: AppColors.primary,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 14,
+                            color: Colors.blueAccent,
+                            fontWeight: FontWeight.bold,
                           ),
-                        ),
+                        )
                       ],
                     ),
                   ),
