@@ -68,7 +68,7 @@ class AppColors {
   static const Color earning = Color(0xFFFDCB6E);
   static const Color growing = Color(0xFF00B894);
   static const Color wealth = Color(0xFF6C5CE7);
-  static const Color bgDark = Color(0xFF0F0E17);
+  static const Color bgDark = Color(0xFF000000);
   static const Color bgCard = Color(0xFF1A1A2E);
   static const Color bgCardLight = Color(0xFF16213E);
   static const Color bgSurface = Color(0xFF1F1F3A);
