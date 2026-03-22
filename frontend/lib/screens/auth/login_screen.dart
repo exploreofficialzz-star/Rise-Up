@@ -15,8 +15,8 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final _emailCtrl = TextEditingController();
   final _passCtrl  = TextEditingController();
-  bool   _loading  = false;
-  bool   _obscure  = true;
+  bool _loading    = false;
+  bool _obscure    = true;
   String? _error;
 
   @override
@@ -29,14 +29,11 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _login() async {
     final email = _emailCtrl.text.trim();
     final pass  = _passCtrl.text;
-
     if (email.isEmpty || pass.isEmpty) {
       setState(() => _error = 'Please fill in all fields');
       return;
     }
-
     setState(() { _loading = true; _error = null; });
-
     try {
       final data = await api.signIn(email, pass);
       if (!mounted) return;
@@ -48,11 +45,11 @@ class _LoginScreenState extends State<LoginScreen> {
 
       try {
         final profile = await api.getProfile();
-        final onboarded = profile['profile']?['onboarding_completed'] ?? false;
+        final onboarded =
+            profile['profile']?['onboarding_completed'] ?? false;
         await storageService.write(
-          key: 'onboarding_completed',
-          value: onboarded.toString(),
-        );
+            key: 'onboarding_completed',
+            value: onboarded.toString());
       } catch (_) {}
 
       if (!mounted) return;
@@ -67,237 +64,291 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-
-    /// ✅ THEME-AWARE COLORS (THIS IS THE MAIN FIX)
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    final bgColor   = isDark ? Colors.black : Colors.white;
-    final textColor = isDark ? Colors.white : Colors.black;
-    final subColor  = isDark ? Colors.white60 : Colors.black54;
-    final inputFill = isDark ? const Color(0xFF121212) : Colors.grey.shade100;
-    final borderColor = isDark ? Colors.white24 : Colors.black12;
+    final isDark     = Theme.of(context).brightness == Brightness.dark;
+    final bgColor    = isDark ? Colors.black : Colors.white;
+    final textColor  = isDark ? Colors.white : Colors.black87;
+    final subColor   = isDark ? Colors.white60 : Colors.black54;
+    final labelColor = isDark ? Colors.white70 : Colors.black54;
+    final inputFill  = isDark ? const Color(0xFF1A1A2E) : Colors.grey.shade100;
+    final inputText  = isDark ? Colors.white : Colors.black87;
+    final iconColor  = isDark ? Colors.white38 : Colors.black38;
 
     return Scaffold(
       backgroundColor: bgColor,
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+          padding: const EdgeInsets.symmetric(
+              horizontal: 24, vertical: 20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const SizedBox(height: 16),
 
-              // ── Logo + RiseUp ─────────────────────────
+              // ── Logo + RiseUp — 60x60, 55px, 2px gap ──
               Row(
                 mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   Image.asset(
                     'assets/images/riseup_logo.png',
-                    width: 55,
-                    height: 55,
-                    errorBuilder: (_, __, ___) => Icon(
+                    width: 60,
+                    height: 60,
+                    errorBuilder: (_, __, ___) => const Icon(
                       Icons.trending_up_rounded,
-                      color: textColor,
-                      size: 55,
+                      color: Color(0xFFFF6B00),
+                      size: 60,
                     ),
                   ),
-                  const SizedBox(width: 6),
+                  const SizedBox(width: 2), // ← 2px gap
                   ShaderMask(
-                    shaderCallback: (bounds) => const LinearGradient(
+                    shaderCallback: (bounds) =>
+                        const LinearGradient(
                       colors: [
                         Color(0xFFFF6B00),
                         Color(0xFFFFD700),
                         Color(0xFF6C5CE7),
                       ],
+                      stops: [0.0, 0.4, 1.0],
                     ).createShader(bounds),
-                    child: const Text(
+                    child: Text(
                       'RiseUp',
                       style: TextStyle(
-                        fontSize: 38,
+                        fontSize: 55,
                         fontWeight: FontWeight.w900,
                         color: Colors.white,
+                        letterSpacing: -1.5,
+                        height: 1.0,
+                        shadows: [
+                          Shadow(
+                            color: Colors.black.withOpacity(0.4),
+                            blurRadius: 1,
+                            offset: const Offset(0.5, 0.5),
+                          ),
+                          Shadow(
+                            color: Colors.black.withOpacity(0.2),
+                            blurRadius: 3,
+                            offset: const Offset(1, 1),
+                          ),
+                        ],
                       ),
                     ),
                   ),
                 ],
-              ).animate().fadeIn(duration: 500.ms),
+              ).animate().fadeIn(duration: 400.ms),
 
-              const SizedBox(height: 40),
+              const SizedBox(height: 44),
 
-              // ── Welcome ───────────────────────────────
+              // ── Welcome back ──────────────────────────
               Text(
                 'Welcome back 👋',
                 style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w600,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
                   color: textColor,
                 ),
               ).animate().fadeIn(delay: 100.ms),
 
-              const SizedBox(height: 4),
+              const SizedBox(height: 6),
 
               Text(
                 'Sign in to continue your wealth journey',
-                style: TextStyle(fontSize: 13, color: subColor),
+                style: TextStyle(
+                    fontSize: 13, color: subColor, height: 1.4),
               ).animate().fadeIn(delay: 150.ms),
 
-              const SizedBox(height: 24),
+              const SizedBox(height: 32),
 
               // ── Error ─────────────────────────────────
               if (_error != null)
                 Container(
                   padding: const EdgeInsets.all(12),
-                  margin: const EdgeInsets.only(bottom: 16),
+                  margin: const EdgeInsets.only(bottom: 20),
                   decoration: BoxDecoration(
-                    color: Colors.red.withOpacity(0.1),
-                    borderRadius: AppRadius.md,
-                    border: Border.all(color: Colors.red.withOpacity(0.3)),
+                    color: AppColors.error.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                        color: AppColors.error.withOpacity(0.3)),
                   ),
                   child: Row(children: [
-                    const Icon(Icons.error_outline, color: Colors.red, size: 16),
+                    const Icon(Icons.error_outline,
+                        color: AppColors.error, size: 16),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Text(
-                        _error!,
-                        style: const TextStyle(color: Colors.red, fontSize: 13),
-                      ),
-                    ),
+                        child: Text(_error!,
+                            style: const TextStyle(
+                                color: AppColors.error,
+                                fontSize: 13))),
                   ]),
                 ).animate().fadeIn().shake(),
 
-              // ── Email ────────────────────────────────
+              // ── Email address ─────────────────────────
               Text('Email address',
                   style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w500,
-                      color: subColor)),
-              const SizedBox(height: 6),
-
+                      color: labelColor)),
+              const SizedBox(height: 8),
               TextField(
                 controller: _emailCtrl,
                 keyboardType: TextInputType.emailAddress,
-                style: TextStyle(fontSize: 14, color: textColor),
+                style: TextStyle(fontSize: 14, color: inputText),
                 decoration: InputDecoration(
                   hintText: 'you@example.com',
-                  hintStyle: TextStyle(color: subColor, fontSize: 14),
+                  hintStyle:
+                      TextStyle(color: iconColor, fontSize: 14),
                   filled: true,
                   fillColor: inputFill,
                   border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(14),
                     borderSide: BorderSide.none,
                   ),
                   focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: borderColor, width: 1.2),
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: const BorderSide(
+                        color: AppColors.primary, width: 1.5),
                   ),
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 16),
                   prefixIcon: Icon(Icons.mail_outline_rounded,
-                      color: subColor, size: 18),
+                      color: iconColor, size: 20),
                 ),
-              ).animate().fadeIn(delay: 300.ms),
+              ).animate().fadeIn(delay: 200.ms),
 
-              const SizedBox(height: 14),
+              const SizedBox(height: 20),
 
-              // ── Password ─────────────────────────────
+              // ── Password ──────────────────────────────
               Text('Password',
                   style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w500,
-                      color: subColor)),
-              const SizedBox(height: 6),
-
+                      color: labelColor)),
+              const SizedBox(height: 8),
               TextField(
                 controller: _passCtrl,
                 obscureText: _obscure,
-                style: TextStyle(fontSize: 14, color: textColor),
+                style: TextStyle(fontSize: 14, color: inputText),
                 onSubmitted: (_) => _login(),
                 decoration: InputDecoration(
                   hintText: '••••••••',
-                  hintStyle: TextStyle(color: subColor, fontSize: 14),
+                  hintStyle:
+                      TextStyle(color: iconColor, fontSize: 14),
                   filled: true,
                   fillColor: inputFill,
                   border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(14),
                     borderSide: BorderSide.none,
                   ),
                   focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: borderColor, width: 1.2),
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: const BorderSide(
+                        color: AppColors.primary, width: 1.5),
                   ),
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 16),
                   prefixIcon: Icon(Icons.lock_outline_rounded,
-                      color: subColor, size: 18),
+                      color: iconColor, size: 20),
                   suffixIcon: IconButton(
                     icon: Icon(
                       _obscure
                           ? Icons.visibility_off_outlined
                           : Icons.visibility_outlined,
-                      color: subColor,
-                      size: 18,
+                      color: iconColor,
+                      size: 20,
                     ),
                     onPressed: () =>
                         setState(() => _obscure = !_obscure),
                   ),
                 ),
-              ).animate().fadeIn(delay: 400.ms),
+              ).animate().fadeIn(delay: 250.ms),
 
-              const SizedBox(height: 10),
+              const SizedBox(height: 12),
 
-              // ── Forgot password ──────────────────────
+              // ── Forgot password ───────────────────────
               Align(
                 alignment: Alignment.centerRight,
                 child: GestureDetector(
                   onTap: () => context.go('/forgot-password'),
-                  child: const Text('Forgot password?',
-                      style: TextStyle(
-                        color: Colors.blueAccent,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 13,
-                      )),
+                  child: const Text(
+                    'Forgot password?',
+                    style: TextStyle(
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                    ),
+                  ),
                 ),
-              ).animate().fadeIn(delay: 450.ms),
+              ).animate().fadeIn(delay: 300.ms),
 
-              const SizedBox(height: 24),
+              const SizedBox(height: 28),
 
-              // ── Button ───────────────────────────────
+              // ── Sign In button ────────────────────────
               GradientButton(
                 text: _loading ? 'Signing in...' : 'Sign In',
                 onTap: _loading ? null : _login,
                 isLoading: _loading,
-              ).animate().fadeIn(delay: 500.ms),
+              ).animate().fadeIn(delay: 350.ms),
 
-              const SizedBox(height: 20),
+              const SizedBox(height: 24),
 
-              // ── Sign up ──────────────────────────────
+              // ── Sign Up Free ──────────────────────────
               Center(
                 child: GestureDetector(
                   onTap: () => context.go('/register'),
                   child: RichText(
                     text: TextSpan(
                       text: "Don't have an account? ",
-                      style: TextStyle(color: subColor, fontSize: 14),
+                      style:
+                          TextStyle(color: subColor, fontSize: 14),
                       children: const [
                         TextSpan(
                           text: 'Sign Up Free',
                           style: TextStyle(
-                            color: Colors.blueAccent,
+                            color: AppColors.primary,
                             fontWeight: FontWeight.w700,
+                            fontSize: 14,
                           ),
                         ),
                       ],
                     ),
                   ),
                 ),
-              ).animate().fadeIn(delay: 600.ms),
+              ).animate().fadeIn(delay: 400.ms),
 
-              const SizedBox(height: 24),
+              const SizedBox(height: 32),
 
-              // ── Legal ────────────────────────────────
+              // ── Legal ─────────────────────────────────
               Center(
-                child: Text(
-                  'By continuing you agree to our Terms and Privacy Policy',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: subColor, fontSize: 11),
+                child: Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 4,
+                  children: [
+                    Text('By continuing you agree to our',
+                        style: TextStyle(
+                            color: subColor, fontSize: 11)),
+                    GestureDetector(
+                      onTap: () => context.go('/terms'),
+                      child: const Text('Terms',
+                          style: TextStyle(
+                              color: AppColors.primary,
+                              fontSize: 11,
+                              decoration:
+                                  TextDecoration.underline)),
+                    ),
+                    Text('and',
+                        style:
+                            TextStyle(color: subColor, fontSize: 11)),
+                    GestureDetector(
+                      onTap: () => context.go('/privacy'),
+                      child: const Text('Privacy Policy',
+                          style: TextStyle(
+                              color: AppColors.primary,
+                              fontSize: 11,
+                              decoration:
+                                  TextDecoration.underline)),
+                    ),
+                  ],
                 ),
-              ).animate().fadeIn(delay: 700.ms),
+              ).animate().fadeIn(delay: 450.ms),
 
               const SizedBox(height: 20),
             ],
