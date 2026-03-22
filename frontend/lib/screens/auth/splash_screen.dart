@@ -1,7 +1,6 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:google_fonts/google_fonts.dart';
 import '../../utils/storage_service.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -33,18 +32,11 @@ class _SplashScreenState extends State<SplashScreen>
   Future<void> _navigate() async {
     await Future.delayed(const Duration(milliseconds: 2800));
     if (!mounted) return;
-
-    if (kIsWeb) {
-      context.go('/login');
-      return;
-    }
-
+    if (kIsWeb) { context.go('/login'); return; }
     try {
-      final token =
-          await storageService.read(key: 'access_token');
+      final token = await storageService.read(key: 'access_token');
       if (!mounted) return;
-      context.go(
-          token != null && token.isNotEmpty ? '/home' : '/login');
+      context.go(token != null && token.isNotEmpty ? '/home' : '/login');
     } catch (_) {
       if (mounted) context.go('/login');
     }
@@ -52,44 +44,41 @@ class _SplashScreenState extends State<SplashScreen>
 
   @override
   Widget build(BuildContext context) {
-    final isDark =
-        Theme.of(context).brightness == Brightness.dark;
-    final bgColor =
-        Theme.of(context).scaffoldBackgroundColor;
-    final footerColor =
-        isDark ? Colors.white30 : Colors.black26;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bgColor = isDark ? Colors.black : Colors.white;
+    final footerColor = isDark ? Colors.white30 : Colors.black26;
     final screenH = MediaQuery.of(context).size.height;
 
     return Scaffold(
       backgroundColor: bgColor,
       body: Stack(
         children: [
-          // ── Logo + Text ──────────────────────────────
+          // ── Logo + RiseUp — upper portion like image 2 ──
           Positioned(
-            top: screenH * 0.32,
+            top: screenH * 0.28, // upper 28% — matches image 2
             left: 0,
             right: 0,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Logo
+                // Logo — bigger
                 Image.asset(
                   'assets/images/riseup_logo.png',
-                  width: 115,
-                  height: 115,
+                  width: 130,
+                  height: 130,
                   errorBuilder: (_, __, ___) => const Icon(
                     Icons.trending_up_rounded,
                     color: Color(0xFFFF6B00),
-                    size: 80,
+                    size: 100,
                   ),
                 ),
 
-                const SizedBox(height: 6),
+                // Tight gap — matches image 2
+                const SizedBox(height: 4),
 
-                // RiseUp — thick Poppins Black font
+                // RiseUp — bigger, tight to logo
                 ShaderMask(
-                  shaderCallback: (bounds) =>
-                      const LinearGradient(
+                  shaderCallback: (bounds) => const LinearGradient(
                     colors: [
                       Color(0xFFFF6B00),
                       Color(0xFFFFD700),
@@ -97,26 +86,14 @@ class _SplashScreenState extends State<SplashScreen>
                     ],
                     stops: [0.0, 0.4, 1.0],
                   ).createShader(bounds),
-                  child: Text(
+                  child: const Text(
                     'RiseUp',
-                    style: GoogleFonts.poppins(
-                      fontSize: 42,
+                    style: TextStyle(
+                      fontSize: 48,
                       fontWeight: FontWeight.w900,
                       color: Colors.white,
                       letterSpacing: -1,
-                      // Thick look via shadows
-                      shadows: [
-                        Shadow(
-                          color: Colors.black.withOpacity(0.3),
-                          blurRadius: 1,
-                          offset: const Offset(0.5, 0.5),
-                        ),
-                        Shadow(
-                          color: Colors.black.withOpacity(0.15),
-                          blurRadius: 2,
-                          offset: const Offset(1, 1),
-                        ),
-                      ],
+                      height: 1.0,
                     ),
                   ),
                 ),
@@ -147,7 +124,7 @@ class _SplashScreenState extends State<SplashScreen>
             ),
           ),
 
-          // ── By chAs footer ───────────────────────────
+          // ── By chAs ──────────────────────────────────
           Positioned(
             bottom: 40,
             left: 0,
@@ -173,18 +150,14 @@ class _Dot extends StatelessWidget {
   final AnimationController ctrl;
   final double delay;
   final Color color;
-  const _Dot(
-      {required this.ctrl,
-      required this.delay,
-      required this.color});
+  const _Dot({required this.ctrl, required this.delay, required this.color});
 
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: ctrl,
       builder: (_, __) {
-        final phase =
-            ((ctrl.value - delay) % 1.0).clamp(0.0, 1.0);
+        final phase = ((ctrl.value - delay) % 1.0).clamp(0.0, 1.0);
         final scale = phase < 0.5
             ? 0.7 + 0.6 * (phase * 2)
             : 1.3 - 0.6 * ((phase - 0.5) * 2);
