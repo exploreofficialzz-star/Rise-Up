@@ -15,8 +15,8 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final _emailCtrl = TextEditingController();
-  final _passCtrl  = TextEditingController();
-  bool   _loading  = false;
+  final _passCtrl = TextEditingController();
+  bool _loading = false;
   String? _error;
 
   @override
@@ -28,24 +28,26 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _login() async {
     final email = _emailCtrl.text.trim();
-    final pass  = _passCtrl.text;
+    final pass = _passCtrl.text;
     if (email.isEmpty || pass.isEmpty) {
       setState(() => _error = 'Please fill in all fields');
       return;
     }
-    setState(() { _loading = true; _error = null; });
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
       final data = await api.signIn(email, pass);
       if (!mounted) return;
 
-      // If email not confirmed, send to verify screen
       if (data['email_confirmed'] == false) {
         context.go(
             '/verify-email?email=${Uri.encodeComponent(email)}');
         return;
       }
 
-      // Check onboarding status and save to storage
+      // Save auth state and go directly to home
       try {
         final profile = await api.getProfile();
         final onboarded =
@@ -53,11 +55,11 @@ class _LoginScreenState extends State<LoginScreen> {
         await storageService.write(
             key: 'onboarding_completed',
             value: onboarded.toString());
-        if (!mounted) return;
-        context.go(onboarded ? '/home' : '/onboarding');
-      } catch (_) {
-        if (mounted) context.go('/home');
-      }
+      } catch (_) {}
+
+      if (!mounted) return;
+      // ← Always go to home — social feed is the main screen
+      context.go('/home');
     } catch (e) {
       setState(() {
         _error = 'Invalid email or password. Please try again.';
@@ -68,10 +70,13 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bgColor = Theme.of(context).scaffoldBackgroundColor;
+    final isDark =
+        Theme.of(context).brightness == Brightness.dark;
+    final bgColor =
+        Theme.of(context).scaffoldBackgroundColor;
     final textColor = isDark ? Colors.white : Colors.black87;
-    final subTextColor = isDark ? Colors.white60 : Colors.black54;
+    final subColor =
+        isDark ? Colors.white60 : Colors.black54;
 
     return Scaffold(
       backgroundColor: bgColor,
@@ -84,20 +89,20 @@ class _LoginScreenState extends State<LoginScreen> {
             children: [
               const SizedBox(height: 16),
 
-              // ── Logo + RiseUp header ──────────────────
+              // ── Logo + RiseUp ─────────────────────────
               Row(
                 children: [
                   Image.asset(
-                    'assets/images/riseup_logo.jpg',
-                    width: 42,
-                    height: 42,
+                    'assets/images/riseup_logo.png',
+                    width: 40,
+                    height: 40,
                     errorBuilder: (_, __, ___) => const Icon(
                       Icons.trending_up_rounded,
                       color: Color(0xFFFF6B00),
-                      size: 42,
+                      size: 40,
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 8),
                   ShaderMask(
                     shaderCallback: (bounds) =>
                         const LinearGradient(
@@ -111,7 +116,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     child: const Text(
                       'RiseUp',
                       style: TextStyle(
-                        fontSize: 28,
+                        fontSize: 26,
                         fontWeight: FontWeight.w900,
                         color: Colors.white,
                         letterSpacing: -0.5,
@@ -123,7 +128,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 48),
 
-              // ── Welcome text ──────────────────────────
               Text(
                 'Welcome back 👋',
                 style: TextStyle(
@@ -137,12 +141,12 @@ class _LoginScreenState extends State<LoginScreen> {
 
               Text(
                 'Sign in to continue your wealth journey',
-                style: TextStyle(fontSize: 14, color: subTextColor),
+                style: TextStyle(
+                    fontSize: 14, color: subColor),
               ).animate().fadeIn(delay: 200.ms),
 
               const SizedBox(height: 36),
 
-              // ── Error message ─────────────────────────
               if (_error != null)
                 Container(
                   padding: const EdgeInsets.all(12),
@@ -151,32 +155,31 @@ class _LoginScreenState extends State<LoginScreen> {
                     color: AppColors.error.withOpacity(0.15),
                     borderRadius: AppRadius.md,
                     border: Border.all(
-                        color: AppColors.error.withOpacity(0.3)),
+                        color:
+                            AppColors.error.withOpacity(0.3)),
                   ),
                   child: Row(children: [
                     const Icon(Icons.error_outline,
                         color: AppColors.error, size: 16),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Text(_error!,
-                          style: TextStyle(
-                              color: AppColors.error, fontSize: 13)),
-                    ),
+                        child: Text(_error!,
+                            style: TextStyle(
+                                color: AppColors.error,
+                                fontSize: 13))),
                   ]),
                 ).animate().fadeIn().shake(),
 
-              // ── Email field ───────────────────────────
               AppTextField(
                 controller: _emailCtrl,
                 label: 'Email address',
                 hint: 'you@example.com',
                 keyboardType: TextInputType.emailAddress,
                 prefixIcon: Icons.mail_outline_rounded,
-              ).animate().fadeIn(delay: 300.ms).slideX(begin: -0.1),
+              ).animate().fadeIn(delay: 300.ms),
 
               const SizedBox(height: 16),
 
-              // ── Password field ────────────────────────
               AppTextField(
                 controller: _passCtrl,
                 label: 'Password',
@@ -184,11 +187,10 @@ class _LoginScreenState extends State<LoginScreen> {
                 obscureText: true,
                 prefixIcon: Icons.lock_outline_rounded,
                 onSubmitted: (_) => _login(),
-              ).animate().fadeIn(delay: 400.ms).slideX(begin: -0.1),
+              ).animate().fadeIn(delay: 400.ms),
 
               const SizedBox(height: 12),
 
-              // ── Forgot password ───────────────────────
               Align(
                 alignment: Alignment.centerRight,
                 child: GestureDetector(
@@ -206,7 +208,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 28),
 
-              // ── Sign In button ────────────────────────
               GradientButton(
                 text: _loading ? 'Signing in...' : 'Sign In',
                 onTap: _loading ? null : _login,
@@ -215,7 +216,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 24),
 
-              // ── Sign up link ──────────────────────────
               Center(
                 child: GestureDetector(
                   onTap: () => context.go('/register'),
@@ -223,7 +223,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     text: TextSpan(
                       text: "Don't have an account? ",
                       style: TextStyle(
-                          color: subTextColor, fontSize: 14),
+                          color: subColor, fontSize: 14),
                       children: [
                         TextSpan(
                           text: 'Sign Up Free',
@@ -241,7 +241,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 32),
 
-              // ── Legal links ───────────────────────────
               Center(
                 child: Wrap(
                   alignment: WrapAlignment.center,
@@ -249,25 +248,27 @@ class _LoginScreenState extends State<LoginScreen> {
                   children: [
                     Text('By continuing you agree to our',
                         style: TextStyle(
-                            color: subTextColor, fontSize: 12)),
+                            color: subColor, fontSize: 12)),
                     GestureDetector(
                       onTap: () => context.go('/terms'),
                       child: Text('Terms',
                           style: TextStyle(
                               color: AppColors.primary,
                               fontSize: 12,
-                              decoration: TextDecoration.underline)),
+                              decoration:
+                                  TextDecoration.underline)),
                     ),
                     Text('and',
                         style: TextStyle(
-                            color: subTextColor, fontSize: 12)),
+                            color: subColor, fontSize: 12)),
                     GestureDetector(
                       onTap: () => context.go('/privacy'),
                       child: Text('Privacy Policy',
                           style: TextStyle(
                               color: AppColors.primary,
                               fontSize: 12,
-                              decoration: TextDecoration.underline)),
+                              decoration:
+                                  TextDecoration.underline)),
                     ),
                   ],
                 ),

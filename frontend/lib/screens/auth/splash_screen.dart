@@ -39,17 +39,11 @@ class _SplashScreenState extends State<SplashScreen>
     }
 
     try {
-      final token = await storageService.read(key: 'access_token');
+      final token =
+          await storageService.read(key: 'access_token');
       if (!mounted) return;
       if (token != null && token.isNotEmpty) {
-        try {
-          final prefs =
-              await storageService.read(key: 'onboarding_completed');
-          if (!mounted) return;
-          context.go(prefs == 'true' ? '/home' : '/onboarding');
-        } catch (_) {
-          if (mounted) context.go('/home');
-        }
+        context.go('/home');
       } else {
         context.go('/login');
       }
@@ -60,22 +54,27 @@ class _SplashScreenState extends State<SplashScreen>
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isDark =
+        Theme.of(context).brightness == Brightness.dark;
+    final bgColor =
+        Theme.of(context).scaffoldBackgroundColor;
+    final footerColor =
+        isDark ? Colors.white30 : Colors.black26;
 
     return Scaffold(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      backgroundColor: bgColor,
       body: Stack(
         children: [
-          // ── Main content ──────────────────────────────
+          // ── Main content ────────────────────────────
           Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Logo — no card container
+                // Logo — transparent PNG, no card/container
                 Image.asset(
-                  'assets/images/riseup_logo.jpg',
-                  width: 110,
-                  height: 110,
+                  'assets/images/riseup_logo.png',
+                  width: 120,
+                  height: 120,
                   errorBuilder: (_, __, ___) => const Icon(
                     Icons.trending_up_rounded,
                     color: Color(0xFFFF6B00),
@@ -83,11 +82,12 @@ class _SplashScreenState extends State<SplashScreen>
                   ),
                 ),
 
-                const SizedBox(height: 20),
+                const SizedBox(height: 16),
 
-                // RiseUp text — orange to purple
+                // RiseUp gradient text
                 ShaderMask(
-                  shaderCallback: (bounds) => const LinearGradient(
+                  shaderCallback: (bounds) =>
+                      const LinearGradient(
                     colors: [
                       Color(0xFFFF6B00),
                       Color(0xFFFFD700),
@@ -98,7 +98,7 @@ class _SplashScreenState extends State<SplashScreen>
                   child: const Text(
                     'RiseUp',
                     style: TextStyle(
-                      fontSize: 42,
+                      fontSize: 40,
                       fontWeight: FontWeight.w900,
                       color: Colors.white,
                       letterSpacing: -1,
@@ -109,7 +109,7 @@ class _SplashScreenState extends State<SplashScreen>
             ),
           ),
 
-          // ── Animated dots loader ──────────────────────
+          // ── Animated dots ────────────────────────────
           Positioned(
             bottom: 100,
             left: 0,
@@ -117,22 +117,22 @@ class _SplashScreenState extends State<SplashScreen>
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                _AnimatedDot(
+                _Dot(
                     ctrl: _dotsCtrl,
                     delay: 0.0,
                     color: const Color(0xFFFF9AA2)),
                 const SizedBox(width: 10),
-                _AnimatedDot(
+                _Dot(
                     ctrl: _dotsCtrl,
                     delay: 0.2,
                     color: const Color(0xFF81ECEC)),
                 const SizedBox(width: 10),
-                _AnimatedDot(
+                _Dot(
                     ctrl: _dotsCtrl,
                     delay: 0.4,
                     color: const Color(0xFFFFD700)),
                 const SizedBox(width: 10),
-                _AnimatedDot(
+                _Dot(
                     ctrl: _dotsCtrl,
                     delay: 0.6,
                     color: const Color(0xFF74B9FF)),
@@ -140,7 +140,7 @@ class _SplashScreenState extends State<SplashScreen>
             ),
           ),
 
-          // ── By chAs footer ────────────────────────────
+          // ── By chAs footer ───────────────────────────
           Positioned(
             bottom: 40,
             left: 0,
@@ -149,7 +149,7 @@ class _SplashScreenState extends State<SplashScreen>
               'By chAs',
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: isDark ? Colors.white38 : Colors.black38,
+                color: footerColor,
                 fontSize: 13,
                 fontWeight: FontWeight.w500,
                 letterSpacing: 1,
@@ -162,23 +162,22 @@ class _SplashScreenState extends State<SplashScreen>
   }
 }
 
-class _AnimatedDot extends StatelessWidget {
+class _Dot extends StatelessWidget {
   final AnimationController ctrl;
   final double delay;
   final Color color;
-
-  const _AnimatedDot({
-    required this.ctrl,
-    required this.delay,
-    required this.color,
-  });
+  const _Dot(
+      {required this.ctrl,
+      required this.delay,
+      required this.color});
 
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: ctrl,
       builder: (_, __) {
-        final phase = ((ctrl.value - delay) % 1.0).clamp(0.0, 1.0);
+        final phase =
+            ((ctrl.value - delay) % 1.0).clamp(0.0, 1.0);
         final scale = phase < 0.5
             ? 0.7 + 0.6 * (phase * 2)
             : 1.3 - 0.6 * ((phase - 0.5) * 2);
@@ -195,7 +194,7 @@ class _AnimatedDot extends StatelessWidget {
                   color: color.withOpacity(0.5),
                   blurRadius: 6,
                   spreadRadius: 1,
-                )
+                ),
               ],
             ),
           ),

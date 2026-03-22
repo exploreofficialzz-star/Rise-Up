@@ -1,53 +1,43 @@
-# RiseUp Social Platform — New Files
+# RiseUp Social — Full Update Package v2
 
-## Files in this package
+## Files in this zip
 
-### 1. `frontend/lib/main_shell.dart`
-Facebook-style bottom navigation:
-- Home, Explore, Create (gradient button), AI, Profile
-- Adapts to system dark/light theme
-- Haptic feedback on tab switch
+### Copy these to your repo:
 
-### 2. `frontend/lib/screens/home/home_screen.dart`
-Social media feed screen:
-- RiseUp gradient header (like Facebook's branding)
-- Stories row
-- For You / Following / Trending tabs
-- Post cards with Like, Comment, Share, Save
-- **"Ask RiseUp AI"** button on every post (public)
-- **"Chat Privately"** button on every post (private)
-- Daily free AI limit (3/day) with rewarded ads after
-- Premium users get unlimited AI access
+| File in zip | Destination in repo |
+|---|---|
+| `assets/images/riseup_logo.png` | `frontend/assets/images/riseup_logo.png` |
+| `lib/widgets/app_text_field.dart` | `frontend/lib/widgets/app_text_field.dart` |
+| `lib/screens/auth/splash_screen.dart` | `frontend/lib/screens/auth/splash_screen.dart` |
+| `lib/screens/auth/login_screen.dart` | `frontend/lib/screens/auth/login_screen.dart` |
+| `lib/screens/auth/register_screen.dart` | `frontend/lib/screens/auth/register_screen.dart` |
+| `lib/screens/home/home_screen.dart` | `frontend/lib/screens/home/home_screen.dart` |
+| `lib/screens/ai/post_ai_sheet.dart` | `frontend/lib/screens/ai/post_ai_sheet.dart` |
+| `lib/screens/chat/chat_screen.dart` | `frontend/lib/screens/chat/chat_screen.dart` |
+| `lib/main_shell.dart` | `frontend/lib/main_shell.dart` |
+| `lib/config/router.dart` | `frontend/lib/config/router.dart` |
 
-### 3. `frontend/lib/screens/ai/post_ai_sheet.dart`
-Public AI bottom sheet:
-- Opens when user taps "Ask RiseUp AI"
-- Auto-reads and responds to the post
-- Shows response as public-style comment
-- Follow-up questions with quick suggestion chips
-- Rewarded ad gate for free users
+---
 
-### 4. `frontend/lib/screens/chat/chat_screen.dart`
-Updated AI chat screen:
-- Now supports `postContext` and `postAuthor` params
-- When opened from a post → shows private context banner
-- Private conversation with full history
-- Same beautiful UI adapted to system theme
+## IMPORTANT — Update pubspec.yaml
 
-### 5. `frontend/lib/config/router.dart`
-Updated router:
-- `/home` → HomeScreen (social feed)
-- `/chat` → ChatScreen (now accepts postContext & postAuthor)
-- `/explore` → CommunityScreen
-- `/create` → (placeholder — build CreatePostScreen next)
-- `/profile` → ProfileScreen
-- All existing routes preserved
+In `frontend/pubspec.yaml` find the assets section and add the png:
 
-## How to use
-Copy each file to the corresponding path in your repo and push.
+```yaml
+  assets:
+    - assets/images/
+    - assets/images/riseup_logo.png
+    - assets/animations/
+    - assets/icons/
+```
 
-## AI Monetization Flow
-- Free users: 3 free AI responses/day on posts
-- After 3: Must watch 30s rewarded ad
-- Premium users: Unlimited, no ads
-- All users can READ AI responses for free
+---
+
+## What changed in this update
+
+1. **Logo** — Transparent PNG (no black background)
+2. **Input text color** — White in dark theme, black in light theme
+3. **Navigation** — After login always goes to Home feed (not AI chat)
+4. **Home AppBar** — Left side now has Message + Task buttons
+5. **Splash** — Uses new transparent logo PNG
+6. **Login/Register** — Logo shows without card container, clean design

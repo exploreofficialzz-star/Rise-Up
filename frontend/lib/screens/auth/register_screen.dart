@@ -13,11 +13,11 @@ class RegisterScreen extends StatefulWidget {
 }
 
 class _RegisterScreenState extends State<RegisterScreen> {
-  final _nameCtrl  = TextEditingController();
+  final _nameCtrl = TextEditingController();
   final _emailCtrl = TextEditingController();
-  final _passCtrl  = TextEditingController();
-  bool   _loading  = false;
-  bool   _agreed   = false;
+  final _passCtrl = TextEditingController();
+  bool _loading = false;
+  bool _agreed = false;
   String? _error;
 
   @override
@@ -29,9 +29,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   Future<void> _register() async {
-    final name  = _nameCtrl.text.trim();
+    final name = _nameCtrl.text.trim();
     final email = _emailCtrl.text.trim();
-    final pass  = _passCtrl.text;
+    final pass = _passCtrl.text;
 
     if (name.isEmpty || email.isEmpty || pass.isEmpty) {
       setState(() => _error = 'Please fill in all fields');
@@ -53,11 +53,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
       return;
     }
 
-    setState(() { _loading = true; _error = null; });
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
       await api.signUp(email, pass, name);
       if (!mounted) return;
-      // Always go to verify email — Supabase requires it
       context.go(
           '/verify-email?email=${Uri.encodeComponent(email)}');
     } catch (e) {
@@ -80,8 +82,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
     final bgColor =
         Theme.of(context).scaffoldBackgroundColor;
     final textColor = isDark ? Colors.white : Colors.black87;
-    final subTextColor =
+    final subColor =
         isDark ? Colors.white60 : Colors.black54;
+    final checkBorderColor =
+        isDark ? Colors.white38 : Colors.black38;
 
     return Scaffold(
       backgroundColor: bgColor,
@@ -94,20 +98,20 @@ class _RegisterScreenState extends State<RegisterScreen> {
             children: [
               const SizedBox(height: 16),
 
-              // ── Logo + RiseUp header ──────────────────
+              // ── Logo + RiseUp ─────────────────────────
               Row(
                 children: [
                   Image.asset(
-                    'assets/images/riseup_logo.jpg',
-                    width: 42,
-                    height: 42,
+                    'assets/images/riseup_logo.png',
+                    width: 40,
+                    height: 40,
                     errorBuilder: (_, __, ___) => const Icon(
                       Icons.trending_up_rounded,
                       color: Color(0xFFFF6B00),
-                      size: 42,
+                      size: 40,
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 8),
                   ShaderMask(
                     shaderCallback: (bounds) =>
                         const LinearGradient(
@@ -121,7 +125,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     child: const Text(
                       'RiseUp',
                       style: TextStyle(
-                        fontSize: 28,
+                        fontSize: 26,
                         fontWeight: FontWeight.w900,
                         color: Colors.white,
                         letterSpacing: -0.5,
@@ -133,7 +137,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
               const SizedBox(height: 40),
 
-              // ── Headline ──────────────────────────────
               Text(
                 'Your journey starts here 🔥',
                 style: TextStyle(
@@ -149,15 +152,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
               Text(
                 'Millions worldwide are building wealth — it\'s your turn',
                 style: TextStyle(
-                  fontSize: 14,
-                  color: subTextColor,
-                  height: 1.5,
-                ),
+                    fontSize: 14, color: subColor, height: 1.5),
               ).animate().fadeIn(delay: 200.ms),
 
               const SizedBox(height: 32),
 
-              // ── Error message ─────────────────────────
               if (_error != null)
                 Container(
                   padding: const EdgeInsets.all(12),
@@ -174,15 +173,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         color: AppColors.error, size: 16),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Text(_error!,
-                          style: TextStyle(
-                              color: AppColors.error,
-                              fontSize: 13)),
-                    ),
+                        child: Text(_error!,
+                            style: TextStyle(
+                                color: AppColors.error,
+                                fontSize: 13))),
                   ]),
                 ).animate().shake(),
 
-              // ── Full name ─────────────────────────────
               AppTextField(
                 controller: _nameCtrl,
                 label: 'Full name',
@@ -192,7 +189,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
               const SizedBox(height: 16),
 
-              // ── Email ─────────────────────────────────
               AppTextField(
                 controller: _emailCtrl,
                 label: 'Email address',
@@ -203,7 +199,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
               const SizedBox(height: 16),
 
-              // ── Password ──────────────────────────────
               AppTextField(
                 controller: _passCtrl,
                 label: 'Password',
@@ -215,7 +210,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
               const SizedBox(height: 8),
 
-              // ── Encrypted note ────────────────────────
               Row(children: [
                 const Icon(Icons.shield_outlined,
                     size: 13, color: AppColors.success),
@@ -229,7 +223,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
               const SizedBox(height: 20),
 
-              // ── Terms checkbox ────────────────────────
               GestureDetector(
                 onTap: () =>
                     setState(() => _agreed = !_agreed),
@@ -251,9 +244,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         border: Border.all(
                           color: _agreed
                               ? AppColors.primary
-                              : (isDark
-                                  ? Colors.white38
-                                  : Colors.black38),
+                              : checkBorderColor,
                           width: 1.5,
                         ),
                       ),
@@ -267,7 +258,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       child: Wrap(spacing: 4, children: [
                         Text('I agree to the',
                             style: TextStyle(
-                                color: subTextColor,
+                                color: subColor,
                                 fontSize: 13)),
                         GestureDetector(
                           onTap: () =>
@@ -281,7 +272,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         ),
                         Text('and',
                             style: TextStyle(
-                                color: subTextColor,
+                                color: subColor,
                                 fontSize: 13)),
                         GestureDetector(
                           onTap: () =>
@@ -301,7 +292,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
               const SizedBox(height: 28),
 
-              // ── Create account button ─────────────────
               GradientButton(
                 text: _loading
                     ? 'Creating account...'
@@ -312,7 +302,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
               const SizedBox(height: 24),
 
-              // ── Sign in link ──────────────────────────
               Center(
                 child: GestureDetector(
                   onTap: () => context.go('/login'),
@@ -320,7 +309,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     text: TextSpan(
                       text: 'Already have an account? ',
                       style: TextStyle(
-                          color: subTextColor, fontSize: 14),
+                          color: subColor, fontSize: 14),
                       children: [
                         TextSpan(
                           text: 'Sign In',

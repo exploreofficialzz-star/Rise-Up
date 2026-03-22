@@ -1,7 +1,7 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
-import '../config/app_constants.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import '../config/app_constants.dart';
 import '../screens/auth/splash_screen.dart';
 import '../screens/auth/login_screen.dart';
 import '../screens/auth/register_screen.dart';
@@ -31,11 +31,12 @@ import '../screens/streak/streak_screen.dart';
 import '../main_shell.dart';
 
 final router = GoRouter(
+  // Web goes straight to login, mobile shows splash
   initialLocation: kIsWeb ? '/login' : '/splash',
   errorBuilder: (context, state) =>
       _ErrorPage(error: state.error?.toString()),
   routes: [
-    // ── Public routes ─────────────────────────────────
+    // ── Public ────────────────────────────────────────
     GoRoute(
         path: '/splash',
         builder: (_, __) => const SplashScreen()),
@@ -59,47 +60,43 @@ final router = GoRouter(
     GoRoute(
         path: '/terms',
         builder: (_, __) => const TermsScreen()),
+    // Onboarding still accessible but not forced
     GoRoute(
         path: '/onboarding',
         builder: (_, __) => const OnboardingChatScreen()),
 
-    // ── Main shell with bottom nav ─────────────────────
+    // ── Main shell ────────────────────────────────────
     ShellRoute(
       builder: (context, state, child) =>
           MainShell(child: child),
       routes: [
-        // ── Home / Social Feed ──────────────────────────
+        // Social feed — main home
         GoRoute(
             path: '/home',
             builder: (_, __) => const HomeScreen()),
 
-        // ── AI Chat (supports post context) ────────────
+        // AI Chat with optional post context
         GoRoute(
           path: '/chat',
           builder: (_, s) => ChatScreen(
             conversationId: s.uri.queryParameters['cid'],
             mode: s.uri.queryParameters['mode'] ?? 'general',
-            postContext: s.uri.queryParameters['postContext'],
-            postAuthor: s.uri.queryParameters['postAuthor'],
+            postContext:
+                s.uri.queryParameters['postContext'],
+            postAuthor:
+                s.uri.queryParameters['postAuthor'],
           ),
         ),
 
-        // ── Explore ─────────────────────────────────────
         GoRoute(
             path: '/explore',
             builder: (_, __) => const CommunityScreen()),
-
-        // ── Create Post ──────────────────────────────────
         GoRoute(
             path: '/create',
             builder: (_, __) => const TasksScreen()),
-
-        // ── Profile ──────────────────────────────────────
         GoRoute(
             path: '/profile',
             builder: (_, __) => const ProfileScreen()),
-
-        // ── Other screens ────────────────────────────────
         GoRoute(
             path: '/tasks',
             builder: (_, __) => const TasksScreen()),
@@ -140,29 +137,30 @@ final router = GoRouter(
             builder: (_, __) => const ReferralsScreen()),
         GoRoute(
             path: '/notifications',
-            builder: (_, __) => const NotificationsScreen()),
+            builder: (_, __) =>
+                const NotificationsScreen()),
         GoRoute(
             path: '/streak',
             builder: (_, __) => const StreakScreen()),
         GoRoute(
           path: '/payment',
           builder: (_, s) => PaymentScreen(
-              plan:
-                  s.uri.queryParameters['plan'] ?? 'monthly'),
+              plan: s.uri.queryParameters['plan'] ??
+                  'monthly'),
         ),
       ],
     ),
   ],
 );
 
-// ── 404 Error page ─────────────────────────────────────
 class _ErrorPage extends StatelessWidget {
   final String? error;
   const _ErrorPage({this.error});
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isDark =
+        Theme.of(context).brightness == Brightness.dark;
     return Scaffold(
       backgroundColor:
           Theme.of(context).scaffoldBackgroundColor,
@@ -170,24 +168,24 @@ class _ErrorPage extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Text('🔍', style: TextStyle(fontSize: 64)),
+            const Text('🔍',
+                style: TextStyle(fontSize: 64)),
             const SizedBox(height: 16),
-            Text(
-              'Page not found',
-              style: TextStyle(
-                color: isDark ? Colors.white : Colors.black87,
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+            Text('Page not found',
+                style: TextStyle(
+                  color: isDark
+                      ? Colors.white
+                      : Colors.black87,
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                )),
             const SizedBox(height: 8),
             Text(
-              'The page you\'re looking for doesn\'t exist.',
-              style: TextStyle(
-                  color: isDark
-                      ? Colors.white54
-                      : Colors.black45),
-            ),
+                'The page you\'re looking for doesn\'t exist.',
+                style: TextStyle(
+                    color: isDark
+                        ? Colors.white54
+                        : Colors.black45)),
             const SizedBox(height: 32),
             ElevatedButton(
               onPressed: () => context.go('/home'),
