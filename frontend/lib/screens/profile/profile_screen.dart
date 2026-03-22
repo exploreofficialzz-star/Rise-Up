@@ -30,16 +30,16 @@ class _ProfileScreenState extends State<ProfileScreen>
   Future<void> _load() async {
     try {
       final userId = await api.getUserId() ?? '';
-      final results = await Future.wait([
+      final results = await Future.wait<Map>([
         api.getProfile(),
         api.getUserPosts(userId),
         api.getLikedPosts(userId),
       ]);
       if (mounted) {
         setState(() {
-          _profile = (results[0] as Map)['profile'] ?? {};
-          _posts = (results[1] as Map)['posts'] ?? [];
-          _likedPosts = (results[2] as Map)['posts'] ?? [];
+          _profile = (results[0])['profile'] ?? {};
+          _posts = (results[1])['posts'] ?? [];
+          _likedPosts = (results[2])['posts'] ?? [];
           _loading = false;
         });
       }
