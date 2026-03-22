@@ -25,7 +25,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
 
   Future<void> _load() async {
     try {
-      final data = await api.getConversations();
+      final data = await api.getDMConversations();
       if (mounted) setState(() { _convos = data['conversations'] ?? []; _loading = false; });
     } catch (_) {
       if (mounted) setState(() => _loading = false);
