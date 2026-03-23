@@ -1,15 +1,42 @@
+// frontend/lib/providers/app_providers.dart
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../services/api_service.dart';
+import '../services/currency_service.dart';
 
 // ── Auth State ────────────────────────────────────────
 final authStateProvider = FutureProvider<bool>((ref) async {
   return api.isAuthenticated();
 });
 
-// ── User Profile  ──────────────────────────────────────
+// ── User Profile ──────────────────────────────────────
 final profileProvider = FutureProvider.autoDispose<Map>((ref) async {
   final data = await api.getProfile();
-  return data['profile'] as Map? ?? {};
+  final profile = data['profile'] as Map? ?? {};
+
+  // Initialise the global currency service whenever the profile loads
+  final currencyCode = profile['currency']?.toString() ?? 'USD';
+  currency.init(currencyCode);
+
+  return profile;
+});
+
+// ── Currency (reactive) ───────────────────────────────
+// Reads the user's currency from their profile.
+// Falls back to USD for users who haven't set one yet.
+final currencyProvider = Provider<CurrencyService>((ref) {
+  // Trigger a reload when profile changes
+  ref.watch(profileProvider);
+  return currency;
+});
+
+// ── Currency Code (string only) ───────────────────────
+final currencyCodeProvider = Provider<String>((ref) {
+  final profile = ref.watch(profileProvider);
+  return profile.when(
+    data:    (p) => p['currency']?.toString() ?? 'USD',
+    loading: () => 'USD',
+    error:   (_, __) => 'USD',
+  );
 });
 
 // ── Dashboard Stats ───────────────────────────────────
@@ -59,10 +86,18 @@ final aiModelsProvider = FutureProvider.autoDispose<List>((ref) async {
 // ── Selected AI Model ─────────────────────────────────
 final selectedModelProvider = StateProvider<String>((ref) => 'auto');
 
-// ── Current Stage Notifier ────────────────────────────
+// ── Agent Quota ───────────────────────────────────────
+final agentQuotaProvider = FutureProvider.autoDispose<Map>((ref) async {
+  try {
+    return await api.get('/agent/quota');
+  } catch (_) {
+    return {'runs_used': 0, 'runs_limit': 3, 'runs_remaining': 3};
+  }
+});
+
+// ── Current Stage ─────────────────────────────────────
 class StageNotifier extends StateNotifier<String> {
   StageNotifier() : super('survival');
-
   void updateStage(String stage) => state = stage;
 }
 

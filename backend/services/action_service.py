@@ -476,4 +476,3 @@ email_service     = EmailService()
 social_service    = SocialMediaService()
 document_service  = DocumentService()
 opportunity_scanner = OpportunityScanner()
-

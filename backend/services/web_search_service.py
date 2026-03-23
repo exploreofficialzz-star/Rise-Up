@@ -300,4 +300,3 @@ def _detect_platform(url: str) -> str:
 
 
 web_search_service = WebSearchService()
-
