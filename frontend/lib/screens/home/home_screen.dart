@@ -6,6 +6,8 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 import '../../services/ad_service.dart';
+import '../../services/ad_manager.dart';
+import '../../widgets/ad_widgets.dart';
 import '../ai/post_ai_sheet.dart';
 
 // ── Post Model ────────────────────────────────────────
@@ -317,10 +319,11 @@ class _HomeScreenState extends State<HomeScreen>
                 color: AppColors.primary,
                 child: ListView.separated(
                   padding: EdgeInsets.zero,
-                  itemCount: posts.length + 1,
+                  itemCount: adManager.feedItemCount(posts.length) + 1,
                   separatorBuilder: (_, __) => Divider(height: 8, thickness: 8, color: borderColor),
                   itemBuilder: (_, i) {
-                    if (i == posts.length) {
+                    final totalContent = adManager.feedItemCount(posts.length);
+                    if (i == totalContent) {
                       return Padding(
                         padding: const EdgeInsets.all(16),
                         child: GestureDetector(
@@ -331,8 +334,18 @@ class _HomeScreenState extends State<HomeScreen>
                         ),
                       );
                     }
+                    // Insert ad every kFeedAdFrequency posts
+                    if (adManager.shouldShowFeedAd(i)) {
+                      return FeedAdCard(
+                        isDark: isDark,
+                        cardColor: cardColor,
+                        borderColor: borderColor,
+                      );
+                    }
+                    final postIndex = adManager.realPostIndex(i);
+                    if (postIndex >= posts.length) return const SizedBox.shrink();
                     return PostCard(
-                      post: posts[i],
+                      post: posts[postIndex],
                       isDark: isDark,
                       cardColor: cardColor,
                       borderColor: borderColor,
@@ -594,6 +607,10 @@ class _AppDrawer extends StatelessWidget {
                   _DItem(Iconsax.chart, 'Dashboard', 'Earnings, stats & tasks', isDark, onTap: () { Navigator.pop(context); context.go('/dashboard'); }),
                   _DItem(Icons.auto_awesome_rounded, 'Agentic AI', 'Execute ANY income task', isDark, badge: 'HEAVY', badgeColor: AppColors.accent, onTap: () { Navigator.pop(context); context.push('/agent'); }),
                   _DItem(Iconsax.flash, 'Workflow Engine', 'AI-powered income execution', isDark, badge: 'NEW', badgeColor: AppColors.success, onTap: () { Navigator.pop(context); context.push('/workflow'); }),
+                  _DItem(Iconsax.chart_3, 'Market Pulse', 'What pays right now', isDark, badge: '🔥 LIVE', badgeColor: const Color(0xFFFF6B35), onTap: () { Navigator.pop(context); context.push('/pulse'); }),
+                  _DItem(Icons.emoji_events_rounded, 'Challenges', '30-day income sprints', isDark, onTap: () { Navigator.pop(context); context.push('/challenges'); }),
+                  _DItem(Iconsax.briefcase, 'Client CRM', 'Track prospects & clients', isDark, onTap: () { Navigator.pop(context); context.push('/crm'); }),
+                  _DItem(Iconsax.gallery, 'My Portfolio', 'Shareable project showcase', isDark, onTap: () { Navigator.pop(context); context.push('/portfolio'); }),
                   _DItem(Iconsax.task_square, 'My Tasks', 'Daily income tasks', isDark, onTap: () { Navigator.pop(context); context.go('/tasks'); }),
                   _DItem(Iconsax.map_1, 'Wealth Roadmap', '3-stage wealth plan', isDark, onTap: () { Navigator.pop(context); context.go('/roadmap'); }),
                   _DItem(Iconsax.book, 'Skills', 'Earn-while-learning', isDark, onTap: () { Navigator.pop(context); context.go('/skills'); }),

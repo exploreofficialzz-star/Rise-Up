@@ -13,7 +13,9 @@ from routers import (
     expenses, achievements, referrals,
     notifications, admin,
     posts, messages, live,
-    workflow, agent, collaboration,
+    workflow, agent, collaboration, ads,
+    income_memory, market_pulse, contracts,
+    crm, challenges, portfolio,
 )
 
 app = FastAPI(
@@ -61,9 +63,16 @@ app.include_router(messages.router,      prefix="/api/v1")
 app.include_router(live.router,          prefix="/api/v1")
 
 # ── AI Workflow Engine ─────────────────────────────────
-app.include_router(workflow.router,      prefix="/api/v1")
-app.include_router(agent.router,         prefix="/api/v1")
-app.include_router(collaboration.router, prefix="/api/v1")
+app.include_router(workflow.router,       prefix="/api/v1")
+app.include_router(agent.router,          prefix="/api/v1")
+app.include_router(collaboration.router,  prefix="/api/v1")
+app.include_router(ads.router,            prefix="/api/v1")
+app.include_router(income_memory.router,  prefix="/api/v1")
+app.include_router(market_pulse.router,   prefix="/api/v1")
+app.include_router(contracts.router,      prefix="/api/v1")
+app.include_router(crm.router,            prefix="/api/v1")
+app.include_router(challenges.router,     prefix="/api/v1")
+app.include_router(portfolio.router,      prefix="/api/v1")
 
 @app.get("/")
 async def root():

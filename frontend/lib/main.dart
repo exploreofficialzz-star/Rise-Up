@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'config/app_constants.dart';
 import 'config/router.dart';
 import 'services/ad_service.dart';
+import 'services/ad_manager.dart';
 import 'services/notification_service.dart';
 import 'utils/storage_service.dart';
 import 'utils/version_check_service.dart';
@@ -48,9 +49,17 @@ void main() async {
     }
   }
 
-  // Ads — optional
+  // Ads — skip for premium, show for free
   try {
-    await adService.initialize();
+    bool isPremium = false;
+    try {
+      final token = await storageService.read(key: 'access_token');
+      if (token != null) {
+        final profile = await api.getProfile();
+        isPremium = (profile['profile']?['subscription_tier'] ?? 'free') == 'premium';
+      }
+    } catch (_) {}
+    await adManager.initialize(isPremium: isPremium);
   } catch (e) {
     debugPrint('[RiseUp] Ads init error: $e');
   }

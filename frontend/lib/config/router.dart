@@ -44,6 +44,11 @@ import '../screens/workflow/workflow_detail_screen.dart';
 import '../screens/collaboration/collaboration_screen.dart';
 import '../screens/agent/agent_screen.dart';
 import '../screens/profile/edit_profile_screen.dart';
+import '../screens/market_pulse/market_pulse_screen.dart';
+import '../screens/challenges/challenges_screen.dart';
+import '../screens/crm/crm_screen.dart';
+import '../screens/portfolio/portfolio_screen.dart';
+
 import '../main_shell.dart';
 
 final router = GoRouter(
@@ -153,6 +158,12 @@ final router = GoRouter(
 
         // ── Edit Profile ──────────────────────────────────────
         GoRoute(path: '/edit-profile',     builder: (_, __) => const EditProfileScreen()),
+
+        // ── New Superpower Features ───────────────────────────
+        GoRoute(path: '/pulse',        builder: (_, __) => const MarketPulseScreen()),
+        GoRoute(path: '/challenges',   builder: (_, __) => const ChallengesScreen()),
+        GoRoute(path: '/crm',          builder: (_, __) => const CrmScreen()),
+        GoRoute(path: '/portfolio',    builder: (_, __) => const PortfolioScreen()),
       ],
     ),
   ],

@@ -6,6 +6,8 @@ import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
+import '../../services/ad_manager.dart';
+import '../../widgets/ad_widgets.dart';
 
 // ─────────────────────────────────────────────────────────────────
 // RiseUp Agentic AI Screen
@@ -29,7 +31,7 @@ class _AgentScreenState extends State<AgentScreen> {
 
   double _budget = 0;
   double _hours = 2;
-  String _currency = 'NGN';
+  static const String _currency = 'USD'; // USD only - universal system
 
   Map<String, dynamic> _agentResult = {};
   String? _workflowId;
@@ -64,15 +66,20 @@ class _AgentScreenState extends State<AgentScreen> {
       setState(() => _error = 'Please describe your goal in more detail');
       return;
     }
+    // Check free usage limit
+    if (!adManager.canUseAgent) {
+      _showLimitDialog();
+      return;
+    }
+    adManager.recordAgentUse();
     setState(() { _phase = _Phase.thinking; _error = ''; });
 
     try {
       final result = await api.post('/agent/run', {
         'task': task,
-        'budget': _budget,
+        'budget_usd': _budget,
         'hours_per_day': _hours,
-        'currency': _currency,
-        'mode': 'full',
+        'urgency': 'normal',
       });
 
       setState(() {
@@ -202,6 +209,26 @@ class _AgentScreenState extends State<AgentScreen> {
           Text('Agentic AI', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: text)),
         ]),
         actions: [
+          if (!adManager.isPremium)
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Center(child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: adManager.agentUsesRemaining > 0
+                      ? AppColors.success.withOpacity(0.12)
+                      : AppColors.error.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  '${adManager.agentUsesRemaining}/3 runs',
+                  style: TextStyle(
+                    fontSize: 11, fontWeight: FontWeight.w600,
+                    color: adManager.agentUsesRemaining > 0 ? AppColors.success : AppColors.error,
+                  ),
+                ),
+              )),
+            ),
           if (_workflowId != null)
             TextButton.icon(
               onPressed: () => context.push('/workflow/$_workflowId'),
@@ -373,30 +400,21 @@ class _InputView extends StatelessWidget {
             ),
           ]),
 
-          const SizedBox(height: 10),
 
-          // Currency
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: currencies.map((c) {
-                final selected = c == currency;
-                return GestureDetector(
-                  onTap: () => onCurrencyChange(c),
-                  child: Container(
-                    margin: const EdgeInsets.only(right: 8),
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: selected ? AppColors.primary : Colors.transparent,
-                      borderRadius: AppRadius.pill,
-                      border: Border.all(color: selected ? AppColors.primary : (isDark ? Colors.white24 : Colors.grey.shade300)),
-                    ),
-                    child: Text(c, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
-                        color: selected ? Colors.white : sub)),
-                  ),
-                );
-              }).toList(),
-            ),
+          // USD only — universal currency
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Row(children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: AppColors.success.withOpacity(0.1),
+                  borderRadius: AppRadius.pill,
+                  border: Border.all(color: AppColors.success.withOpacity(0.3)),
+                ),
+                child: const Text('💵 USD — Universal Currency', style: TextStyle(fontSize: 11, color: AppColors.success, fontWeight: FontWeight.w600)),
+              ),
+            ]),
           ),
 
           const SizedBox(height: 20),
@@ -612,7 +630,7 @@ class _ResultViewState extends State<_ResultView> with SingleTickerProviderState
                 indicatorColor: AppColors.primary,
                 indicatorWeight: 2,
                 labelStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-                tabs: const [Tab(text: 'Steps'), Tab(text: 'Tools'), Tab(text: 'AI Chat')],
+                tabs: const [Tab(text: 'Steps'), Tab(text: 'Stack'), Tab(text: 'Tools'), Tab(text: 'Chat')],
               ),
             ],
           ),
@@ -764,7 +782,106 @@ class _ResultViewState extends State<_ResultView> with SingleTickerProviderState
                 },
               ),
 
-              // ── AI Chat tab ────────────────────────────
+              // ── Income Stack tab ───────────────────────
+              Builder(builder: (ctx) {
+                final stacks = widget.result['income_stacking'] as List? ?? [];
+                final antiFailure = widget.result['anti_failure_protocols'] as List? ?? [];
+                final timeline = widget.result['cash_pull_timeline'] as Map? ?? {};
+                final surface = widget.isDark ? AppColors.bgSurface : Colors.grey.shade100;
+                return ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    if (timeline.isNotEmpty) ...[
+                      Text('💰 Cash Pull Timeline', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: widget.text)),
+                      const SizedBox(height: 10),
+                      Row(children: [
+                        _timelinePill('Day 7', '\$${timeline['day7_target_usd'] ?? 0}', AppColors.success),
+                        const SizedBox(width: 8),
+                        _timelinePill('Month 1', '\$${timeline['month1_target_usd'] ?? 0}', AppColors.primary),
+                        const SizedBox(width: 8),
+                        _timelinePill('Month 3', '\$${timeline['month3_target_usd'] ?? 0}', AppColors.accent),
+                        const SizedBox(width: 8),
+                        _timelinePill('Month 6', '\$${timeline['month6_target_usd'] ?? 0}', AppColors.gold),
+                      ]),
+                      if (timeline['day7_how'] != null) ...[
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(color: AppColors.success.withOpacity(0.08), borderRadius: AppRadius.md),
+                          child: Text('Day 7: ${timeline['day7_how']}', style: TextStyle(fontSize: 12, color: widget.text, height: 1.4)),
+                        ),
+                      ],
+                      const SizedBox(height: 20),
+                    ],
+                    if (stacks.isNotEmpty) ...[
+                      Text('📈 Income Stacking — 3 Streams, 1 Skill', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: widget.text)),
+                      const SizedBox(height: 10),
+                      ...stacks.map((s) {
+                        final stream = s as Map;
+                        final colors = [AppColors.success, AppColors.primary, AppColors.accent];
+                        final idx = stacks.indexOf(s).clamp(0, 2);
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: widget.isDark ? AppColors.bgCard : const Color(0xFFF8F8F8),
+                            borderRadius: AppRadius.lg,
+                            border: Border.all(color: colors[idx].withOpacity(0.2)),
+                          ),
+                          child: Row(children: [
+                            Container(width: 4, height: 50, decoration: BoxDecoration(color: colors[idx], borderRadius: BorderRadius.circular(4))),
+                            const SizedBox(width: 12),
+                            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(stream['stream']?.toString() ?? '', style: TextStyle(fontSize: 11, color: colors[idx], fontWeight: FontWeight.w700)),
+                              Text(stream['method']?.toString() ?? '', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: widget.text)),
+                              const SizedBox(height: 2),
+                              Row(children: [
+                                Icon(Icons.attach_money_rounded, size: 12, color: AppColors.gold),
+                                Text('\$${stream['monthly_potential_usd'] ?? 0}/mo potential', style: TextStyle(fontSize: 11, color: widget.sub)),
+                              ]),
+                            ])),
+                          ]),
+                        );
+                      }),
+                      const SizedBox(height: 20),
+                    ],
+                    if (antiFailure.isNotEmpty) ...[
+                      Text('🛡️ Anti-Failure Protocols', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: widget.text)),
+                      const SizedBox(height: 10),
+                      ...antiFailure.map((f) {
+                        final fail = f as Map;
+                        final prob = fail['probability']?.toString() ?? 'medium';
+                        final color = prob == 'high' ? AppColors.error : prob == 'medium' ? AppColors.warning : AppColors.success;
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: color.withOpacity(0.06),
+                            borderRadius: AppRadius.lg,
+                            border: Border.all(color: color.withOpacity(0.2)),
+                          ),
+                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Row(children: [
+                              Text(prob == 'high' ? '⚠️' : prob == 'medium' ? '⚡' : '💡', style: const TextStyle(fontSize: 14)),
+                              const SizedBox(width: 6),
+                              Expanded(child: Text(fail['failure_mode']?.toString() ?? '', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: widget.text))),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(color: color.withOpacity(0.15), borderRadius: AppRadius.pill),
+                                child: Text(prob.toUpperCase(), style: TextStyle(fontSize: 9, color: color, fontWeight: FontWeight.w700)),
+                              ),
+                            ]),
+                            const SizedBox(height: 6),
+                            Text('Prevention: ${fail['counter_strategy'] ?? ''}', style: TextStyle(fontSize: 12, color: widget.sub, height: 1.4)),
+                          ]),
+                        );
+                      }),
+                    ],
+                  ],
+                );
+              }),
+
+                            // ── AI Chat tab ────────────────────────────
               Column(
                 children: [
                   // Quick tool buttons
@@ -888,6 +1005,17 @@ class _ResultViewState extends State<_ResultView> with SingleTickerProviderState
       ],
     );
   }
+
+  Widget _timelinePill(String period, String amount, Color color) => Expanded(
+    child: Container(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: AppRadius.md, border: Border.all(color: color.withOpacity(0.25))),
+      child: Column(children: [
+        Text(amount, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: color)),
+        Text(period, style: TextStyle(fontSize: 9, color: color.withOpacity(0.7))),
+      ]),
+    ),
+  );
 
   Widget _pill(String label, Color color) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
