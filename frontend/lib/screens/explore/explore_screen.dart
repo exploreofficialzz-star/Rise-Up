@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -6,263 +5,138 @@ import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
-import '../../services/ad_manager.dart';
-import '../../widgets/ad_widgets.dart';
 
-// ─────────────────────────────────────────────────────────────────
-// RiseUp Agentic AI Screen
-// User describes ANY task → Agent plans + executes → saves workflow
-// ─────────────────────────────────────────────────────────────────
-
-class AgentScreen extends StatefulWidget {
-  final String? workflowId;
-  const AgentScreen({super.key, this.workflowId});
+class ExploreScreen extends StatefulWidget {
+  const ExploreScreen({super.key});
   @override
-  State<AgentScreen> createState() => _AgentScreenState();
+  State<ExploreScreen> createState() => _ExploreScreenState();
 }
 
-enum _Phase { idle, thinking, result, chatting }
+class _ExploreScreenState extends State<ExploreScreen>
+    with SingleTickerProviderStateMixin {
+  final _searchCtrl = TextEditingController();
+  late TabController _tabCtrl;
 
-class _AgentScreenState extends State<AgentScreen> {
-  _Phase _phase = _Phase.idle;
-  final _taskCtrl = TextEditingController();
-  final _chatCtrl = TextEditingController();
-  final _scrollCtrl = ScrollController();
+  String _query     = '';
+  bool   _searching = false;
 
-  double _budget = 0;
-  double _hours = 2;
-  static const String _currency = 'USD';
+  // All data comes from API
+  List _trendingPosts = [];
+  List _creators      = [];
+  List _groups        = [];
+  List _leaders       = [];
+  List _challenges    = [];
 
-  Map<String, dynamic> _agentResult = {};
-  String? _workflowId;
-  String? _sessionId;
-  String _error = '';
-
-  final List<_ChatMsg> _chatMsgs = [];
-  bool _chatLoading = false;
-
-  static const _quickTasks = [
-    ('▶️', 'Start a YouTube channel', 'I want to start earning on YouTube in the next 2 months'),
-    ('💻', 'Freelance on Upwork/Fiverr', 'I want to get my first freelance client this week'),
-    ('📱', 'Sell on social media', 'I want to start selling products via WhatsApp and Instagram'),
-    ('✍️', 'Content writing income', 'I want to earn from writing articles and blog posts'),
-    ('🛍️', 'eCommerce / dropshipping', 'I want to start an online store with no upfront stock'),
-    ('📊', 'Trading / investing', 'I want to learn trading and start making money from it'),
-    ('🎨', 'Design & creative work', 'I want to earn from graphic design and creative services'),
-    ('📚', 'Online tutoring / teaching', 'I want to earn money teaching skills I know online'),
-  ];
+  bool _postsLoaded      = false;
+  bool _creatorsLoaded   = false;
+  bool _groupsLoaded     = false;
+  bool _leadersLoaded    = false;
+  bool _challengesLoaded = false;
 
   @override
   void initState() {
     super.initState();
-    _workflowId = widget.workflowId;
-  }
-
-  void _showLimitDialog() {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (_) => Container(
-        padding: const EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          color: isDark ? AppColors.bgCard : Colors.white,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const Text('🔒', style: TextStyle(fontSize: 40)),
-          const SizedBox(height: 12),
-          const Text('Daily Limit Reached',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-          const SizedBox(height: 8),
-          Text(
-            '${AdManager.kFreeAgentDaily} agent runs per day on free plan.\nWatch an ad for 1 more run, or go Premium for unlimited.',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 13,
-              color: isDark ? Colors.white54 : Colors.black45,
-              height: 1.5,
-            ),
-          ),
-          const SizedBox(height: 20),
-          Row(children: [
-            Expanded(
-              child: GestureDetector(
-                onTap: () {
-                  Navigator.pop(context);
-                  adManager.watchAdForAgentUse(context).then((ok) {
-                    if (ok && mounted) _runAgent();
-                  });
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  decoration: BoxDecoration(
-                    color: AppColors.primary.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: AppColors.primary.withOpacity(0.3)),
-                  ),
-                  child: const Center(
-                    child: Text('▶️  Watch Ad',
-                        style: TextStyle(
-                            color: AppColors.primary,
-                            fontWeight: FontWeight.w700)),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: GestureDetector(
-                onTap: () {
-                  Navigator.pop(context);
-                  context.push('/premium');
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                        colors: [AppColors.primary, AppColors.accent]),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Center(
-                    child: Text('⭐ Go Premium',
-                        style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w700)),
-                  ),
-                ),
-              ),
-            ),
-          ]),
-          const SizedBox(height: 8),
-        ]),
-      ),
-    );
-  }
-
-  Future<void> _runAgent() async {
-    final task = _taskCtrl.text.trim();
-    if (task.length < 10) {
-      setState(() => _error = 'Please describe your goal in more detail');
-      return;
-    }
-    if (!adManager.canUseAgent) {
-      _showLimitDialog();
-      return;
-    }
-    adManager.recordAgentUse();
-    setState(() {
-      _phase = _Phase.thinking;
-      _error = '';
-    });
-
-    try {
-      final result = await api.post('/agent/run', {
-        'task': task,
-        'budget_usd': _budget,
-        'hours_per_day': _hours,
-        'urgency': 'normal',
-      });
-
-      setState(() {
-        _agentResult = Map<String, dynamic>.from(result as Map);
-        _workflowId = result['workflow_id']?.toString();
-        _phase = _Phase.result;
-        final agentResp = result['agent_response']?.toString() ?? '';
-        if (agentResp.isNotEmpty) {
-          _chatMsgs.add(_ChatMsg(text: agentResp, isAgent: true));
-        }
-      });
-    } catch (e) {
-      setState(() {
-        _error = 'Agent failed. Please try again.';
-        _phase = _Phase.idle;
-      });
-    }
-  }
-
-  Future<void> _sendChat() async {
-    final msg = _chatCtrl.text.trim();
-    if (msg.isEmpty || _chatLoading) return;
-    _chatCtrl.clear();
-    setState(() {
-      _chatMsgs.add(_ChatMsg(text: msg, isAgent: false));
-      _chatLoading = true;
-    });
-    _scrollToBottom();
-
-    try {
-      final result = await api.post('/agent/chat', {
-        'message': msg,
-        if (_sessionId != null) 'session_id': _sessionId,
-        if (_workflowId != null) 'workflow_id': _workflowId,
-      });
-      setState(() {
-        _sessionId = result['session_id']?.toString();
-        _chatMsgs.add(_ChatMsg(
-            text: result['content']?.toString() ?? '...', isAgent: true));
-        _chatLoading = false;
-      });
-      _scrollToBottom();
-    } catch (e) {
-      setState(() {
-        _chatMsgs
-            .add(_ChatMsg(text: 'Connection issue. Try again! 🔄', isAgent: true));
-        _chatLoading = false;
-      });
-    }
-  }
-
-  Future<void> _executeTool(String tool, Map<String, dynamic> input) async {
-    setState(() => _chatLoading = true);
-    try {
-      final result = await api.post('/agent/execute-tool', {
-        'tool': tool,
-        'input': input,
-        if (_workflowId != null) 'workflow_id': _workflowId,
-      });
-      final output = result['output'] as Map? ?? {};
-      final content = output['content']?.toString() ??
-          output['template']?.toString() ??
-          output['result']?.toString() ??
-          jsonEncode(output);
-      setState(() {
-        _chatMsgs.add(
-            _ChatMsg(text: content, isAgent: true, isTool: true, toolName: tool));
-        _chatLoading = false;
-      });
-      _scrollToBottom();
-    } catch (e) {
-      setState(() => _chatLoading = false);
-    }
-  }
-
-  void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollCtrl.hasClients) {
-        _scrollCtrl.animateTo(_scrollCtrl.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOut);
-      }
-    });
+    _tabCtrl = TabController(length: 6, vsync: this);
+    _tabCtrl.addListener(_onTabChange);
+    _loadPosts();
+    _loadLeaderboard();
   }
 
   @override
   void dispose() {
-    _taskCtrl.dispose();
-    _chatCtrl.dispose();
-    _scrollCtrl.dispose();
+    _searchCtrl.dispose();
+    _tabCtrl.removeListener(_onTabChange);
+    _tabCtrl.dispose();
     super.dispose();
+  }
+
+  void _onTabChange() {
+    if (!_tabCtrl.indexIsChanging) return;
+    switch (_tabCtrl.index) {
+      case 1: if (!_creatorsLoaded)   _loadCreators();   break;
+      case 2: if (!_groupsLoaded)     _loadGroups();     break;
+      case 3: if (!_leadersLoaded)    _loadLeaderboard(); break;
+      case 4: if (!_challengesLoaded) _loadChallenges(); break;
+    }
+  }
+
+  Future<void> _loadPosts() async {
+    try {
+      final d = await api.getFeed(tab: 'trending', limit: 20, offset: 0);
+      if (mounted) setState(() {
+        _trendingPosts = d['posts'] as List? ?? [];
+        _postsLoaded   = true;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _postsLoaded = true);
+    }
+  }
+
+  Future<void> _loadCreators() async {
+    try {
+      final d = await api.get('/progress/leaderboard');
+      if (mounted) setState(() {
+        _creators       = (d as Map?)?['leaders'] as List? ?? [];
+        _creatorsLoaded = true;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _creatorsLoaded = true);
+    }
+  }
+
+  Future<void> _loadGroups() async {
+    try {
+      final d = await api.get('/community/groups');
+      if (mounted) setState(() {
+        _groups       = (d as Map?)?['groups'] ?? d as List? ?? [];
+        _groupsLoaded = true;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _groupsLoaded = true);
+    }
+  }
+
+  Future<void> _loadLeaderboard() async {
+    try {
+      final d = await api.get('/progress/leaderboard');
+      if (mounted) setState(() {
+        _leaders      = (d as Map?)?['leaders'] as List? ?? [];
+        _leadersLoaded = true;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _leadersLoaded = true);
+    }
+  }
+
+  Future<void> _loadChallenges() async {
+    try {
+      final d = await api.get('/challenges/');
+      if (mounted) setState(() {
+        _challenges      = (d as Map?)?['challenges'] as List? ?? [];
+        _challengesLoaded = true;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _challengesLoaded = true);
+    }
+  }
+
+  Future<void> _refreshAll() async {
+    setState(() {
+      _postsLoaded = _creatorsLoaded = _groupsLoaded =
+          _leadersLoaded = _challengesLoaded = false;
+    });
+    await Future.wait([_loadPosts(), _loadLeaderboard()]);
   }
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bg = isDark ? Colors.black : Colors.white;
-    final card = isDark ? AppColors.bgCard : Colors.white;
-    final border = isDark ? AppColors.bgSurface : Colors.grey.shade200;
-    final text = isDark ? Colors.white : Colors.black87;
-    final sub = isDark ? Colors.white54 : Colors.black45;
+    final isDark   = Theme.of(context).brightness == Brightness.dark;
+    final bg       = isDark ? Colors.black : Colors.white;
+    final card     = isDark ? AppColors.bgCard : Colors.white;
+    final surface  = isDark ? AppColors.bgSurface : Colors.grey.shade100;
+    final border   = isDark ? AppColors.bgSurface : Colors.grey.shade200;
+    final text     = isDark ? Colors.white : Colors.black87;
+    final sub      = isDark ? Colors.white54 : Colors.black45;
 
     return Scaffold(
       backgroundColor: bg,
@@ -270,295 +144,494 @@ class _AgentScreenState extends State<AgentScreen> {
         backgroundColor: card,
         elevation: 0,
         surfaceTintColor: Colors.transparent,
-        leading: IconButton(
-          icon: Icon(Icons.arrow_back_rounded, color: text),
-          onPressed: () {
-            if (_phase == _Phase.result || _phase == _Phase.chatting) {
-              setState(() {
-                _phase = _Phase.idle;
-                _taskCtrl.clear();
-                _agentResult = {};
-                _chatMsgs.clear();
-              });
-            } else {
-              context.pop();
-            }
-          },
-        ),
-        title: Row(children: [
-          Container(
-            width: 30,
-            height: 30,
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                  colors: [AppColors.primary, AppColors.accent]),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: const Icon(Icons.auto_awesome, color: Colors.white, size: 16),
-          ),
-          const SizedBox(width: 10),
-          Text('Agentic AI',
-              style: TextStyle(
-                  fontSize: 17, fontWeight: FontWeight.w700, color: text)),
-        ]),
+        title: Text('Explore',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: text)),
         actions: [
-          if (!adManager.isPremium)
-            Padding(
-              padding: const EdgeInsets.only(right: 4),
-              child: Center(
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: adManager.agentUsesRemaining > 0
-                        ? AppColors.success.withOpacity(0.12)
-                        : AppColors.error.withOpacity(0.12),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    '${adManager.agentUsesRemaining}/3 runs',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: adManager.agentUsesRemaining > 0
-                          ? AppColors.success
-                          : AppColors.error,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          if (_workflowId != null)
-            TextButton.icon(
-              onPressed: () => context.push('/workflow/$_workflowId'),
-              icon: const Icon(Iconsax.flash, size: 14, color: AppColors.primary),
-              label: const Text('Workflow',
-                  style: TextStyle(
-                      color: AppColors.primary,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600)),
-            ),
+          IconButton(
+            icon: Icon(Iconsax.refresh, color: sub, size: 20),
+            onPressed: _refreshAll,
+          ),
         ],
         bottom: PreferredSize(
             preferredSize: const Size.fromHeight(1),
             child: Divider(height: 1, color: border)),
       ),
-      body: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 350),
-        child: _phase == _Phase.thinking
-            ? _ThinkingView()
-            : _phase == _Phase.result || _phase == _Phase.chatting
-                ? _ResultView(
-                    result: _agentResult,
-                    chatMsgs: _chatMsgs,
-                    chatCtrl: _chatCtrl,
-                    scrollCtrl: _scrollCtrl,
-                    chatLoading: _chatLoading,
-                    isDark: isDark,
-                    text: text,
-                    sub: sub,
-                    card: card,
-                    border: border,
-                    workflowId: _workflowId,
-                    onSend: _sendChat,
-                    onExecuteTool: _executeTool,
-                    onViewWorkflow: () => _workflowId != null
-                        ? context.push('/workflow/$_workflowId')
-                        : null,
-                  )
-                : _InputView(
-                    taskCtrl: _taskCtrl,
-                    budget: _budget,
-                    hours: _hours,
-                    currency: _currency,
-                    error: _error,
-                    quickTasks: _quickTasks,
-                    isDark: isDark,
-                    text: text,
-                    sub: sub,
-                    card: card,
-                    onBudgetChange: (v) => setState(() => _budget = v),
-                    onHoursChange: (v) => setState(() => _hours = v),
-                    onCurrencyChange: (_) {},
-                    onRun: _runAgent,
-                    onQuickTask: (task) {
-                      setState(() => _taskCtrl.text = task);
+      body: Column(children: [
+        // Search
+        Container(
+          color: card,
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          child: TextField(
+            controller: _searchCtrl,
+            style: TextStyle(fontSize: 14, color: text),
+            onChanged: (v) => setState(() { _query = v; _searching = v.isNotEmpty; }),
+            decoration: InputDecoration(
+              hintText: 'Search creators, topics, groups...',
+              hintStyle: TextStyle(color: sub, fontSize: 13),
+              filled: true,
+              fillColor: surface,
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+              prefixIcon: Icon(Iconsax.search_normal, color: sub, size: 18),
+              suffixIcon: _searching
+                  ? IconButton(
+                      icon: Icon(Icons.close, color: sub, size: 18),
+                      onPressed: () => setState(() { _searchCtrl.clear(); _query = ''; _searching = false; }))
+                  : null,
+              contentPadding: const EdgeInsets.symmetric(vertical: 12),
+            ),
+          ),
+        ),
+
+        // Tabs
+        Container(
+          color: card,
+          child: TabBar(
+            controller: _tabCtrl,
+            labelColor: AppColors.primary,
+            unselectedLabelColor: sub,
+            indicatorColor: AppColors.primary,
+            indicatorWeight: 2.5,
+            labelStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+            isScrollable: true,
+            tabAlignment: TabAlignment.start,
+            tabs: const [
+              Tab(text: 'Trending'),
+              Tab(text: 'Creators'),
+              Tab(text: 'Groups'),
+              Tab(text: 'Leaderboard'),
+              Tab(text: 'Challenges'),
+              Tab(text: 'Topics'),
+            ],
+          ),
+        ),
+        Divider(height: 1, color: border),
+
+        Expanded(
+          child: TabBarView(controller: _tabCtrl, children: [
+            // TRENDING
+            _buildTabBody(_postsLoaded, _trendingPosts.isEmpty && _postsLoaded,
+              'No trending posts yet', 'Be the first to post something!',
+              RefreshIndicator(
+                onRefresh: _loadPosts,
+                color: AppColors.primary,
+                child: ListView.separated(
+                  padding: EdgeInsets.zero,
+                  itemCount: _trendingPosts.length,
+                  separatorBuilder: (_, __) => Divider(height: 8, thickness: 8, color: border),
+                  itemBuilder: (_, i) {
+                    final p = _trendingPosts[i] as Map;
+                    return _PostCard(post: p, isDark: isDark, text: text, sub: sub, card: card, index: i);
+                  },
+                ),
+              ),
+            ),
+
+            // CREATORS (from leaderboard)
+            _buildTabBody(_creatorsLoaded, _creators.isEmpty && _creatorsLoaded,
+              'No top earners yet', 'Start earning to appear here!',
+              ListView.separated(
+                padding: const EdgeInsets.all(16),
+                itemCount: _creators.length,
+                separatorBuilder: (_, __) => Divider(height: 16, color: border),
+                itemBuilder: (_, i) {
+                  final c    = _creators[i] as Map;
+                  final name = c['full_name']?.toString() ?? 'User';
+                  final earned = (c['total_earned'] as num?)?.toDouble() ?? 0;
+                  final country = c['country']?.toString() ?? '';
+                  return Row(children: [
+                    Container(
+                      width: 50, height: 50,
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)]),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Center(child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+                          style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Colors.white))),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(name, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: text)),
+                      Text(country, style: TextStyle(fontSize: 12, color: sub)),
+                      Text('Stage: ${c['stage'] ?? 'survival'}',
+                          style: TextStyle(fontSize: 12, color: sub)),
+                      Text('\$${earned.toStringAsFixed(0)} earned',
+                          style: const TextStyle(fontSize: 11, color: AppColors.primary, fontWeight: FontWeight.w600)),
+                    ])),
+                    GestureDetector(
+                      onTap: () {
+                        HapticFeedback.lightImpact();
+                        if (c['id'] != null) context.push('/user-profile/${c['id']}');
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        decoration: BoxDecoration(
+                            color: AppColors.primary, borderRadius: BorderRadius.circular(20)),
+                        child: const Text('View',
+                            style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+                      ),
+                    ),
+                  ]).animate().fadeIn(delay: Duration(milliseconds: i * 60));
+                },
+              ),
+            ),
+
+            // GROUPS
+            _buildTabBody(_groupsLoaded, _groups.isEmpty && _groupsLoaded,
+              'No groups yet', 'Groups are coming soon!',
+              ListView.separated(
+                padding: const EdgeInsets.all(16),
+                itemCount: _groups.length,
+                separatorBuilder: (_, __) => Divider(height: 1, color: border),
+                itemBuilder: (_, i) {
+                  final g = _groups[i] as Map;
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    child: Row(children: [
+                      Container(
+                        width: 48, height: 48,
+                        decoration: BoxDecoration(
+                          color: isDark ? AppColors.bgSurface : Colors.grey.shade100,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Center(child: Text(g['emoji']?.toString() ?? '💬',
+                            style: const TextStyle(fontSize: 22))),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(g['name']?.toString() ?? '',
+                            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: text)),
+                        const SizedBox(height: 2),
+                        Row(children: [
+                          Text('${g['members_count'] ?? 0} members',
+                              style: TextStyle(fontSize: 11, color: sub)),
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                            decoration: BoxDecoration(
+                                color: AppColors.primary.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(6)),
+                            child: Text(g['category']?.toString() ?? '',
+                                style: const TextStyle(fontSize: 9, color: AppColors.primary, fontWeight: FontWeight.w600)),
+                          ),
+                        ]),
+                      ])),
+                      GestureDetector(
+                        onTap: () => context.go('/groups'),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                          decoration: BoxDecoration(
+                              color: AppColors.primary, borderRadius: BorderRadius.circular(20)),
+                          child: const Text('Join',
+                              style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+                        ),
+                      ),
+                    ]),
+                  );
+                },
+              ),
+            ),
+
+            // LEADERBOARD
+            Column(children: [
+              Container(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                color: card,
+                child: Row(children: [
+                  const Text('Real verified earnings', style: TextStyle(fontSize: 12, color: AppColors.primary, fontWeight: FontWeight.w600)),
+                  const Spacer(),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(color: AppColors.success.withOpacity(0.1), borderRadius: AppRadius.pill),
+                    child: const Text('LIVE', style: TextStyle(fontSize: 10, color: AppColors.success, fontWeight: FontWeight.w700)),
+                  ),
+                ]),
+              ),
+              Expanded(
+                child: _buildTabBody(_leadersLoaded, _leaders.isEmpty && _leadersLoaded,
+                  'No earners yet', 'Start earning to appear here!',
+                  ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _leaders.length,
+                    itemBuilder: (_, i) {
+                      final l      = _leaders[i] as Map;
+                      final rank   = (l['rank'] as num?)?.toInt() ?? i + 1;
+                      final isTop3 = rank <= 3;
+                      final name   = l['full_name']?.toString() ?? 'User';
+                      final earned = (l['total_earned'] as num?)?.toDouble() ?? 0;
+                      final badges = ['🥇', '🥈', '🥉'];
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: isTop3
+                              ? AppColors.gold.withOpacity(isDark ? 0.12 : 0.06)
+                              : (isDark ? AppColors.bgCard : const Color(0xFFF8F8F8)),
+                          borderRadius: BorderRadius.circular(14),
+                          border: isTop3 ? Border.all(color: AppColors.gold.withOpacity(0.3)) : null,
+                        ),
+                        child: Row(children: [
+                          SizedBox(
+                            width: 36,
+                            child: Text(isTop3 ? badges[rank - 1] : '#$rank',
+                                style: TextStyle(fontSize: isTop3 ? 22 : 14,
+                                    fontWeight: FontWeight.w700, color: sub),
+                                textAlign: TextAlign.center),
+                          ),
+                          const SizedBox(width: 10),
+                          Container(
+                            width: 42, height: 42,
+                            decoration: BoxDecoration(
+                                color: AppColors.primary.withOpacity(0.12),
+                                shape: BoxShape.circle),
+                            child: Center(child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800,
+                                    color: isTop3 ? AppColors.gold : AppColors.primary))),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Text(name, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: text)),
+                            Row(children: [
+                              Text(l['country']?.toString() ?? '',
+                                  style: TextStyle(fontSize: 11, color: sub)),
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                decoration: BoxDecoration(
+                                    color: AppColors.primary.withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(4)),
+                                child: Text(l['stage']?.toString() ?? '',
+                                    style: const TextStyle(fontSize: 9,
+                                        color: AppColors.primary, fontWeight: FontWeight.w700)),
+                              ),
+                            ]),
+                          ])),
+                          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                            Text('\$${earned.toStringAsFixed(0)}',
+                                style: TextStyle(color: isTop3 ? AppColors.gold : AppColors.success,
+                                    fontWeight: FontWeight.w800, fontSize: 14)),
+                            Text('earned', style: TextStyle(fontSize: 10, color: sub)),
+                          ]),
+                        ]),
+                      ).animate().fadeIn(delay: Duration(milliseconds: i * 50));
                     },
                   ),
-      ),
+                ),
+              ),
+            ]),
+
+            // CHALLENGES
+            _buildTabBody(_challengesLoaded, _challenges.isEmpty && _challengesLoaded,
+              'No challenges yet', 'Start a challenge from the Income Tools menu!',
+              ListView.builder(
+                padding: const EdgeInsets.all(16),
+                itemCount: _challenges.length,
+                itemBuilder: (_, i) {
+                  final c       = _challenges[i] as Map;
+                  final pct     = ((c['current_usd'] ?? 0) / ((c['target_usd'] ?? 1) == 0 ? 1 : c['target_usd'])).clamp(0.0, 1.0).toDouble();
+                  final active  = c['status'] == 'active';
+                  final done    = c['status'] == 'completed';
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: isDark ? AppColors.bgCard : const Color(0xFFF8F8F8),
+                      borderRadius: BorderRadius.circular(16),
+                      border: active ? Border.all(color: AppColors.primary.withOpacity(0.3)) : null,
+                    ),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Row(children: [
+                        Text(c['emoji']?.toString() ?? '🎯',
+                            style: const TextStyle(fontSize: 24)),
+                        const SizedBox(width: 10),
+                        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text(c['title']?.toString() ?? '',
+                              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: text)),
+                          Text('Day ${c['current_day'] ?? 1}/${c['duration_days'] ?? 30} '
+                               '· ${c['streak'] ?? 0} day streak',
+                              style: TextStyle(fontSize: 11, color: sub)),
+                        ])),
+                        if (done)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                                color: AppColors.success.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(8)),
+                            child: const Text('DONE', style: TextStyle(
+                                fontSize: 10, color: AppColors.success, fontWeight: FontWeight.w700)),
+                          ),
+                      ]),
+                      const SizedBox(height: 10),
+                      Row(children: [
+                        Text('\$${c['current_usd'] ?? 0}', style: const TextStyle(
+                            color: AppColors.success, fontWeight: FontWeight.w700)),
+                        Text(' / \$${c['target_usd'] ?? 0}',
+                            style: TextStyle(color: sub, fontSize: 12)),
+                        const Spacer(),
+                        Text('${(pct * 100).toStringAsFixed(0)}%',
+                            style: TextStyle(color: sub, fontSize: 12)),
+                      ]),
+                      const SizedBox(height: 6),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          value: pct,
+                          backgroundColor: isDark ? AppColors.bgSurface : Colors.grey.shade200,
+                          valueColor: AlwaysStoppedAnimation(done ? AppColors.success : AppColors.primary),
+                          minHeight: 5,
+                        ),
+                      ),
+                      if (active) ...[
+                        const SizedBox(height: 10),
+                        GestureDetector(
+                          onTap: () => context.push('/challenges'),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                            decoration: BoxDecoration(
+                              gradient: const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: const Text('Check In Today',
+                                style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+                          ),
+                        ),
+                      ],
+                    ]),
+                  ).animate().fadeIn(delay: Duration(milliseconds: i * 60));
+                },
+              ),
+            ),
+
+            // TOPICS
+            GridView.builder(
+              padding: const EdgeInsets.all(16),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: 1.6),
+              itemCount: _topicData.length,
+              itemBuilder: (_, i) {
+                final t = _topicData[i];
+                return GestureDetector(
+                  onTap: () { HapticFeedback.lightImpact(); },
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(isDark ? 0.15 : 0.08),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: AppColors.primary.withOpacity(0.2)),
+                    ),
+                    child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                      Text(t.$1, style: const TextStyle(fontSize: 28)),
+                      const SizedBox(height: 6),
+                      Text(t.$2, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: text)),
+                    ]),
+                  ),
+                ).animate().fadeIn(delay: Duration(milliseconds: i * 60));
+              },
+            ),
+          ]),
+        ),
+      ]),
     );
   }
+
+  // Helper to show loading, empty, or content
+  Widget _buildTabBody(bool loaded, bool empty, String emptyTitle, String emptySub, Widget content) {
+    if (!loaded) return const Center(child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2));
+    if (empty)   return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+      const Text('🔍', style: TextStyle(fontSize: 48)),
+      const SizedBox(height: 12),
+      Text(emptyTitle, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+      const SizedBox(height: 6),
+      Text(emptySub, style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
+    ]));
+    return content;
+  }
+
+  static const _topicData = [
+    ('💰', 'Wealth'),
+    ('📈', 'Investing'),
+    ('💼', 'Business'),
+    ('🧠', 'Mindset'),
+    ('⚡', 'Hustle'),
+    ('🎯', 'Skills'),
+    ('🏠', 'Real Estate'),
+    ('💻', 'Tech'),
+  ];
 }
 
-// ── Input Phase ───────────────────────────────────────────────────
-class _InputView extends StatelessWidget {
-  final TextEditingController taskCtrl;
-  final double budget, hours;
-  final String currency, error;
-  final List<(String, String, String)> quickTasks;
-  final bool isDark;
+// POST CARD - renders a real post from API
+class _PostCard extends StatelessWidget {
+  final Map   post;
+  final bool  isDark;
   final Color text, sub, card;
-  final Function(double) onBudgetChange, onHoursChange;
-  final Function(String) onCurrencyChange, onQuickTask;
-  final VoidCallback onRun;
+  final int   index;
 
-  const _InputView({
-    required this.taskCtrl,
-    required this.budget,
-    required this.hours,
-    required this.currency,
-    required this.error,
-    required this.quickTasks,
-    required this.isDark,
-    required this.text,
-    required this.sub,
-    required this.card,
-    required this.onBudgetChange,
-    required this.onHoursChange,
-    required this.onCurrencyChange,
-    required this.onQuickTask,
-    required this.onRun,
-  });
+  const _PostCard({required this.post, required this.isDark, required this.text,
+      required this.sub, required this.card, required this.index});
 
   @override
   Widget build(BuildContext context) {
-    final surface = isDark ? AppColors.bgSurface : Colors.grey.shade100;
+    final name    = post['author_name']?.toString() ?? post['full_name']?.toString() ?? 'User';
+    final content = post['content']?.toString() ?? '';
+    final likes   = (post['likes_count'] as num?)?.toInt() ?? 0;
+    final tag     = post['tag']?.toString() ?? '';
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
+    return Container(
+      color: card,
+      padding: const EdgeInsets.all(16),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
           Container(
-            padding: const EdgeInsets.all(20),
+            width: 40, height: 40,
             decoration: BoxDecoration(
-              color: isDark ? AppColors.bgCard : const Color(0xFFF8F8FF),
-              borderRadius: AppRadius.lg,
-              border: Border.all(color: AppColors.primary.withOpacity(0.2)),
-            ),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-              Row(children: [
-                const Text('⚡', style: TextStyle(fontSize: 28)),
-                const SizedBox(width: 10),
-                Expanded(
-                    child: Text('What do you want to earn from?',
-                        style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700,
-                            color: text))),
-              ]),
-              const SizedBox(height: 8),
-              Text(
-                  'Describe ANY income goal. The agent will research, plan, and execute it with you — step by step.',
-                  style: TextStyle(fontSize: 13, color: sub, height: 1.5)),
-            ]),
-          ).animate().fadeIn(),
-
-          const SizedBox(height: 20),
-
-          Container(
-            decoration: BoxDecoration(
-              color: surface,
-              borderRadius: AppRadius.lg,
-              border: Border.all(color: AppColors.primary.withOpacity(0.3)),
-            ),
-            child: TextField(
-              controller: taskCtrl,
-              maxLines: 4,
-              style: TextStyle(fontSize: 14, color: text),
-              decoration: InputDecoration(
-                hintText:
-                    'e.g. "I want to start earning on YouTube in 2 months with zero budget" or "Help me get my first freelance client this week"',
-                hintStyle: TextStyle(color: sub, fontSize: 13),
-                border: InputBorder.none,
-                contentPadding: const EdgeInsets.all(16),
-              ),
-            ),
+                color: AppColors.primary.withOpacity(0.12), shape: BoxShape.circle),
+            child: Center(child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800,
+                    color: AppColors.primary))),
           ),
-
-          if (error.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text(error,
-                  style: const TextStyle(
-                      color: AppColors.error, fontSize: 12)),
-            ),
-
-          const SizedBox(height: 16),
-
-          Row(children: [
-            Expanded(
-              child: _SettingCard(
-                label: 'Budget',
-                value: budget == 0 ? '\$0 Free' : '\$${budget.toStringAsFixed(0)}',
-                valueColor:
-                    budget == 0 ? AppColors.success : AppColors.primary,
-                child: Slider(
-                  value: budget,
-                  min: 0,
-                  max: 100,
-                  divisions: 10,
-                  activeColor: AppColors.primary,
-                  onChanged: onBudgetChange,
-                ),
-                isDark: isDark,
-                text: text,
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _SettingCard(
-                label: 'Daily time',
-                value: '${hours.toStringAsFixed(1)}h',
-                valueColor: AppColors.accent,
-                child: Slider(
-                  value: hours,
-                  min: 0.5,
-                  max: 8,
-                  divisions: 15,
-                  activeColor: AppColors.accent,
-                  onChanged: onHoursChange,
-                ),
-                isDark: isDark,
-                text: text,
-              ),
-            ),
-          ]),
-
-          const SizedBox(height: 10),
-
-          Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-            decoration: BoxDecoration(
-              color: AppColors.success.withOpacity(0.1),
-              borderRadius: AppRadius.pill,
-              border: Border.all(color: AppColors.success.withOpacity(0.3)),
-            ),
-            child: const Text('💵 USD — Universal Currency',
-                style: TextStyle(
-                    fontSize: 11,
-                    color: AppColors.success,
-                    fontWeight: FontWeight.w600)),
-          ),
-
-          const SizedBox(height: 20),
-
-          GestureDetector(
-            onTap: onRun,
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 15),
+          const SizedBox(width: 10),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(name, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: text)),
+            Text(_timeAgo(post['created_at']?.toString()), style: TextStyle(fontSize: 11, color: sub)),
+          ])),
+          if (tag.isNotEmpty)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                    colors: [AppColors.primary, AppColors.accent]),
-                borderRadius: AppRadius.pill,
-                boxShadow: AppShadows.glow,
-              ),
-              child: const Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.auto_awesome, color: Colors.white, size: 18),
-                  SizedBox(width: 8),
-                 
+                  color: AppColors.primary.withOpacity(0.1), borderRadius: BorderRadius.circular(20)),
+              child: Text(tag, style: const TextStyle(fontSize: 10, color: AppColors.primary, fontWeight: FontWeight.w600)),
+            ),
+        ]),
+        const SizedBox(height: 10),
+        Text(content, style: TextStyle(fontSize: 14, color: text, height: 1.55)),
+        const SizedBox(height: 10),
+        Row(children: [
+          Icon(Icons.favorite_border_rounded, color: sub, size: 18),
+          const SizedBox(width: 4),
+          Text(_fmt(likes), style: TextStyle(color: sub, fontSize: 12)),
+          const SizedBox(width: 16),
+          Icon(Iconsax.message, color: sub, size: 18),
+          const SizedBox(width: 4),
+          Text(_fmt((post['comments_count'] as num?)?.toInt() ?? 0),
+              style: TextStyle(color: sub, fontSize: 12)),
+        ]),
+      ]),
+    ).animate().fadeIn(delay: Duration(milliseconds: index * 60));
+  }
+
+  static String _fmt(int n) {
+    if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}K';
+    return '$n';
+  }
+
+  static String _timeAgo(String? iso) {
+    if (iso == null) return '';
+    try {
+      final dt   = DateTime.parse(iso);
+      final diff = DateTime.now().difference(dt);
+      if (diff.inMinutes < 60)  return '${diff.inMinutes}m ago';
+      if (diff.inHours   < 24)  return '${diff.inHours}h ago';
+      if (diff.inDays    < 7)   return '${diff.inDays}d ago';
+      return '${diff.inDays ~/ 7}w ago';
+    } catch (_) { return ''; }
+  }
+}
