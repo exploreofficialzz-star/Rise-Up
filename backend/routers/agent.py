@@ -1,540 +1,932 @@
 """
-RiseUp Agentic AI — Heavy Real-World Task Engine
-─────────────────────────────────────────────────
-This is NOT a chatbot. This is an AI AGENT that:
-  1. Takes any income goal or task the user describes
-  2. PLANS what needs to happen (dynamically, not hardcoded)
-  3. EXECUTES each step using AI tools
-  4. Produces REAL, ready-to-use outputs
-  5. Tracks everything in the user's workflow
+RiseUp Autonomous Agent — v4 (APEX)
+═══════════════════════════════════════════════════════════════════════════
+This is a REAL autonomous agent. It doesn't just plan — it WORKS.
 
-It handles: YouTube, freelance, ecommerce, physical business,
-trading, content creation, coding gigs, affiliate, tutoring,
-writing, design, social media, and anything else.
+  ┌─────────────────────────────────────────────────────────────────┐
+  │ THINKS  →  Reasons step-by-step with chain-of-thought           │
+  │ SEARCHES → Reads the live internet for real data                │
+  │ ACTS    →  Sends emails, posts social media, generates docs     │
+  │ HUNTS   →  Finds real freelance jobs + partnership opps         │
+  │ BUILDS  →  Creates contracts, invoices, business plans          │
+  │ STREAMS →  Shows the user everything in real-time               │
+  │ SAVES   →  Persists every output to the user's workflow         │
+  └─────────────────────────────────────────────────────────────────┘
+
+28 tools across 4 categories:
+  🧠 THINKING  — write_content, create_plan, estimate_income, generate_ideas,
+                  breakdown_task, create_template, write_cold_outreach, build_profile_content
+  🌐 RESEARCH  — web_search, deep_research, find_freelance_jobs, find_partners,
+                  find_free_resources, market_research, scan_opportunities
+  📤 ACTIONS   — send_email, post_twitter, post_linkedin, schedule_post
+  📄 DOCUMENTS — generate_contract, generate_invoice, generate_proposal, generate_pitch_deck
 """
 
 import json
 import logging
-import uuid
+import asyncio
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing   import Optional, Dict, Any, List
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi           import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic          import BaseModel
 
-from middleware.rate_limit import limiter, AI_LIMIT
-from services.ai_service import ai_service
-from services.supabase_service import supabase_service
+from middleware.rate_limit       import limiter, AI_LIMIT
+from services.ai_service         import ai_service
+from services.supabase_service   import supabase_service
+from services.web_search_service import web_search_service
+from services.action_service     import (
+    email_service, social_service, document_service, opportunity_scanner
+)
 from utils.auth import get_current_user
 
 router = APIRouter(prefix="/agent", tags=["Agentic AI"])
 logger = logging.getLogger(__name__)
 
+MAX_REACT_ITERATIONS = 8
+MAX_RETRIES          = 2
+DEFAULT_DAILY_RUNS   = 3
+PREMIUM_DAILY_RUNS   = 25
 
-# ── Request Models ────────────────────────────────────────────────
+
+# ═══════════════════════════════════════════════════════════════════
+# REQUEST MODELS
+# ═══════════════════════════════════════════════════════════════════
 
 class AgentRequest(BaseModel):
-    task: str                              # User's natural language task description
-    context: Optional[str] = None         # Extra context the user provides
-    budget: Optional[float] = 0.0         # Money they can invest
-    hours_per_day: Optional[float] = 2.0
-    currency: Optional[str] = "NGN"
-    mode: Optional[str] = "full"          # full | plan_only | execute_step
-    step_to_execute: Optional[str] = None # For execute_step mode
-    workflow_id: Optional[str] = None     # Attach to existing workflow
+    task:              str
+    context:           Optional[str]   = None
+    budget:            Optional[float] = 0.0
+    hours_per_day:     Optional[float] = 2.0
+    currency:          Optional[str]   = "NGN"
+    mode:              Optional[str]   = "full"
+    workflow_id:       Optional[str]   = None
+    allow_email:       bool = False
+    allow_social_post: bool = False
+    social_tokens:     Optional[Dict] = None
 
 class AgentChatRequest(BaseModel):
-    message: str
-    session_id: Optional[str] = None
-    workflow_id: Optional[str] = None
+    message:     str
+    session_id:  Optional[str]        = None
+    workflow_id: Optional[str]        = None
+    history:     Optional[List[Dict]] = None
 
 class ExecuteToolRequest(BaseModel):
-    tool: str           # write_content | research | create_plan | find_tools | estimate_income | create_template
-    input: Dict[str, Any]
+    tool:        str
+    input:       Dict[str, Any]
     workflow_id: Optional[str] = None
 
+class QuickRequest(BaseModel):
+    task:        str
+    output_type: Optional[str] = "any"
 
-# ── The Agent Brain — System Prompt ──────────────────────────────
+class AnalyzeRequest(BaseModel):
+    content: str
+    goal:    Optional[str] = "improve"
 
-def _agent_system_prompt(profile: dict, task: str, budget: float, hours: float, currency: str) -> str:
-    name = profile.get("full_name", "User")
-    stage = profile.get("stage", "survival")
-    skills = ", ".join(profile.get("current_skills", []) or ["none listed"])
-    country = profile.get("country", "NG")
-    monthly_income = profile.get("monthly_income", 0)
-
-    return f"""You are RiseUp's Agentic AI — a heavyweight execution engine, not a chatbot.
-
-USER PROFILE:
-- Name: {name}
-- Country: {country}
-- Stage: {stage.upper()}
-- Skills: {skills}
-- Monthly Income: {currency} {monthly_income:,.0f}
-- Budget to invest: {currency if budget > 0 else "$0 — FREE ONLY"} {budget if budget > 0 else "(must use free tools only)"}
-- Daily time: {hours} hours/day
-
-TASK: {task}
-
-YOUR JOB:
-You are an execution engine. You don't give advice. You BUILD plans and EXECUTE them.
-
-WHAT YOU MUST DO:
-1. Understand the task deeply — what does success actually look like?
-2. Research what actually works RIGHT NOW in 2025/2026 for this exact task
-3. Break it into concrete executable steps (not vague phases)
-4. For each step, determine: can AI do this? Must the user do it? Can it be automated?
-5. Find FREE tools first — only suggest paid if absolutely necessary
-6. Write real outputs — scripts, descriptions, email templates, pitches, plans — ready to copy-paste
-7. Give REALISTIC timelines and income estimates (not hype)
-8. Identify what the user can AUTOMATE vs what needs their hands
-
-TOOL EXECUTION RULES:
-- When asked to write content: write the FULL content, not a template
-- When asked to research: give SPECIFIC findings with platform names and numbers
-- When asked to create a plan: give ACTIONABLE day-by-day steps
-- When asked to find tools: list SPECIFIC free tools with URLs and exact use case
-- When asked to estimate income: give REALISTIC range with WHY
-
-RESPONSE FORMAT:
-Always respond in valid JSON with this structure:
-{{
-  "agent_response": "Your natural explanation to the user",
-  "plan": {{
-    "title": "Short workflow title",
-    "income_type": "youtube|freelance|ecommerce|physical|content|service|trading|other",
-    "viability": 0-100,
-    "timeline": "e.g. 4-8 weeks",
-    "income_range": {{"min": 0, "max": 0, "currency": "{currency}"}},
-    "warning": "One honest realistic warning"
-  }},
-  "steps": [
-    {{
-      "order": 1,
-      "title": "Step title",
-      "description": "Exact what to do",
-      "type": "automated|manual|outsource",
-      "ai_output": "If automated, the FULL ready-to-use content AI produces here",
-      "tools": ["Tool 1", "Tool 2"],
-      "time_minutes": 30,
-      "is_critical": true
-    }}
-  ],
-  "free_tools": [
-    {{"name": "Tool name", "url": "url.com", "purpose": "Exact use", "is_free": true}}
-  ],
-  "immediate_action": "The ONE thing they should do in the next 10 minutes"
-}}
-
-CRITICAL: Return ONLY valid JSON. No markdown. No explanation outside the JSON.
-Be SPECIFIC to this user's situation, country, and budget.
-"""
+class ScanRequest(BaseModel):
+    force_refresh: bool = False
 
 
-# ── Tool Execution Prompts ────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+# TOOL REGISTRY
+# ═══════════════════════════════════════════════════════════════════
 
-TOOL_PROMPTS = {
-    "write_content": """You are a professional content writer. Write the COMPLETE, ready-to-use content requested.
-Do NOT write templates or placeholders. Write the actual content.
-Return JSON: {{"content": "THE FULL WRITTEN CONTENT", "type": "...", "usage_tip": "..."}}""",
+TOOLS: Dict[str, Dict] = {
+    # ── THINKING ──────────────────────────────────────────────────
+    "write_content": {
+        "category":    "thinking",
+        "description": "Write complete copy-paste-ready content: scripts, captions, bios, pitches, ad copy.",
+        "system": 'Write COMPLETE, ready-to-use content. No placeholders. Return JSON: {"content":"FULL TEXT","type":"...","usage_tip":"..."}',
+    },
+    "create_plan": {
+        "category":    "thinking",
+        "description": "Build a day-by-day execution calendar with specific completable daily actions.",
+        "system": 'Create DETAILED day-by-day plan. Specific, completable actions. Return JSON: {"plan_title":"...","days":[{"day":1,"actions":[...],"goal":"..."}],"success_metric":"..."}',
+    },
+    "estimate_income": {
+        "category":    "thinking",
+        "description": "Give realistic income estimates with best/worst/likely cases and clear reasoning.",
+        "system": 'Give REALISTIC 2025 income estimates. Return JSON: {"min_monthly":0,"max_monthly":0,"likely_monthly":0,"currency":"...","timeline_to_first_income":"...","reasoning":"..."}',
+    },
+    "generate_ideas": {
+        "category":    "thinking",
+        "description": "Generate specific actionable business/content/product ideas with first steps and income potential.",
+        "system": 'Generate SPECIFIC actionable ideas with first steps. Return JSON: {"ideas":[{"title":"...","description":"...","first_steps":[...],"income_potential":"...","effort":"low|medium|high"}]}',
+    },
+    "breakdown_task": {
+        "category":    "thinking",
+        "description": "Break any goal into smallest executable components with critical path and quick wins.",
+        "system": 'Break down like a senior PM. Return JSON: {"task_summary":"...","components":[...],"critical_path":[...],"quick_wins":[...]}',
+    },
+    "create_template": {
+        "category":    "thinking",
+        "description": "Create complete ready-to-send templates: emails, proposals, scripts, cold DMs.",
+        "system": 'Write READY-TO-USE complete template with real text. Return JSON: {"template_type":"...","template":"FULL TEXT","how_to_customize":"..."}',
+    },
+    "write_cold_outreach": {
+        "category":    "thinking",
+        "description": "Write personalized cold emails, WhatsApp messages, LinkedIn/Twitter DMs to land clients or partnerships.",
+        "system": 'Write HIGH-CONVERTING outreach. 3 variants: short (2-3 sentences), medium (1 paragraph), long (full email). Return JSON: {"short":"...","medium":"...","long":"...","subject_line":"...","follow_up":"..."}',
+    },
+    "build_profile_content": {
+        "category":    "thinking",
+        "description": "Write optimized platform profiles: Fiverr gig, Upwork bio, LinkedIn summary, Twitter/Instagram bio.",
+        "system": 'Write OPTIMIZED platform profiles that attract clients. Return JSON: {"platform":"...","headline":"...","bio":"...","skills":[...],"cta":"...","full_profile":"COMPLETE TEXT"}',
+    },
 
-    "research": """You are a research engine. Find SPECIFIC, current information about the topic.
-Include real platform names, real statistics from 2024-2026, real tools, real methods.
-Return JSON: {{"findings": [...], "key_insight": "...", "sources_to_check": [...]}}""",
+    # ── RESEARCH ──────────────────────────────────────────────────
+    "web_search": {
+        "category":    "research",
+        "description": "Search the live internet for current info, platforms, pricing, job postings, news.",
+        "handler":     "web_search",
+    },
+    "deep_research": {
+        "category":    "research",
+        "description": "Run multiple searches on a topic and synthesize comprehensive real findings.",
+        "handler":     "deep_research",
+    },
+    "find_freelance_jobs": {
+        "category":    "research",
+        "description": "Find real live freelance job postings on Upwork, Freelancer, LinkedIn, and others.",
+        "handler":     "find_freelance_jobs",
+    },
+    "find_partners": {
+        "category":    "research",
+        "description": "Find potential business partners, collaborators, or co-founders in a niche.",
+        "handler":     "find_partners",
+    },
+    "find_free_resources": {
+        "category":    "research",
+        "description": "Find free tools, grants, free courses, and zero-capital resources for starting a business.",
+        "handler":     "find_free_resources",
+    },
+    "market_research": {
+        "category":    "research",
+        "description": "Research a market: competition level, demand, pricing benchmarks, opportunity score.",
+        "system": 'Analyze market with real data. Return JSON: {"niche":"...","competition":"low|medium|high","demand":"...","avg_price":"...","opportunity_score":0,"insights":[...],"entry_strategy":"..."}',
+    },
+    "scan_opportunities": {
+        "category":    "research",
+        "description": "Scan web for current income opportunities matching the user skills and goals.",
+        "handler":     "scan_opportunities",
+    },
 
-    "create_plan": """You are a strategic planner. Create a DETAILED, day-by-day execution plan.
-Every action must be specific and completable in that time.
-Return JSON: {{"plan_title": "...", "days": [{{"day": 1, "actions": [...], "goal": "..."}}], "success_metric": "..."}}""",
+    # ── ACTIONS ───────────────────────────────────────────────────
+    "send_email": {
+        "category":            "action",
+        "description":         "Send a real email on behalf of the user to a client, partner, or prospect.",
+        "handler":             "send_email",
+        "requires_permission": "allow_email",
+    },
+    "post_twitter": {
+        "category":            "action",
+        "description":         "Post a tweet to Twitter/X on behalf of the user.",
+        "handler":             "post_twitter",
+        "requires_permission": "allow_social_post",
+    },
+    "post_linkedin": {
+        "category":            "action",
+        "description":         "Publish a post to LinkedIn on behalf of the user.",
+        "handler":             "post_linkedin",
+        "requires_permission": "allow_social_post",
+    },
+    "schedule_post": {
+        "category":            "action",
+        "description":         "Schedule a social media post for a future date/time.",
+        "handler":             "schedule_post",
+        "requires_permission": "allow_social_post",
+    },
 
-    "find_tools": """You are a tool researcher. Find SPECIFIC free tools that solve the exact problem.
-Include: name, URL, what it does, how to use it, free tier limits.
-Return JSON: {{"free_tools": [...], "paid_upgrades": [...]}}""",
-
-    "estimate_income": """You are an income analyst. Give REALISTIC income estimates based on real data.
-Include best case, worst case, and most likely case with reasoning.
-Return JSON: {{"min_monthly": 0, "max_monthly": 0, "likely_monthly": 0, "currency": "...", "timeline_to_first_income": "...", "reasoning": "..."}}""",
-
-    "create_template": """You create READY-TO-USE templates (emails, proposals, scripts, pitches, etc.)
-Write the FULL template with real text, not placeholders where possible.
-Return JSON: {{"template_type": "...", "template": "THE FULL TEXT", "how_to_customize": "..."}}""",
-
-    "breakdown_task": """You break down ANY task into its smallest executable components.
-Think like a senior project manager. Nothing vague.
-Return JSON: {{"task_summary": "...", "components": [...], "critical_path": [...], "quick_wins": [...]}}""",
+    # ── DOCUMENTS ─────────────────────────────────────────────────
+    "generate_contract": {
+        "category":    "document",
+        "description": "Generate a complete legally structured freelance service contract.",
+        "handler":     "generate_contract",
+    },
+    "generate_invoice": {
+        "category":    "document",
+        "description": "Generate a professional invoice for completed work.",
+        "handler":     "generate_invoice",
+    },
+    "generate_proposal": {
+        "category":    "document",
+        "description": "Generate a complete business proposal document.",
+        "handler":     "generate_proposal",
+    },
+    "generate_pitch_deck": {
+        "category":    "document",
+        "description": "Generate a complete pitch deck outline for investors or partners.",
+        "handler":     "generate_pitch_deck",
+    },
 }
 
 
-# ── Main Agent Endpoint ───────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+# TOOL EXECUTOR
+# ═══════════════════════════════════════════════════════════════════
+
+async def _execute_tool(tool_name: str, tool_input: dict,
+                         profile: dict, permissions: dict) -> str:
+    meta = TOOLS.get(tool_name)
+    if not meta:
+        return json.dumps({"error": f"Unknown tool: {tool_name}"})
+
+    required_perm = meta.get("requires_permission")
+    if required_perm and not permissions.get(required_perm, False):
+        return json.dumps({"skipped": True,
+                           "reason": f"Permission '{required_perm}' not granted.",
+                           "content_preview": tool_input})
+
+    handler  = meta.get("handler")
+    currency = profile.get("currency", "NGN")
+    country  = profile.get("country",  "NG")
+
+    # Web research handlers
+    if handler == "web_search":
+        results = await web_search_service.search(tool_input.get("query", ""), num=8)
+        return json.dumps({"results": results[:8]})
+
+    if handler == "deep_research":
+        result = await web_search_service.deep_research(
+            tool_input.get("topic", tool_input.get("query", "")),
+            tool_input.get("sub_queries"),
+        )
+        return json.dumps(result)
+
+    if handler == "find_freelance_jobs":
+        jobs = await web_search_service.find_freelance_jobs(
+            tool_input.get("skill", ""), country
+        )
+        return json.dumps({"jobs": jobs})
+
+    if handler == "find_partners":
+        partners = await web_search_service.find_partners(
+            tool_input.get("niche", ""), country
+        )
+        return json.dumps({"partners": partners})
+
+    if handler == "find_free_resources":
+        res = await web_search_service.find_free_resources(
+            tool_input.get("business_type", tool_input.get("type", ""))
+        )
+        return json.dumps({"resources": res})
+
+    if handler == "scan_opportunities":
+        opps = await opportunity_scanner.scan_for_user(profile)
+        return json.dumps({"opportunities": opps})
+
+    # Action handlers
+    if handler == "send_email":
+        result = await email_service.send(
+            to_email  = tool_input.get("to", ""),
+            subject   = tool_input.get("subject", ""),
+            body_text = tool_input.get("body", ""),
+            body_html = tool_input.get("body_html"),
+            from_name = profile.get("full_name", "RiseUp Agent"),
+            reply_to  = tool_input.get("reply_to"),
+        )
+        return json.dumps(result)
+
+    if handler == "post_twitter":
+        tokens = permissions.get("social_tokens", {}).get("twitter", {})
+        return json.dumps(await social_service.post_twitter(tool_input.get("text", ""), tokens))
+
+    if handler == "post_linkedin":
+        tokens = permissions.get("social_tokens", {}).get("linkedin", {})
+        return json.dumps(await social_service.post_linkedin(tool_input.get("text", ""), tokens))
+
+    if handler == "schedule_post":
+        return json.dumps(await social_service.schedule_post(
+            tool_input.get("platform", ""),
+            tool_input.get("text", ""),
+            tool_input.get("schedule_at", ""),
+            profile.get("id", ""),
+        ))
+
+    # Document handlers
+    if handler == "generate_contract":
+        doc = document_service.generate_freelance_contract(
+            client_name     = tool_input.get("client_name", "Client"),
+            freelancer_name = tool_input.get("freelancer_name", profile.get("full_name", "Freelancer")),
+            project_title   = tool_input.get("project_title", ""),
+            deliverables    = tool_input.get("deliverables", []),
+            amount          = tool_input.get("amount", 0),
+            currency        = tool_input.get("currency", currency),
+            deadline        = tool_input.get("deadline", ""),
+            payment_terms   = tool_input.get("payment_terms", "50% upfront, 50% on delivery"),
+        )
+        return json.dumps({"document": doc, "type": "contract"})
+
+    if handler == "generate_invoice":
+        doc = document_service.generate_invoice(
+            client_name      = tool_input.get("client_name", "Client"),
+            freelancer_name  = profile.get("full_name", "Freelancer"),
+            freelancer_email = profile.get("email", ""),
+            items            = tool_input.get("items", []),
+            currency         = tool_input.get("currency", currency),
+        )
+        return json.dumps({"document": doc, "type": "invoice"})
+
+    if handler == "generate_proposal":
+        doc = document_service.generate_business_proposal(
+            business_name = tool_input.get("business_name", ""),
+            owner_name    = profile.get("full_name", ""),
+            business_type = tool_input.get("business_type", ""),
+            target_market = tool_input.get("target_market", ""),
+            problem       = tool_input.get("problem", ""),
+            solution      = tool_input.get("solution", ""),
+            revenue_model = tool_input.get("revenue_model", ""),
+            startup_costs = tool_input.get("startup_costs", ""),
+            timeline      = tool_input.get("timeline", ""),
+            contact_email = profile.get("email", ""),
+        )
+        return json.dumps({"document": doc, "type": "proposal"})
+
+    if handler == "generate_pitch_deck":
+        doc = document_service.generate_pitch_deck_outline(
+            business_name = tool_input.get("business_name", ""),
+            problem       = tool_input.get("problem", ""),
+            solution      = tool_input.get("solution", ""),
+            market_size   = tool_input.get("market_size", ""),
+            traction      = tool_input.get("traction", ""),
+            ask           = tool_input.get("ask", ""),
+        )
+        return json.dumps({"document": doc, "type": "pitch_deck"})
+
+    # AI thinking tools
+    system  = meta.get("system", "Return ONLY valid JSON.")
+    user_msg = (
+        f"User: {country}, {currency}, skills={profile.get('current_skills', [])}, "
+        f"stage={profile.get('stage','survival')}\n"
+        f"Input: {json.dumps(tool_input)}\nReturn ONLY valid JSON."
+    )
+    for attempt in range(MAX_RETRIES):
+        try:
+            result = await ai_service.chat(
+                messages=[{"role": "user", "content": user_msg}],
+                system=system, max_tokens=2500,
+            )
+            raw = result["content"].strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            json.loads(raw.strip())
+            return raw.strip()
+        except Exception as e:
+            if attempt == MAX_RETRIES - 1:
+                return json.dumps({"error": str(e)})
+            await asyncio.sleep(0.5)
+    return json.dumps({"error": "Tool failed"})
+
+
+# ═══════════════════════════════════════════════════════════════════
+# SYSTEM PROMPTS
+# ═══════════════════════════════════════════════════════════════════
+
+def _agent_system(profile, task, budget, hours, currency, permissions) -> str:
+    name    = profile.get("full_name", "User")
+    stage   = profile.get("stage", "survival")
+    skills  = ", ".join(profile.get("current_skills", []) or ["none"])
+    country = profile.get("country", "NG")
+    income  = profile.get("monthly_income", 0)
+    perms   = []
+    if permissions.get("allow_email"):
+        perms.append("✅ send_email permitted")
+    if permissions.get("allow_social_post"):
+        perms.append("✅ post_twitter / post_linkedin permitted")
+    if not perms:
+        perms.append("⚠️  No action permissions — thinking & research tools only this run")
+
+    tool_list = "\n".join(
+        f"  [{m['category'].upper():8}] {n}: {m['description']}"
+        for n, m in TOOLS.items()
+    )
+
+    return f"""You are APEX — RiseUp's Autonomous Agent. You WORK, not chat.
+
+USER: {name} | {country} | {stage.upper()} | Skills: {skills}
+Income: {currency} {income:,.0f}/mo | Budget: {"FREE ONLY" if not budget else f"{currency} {budget:,.0f}"} | Time: {hours}h/day
+
+PERMISSIONS: {" | ".join(perms)}
+
+TASK: {task}
+
+TOOLS ({len(TOOLS)} available):
+{tool_list}
+
+REACT FORMAT — output EXACTLY this every turn:
+THOUGHT: <explicit reasoning about what to do and why>
+TOOL: <tool_name or NONE>
+TOOL_INPUT: <JSON object or null>
+DONE: <true|false>
+
+APEX MISSION RULES:
+- Use web search tools FIRST — never fabricate statistics
+- Zero budget task? → find_free_resources first, build around what exists
+- Freelance/client work? → find_freelance_jobs + write_cold_outreach + optionally send_email
+- Social media goal? → write_content + post_twitter/post_linkedin (if permitted)
+- Business setup? → deep_research + find_free_resources + build_profile_content + generate_proposal
+- Partnership goal? → find_partners + write_cold_outreach + optionally send_email
+- Contracts needed? → web_search for client + generate_contract + optionally send_email
+- Set DONE=true only when you have enough to write a complete, actionable final answer
+- All content must be SPECIFIC to {country} and use {currency}
+"""
+
+
+def _final_system(currency) -> str:
+    return f"""Write the FINAL complete output for this APEX Agent run.
+You have all the research, tool outputs, and reasoning. Be comprehensive.
+
+Return ONLY valid JSON (no fences):
+{{
+  "agent_response": "What the agent did and found — warm and direct (3-5 sentences)",
+  "plan": {{
+    "title": "Short workflow title",
+    "income_type": "freelance|youtube|ecommerce|service|content|trading|other",
+    "viability": 0-100,
+    "timeline": "e.g. 2-4 weeks",
+    "income_range": {{"min": 0, "max": 0, "currency": "{currency}"}},
+    "warning": "One honest warning"
+  }},
+  "steps": [{{
+    "order": 1, "title": "...", "description": "Specific actions",
+    "type": "automated|manual|outsource",
+    "ai_output": "If automated — COMPLETE ready-to-use content here",
+    "tools": ["..."], "time_minutes": 30, "is_critical": true
+  }}],
+  "free_tools": [{{"name":"...","url":"...","purpose":"...","is_free":true}}],
+  "documents_generated": [{{"type":"contract|invoice|proposal","content":"FULL DOC TEXT"}}],
+  "outreach_messages": [{{"type":"email|dm|whatsapp","subject":"...","body":"COMPLETE MESSAGE"}}],
+  "opportunities_found": [{{"title":"...","url":"...","platform":"...","fit_score":0-100,"why":"..."}}],
+  "social_posts": [{{"platform":"twitter|linkedin","text":"COMPLETE POST","posted":false}}],
+  "immediate_action": "The ONE specific thing to do in the next 10 minutes",
+  "wealth_insight": "One deeper insight about their path to financial growth"
+}}
+"""
+
+
+# ═══════════════════════════════════════════════════════════════════
+# REACT LOOP
+# ═══════════════════════════════════════════════════════════════════
+
+def _parse(text: str) -> Dict:
+    out = {"thought": "", "tool": None, "tool_input": None, "done": False}
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("THOUGHT:"):
+            out["thought"] = line[8:].strip()
+        elif line.startswith("TOOL:"):
+            v = line[5:].strip()
+            out["tool"] = None if v.upper() in ("NONE", "NULL", "") else v
+        elif line.startswith("TOOL_INPUT:"):
+            v = line[11:].strip()
+            if v and v.lower() not in ("null", "none"):
+                try:
+                    out["tool_input"] = json.loads(v)
+                except Exception:
+                    out["tool_input"] = {"query": v}
+        elif line.startswith("DONE:"):
+            out["done"] = line[5:].strip().lower() == "true"
+    return out
+
+
+async def _react_loop(task, profile, budget, hours, currency, permissions) -> Dict:
+    system   = _agent_system(profile, task, budget, hours, currency, permissions)
+    messages = [{"role": "user", "content": f"Begin: {task}"}]
+    memory   = []
+    last_result = {}
+
+    for i in range(1, MAX_REACT_ITERATIONS + 1):
+        ctx = ""
+        if memory:
+            ctx = "\n─── COMPLETED STEPS ───\n" + "".join(
+                f"\n[{m['iteration']}] TOOL={m['tool'] or 'NONE'}\n"
+                f"THOUGHT: {m['thought']}\n"
+                f"RESULT: {m['observation'][:350]}...\n" if len(m['observation']) > 350
+                else f"\n[{m['iteration']}] TOOL={m['tool'] or 'NONE'}\n"
+                     f"THOUGHT: {m['thought']}\n"
+                     f"RESULT: {m['observation']}\n"
+                for m in memory
+            ) + "\n─── Continue ───"
+
+        result = await ai_service.chat(
+            messages=messages + ([{"role": "assistant", "content": ctx}] if ctx else []),
+            system=system, max_tokens=800,
+        )
+        last_result = result
+        turn = _parse(result["content"])
+
+        obs = ""
+        if turn["tool"] and turn["tool"] in TOOLS:
+            obs = await _execute_tool(turn["tool"], turn["tool_input"] or {"query": task},
+                                       profile, permissions)
+        elif turn["tool"]:
+            obs = json.dumps({"error": f"Tool '{turn['tool']}' not in registry"})
+
+        memory.append({
+            "thought":     turn["thought"],
+            "tool":        turn["tool"],
+            "input":       turn["tool_input"],
+            "observation": obs,
+            "iteration":   i,
+        })
+        if turn["done"] or i == MAX_REACT_ITERATIONS:
+            break
+
+    return {"memory": memory, "iterations": len(memory), "model": last_result.get("model", "unknown")}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# QUOTA
+# ═══════════════════════════════════════════════════════════════════
+
+async def _check_quota(user_id, is_premium=False) -> Dict:
+    limit = PREMIUM_DAILY_RUNS if is_premium else DEFAULT_DAILY_RUNS
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    key   = f"agent_runs:{user_id}:{today}"
+    try:
+        sb   = supabase_service.client
+        row  = sb.table("agent_run_quota").select("*").eq("quota_key", key).maybe_single().execute()
+        used = row.data["runs_used"] if row.data else 0
+        if used >= limit:
+            return {"allowed": False, "runs_used": used, "runs_limit": limit,
+                    "resets_at": f"{today}T23:59:59Z"}
+        if row.data:
+            sb.table("agent_run_quota").update({"runs_used": used + 1}).eq("quota_key", key).execute()
+        else:
+            sb.table("agent_run_quota").insert({
+                "quota_key": key, "user_id": user_id, "runs_used": 1,
+                "quota_date": today, "quota_limit": limit,
+            }).execute()
+        return {"allowed": True, "runs_used": used + 1, "runs_limit": limit}
+    except Exception as e:
+        logger.warning(f"Quota check error: {e}")
+        return {"allowed": True, "runs_used": 1, "runs_limit": limit}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# WORKFLOW SAVE
+# ═══════════════════════════════════════════════════════════════════
+
+async def _save_workflow(user_id, task, data, currency, workflow_id=None):
+    plan  = data.get("plan", {})
+    steps = data.get("steps", [])
+    if not (plan and steps):
+        return workflow_id
+    try:
+        sb = supabase_service.client
+        if not workflow_id:
+            wf = sb.table("workflows").insert({
+                "user_id":            user_id, "title": plan.get("title", task[:50]),
+                "goal":               task,    "income_type": plan.get("income_type", "other"),
+                "currency":           currency, "status": "active", "total_revenue": 0.0,
+                "viability_score":    plan.get("viability", 75),
+                "realistic_timeline": plan.get("timeline", ""),
+                "potential_min":      plan.get("income_range", {}).get("min", 0),
+                "potential_max":      plan.get("income_range", {}).get("max", 0),
+                "honest_warning":     plan.get("warning", ""),
+                "research_snapshot":  json.dumps(data),
+            }).execute()
+            workflow_id = wf.data[0]["id"] if wf.data else None
+
+        if workflow_id and steps:
+            sb.table("workflow_steps").insert([{
+                "workflow_id":  workflow_id, "user_id": user_id,
+                "order_index":  s.get("order", i + 1), "title": s.get("title", ""),
+                "description":  s.get("description", ""), "step_type": s.get("type", "manual"),
+                "time_minutes": s.get("time_minutes", 30),
+                "tools":        json.dumps(s.get("tools", [])),
+                "ai_output":    s.get("ai_output", ""), "status": "pending",
+            } for i, s in enumerate(steps)]).execute()
+
+        free_tools = data.get("free_tools", [])
+        if free_tools and workflow_id:
+            sb.table("workflow_tools").insert([{
+                "workflow_id": workflow_id, "name": t.get("name", ""),
+                "url": t.get("url", ""), "purpose": t.get("purpose", ""),
+                "is_free": t.get("is_free", True),
+            } for t in free_tools]).execute()
+
+        # Save generated documents
+        for doc in data.get("documents_generated", []):
+            if doc.get("content") and workflow_id:
+                try:
+                    sb.table("agent_documents").insert({
+                        "workflow_id": workflow_id, "user_id": user_id,
+                        "doc_type": doc.get("type", "document"),
+                        "content":  doc.get("content", ""),
+                    }).execute()
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.error(f"Workflow save error: {e}")
+    return workflow_id
+
+
+def _sse(event, data) -> str:
+    return f"event: {event}\ndata: {json.dumps(data) if not isinstance(data, str) else data}\n\n"
+
+
+def _build_final_prompt(task, memory) -> str:
+    memory_text = "\n\n".join(
+        f"[Step {m['iteration']}]\nTHOUGHT: {m['thought']}\n"
+        f"TOOL: {m['tool'] or 'none'}\nRESULT: {m['observation']}"
+        for m in memory
+    )
+    return f"TASK: {task}\n\nRESEARCH & ACTIONS:\n{memory_text}\n\nWrite the final structured response."
+
+
+async def _finalize(task, memory, currency) -> Dict:
+    final = await ai_service.chat(
+        messages=[{"role": "user", "content": _build_final_prompt(task, memory)}],
+        system=_final_system(currency), max_tokens=4000,
+    )
+    raw = final["content"].strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    try:
+        return json.loads(raw.strip())
+    except Exception:
+        s, e = raw.find("{"), raw.rfind("}") + 1
+        return json.loads(raw[s:e]) if s >= 0 and e > s else {"agent_response": raw}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════
 
 @router.post("/run")
 @limiter.limit(AI_LIMIT)
-async def run_agent(
-    req: AgentRequest,
-    request: Request,
-    user: dict = Depends(get_current_user)
-):
+async def run_agent(req: AgentRequest, request: Request,
+                    user: dict = Depends(get_current_user)):
+    user_id    = user["id"]
+    is_premium = user.get("is_premium", False)
+    profile    = await supabase_service.get_profile(user_id) or {}
+    currency   = req.currency or profile.get("currency", "NGN")
+
+    quota = await _check_quota(user_id, is_premium)
+    if not quota["allowed"]:
+        raise HTTPException(429, {
+            "error": "Daily run limit reached",
+            "runs_used": quota["runs_used"], "runs_limit": quota["runs_limit"],
+            "upgrade_prompt": "Upgrade to Premium for 25 runs/day",
+        })
+
+    permissions = {"allow_email": req.allow_email,
+                   "allow_social_post": req.allow_social_post,
+                   "social_tokens": req.social_tokens or {}}
+
+    react = await _react_loop(req.task, profile, req.budget or 0,
+                               req.hours_per_day or 2, currency, permissions)
+    agent_data  = await _finalize(req.task, react["memory"], currency)
+    workflow_id = await _save_workflow(user_id, req.task, agent_data, currency, req.workflow_id)
+
+    return {**agent_data, "workflow_id": workflow_id,
+            "model_used": react["model"], "iterations": react["iterations"],
+            "task": req.task, "quota": quota}
+
+
+@router.post("/run-stream")
+@limiter.limit(AI_LIMIT)
+async def run_agent_stream(req: AgentRequest, request: Request,
+                            user: dict = Depends(get_current_user)):
     """
-    Main agentic endpoint. Takes ANY task and produces a complete
-    execution plan + ready-to-use outputs.
+    Full streaming agent run via SSE.
+    Events: quota_check | thinking | tool_call | tool_result | action_done | finalizing | complete | error
     """
-    user_id = user["id"]
-    profile = await supabase_service.get_profile(user_id) or {}
+    user_id    = user["id"]
+    is_premium = user.get("is_premium", False)
+    profile    = await supabase_service.get_profile(user_id) or {}
+    currency   = req.currency or profile.get("currency", "NGN")
+    permissions = {"allow_email": req.allow_email,
+                   "allow_social_post": req.allow_social_post,
+                   "social_tokens": req.social_tokens or {}}
 
-    system = _agent_system_prompt(
-        profile, req.task,
-        req.budget or 0,
-        req.hours_per_day or 2,
-        req.currency or "NGN"
-    )
+    async def stream():
+        quota = await _check_quota(user_id, is_premium)
+        yield _sse("quota_check", {**quota, "runs_remaining": quota["runs_limit"] - quota["runs_used"]})
 
-    user_message = f"""TASK: {req.task}
-{f"ADDITIONAL CONTEXT: {req.context}" if req.context else ""}
-BUDGET: {"$0 - free tools only" if not req.budget else f"${req.budget}"}
-DAILY TIME: {req.hours_per_day} hours"""
+        if not quota["allowed"]:
+            yield _sse("error", {"message": "Daily run limit reached. Upgrade for more runs.",
+                                  "resets_at": quota.get("resets_at", "")})
+            return
 
-    result = await ai_service.chat(
-        messages=[{"role": "user", "content": user_message}],
-        system=system,
-        max_tokens=3000,
-    )
+        system   = _agent_system(profile, req.task, req.budget or 0,
+                                  req.hours_per_day or 2, currency, permissions)
+        messages = [{"role": "user", "content": f"Begin: {req.task}"}]
+        memory   = []
+        last_model = "unknown"
 
-    raw = result["content"].strip()
-    # Strip markdown fences if model added them
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"): raw = raw[4:]
-    raw = raw.strip()
+        for i in range(1, MAX_REACT_ITERATIONS + 1):
+            ctx = ""
+            if memory:
+                ctx = "\n─── COMPLETED ───\n" + "".join(
+                    f"\n[{m['iteration']}] TOOL={m['tool'] or 'NONE'} | {m['observation'][:250]}...\n"
+                    if len(m['observation']) > 250
+                    else f"\n[{m['iteration']}] TOOL={m['tool'] or 'NONE'} | {m['observation']}\n"
+                    for m in memory
+                ) + "\n─── Continue ───"
 
-    try:
-        agent_data = json.loads(raw)
-    except json.JSONDecodeError:
-        start, end = raw.find("{"), raw.rfind("}") + 1
-        if start >= 0 and end > start:
-            agent_data = json.loads(raw[start:end])
-        else:
-            raise HTTPException(500, "Agent failed to produce a plan. Please try again.")
+            result = await ai_service.chat(
+                messages=messages + ([{"role": "assistant", "content": ctx}] if ctx else []),
+                system=system, max_tokens=800,
+            )
+            last_model = result.get("model", "unknown")
+            turn = _parse(result["content"])
+            cat  = TOOLS.get(turn["tool"] or "", {}).get("category", "")
 
-    # Save as workflow if plan was produced
-    workflow_id = req.workflow_id
-    plan = agent_data.get("plan", {})
-    steps = agent_data.get("steps", [])
+            yield _sse("thinking", {
+                "iteration": i, "thought": turn["thought"],
+                "total": MAX_REACT_ITERATIONS,
+            })
 
-    if plan and steps and not workflow_id:
-        try:
-            sb = supabase_service.client
-            wf = sb.table("workflows").insert({
-                "user_id": user_id,
-                "title": plan.get("title", req.task[:50]),
-                "goal": req.task,
-                "income_type": plan.get("income_type", "other"),
-                "currency": req.currency or "NGN",
-                "status": "active",
-                "total_revenue": 0.0,
-                "viability_score": plan.get("viability", 75),
-                "realistic_timeline": plan.get("timeline", ""),
-                "potential_min": plan.get("income_range", {}).get("min", 0),
-                "potential_max": plan.get("income_range", {}).get("max", 0),
-                "honest_warning": plan.get("warning", ""),
-                "research_snapshot": json.dumps(agent_data),
-            }).execute()
+            obs = ""
+            if turn["tool"] and turn["tool"] in TOOLS:
+                tool_input = turn["tool_input"] or {"query": req.task}
+                yield _sse("tool_call", {"iteration": i, "tool": turn["tool"],
+                                          "category": cat, "input": tool_input})
+                obs = await _execute_tool(turn["tool"], tool_input, profile, permissions)
 
-            workflow_id = wf.data[0]["id"] if wf.data else None
+                try:
+                    preview = json.loads(obs)
+                except Exception:
+                    preview = {"raw": obs[:300]}
 
-            if workflow_id and steps:
-                step_rows = [{
-                    "workflow_id": workflow_id,
-                    "user_id": user_id,
-                    "order_index": s.get("order", i + 1),
-                    "title": s.get("title", ""),
-                    "description": s.get("description", ""),
-                    "step_type": s.get("type", "manual"),
-                    "time_minutes": s.get("time_minutes", 30),
-                    "tools": json.dumps(s.get("tools", [])),
-                    "ai_output": s.get("ai_output", ""),
-                    "status": "pending",
-                } for i, s in enumerate(steps)]
-                sb.table("workflow_steps").insert(step_rows).execute()
+                yield _sse("tool_result", {"iteration": i, "tool": turn["tool"],
+                                            "category": cat,
+                                            "preview": str(obs)[:350]})
+                if cat == "action":
+                    yield _sse("action_done", {"tool": turn["tool"], "result": preview})
 
-                # Save tools
-                tools = agent_data.get("free_tools", [])
-                if tools:
-                    sb.table("workflow_tools").insert([{
-                        "workflow_id": workflow_id,
-                        "name": t.get("name", ""),
-                        "url": t.get("url", ""),
-                        "purpose": t.get("purpose", ""),
-                        "is_free": t.get("is_free", True),
-                    } for t in tools]).execute()
+            elif turn["tool"]:
+                obs = json.dumps({"error": f"Unknown tool: {turn['tool']}"})
 
-        except Exception as e:
-            logger.error(f"Workflow save error: {e}")
+            memory.append({"thought": turn["thought"], "tool": turn["tool"],
+                            "input": turn["tool_input"], "observation": obs, "iteration": i})
 
-    return {
-        **agent_data,
-        "workflow_id": workflow_id,
-        "model_used": result.get("model", "unknown"),
-        "task": req.task,
-    }
+            if turn["done"] or i == MAX_REACT_ITERATIONS:
+                break
 
+        yield _sse("finalizing", {"message": "Writing your complete plan..."})
+        agent_data  = await _finalize(req.task, memory, currency)
+        workflow_id = await _save_workflow(user_id, req.task, agent_data, currency, req.workflow_id)
 
-# ── Agent Chat (conversational execution) ────────────────────────
+        yield _sse("complete", {**agent_data, "workflow_id": workflow_id,
+                                 "model_used": last_model, "iterations": len(memory),
+                                 "task": req.task, "quota": quota})
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                              headers={"Cache-Control": "no-cache",
+                                        "X-Accel-Buffering": "no",
+                                        "Access-Control-Allow-Origin": "*"})
+
 
 @router.post("/chat")
 @limiter.limit(AI_LIMIT)
-async def agent_chat(
-    req: AgentChatRequest,
-    request: Request,
-    user: dict = Depends(get_current_user)
-):
-    """
-    Conversational agent — user can ask follow-up questions,
-    request rewrites, ask AI to execute specific steps.
-    """
+async def agent_chat(req: AgentChatRequest, request: Request,
+                      user: dict = Depends(get_current_user)):
     user_id = user["id"]
     profile = await supabase_service.get_profile(user_id) or {}
-
-    # Load session history if exists
-    history = []
-    if req.session_id:
+    history: List[Dict] = req.history[-14:] if req.history else []
+    if not history and req.session_id:
         try:
-            msgs = await supabase_service.get_messages(req.session_id, limit=10)
+            msgs    = await supabase_service.get_messages(req.session_id, limit=14)
             history = [{"role": m["role"], "content": m["content"]}
                        for m in msgs if m["role"] in ("user", "assistant")]
         except Exception:
             pass
 
-    # Load workflow context if provided
-    workflow_context = ""
+    wf_ctx = ""
     if req.workflow_id:
         try:
-            sb = supabase_service.client
-            wf = sb.table("workflows").select("title, goal, income_type").eq("id", req.workflow_id).single().execute()
+            wf = supabase_service.client.table("workflows") \
+                   .select("title,goal").eq("id", req.workflow_id).single().execute()
             if wf.data:
-                workflow_context = f"\nACTIVE WORKFLOW: {wf.data['title']} — Goal: {wf.data['goal']}"
+                wf_ctx = f"\nWORKFLOW: {wf.data['title']} — {wf.data['goal']}"
         except Exception:
             pass
 
-    name = profile.get("full_name", "User")
-    stage = profile.get("stage", "survival")
-    skills = ", ".join(profile.get("current_skills", []) or [])
-    currency = profile.get("currency", "NGN")
-
-    system = f"""You are RiseUp's Agentic AI — an execution engine.
-
-USER: {name} | Stage: {stage.upper()} | Skills: {skills} | Currency: {currency}
-{workflow_context}
-
-You are in CONVERSATION MODE. The user wants to:
-- Get clarification on steps
-- Ask you to write/create/produce something specific
-- Get help executing a particular step
-- Ask follow-up questions about their workflow
-
-RULES:
-- Be DIRECT and SPECIFIC
-- When asked to write something — WRITE IT IN FULL (no placeholders)
-- When asked to research something — give SPECIFIC findings
-- Keep responses focused and action-oriented
-- If the user asks you to produce content/templates/scripts — produce them completely
-
-Respond naturally but powerfully. You are a senior consultant who produces real work."""
-
-    history.append({"role": "user", "content": req.message})
-
-    result = await ai_service.chat(
-        messages=history,
-        system=system,
-        max_tokens=2000,
+    system = (
+        f"You are APEX — RiseUp's Autonomous Agent for {profile.get('full_name','User')}.\n"
+        f"Country: {profile.get('country','NG')} | Skills: {', '.join(profile.get('current_skills',[]) or [])}"
+        f" | Currency: {profile.get('currency','NGN')}{wf_ctx}\n\n"
+        "RULES: Write COMPLETE deliverables. No placeholders. Full text always. "
+        "Specific to user's country and context. You produce real work, not advice."
     )
 
+    history.append({"role": "user", "content": req.message})
+    result     = await ai_service.chat(messages=history, system=system, max_tokens=2500)
     ai_content = result["content"]
 
-    # Save to conversation
     session_id = req.session_id
     try:
         if not session_id:
-            conv = await supabase_service.create_conversation(user_id, title="Agent Session")
+            conv       = await supabase_service.create_conversation(user_id, "APEX Session")
             session_id = conv["id"]
         await supabase_service.save_message(session_id, user_id, "user", req.message)
         await supabase_service.save_message(session_id, user_id, "assistant", ai_content,
                                             ai_model=result.get("model"))
     except Exception as e:
-        logger.error(f"Session save error: {e}")
+        logger.error(f"Session save: {e}")
 
-    return {
-        "content": ai_content,
-        "session_id": session_id,
-        "model_used": result.get("model", "unknown"),
-    }
+    return {"content": ai_content, "session_id": session_id, "model_used": result.get("model")}
 
-
-# ── Execute a Specific Tool ───────────────────────────────────────
 
 @router.post("/execute-tool")
 @limiter.limit(AI_LIMIT)
-async def execute_tool(
-    req: ExecuteToolRequest,
-    request: Request,
-    user: dict = Depends(get_current_user)
-):
-    """
-    Execute a specific AI tool.
-    Tools: write_content | research | create_plan | find_tools |
-           estimate_income | create_template | breakdown_task
-    """
-    user_id = user["id"]
-    profile = await supabase_service.get_profile(user_id) or {}
-
-    if req.tool not in TOOL_PROMPTS:
-        raise HTTPException(400, f"Unknown tool: {req.tool}. Valid: {list(TOOL_PROMPTS.keys())}")
-
-    currency = profile.get("currency", "NGN")
-    country = profile.get("country", "NG")
-
-    system = TOOL_PROMPTS[req.tool]
-    user_msg = f"""User context: {country}, currency {currency}
-Tool input: {json.dumps(req.input)}
-Return ONLY valid JSON. No markdown."""
-
-    result = await ai_service.chat(
-        messages=[{"role": "user", "content": user_msg}],
-        system=system,
-        max_tokens=2000,
-    )
-
-    raw = result["content"].strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"): raw = raw[4:]
-    raw = raw.strip()
-
+async def execute_tool(req: ExecuteToolRequest, request: Request,
+                        user: dict = Depends(get_current_user)):
+    if req.tool not in TOOLS:
+        raise HTTPException(400, {"error": f"Unknown tool: {req.tool}", "valid": list(TOOLS.keys())})
+    profile = await supabase_service.get_profile(user["id"]) or {}
+    permissions = {"allow_email": True, "allow_social_post": True, "social_tokens": {}}
+    raw = await _execute_tool(req.tool, req.input, profile, permissions)
     try:
-        tool_output = json.loads(raw)
-    except json.JSONDecodeError:
-        start, end = raw.find("{"), raw.rfind("}") + 1
-        if start >= 0 and end > start:
-            tool_output = json.loads(raw[start:end])
-        else:
-            tool_output = {"result": raw}
-
-    # If tied to a workflow step, save output
+        output = json.loads(raw)
+    except Exception:
+        output = {"result": raw}
     if req.workflow_id and req.input.get("step_id"):
         try:
-            sb = supabase_service.client
-            sb.table("workflow_steps").update({
-                "ai_output": json.dumps(tool_output)
-            }).eq("id", req.input["step_id"]).eq("workflow_id", req.workflow_id).execute()
+            supabase_service.client.table("workflow_steps") \
+                .update({"ai_output": json.dumps(output)}) \
+                .eq("id", req.input["step_id"]).eq("workflow_id", req.workflow_id).execute()
         except Exception:
             pass
+    return {"tool": req.tool, "output": output}
 
-    return {
-        "tool": req.tool,
-        "output": tool_output,
-        "model_used": result.get("model", "unknown"),
-    }
-
-
-# ── Quick Execute — Produce content immediately ───────────────────
 
 @router.post("/quick")
 @limiter.limit(AI_LIMIT)
-async def quick_execute(
-    request: Request,
-    task: str,
-    output_type: str = "any",
-    user: dict = Depends(get_current_user)
-):
-    """
-    Fast execution for simple tasks:
-    - "Write me a YouTube description for my budgeting video"
-    - "Create an email pitch for my freelance services"
-    - "Write a WhatsApp message to find my first client"
-    - "Give me 10 content ideas for my niche"
-    """
-    user_id = user["id"]
-    profile = await supabase_service.get_profile(user_id) or {}
+async def quick_execute(req: QuickRequest, request: Request,
+                         user: dict = Depends(get_current_user)):
+    profile  = await supabase_service.get_profile(user["id"]) or {}
     currency = profile.get("currency", "NGN")
-    country = profile.get("country", "NG")
-    name = profile.get("full_name", "User")
-
-    system = f"""You are RiseUp's execution engine for {name} in {country}.
-
-TASK: {task}
-OUTPUT TYPE REQUESTED: {output_type}
-
-Produce the COMPLETE, ready-to-use output immediately.
-- If writing content: write the full text
-- If creating a plan: write specific daily actions
-- If researching: give specific findings with real data
-- If making a template: write the complete template
-
-Be specific to Nigeria/Africa context if the user is there.
-Use {currency} for money references.
-NO generic advice. Produce REAL work output."""
-
-    result = await ai_service.chat(
-        messages=[{"role": "user", "content": task}],
-        system=system,
-        max_tokens=1500,
+    country  = profile.get("country", "NG")
+    result   = await ai_service.chat(
+        messages=[{"role": "user", "content": req.task}],
+        system=(f"You are APEX for {profile.get('full_name','User')} in {country}. "
+                f"TASK: {req.task}. Produce COMPLETE ready-to-use output. "
+                f"Be specific to {country}. Use {currency}. No generic advice."),
+        max_tokens=1800,
     )
+    return {"output": result["content"], "task": req.task, "model_used": result.get("model")}
 
-    return {
-        "output": result["content"],
-        "task": task,
-        "model_used": result.get("model", "unknown"),
-    }
-
-
-# ── Analyze and Improve Existing Work ────────────────────────────
 
 @router.post("/analyze")
 @limiter.limit(AI_LIMIT)
-async def analyze_and_improve(
-    request: Request,
-    content: str,
-    goal: str = "improve",
-    user: dict = Depends(get_current_user)
-):
-    """
-    Analyze user's existing work (post, bio, pitch, description)
-    and produce an improved version.
-    """
+async def analyze(req: AnalyzeRequest, request: Request,
+                   user: dict = Depends(get_current_user)):
     profile = await supabase_service.get_profile(user["id"]) or {}
-    currency = profile.get("currency", "NGN")
-
-    system = f"""You are RiseUp's content improvement engine.
-
-GOAL: {goal}
-USER CURRENCY: {currency}
-
-Analyze the provided content and:
-1. Identify what's weak (be direct)
-2. Rewrite it completely — improved, stronger, more effective
-3. Explain the key changes
-
-Return JSON: {{
-  "issues": ["what was weak"],
-  "improved_version": "THE COMPLETE REWRITTEN CONTENT",
-  "key_changes": ["what you changed and why"],
-  "score_before": 0-100,
-  "score_after": 0-100
-}}"""
-
-    result = await ai_service.chat(
-        messages=[{"role": "user", "content": f"Analyze and improve this:\n\n{content}"}],
-        system=system,
-        max_tokens=1500,
+    result  = await ai_service.chat(
+        messages=[{"role": "user", "content": f"Analyze and improve:\n\n{req.content}"}],
+        system=(f"Improvement engine. Goal: {req.goal}. Currency: {profile.get('currency','NGN')}. "
+                'Return JSON: {"issues":[...],"improved_version":"FULL REWRITE","key_changes":[...],'
+                '"score_before":0,"score_after":0}'),
+        max_tokens=2000,
     )
-
-    raw = result["content"].strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"): raw = raw[4:]
-
+    raw = result["content"].strip().lstrip("```json").lstrip("```").rstrip("```").strip()
     try:
-        output = json.loads(raw.strip())
+        output = json.loads(raw)
     except Exception:
         output = {"improved_version": result["content"], "issues": [], "key_changes": []}
-
     return {"analysis": output, "model_used": result.get("model")}
+
+
+@router.post("/scan")
+@limiter.limit(AI_LIMIT)
+async def scan(req: ScanRequest, request: Request,
+                user: dict = Depends(get_current_user)):
+    profile = await supabase_service.get_profile(user["id"]) or {}
+    opps    = await opportunity_scanner.scan_for_user(profile)
+    return {"opportunities": opps, "scanned_at": datetime.now(timezone.utc).isoformat()}
+
+
+@router.get("/quota")
+async def get_quota(user: dict = Depends(get_current_user)):
+    limit = PREMIUM_DAILY_RUNS if user.get("is_premium") else DEFAULT_DAILY_RUNS
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    key   = f"agent_runs:{user['id']}:{today}"
+    try:
+        sb   = supabase_service.client
+        row  = sb.table("agent_run_quota").select("runs_used").eq("quota_key", key).maybe_single().execute()
+        used = row.data["runs_used"] if row.data else 0
+        return {"runs_used": used, "runs_limit": limit, "runs_remaining": limit - used}
+    except Exception:
+        return {"runs_used": 0, "runs_limit": limit, "runs_remaining": limit}
+
+
+@router.get("/tools")
+async def list_tools():
+    return {
+        "total": len(TOOLS),
+        "categories": {
+            cat: [{"name": n, "description": m["description"]}
+                  for n, m in TOOLS.items() if m["category"] == cat]
+            for cat in ["thinking", "research", "action", "document"]
+        },
+    }
