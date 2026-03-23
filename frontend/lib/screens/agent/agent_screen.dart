@@ -38,12 +38,6 @@ class _Msg {
         this.isTool = false, this.toolName, this.toolCategory});
 }
 
-class _StreamEvent {
-  final String type;    // thinking | tool_call | tool_result | action_done | finalizing | complete | error
-  final Map    data;
-  _StreamEvent(this.type, this.data);
-}
-
 // ─────────────────────────────────────────────────────────────────
 // Screen
 // ─────────────────────────────────────────────────────────────────
@@ -78,7 +72,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
   String  _error = '';
 
   final List<_Msg>    _chatMsgs     = [];
-  List<_StreamEvent>  _streamEvents = [];
+  List<StreamEvent>  _streamEvents = [];
   bool _chatLoading = false;
   int  _streamIteration = 0;
   String _streamStatus  = '';
@@ -162,7 +156,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
     }
   }
 
-  void _handleStreamEvent(_StreamEvent event) {
+  void _handleStreamEvent(StreamEvent event) {
     setState(() {
       _streamEvents.add(event);
       switch (event.type) {
@@ -639,7 +633,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
               itemCount: _streamEvents.length,
               itemBuilder: (_, i) {
                 final e = _streamEvents[i];
-                return _StreamEventTile(event: e, isDark: isDark);
+                return StreamEventTile(event: e, isDark: isDark);
               },
             ),
           ),
@@ -1043,10 +1037,10 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
 // Sub-widgets
 // ─────────────────────────────────────────────────────────────────
 
-class _StreamEventTile extends StatelessWidget {
-  final _StreamEvent event;
+class StreamEventTile extends StatelessWidget {
+  final StreamEvent event;
   final bool isDark;
-  const _StreamEventTile({required this.event, required this.isDark});
+  const StreamEventTile({required this.event, required this.isDark});
 
   @override
   Widget build(BuildContext context) {

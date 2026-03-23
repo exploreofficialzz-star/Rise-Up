@@ -7,7 +7,7 @@
 // Usage:
 //   final stream = api.streamPost('/agent/run-stream', {...});
 //   await for (final event in stream) {
-//     // event is a _StreamEvent — handle it in the screen
+//     // event is a StreamEvent — handle it in the screen
 //   }
 
 import 'dart:async';
@@ -20,7 +20,7 @@ import '../config/app_constants.dart';
 extension ApiStreamExtension on ApiService {
 
   /// Stream a POST request and yield parsed SSE events.
-  Stream<_StreamEvent> streamPost(String path, Map<String, dynamic> body) async* {
+  Stream<StreamEvent> streamPost(String path, Map<String, dynamic> body) async* {
     final token = await getToken();   // your existing getToken() method
     final uri   = Uri.parse('$kApiBaseUrl$path');
 
@@ -36,7 +36,7 @@ extension ApiStreamExtension on ApiService {
       final response = await request.send();
 
       if (response.statusCode != 200) {
-        yield _StreamEvent('error', {'message': 'HTTP ${response.statusCode}'});
+        yield StreamEvent('error', {'message': 'HTTP ${response.statusCode}'});
         return;
       }
 
@@ -65,22 +65,22 @@ extension ApiStreamExtension on ApiService {
           if (eventType != null && eventData != null) {
             try {
               final parsed = jsonDecode(eventData) as Map<String, dynamic>;
-              yield _StreamEvent(eventType, parsed);
+              yield StreamEvent(eventType, parsed);
             } catch (_) {
-              yield _StreamEvent(eventType, {'raw': eventData});
+              yield StreamEvent(eventType, {'raw': eventData});
             }
           }
         }
       }
     } catch (e) {
-      yield _StreamEvent('error', {'message': e.toString()});
+      yield StreamEvent('error', {'message': e.toString()});
     }
   }
 }
 
 /// Parsed SSE event from the APEX streaming endpoint.
-class _StreamEvent {
+class StreamEvent {
   final String type;
   final Map<String, dynamic> data;
-  const _StreamEvent(this.type, this.data);
+  const StreamEvent(this.type, this.data);
 }
