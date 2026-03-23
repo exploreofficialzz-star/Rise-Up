@@ -227,48 +227,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
                       const SizedBox(height: 12),
 
-                      // ── Workflow Engine CTA ──────────────────
-                      GestureDetector(
-                        onTap: () => context.push('/workflow'),
-                        child: Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: isDark ? AppColors.bgCard : const Color(0xFFF8F8F8),
-                            borderRadius: AppRadius.lg,
-                            border: Border.all(color: isDark ? AppColors.bgSurface : Colors.grey.shade200),
-                          ),
-                          child: Row(
-                            children: [
-                              Container(
-                                width: 44, height: 44,
-                                decoration: BoxDecoration(
-                                  color: AppColors.success.withOpacity(0.12),
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: const Icon(Iconsax.flash, color: AppColors.success, size: 22),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(children: [
-                                      Text('Workflow Engine', style: AppTextStyles.h4.copyWith(fontSize: 14, color: isDark ? Colors.white : Colors.black87)),
-                                      const SizedBox(width: 6),
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                        decoration: BoxDecoration(color: AppColors.success.withOpacity(0.15), borderRadius: BorderRadius.circular(6)),
-                                        child: const Text('NEW', style: TextStyle(fontSize: 9, color: AppColors.success, fontWeight: FontWeight.w800)),
-                                      ),
-                                    ]),
-                                    Text('AI researches & executes your income plan', style: AppTextStyles.bodySmall),
-                                  ],
-                                ),
-                              ),
-                              Icon(Icons.arrow_forward_ios_rounded, color: isDark ? Colors.white30 : Colors.black26, size: 14),
-                            ],
-                          ),
-                        ),
+                      // ── Superpower Feature CTAs ──────────────
+                      Text('Income Tools', style: AppTextStyles.h4),
+                      const SizedBox(height: 12),
+                      GridView.count(
+                        crossAxisCount: 2,
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        crossAxisSpacing: 10,
+                        mainAxisSpacing: 10,
+                        childAspectRatio: 2.2,
+                        children: [
+                          _FeatureTile(icon: Icons.auto_awesome_rounded, label: 'Agentic AI', sub: 'Execute any task', color: AppColors.accent, onTap: () => context.push('/agent'), isDark: isDark, badge: 'APEX'),
+                          _FeatureTile(icon: Iconsax.flash, label: 'Workflows', sub: 'AI income plans', color: AppColors.success, onTap: () => context.push('/workflow'), isDark: isDark),
+                          _FeatureTile(icon: Icons.trending_up_rounded, label: 'Market Pulse', sub: "What pays now", color: const Color(0xFFFF6B35), onTap: () => context.push('/pulse'), isDark: isDark, badge: 'LIVE'),
+                          _FeatureTile(icon: Icons.emoji_events_rounded, label: 'Challenges', sub: '30-day sprints', color: const Color(0xFF6C5CE7), onTap: () => context.push('/challenges'), isDark: isDark),
+                          _FeatureTile(icon: Iconsax.briefcase, label: 'Client CRM', sub: 'Track deals', color: AppColors.primary, onTap: () => context.push('/crm'), isDark: isDark),
+                          _FeatureTile(icon: Iconsax.document_text, label: 'Contracts', sub: 'AI contracts', color: AppColors.gold, onTap: () => context.push('/contracts'), isDark: isDark),
+                          _FeatureTile(icon: Iconsax.gallery, label: 'Portfolio', sub: 'Showcase work', color: const Color(0xFFFF3CAC), onTap: () => context.push('/portfolio'), isDark: isDark),
+                          _FeatureTile(icon: Icons.psychology_rounded, label: 'Memory', sub: 'Income DNA', color: const Color(0xFF00B894), onTap: () => context.push('/memory'), isDark: isDark),
+                        ],
                       ).animate().fadeIn(delay: 250.ms),
 
                       const SizedBox(height: 24),
@@ -629,6 +607,53 @@ class _DIt extends StatelessWidget {
             const Icon(Icons.chevron_right_rounded, size: 15, color: Colors.white24),
           ]),
         ),
+      ),
+    );
+  }
+}
+
+
+class _FeatureTile extends StatelessWidget {
+  final IconData icon;
+  final String label, sub;
+  final Color color;
+  final VoidCallback onTap;
+  final bool isDark;
+  final String? badge;
+  const _FeatureTile({required this.icon, required this.label, required this.sub,
+      required this.color, required this.onTap, required this.isDark, this.badge});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: color.withOpacity(isDark ? 0.1 : 0.07),
+          borderRadius: AppRadius.lg,
+          border: Border.all(color: color.withOpacity(0.2)),
+        ),
+        child: Row(children: [
+          Icon(icon, color: color, size: 20),
+          const SizedBox(width: 8),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center, children: [
+            Row(children: [
+              Flexible(child: Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+                  color: isDark ? Colors.white : Colors.black87), overflow: TextOverflow.ellipsis)),
+              if (badge != null) ...[
+                const SizedBox(width: 4),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                  decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(4)),
+                  child: Text(badge!, style: const TextStyle(color: Colors.white, fontSize: 7, fontWeight: FontWeight.w800)),
+                ),
+              ],
+            ]),
+            Text(sub, style: TextStyle(fontSize: 10, color: isDark ? Colors.white38 : Colors.black38)),
+          ])),
+        ]),
       ),
     );
   }

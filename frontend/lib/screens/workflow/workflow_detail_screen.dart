@@ -133,6 +133,27 @@ class _WorkflowDetailScreenState extends State<WorkflowDetailScreen>
                     onPressed: () => context.pop(),
                   ),
                   actions: [
+                    if ((_workflow['total_revenue'] ?? 0) > 0)
+                      IconButton(
+                        icon: const Icon(Iconsax.gallery, color: Colors.white),
+                        tooltip: 'Generate Portfolio Case Study',
+                        onPressed: () async {
+                          final wfId = widget.workflowId;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('✨ Generating portfolio case study...'), backgroundColor: AppColors.primary),
+                          );
+                          try {
+                            await api.generatePortfolioFromWorkflow(wfId);
+                            if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('✅ Added to your portfolio!'), backgroundColor: AppColors.success),
+                            );
+                          } catch (e) {
+                            if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Failed: $e'), backgroundColor: AppColors.error),
+                            );
+                          }
+                        },
+                      ),
                     IconButton(
                       icon: const Icon(Iconsax.add_circle),
                       onPressed: _showLogRevenue,

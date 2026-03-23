@@ -232,6 +232,21 @@ class _ProfileScreenState extends State<ProfileScreen>
                   ]),
                 ),
 
+                // ── Quick feature access ─────────────────
+                Container(
+                  color: cardColor,
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+                  child: Row(children: [
+                    _ProfileFeatureTile('🎨', 'Portfolio', () => context.push('/portfolio')),
+                    const SizedBox(width: 8),
+                    _ProfileFeatureTile('🏆', 'Challenges', () => context.push('/challenges')),
+                    const SizedBox(width: 8),
+                    _ProfileFeatureTile('🧠', 'Memory', () => context.push('/memory')),
+                    const SizedBox(width: 8),
+                    _ProfileFeatureTile('💼', 'CRM', () => context.push('/crm')),
+                  ]),
+                ),
+
                 // ── Tabs ────────────────────────────────
                 Container(
                   color: cardColor,
@@ -340,4 +355,33 @@ class _StatCol extends StatelessWidget {
     const SizedBox(height: 2),
     Text(label, style: TextStyle(fontSize: 11, color: subColor)),
   ]);
+}
+
+class _ProfileFeatureTile extends StatelessWidget {
+  final String emoji, label;
+  final VoidCallback onTap;
+  const _ProfileFeatureTile(this.emoji, this.label, this.onTap);
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: BoxDecoration(
+            color: isDark ? AppColors.bgSurface : Colors.grey.shade100,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Column(children: [
+            Text(emoji, style: const TextStyle(fontSize: 18)),
+            const SizedBox(height: 2),
+            Text(label, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600,
+                color: isDark ? Colors.white70 : Colors.black54)),
+          ]),
+        ),
+      ),
+    );
+  }
 }

@@ -20,6 +20,8 @@ class _ExploreScreenState extends State<ExploreScreen>
   String _query = '';
   List _realTrending = [];
   bool _trendingLoaded = false;
+  List _realLeaders = [];
+  bool _leadersLoaded = false;
 
   static const _categories = [
     ('💰', 'Wealth'),
@@ -71,6 +73,7 @@ class _ExploreScreenState extends State<ExploreScreen>
     super.initState();
     _tabCtrl = TabController(length: 6, vsync: this);
     _loadTrending();
+    _loadLeaderboard();
   }
 
   Future<void> _loadTrending() async {
@@ -82,6 +85,18 @@ class _ExploreScreenState extends State<ExploreScreen>
       });
     } catch (_) {
       if (mounted) setState(() => _trendingLoaded = true);
+    }
+  }
+
+  Future<void> _loadLeaderboard() async {
+    try {
+      final data = await api.get('/progress/leaderboard');
+      if (mounted) setState(() {
+        _realLeaders = (data as Map?)?['leaders'] as List? ?? [];
+        _leadersLoaded = true;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _leadersLoaded = true);
     }
   }
 
@@ -487,50 +502,105 @@ class _LeaderboardTab extends StatelessWidget {
         ),
 
         Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.all(16),
-            itemCount: _leaders.length,
-            itemBuilder: (_, i) {
-              final l = _leaders[i];
-              final isTop3 = l.rank <= 3;
-              return Container(
-                margin: const EdgeInsets.only(bottom: 10),
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: isTop3
-                      ? AppColors.primary.withOpacity(isDark ? 0.12 : 0.06)
-                      : (isDark ? AppColors.bgCard : const Color(0xFFF8F8F8)),
-                  borderRadius: BorderRadius.circular(14),
-                  border: isTop3 ? Border.all(color: AppColors.primary.withOpacity(0.2)) : null,
-                ),
-                child: Row(children: [
-                  SizedBox(
-                    width: 32,
-                    child: Text(
-                      l.badge.isNotEmpty ? l.badge : '#${l.rank}',
-                      style: TextStyle(fontSize: l.badge.isNotEmpty ? 20 : 14, fontWeight: FontWeight.w700, color: subColor),
-                      textAlign: TextAlign.center,
+          child: !_leadersLoaded
+              ? const Center(child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2))
+              : _realLeaders.isEmpty
+                  ? ListView.builder(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: _leaders.length,
+                      itemBuilder: (_, i) {
+                        final l = _leaders[i];
+                        final isTop3 = l.rank <= 3;
+                        final badges = ['🥇', '🥈', '🥉'];
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: isTop3
+                                ? AppColors.primary.withOpacity(isDark ? 0.12 : 0.06)
+                                : (isDark ? AppColors.bgCard : const Color(0xFFF8F8F8)),
+                            borderRadius: BorderRadius.circular(14),
+                            border: isTop3 ? Border.all(color: AppColors.primary.withOpacity(0.2)) : null,
+                          ),
+                          child: Row(children: [
+                            SizedBox(width: 32, child: Text(
+                              l.rank <= 3 ? badges[l.rank - 1] : '#\${l.rank}',
+                              style: TextStyle(fontSize: l.rank <= 3 ? 20 : 14, fontWeight: FontWeight.w700, color: subColor),
+                              textAlign: TextAlign.center,
+                            )),
+                            const SizedBox(width: 10),
+                            Container(width: 42, height: 42,
+                              decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.12), shape: BoxShape.circle),
+                              child: Center(child: Text(l.emoji, style: const TextStyle(fontSize: 20)))),
+                            const SizedBox(width: 12),
+                            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(l.name, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: textColor)),
+                              Text(l.username, style: TextStyle(fontSize: 11, color: subColor)),
+                            ])),
+                            Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                              Text(l.score, style: const TextStyle(color: AppColors.success, fontWeight: FontWeight.w800, fontSize: 14)),
+                              Text('total earned', style: TextStyle(fontSize: 10, color: subColor)),
+                            ]),
+                          ]),
+                        ).animate().fadeIn(delay: Duration(milliseconds: i * 50));
+                      },
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: _realLeaders.length,
+                      itemBuilder: (_, i) {
+                        final l = _realLeaders[i] as Map;
+                        final rank = (l['rank'] as num?)?.toInt() ?? i + 1;
+                        final isTop3 = rank <= 3;
+                        final badges = ['🥇', '🥈', '🥉'];
+                        final name = l['full_name']?.toString() ?? 'User';
+                        final earned = (l['total_earned'] as num?)?.toDouble() ?? 0;
+                        final country = l['country']?.toString() ?? '';
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: isTop3
+                                ? AppColors.gold.withOpacity(isDark ? 0.12 : 0.06)
+                                : (isDark ? AppColors.bgCard : const Color(0xFFF8F8F8)),
+                            borderRadius: BorderRadius.circular(14),
+                            border: isTop3 ? Border.all(color: AppColors.gold.withOpacity(0.3)) : null,
+                          ),
+                          child: Row(children: [
+                            SizedBox(width: 32, child: Text(
+                              isTop3 ? badges[rank - 1] : '#\$rank',
+                              style: TextStyle(fontSize: isTop3 ? 20 : 14, fontWeight: FontWeight.w700, color: subColor),
+                              textAlign: TextAlign.center,
+                            )),
+                            const SizedBox(width: 10),
+                            Container(width: 42, height: 42,
+                              decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.12), shape: BoxShape.circle),
+                              child: Center(child: Text(name.isNotEmpty ? name[0].toUpperCase() : '👤',
+                                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800,
+                                      color: isTop3 ? AppColors.gold : AppColors.primary)))),
+                            const SizedBox(width: 12),
+                            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(name, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: textColor)),
+                              Row(children: [
+                                Text(country, style: TextStyle(fontSize: 11, color: subColor)),
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                  decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.1), borderRadius: BorderRadius.circular(4)),
+                                  child: Text(l['stage']?.toString() ?? '', style: const TextStyle(fontSize: 9, color: AppColors.primary, fontWeight: FontWeight.w700)),
+                                ),
+                              ]),
+                            ])),
+                            Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                              Text('\$\${earned.toStringAsFixed(0)}',
+                                  style: TextStyle(color: isTop3 ? AppColors.gold : AppColors.success,
+                                      fontWeight: FontWeight.w800, fontSize: 14)),
+                              Text('earned', style: TextStyle(fontSize: 10, color: subColor)),
+                            ]),
+                          ]),
+                        ).animate().fadeIn(delay: Duration(milliseconds: i * 50));
+                      },
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  Container(
-                    width: 42, height: 42,
-                    decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.12), shape: BoxShape.circle),
-                    child: Center(child: Text(l.emoji, style: const TextStyle(fontSize: 20))),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(l.name, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: textColor)),
-                    Text(l.username, style: TextStyle(fontSize: 11, color: subColor)),
-                  ])),
-                  Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                    Text(l.score, style: const TextStyle(color: AppColors.success, fontWeight: FontWeight.w800, fontSize: 14)),
-                    Text('points', style: TextStyle(fontSize: 10, color: subColor)),
-                  ]),
-                ]),
-              ).animate().fadeIn(delay: Duration(milliseconds: i * 50));
-            },
-          ),
         ),
       ],
     );

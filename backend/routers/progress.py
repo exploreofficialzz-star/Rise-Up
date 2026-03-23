@@ -2,7 +2,7 @@
 import base64
 import uuid
 import logging
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
 from fastapi.responses import JSONResponse
 
 from models.schemas import ProfileUpdate, EarningLog
@@ -97,3 +97,28 @@ async def upload_avatar(
     except Exception as e:
         logger.error(f"Avatar upload error: {e}")
         raise HTTPException(500, f"Upload failed: {str(e)}")
+
+
+@router.get("/leaderboard")
+async def get_leaderboard(request: Request = None, user: dict = Depends(get_current_user)):
+    """Real earnings leaderboard — verified, not fake"""
+    try:
+        leaders = supabase_service.client.table("profiles").select(
+            "id, full_name, stage, country, total_earned, currency, xp_points, subscription_tier"
+        ).gt("total_earned", 0).order("total_earned", desc=True).limit(50).execute()
+
+        result = []
+        for i, p in enumerate(leaders.data or []):
+            result.append({
+                "rank": i + 1,
+                "full_name": p.get("full_name", "User"),
+                "stage": p.get("stage", "survival"),
+                "country": p.get("country", ""),
+                "total_earned": p.get("total_earned", 0),
+                "currency": p.get("currency", "USD"),
+                "xp_points": p.get("xp_points", 0),
+            })
+
+        return {"leaders": result, "total": len(result)}
+    except Exception as e:
+        return {"leaders": [], "total": 0}
