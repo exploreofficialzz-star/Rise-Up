@@ -72,3 +72,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             del response.headers["x-powered-by"]
 
         return response
+
+
+# Alias so main.py can import either name
+SecurityMiddleware = SecurityHeadersMiddleware
