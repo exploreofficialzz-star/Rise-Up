@@ -18,7 +18,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
   Map _scan = {};
   bool _loading = true;
   bool _scanning = false;
-  String _scanSkill = '';
+  String _selectedSkill = '';
 
   @override
   void initState() {
@@ -45,7 +45,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
   }
 
   Future<void> _scanSkill(String skill) async {
-    setState(() { _scanning = true; _scanSkill = skill; });
+    setState(() { _scanning = true; _selectedSkill = skill; });
     try {
       final data = await api.get('/pulse/opportunity-scan', queryParams: {'skill': skill});
       if (mounted) setState(() { _scan = (data as Map?) ?? {}; _scanning = false; });
@@ -287,17 +287,17 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
             decoration: BoxDecoration(
-              color: _scanSkill == s ? AppColors.primary : (isDark ? AppColors.bgCard : const Color(0xFFF5F5F5)),
+              color: _selectedSkill == s ? AppColors.primary : (isDark ? AppColors.bgCard : const Color(0xFFF5F5F5)),
               borderRadius: AppRadius.pill,
             ),
-            child: Text(s, style: TextStyle(fontSize: 12, color: _scanSkill == s ? Colors.white : text, fontWeight: FontWeight.w600)),
+            child: Text(s, style: TextStyle(fontSize: 12, color: _selectedSkill == s ? Colors.white : text, fontWeight: FontWeight.w600)),
           ),
         )).toList()),
         const SizedBox(height: 16),
         if (_scanning)
           const Center(child: CircularProgressIndicator(color: AppColors.primary))
         else if (scanData.isNotEmpty) ...[
-          Text('📊 ${_scan['skill']} — Market Scan', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: text)),
+          Text('📊 ${_scan['skill'] ?? _selectedSkill} — Market Scan', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: text)),
           const SizedBox(height: 12),
           _scanStat('Demand Level', scanData['demand_level']?.toString() ?? '', isDark, text),
           _scanStat('Best Platform Now', scanData['best_platform_now']?.toString() ?? '', isDark, text),

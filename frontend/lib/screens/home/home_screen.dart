@@ -340,6 +340,8 @@ class _HomeScreenState extends State<HomeScreen>
                         isDark: isDark,
                         cardColor: cardColor,
                         borderColor: borderColor,
+                        textColor: textColor,
+                        subColor: subColor,
                       );
                     }
                     final postIndex = adManager.realPostIndex(i);
@@ -610,6 +612,8 @@ class _AppDrawer extends StatelessWidget {
                   _DItem(Iconsax.chart_3, 'Market Pulse', 'What pays right now', isDark, badge: '🔥 LIVE', badgeColor: const Color(0xFFFF6B35), onTap: () { Navigator.pop(context); context.push('/pulse'); }),
                   _DItem(Icons.emoji_events_rounded, 'Challenges', '30-day income sprints', isDark, onTap: () { Navigator.pop(context); context.push('/challenges'); }),
                   _DItem(Iconsax.briefcase, 'Client CRM', 'Track prospects & clients', isDark, onTap: () { Navigator.pop(context); context.push('/crm'); }),
+                  _DItem(Iconsax.document_text, 'Contracts & Invoices', 'Pro contract generation', isDark, onTap: () { Navigator.pop(context); context.push('/contracts'); }),
+                  _DItem(Icons.psychology_rounded, 'Income Memory', 'Your income DNA', isDark, onTap: () { Navigator.pop(context); context.push('/memory'); }),
                   _DItem(Iconsax.gallery, 'My Portfolio', 'Shareable project showcase', isDark, onTap: () { Navigator.pop(context); context.push('/portfolio'); }),
                   _DItem(Iconsax.task_square, 'My Tasks', 'Daily income tasks', isDark, onTap: () { Navigator.pop(context); context.go('/tasks'); }),
                   _DItem(Iconsax.map_1, 'Wealth Roadmap', '3-stage wealth plan', isDark, onTap: () { Navigator.pop(context); context.go('/roadmap'); }),

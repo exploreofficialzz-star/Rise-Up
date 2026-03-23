@@ -690,6 +690,163 @@ class ApiService {
     return r.data as Map;
   }
 
+  // ── Income Memory ─────────────────────────────────────────────
+  Future<Map> logMemoryEvent({required String eventType, required String title,
+      double amountUsd = 0, String? platform, String? skillUsed, String? outcome}) async {
+    final res = await _dio.post('/memory/event', data: {
+      'event_type': eventType, 'title': title, 'amount_usd': amountUsd,
+      if (platform != null) 'platform': platform,
+      if (skillUsed != null) 'skill_used': skillUsed,
+      'outcome': outcome ?? 'success',
+    });
+    return res.data;
+  }
+
+  Future<Map> getMemoryProfile() async {
+    final res = await _dio.get('/memory/profile');
+    return res.data;
+  }
+
+  Future<Map> getMemoryInsights() async {
+    final res = await _dio.get('/memory/insights');
+    return res.data;
+  }
+
+  Future<Map> getIncomePatterns() async {
+    final res = await _dio.get('/memory/streak-patterns');
+    return res.data;
+  }
+
+  // ── Market Pulse ──────────────────────────────────────────────
+  Future<Map> getTodaysPulse() async {
+    final res = await _dio.get('/pulse/today');
+    return res.data;
+  }
+
+  Future<Map> getArbitrageData() async {
+    final res = await _dio.get('/pulse/arbitrage');
+    return res.data;
+  }
+
+  Future<Map> scanSkillDemand(String skill) async {
+    final res = await _dio.get('/pulse/opportunity-scan', queryParameters: {'skill': skill});
+    return res.data;
+  }
+
+  // ── Contracts & Invoices ──────────────────────────────────────
+  Future<Map> generateContract(Map<String, dynamic> data) async {
+    final res = await _dio.post('/contracts/generate', data: data);
+    return res.data;
+  }
+
+  Future<Map> generateInvoice(Map<String, dynamic> data) async {
+    final res = await _dio.post('/contracts/invoice/generate', data: data);
+    return res.data;
+  }
+
+  Future<Map> listContracts() async {
+    final res = await _dio.get('/contracts/');
+    return res.data;
+  }
+
+  Future<Map> markInvoicePaid(String invoiceId) async {
+    final res = await _dio.patch('/contracts/invoice/$invoiceId/paid');
+    return res.data;
+  }
+
+  // ── Client CRM ────────────────────────────────────────────────
+  Future<Map> addCrmClient(Map<String, dynamic> data) async {
+    final res = await _dio.post('/crm/clients', data: data);
+    return res.data;
+  }
+
+  Future<Map> getCrmClients({String? status}) async {
+    final res = await _dio.get('/crm/clients',
+        queryParameters: {if (status != null) 'status': status});
+    return res.data;
+  }
+
+  Future<Map> getDueFollowUps() async {
+    final res = await _dio.get('/crm/follow-ups/due');
+    return res.data;
+  }
+
+  Future<Map> generateFollowUpMessage(String clientId) async {
+    final res = await _dio.post('/crm/clients/$clientId/ai-followup');
+    return res.data;
+  }
+
+  Future<Map> getCrmAnalytics() async {
+    final res = await _dio.get('/crm/analytics');
+    return res.data;
+  }
+
+  Future<Map> updateCrmClient(String clientId, Map<String, dynamic> data) async {
+    final res = await _dio.patch('/crm/clients/$clientId', data: data);
+    return res.data;
+  }
+
+  // ── Income Challenges ─────────────────────────────────────────
+  Future<Map> createChallenge(String type, {String? customGoal, double? targetUsd}) async {
+    final res = await _dio.post('/challenges/create', data: {
+      'challenge_type': type,
+      if (customGoal != null) 'custom_goal': customGoal,
+      if (targetUsd != null) 'custom_target_usd': targetUsd,
+    });
+    return res.data;
+  }
+
+  Future<Map> challengeCheckIn(String challengeId, String action, {double amountUsd = 0, String? note}) async {
+    final res = await _dio.post('/challenges/check-in', data: {
+      'challenge_id': challengeId, 'action_taken': action,
+      'amount_earned_usd': amountUsd,
+      if (note != null) 'note': note,
+    });
+    return res.data;
+  }
+
+  Future<Map> listChallenges() async {
+    final res = await _dio.get('/challenges/');
+    return res.data;
+  }
+
+  Future<Map> getChallenge(String id) async {
+    final res = await _dio.get('/challenges/$id');
+    return res.data;
+  }
+
+  Future<Map> getChallengeIntervention(String id) async {
+    final res = await _dio.post('/challenges/$id/ai-intervention');
+    return res.data;
+  }
+
+  // ── Portfolio ─────────────────────────────────────────────────
+  Future<Map> getPortfolio() async {
+    final res = await _dio.get('/portfolio/');
+    return res.data;
+  }
+
+  Future<Map> addPortfolioProject(Map<String, dynamic> data) async {
+    final res = await _dio.post('/portfolio/projects', data: data);
+    return res.data;
+  }
+
+  Future<Map> generatePortfolioFromWorkflow(String workflowId) async {
+    final res = await _dio.post('/portfolio/generate-from-workflow/$workflowId');
+    return res.data;
+  }
+
+  Future<Map> generateProfessionalBio() async {
+    final res = await _dio.post('/portfolio/ai-bio');
+    return res.data;
+  }
+
+  Future<Map> getPublicPortfolio(String userId) async {
+    final res = await _dio.get('/portfolio/public/$userId');
+    return res.data;
+  }
+
+
 } // end ApiService
 
 // Global singleton instance

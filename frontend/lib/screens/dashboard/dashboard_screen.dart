@@ -524,6 +524,8 @@ class _DashboardDrawer extends StatelessWidget {
                   _DIt(Iconsax.chart_3, 'Market Pulse', 'What pays right now', onTap: () { Navigator.pop(context); context.push('/pulse'); }, badge: '🔥', badgeColor: const Color(0xFFFF6B35)),
                   _DIt(Icons.emoji_events_rounded, 'Challenges', '30-day income sprints', onTap: () { Navigator.pop(context); context.push('/challenges'); }),
                   _DIt(Iconsax.briefcase, 'Client CRM', 'Track clients & deals', onTap: () { Navigator.pop(context); context.push('/crm'); }),
+                  _DIt(Iconsax.document_text, 'Contracts & Invoices', 'AI contract writing', onTap: () { Navigator.pop(context); context.push('/contracts'); }),
+                  _DIt(Icons.psychology_rounded, 'Income Memory', 'Your income DNA', onTap: () { Navigator.pop(context); context.push('/memory'); }),
                   _DIt(Iconsax.gallery, 'Portfolio', 'Shareable showcase', onTap: () { Navigator.pop(context); context.push('/portfolio'); }),
                   _DIt(Iconsax.task_square, 'My Tasks', 'Daily income tasks', onTap: () { Navigator.pop(context); context.go('/tasks'); }),
                   _DIt(Iconsax.map_1, 'Wealth Roadmap', '3-stage plan', onTap: () { Navigator.pop(context); context.go('/roadmap'); }),

@@ -11,7 +11,7 @@
 
 import 'package:flutter/material.dart';
 import 'ad_service.dart';
-import '../api_service.dart';
+import 'api_service.dart';
 
 // Global singleton
 final adManager = AdManager._();

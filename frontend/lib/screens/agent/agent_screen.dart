@@ -60,6 +60,28 @@ class _AgentScreenState extends State<AgentScreen> {
     _workflowId = widget.workflowId;
   }
 
+  void _showLimitDialog() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => UsageLimitBanner(
+        title: 'Daily limit reached',
+        subtitle: 'Watch a short ad for 1 more run, or go Premium for unlimited',
+        watchAdLabel: 'Watch Ad — Get 1 Run',
+        isDark: isDark,
+        remaining: 0,
+        onWatchAd: () {
+          Navigator.pop(context);
+          adManager.watchAdForAgentUse(context).then((ok) {
+            if (ok && mounted) _runAgent();
+          });
+        },
+        onUpgrade: () { Navigator.pop(context); context.push('/premium'); },
+      ),
+    );
+  }
+
   Future<void> _runAgent() async {
     final task = _taskCtrl.text.trim();
     if (task.length < 10) {
@@ -272,7 +294,7 @@ class _AgentScreenState extends State<AgentScreen> {
                     card: card,
                     onBudgetChange: (v) => setState(() => _budget = v),
                     onHoursChange: (v) => setState(() => _hours = v),
-                    onCurrencyChange: (v) => setState(() => _currency = v),
+                    onCurrencyChange: (_) {}, // USD only
                     onRun: _runAgent,
                     onQuickTask: (task) {
                       setState(() => _taskCtrl.text = task);

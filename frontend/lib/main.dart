@@ -9,6 +9,7 @@ import 'services/ad_service.dart';
 import 'services/ad_manager.dart';
 import 'services/notification_service.dart';
 import 'utils/storage_service.dart';
+import 'services/api_service.dart';
 import 'utils/version_check_service.dart';
 
 void main() async {
