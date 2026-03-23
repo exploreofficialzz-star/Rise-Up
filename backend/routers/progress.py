@@ -79,15 +79,34 @@ async def upload_avatar(
         filename = f"avatars/{user_id}/{uuid.uuid4()}.{ext}"
 
         # Upload to Supabase Storage bucket "avatars"
-        sb.storage.from_("avatars").upload(
-            filename,
-            contents,
-            {"content-type": content_type, "upsert": "true"}
-        )
+        # supabase-py v2.x: file_options uses content_type (underscore), upsert is bool
+        try:
+            sb.storage.from_("avatars").upload(
+                path=filename,
+                file=contents,
+                file_options={"content-type": content_type, "upsert": True},
+            )
+        except Exception as upload_err:
+            # If file already exists and upsert failed, try remove + re-upload
+            err_str = str(upload_err).lower()
+            if "already exists" in err_str or "duplicate" in err_str or "23505" in err_str:
+                try:
+                    sb.storage.from_("avatars").remove([filename])
+                except Exception:
+                    pass
+                sb.storage.from_("avatars").upload(
+                    path=filename,
+                    file=contents,
+                    file_options={"content-type": content_type},
+                )
+            else:
+                raise upload_err
 
-        # Get public URL
+        # Get public URL — supabase-py v2 returns a string directly
         url_result = sb.storage.from_("avatars").get_public_url(filename)
-        avatar_url = url_result if isinstance(url_result, str) else url_result.get("publicUrl", "")
+        avatar_url = url_result if isinstance(url_result, str) else (
+            url_result.get("publicUrl") or url_result.get("public_url") or ""
+        )
 
         # Update profile
         await supabase_service.update_profile(user_id, {"avatar_url": avatar_url})
