@@ -20,6 +20,7 @@ import 'package:iconsax/iconsax.dart';
 import '../../config/app_constants.dart';
 import '../../providers/app_providers.dart';
 import '../../services/api_service.dart';
+import '../../services/api_service_stream.dart';
 import '../../services/ad_manager.dart';
 import '../../services/currency_service.dart';
 
@@ -76,8 +77,8 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
   String? _sessionId;
   String  _error = '';
 
-  final List<_Msg>         _chatMsgs     = [];
-  final List<_StreamEvent> _streamEvents = [];
+  final List<_Msg>    _chatMsgs     = [];
+  List<_StreamEvent>  _streamEvents = [];
   bool _chatLoading = false;
   int  _streamIteration = 0;
   String _streamStatus  = '';

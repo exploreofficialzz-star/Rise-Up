@@ -75,7 +75,8 @@ final earningsProvider = FutureProvider.autoDispose<Map>((ref) async {
 
 // ── Conversations ─────────────────────────────────────
 final conversationsProvider = FutureProvider.autoDispose<List>((ref) async {
-  return api.getConversations();
+  final data = await api.getConversations();
+  return (data['conversations'] as List?) ?? [];
 });
 
 // ── AI Models ─────────────────────────────────────────
