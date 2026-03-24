@@ -1,7 +1,8 @@
-"""Posts Router — Social feed, likes, comments, shares, follows"""
-from fastapi import APIRouter, Depends, HTTPException, Query
+"""Posts Router — Social feed, likes, comments, shares, follows, status"""
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
 from typing import Optional, List
+from datetime import datetime, timedelta
 from services.supabase_service import supabase_service
 from utils.auth import get_current_user
 
@@ -398,5 +399,163 @@ async def get_user_liked_posts(user_id: str, limit: int = 20, user: dict = Depen
             p["likes_count"] = len(likes)
             p["is_saved"] = any(s["user_id"] == user["id"] for s in saves)
         return {"posts": posts}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+# ── User Status / Stories ────────────────────────────────────────
+class StatusCreate(BaseModel):
+    content: Optional[str] = None
+    media_url: Optional[str] = None
+    media_type: Optional[str] = "text"   # text | image | video | link
+    link_url: Optional[str] = None
+    link_title: Optional[str] = None
+    background_color: Optional[str] = None
+    duration_hours: int = 24
+
+
+@router.post("/status")
+async def create_status(req: StatusCreate, user: dict = Depends(get_current_user)):
+    """Create a status update (story) — max 15 active per user"""
+    user_id = user["id"]
+    try:
+        active = db.table("user_status").select("id", count="exact") \
+            .eq("user_id", user_id).eq("is_active", True).execute()
+        if (active.count or 0) >= 15:
+            raise HTTPException(400, "Maximum 15 active status updates allowed")
+
+        from datetime import timezone as tz
+        expires = (datetime.now(tz.utc) + timedelta(hours=req.duration_hours)).isoformat()
+        saved = db.table("user_status").insert({
+            "user_id": user_id,
+            "content": req.content,
+            "media_url": req.media_url,
+            "media_type": req.media_type or "text",
+            "link_url": req.link_url,
+            "link_title": req.link_title,
+            "background_color": req.background_color or "#6C5CE7",
+            "expires_at": expires,
+            "is_active": True,
+            "views_count": 0,
+        }).execute()
+        return {"status": saved.data[0] if saved.data else {}, "message": "Status posted!"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@router.get("/status/feed")
+async def get_status_feed(user: dict = Depends(get_current_user)):
+    """Get status updates from people user follows + own status"""
+    user_id = user["id"]
+    try:
+        from datetime import timezone as tz
+        now = datetime.now(tz.utc).isoformat()
+
+        # Get followed user IDs
+        follows = db.table("follows").select("following_id") \
+            .eq("follower_id", user_id).execute().data or []
+        followed_ids = [f["following_id"] for f in follows] + [user_id]
+
+        # Get active statuses
+        res = db.table("user_status") \
+            .select("*, profiles(id, full_name, avatar_url, is_online)") \
+            .in_("user_id", followed_ids) \
+            .eq("is_active", True) \
+            .gte("expires_at", now) \
+            .order("created_at", desc=True) \
+            .limit(50).execute()
+
+        statuses = res.data or []
+
+        # Group by user
+        grouped: dict = {}
+        for s in statuses:
+            uid = s["user_id"]
+            if uid not in grouped:
+                grouped[uid] = {
+                    "user_id": uid,
+                    "profile": s.get("profiles") or {},
+                    "is_own": uid == user_id,
+                    "items": [],
+                    "has_unseen": False,
+                }
+            viewed = db.table("status_views").select("id") \
+                .eq("status_id", s["id"]).eq("viewer_id", user_id).execute().data
+            s["is_viewed"] = bool(viewed)
+            if not s["is_viewed"] and uid != user_id:
+                grouped[uid]["has_unseen"] = True
+            grouped[uid]["items"].append(s)
+
+        result = sorted(grouped.values(), key=lambda x: (not x["is_own"], not x["has_unseen"]))
+        return {"users": result, "total": len(result)}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@router.post("/status/{status_id}/view")
+async def view_status(status_id: str, user: dict = Depends(get_current_user)):
+    """Mark status as viewed"""
+    try:
+        db.table("status_views").upsert({
+            "status_id": status_id, "viewer_id": user["id"]
+        }, on_conflict="status_id,viewer_id").execute()
+        db.table("user_status").update({"views_count": db.table("user_status").select("views_count").eq("id", status_id).single().execute().data.get("views_count", 0) + 1}) \
+            .eq("id", status_id).execute()
+        return {"viewed": True}
+    except Exception:
+        return {"viewed": True}
+
+
+@router.delete("/status/{status_id}")
+async def delete_status(status_id: str, user: dict = Depends(get_current_user)):
+    db.table("user_status").update({"is_active": False}) \
+        .eq("id", status_id).eq("user_id", user["id"]).execute()
+    return {"deleted": True}
+
+
+@router.post("/status/upload-media")
+async def upload_status_media(
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user)
+):
+    """Upload image/video for status to Supabase Storage"""
+    from services.supabase_service import supabase_service
+    import uuid as _uuid
+
+    allowed = {"image/jpeg", "image/png", "image/webp", "image/gif", "video/mp4", "video/quicktime"}
+    ct = file.content_type or "image/jpeg"
+    if ct not in allowed:
+        raise HTTPException(400, "Only images (JPEG/PNG/WebP/GIF) and videos (MP4/MOV) allowed")
+
+    contents = await file.read()
+    if len(contents) > 50 * 1024 * 1024:
+        raise HTTPException(400, "File must be under 50MB")
+
+    try:
+        sb = supabase_service.client
+        ext = ct.split("/")[-1].replace("jpeg", "jpg").replace("quicktime", "mov")
+        is_video = ct.startswith("video/")
+        bucket = "status-media"
+        filename = f"{user['id']}/{_uuid.uuid4()}.{ext}"
+
+        try:
+            sb.storage.from_(bucket).upload(
+                path=filename, file=contents,
+                file_options={"content-type": ct, "upsert": True}
+            )
+        except Exception:
+            sb.storage.from_(bucket).upload(
+                path=filename, file=contents,
+                file_options={"content-type": ct}
+            )
+
+        url = sb.storage.from_(bucket).get_public_url(filename)
+        return {
+            "url": url if isinstance(url, str) else url.get("publicUrl", ""),
+            "media_type": "video" if is_video else "image",
+            "content_type": ct,
+        }
     except Exception as e:
         raise HTTPException(500, str(e))

@@ -44,6 +44,9 @@ import '../screens/workflow/workflow_detail_screen.dart';
 import '../screens/collaboration/collaboration_screen.dart';
 import '../screens/agent/agent_screen.dart';
 import '../screens/profile/edit_profile_screen.dart';
+import '../screens/profile/user_profile_screen.dart';
+import '../screens/home/create_status_screen.dart';
+
 import '../screens/market_pulse/market_pulse_screen.dart';
 import '../screens/contracts/contracts_screen.dart';
 import '../screens/memory/income_memory_screen.dart';
@@ -98,7 +101,7 @@ final router = GoRouter(
         GoRoute(path: '/create',        builder: (_, __) => const CreatePostScreen()),
         GoRoute(path: '/messages',      builder: (_, __) => const MessagesScreen()),
         GoRoute(path: '/profile',       builder: (_, __) => const ProfileScreen()),
-        GoRoute(path: '/user-profile/:id', builder: (_, __) => const ProfileScreen()),
+        GoRoute(path: '/user-profile/:id', builder: (_, s) => UserProfileScreen(userId: s.pathParameters['id'] ?? '')),
         GoRoute(path: '/settings',      builder: (_, __) => const SettingsScreen()),
         GoRoute(path: '/notifications', builder: (_, __) => const NotificationsScreen()),
         GoRoute(path: '/live',          builder: (_, __) => const LiveScreen()),
@@ -161,6 +164,7 @@ final router = GoRouter(
 
         // ── Edit Profile ──────────────────────────────────────
         GoRoute(path: '/edit-profile',     builder: (_, __) => const EditProfileScreen()),
+        GoRoute(path: '/create-status',    builder: (_, __) => const CreateStatusScreen()),
 
         // ── New Superpower Features ───────────────────────────
         GoRoute(path: '/pulse',        builder: (_, __) => const MarketPulseScreen()),

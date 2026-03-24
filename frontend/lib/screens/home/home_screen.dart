@@ -9,6 +9,7 @@ import '../../services/ad_service.dart';
 import '../../services/ad_manager.dart';
 import '../../widgets/ad_widgets.dart';
 import '../ai/post_ai_sheet.dart';
+import 'create_status_screen.dart';
 
 // ── Post Model ────────────────────────────────────────
 class PostModel {
@@ -103,6 +104,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void initState() {
     super.initState();
+        _loadStatus();
     _tabCtrl = TabController(length: 3, vsync: this);
     _tabCtrl.addListener(() {
       if (!_tabCtrl.indexIsChanging) {
@@ -119,6 +121,29 @@ class _HomeScreenState extends State<HomeScreen>
       final data = await api.getProfile();
       if (mounted) setState(() => _profile = data['profile'] ?? {});
     } catch (_) {}
+  }
+
+  void _viewStatus(Map user) {
+    final items = user['items'] as List? ?? [];
+    if (items.isEmpty) return;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _StatusViewSheet(user: user),
+    );
+  }
+
+    Future<void> _loadStatus() async {
+    try {
+      final data = await api.get('/posts/status/feed');
+      if (mounted) setState(() {
+        _statusUsers  = (data as Map?)?['users'] as List? ?? [];
+        _statusLoaded = true;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _statusLoaded = true);
+    }
   }
 
   Future<void> _loadFeed(String tab, {bool refresh = false}) async {
@@ -724,32 +749,274 @@ class _DItem extends StatelessWidget {
   }
 }
 
-class _StoryItem extends StatelessWidget {
-  final int index; final bool isDark;
-  const _StoryItem({required this.index, required this.isDark});
-  static const _emojis = ['💰', '🚀', '💎', '📈', '🔥', '💼', '🧠', '🎯'];
-  static const _names = ['You', 'Marcus', 'Priya', 'Sarah', 'Alex', 'James', 'Linda', 'Kwame'];
+// ── Add status button ─────────────────────────────────
+class _StoryAddButton extends StatelessWidget {
+  final bool isDark;
+  final VoidCallback onTap;
+  const _StoryAddButton({required this.isDark, required this.onTap});
+
   @override
   Widget build(BuildContext context) {
-    final isYou = index == 0;
     return Padding(
       padding: const EdgeInsets.only(right: 14),
-      child: Column(children: [
-        Stack(children: [
+      child: GestureDetector(
+        onTap: onTap,
+        child: Column(children: [
           Container(
             width: 58, height: 58,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              gradient: isYou ? null : const LinearGradient(colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)], begin: Alignment.topLeft, end: Alignment.bottomRight),
-              color: isYou ? (isDark ? AppColors.bgSurface : Colors.grey.shade200) : null,
-              border: isYou ? Border.all(color: AppColors.primary.withOpacity(0.4), width: 1.5) : null,
+              color: isDark ? AppColors.bgSurface : Colors.grey.shade200,
+              border: Border.all(color: AppColors.primary.withOpacity(0.4), width: 1.5),
             ),
-            child: Center(child: isYou ? Icon(Icons.add, color: AppColors.primary, size: 24) : Text(_emojis[index], style: const TextStyle(fontSize: 26))),
+            child: const Center(child: Icon(Icons.add, color: AppColors.primary, size: 24)),
           ),
-          if (!isYou) Positioned(bottom: 1, right: 1, child: Container(width: 13, height: 13, decoration: BoxDecoration(color: AppColors.success, shape: BoxShape.circle, border: Border.all(color: isDark ? AppColors.bgCard : Colors.white, width: 2)))),
+          const SizedBox(height: 5),
+          Text('You', style: TextStyle(fontSize: 11,
+              color: isDark ? Colors.white60 : Colors.black54,
+              fontWeight: FontWeight.w600)),
         ]),
-        const SizedBox(height: 5),
-        Text(_names[index], style: TextStyle(fontSize: 11, color: isDark ? Colors.white60 : Colors.black54, fontWeight: isYou ? FontWeight.w600 : FontWeight.w400)),
+      ),
+    );
+  }
+}
+
+// ── Story Item (real user status) ─────────────────────
+class _StoryItem extends StatelessWidget {
+  final Map user;
+  final bool isDark;
+  final VoidCallback onTap;
+  const _StoryItem({required this.user, required this.isDark, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final profile    = user['profile'] as Map? ?? {};
+    final name       = profile['full_name']?.toString() ?? 'User';
+    final avatar     = profile['avatar_url']?.toString();
+    final isOnline   = profile['is_online'] == true;
+    final hasUnseen  = user['has_unseen'] == true;
+    final shortName  = name.split(' ').first;
+
+    return Padding(
+      padding: const EdgeInsets.only(right: 14),
+      child: GestureDetector(
+        onTap: onTap,
+        child: Column(children: [
+          Stack(children: [
+            Container(
+              width: 58, height: 58,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: hasUnseen
+                    ? const LinearGradient(
+                        colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)],
+                        begin: Alignment.topLeft, end: Alignment.bottomRight)
+                    : null,
+                color: hasUnseen ? null
+                    : (isDark ? AppColors.bgSurface : Colors.grey.shade300),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(2.5),
+                child: Container(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: isDark ? Colors.black : Colors.white,
+                  ),
+                  child: ClipOval(
+                    child: avatar != null && avatar.isNotEmpty
+                        ? Image.network(avatar, fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => _initials(name))
+                        : _initials(name),
+                  ),
+                ),
+              ),
+            ),
+            if (isOnline)
+              Positioned(bottom: 1, right: 1,
+                child: Container(width: 13, height: 13,
+                  decoration: BoxDecoration(
+                    color: AppColors.success, shape: BoxShape.circle,
+                    border: Border.all(
+                        color: isDark ? Colors.black : Colors.white, width: 2)),
+                )),
+          ]),
+          const SizedBox(height: 5),
+          SizedBox(width: 62, child: Text(shortName,
+              textAlign: TextAlign.center,
+              maxLines: 1, overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11,
+                  color: isDark ? Colors.white60 : Colors.black54))),
+        ]),
+      ),
+    );
+  }
+
+  Widget _initials(String name) => Container(
+    color: AppColors.primary.withOpacity(0.15),
+    child: Center(child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+        style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800,
+            color: AppColors.primary))),
+  );
+}
+
+// ── Status Viewer Sheet ───────────────────────────────
+class _StatusViewSheet extends StatefulWidget {
+  final Map user;
+  const _StatusViewSheet({required this.user});
+  @override
+  State<_StatusViewSheet> createState() => _StatusViewSheetState();
+}
+
+class _StatusViewSheetState extends State<_StatusViewSheet> {
+  int _currentIndex = 0;
+  late PageController _page;
+
+  @override
+  void initState() {
+    super.initState();
+    _page = PageController();
+    _markViewed();
+  }
+
+  @override
+  void dispose() { _page.dispose(); super.dispose(); }
+
+  void _markViewed() {
+    final items = widget.user['items'] as List? ?? [];
+    if (items.isEmpty) return;
+    final id = (items[_currentIndex] as Map)['id']?.toString();
+    if (id != null) api.post('/posts/status/$id/view', {}).catchError((_) => {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final items   = widget.user['items'] as List? ?? [];
+    final profile = widget.user['profile'] as Map? ?? {};
+    final name    = profile['full_name']?.toString() ?? 'User';
+    final avatar  = profile['avatar_url']?.toString();
+    final isDark  = Theme.of(context).brightness == Brightness.dark;
+    if (items.isEmpty) return const SizedBox.shrink();
+
+    final item  = items[_currentIndex] as Map;
+    final media = item['media_url']?.toString();
+    final text  = item['content']?.toString() ?? '';
+    final bg    = item['background_color']?.toString() ?? '#6C5CE7';
+    final link  = item['link_url']?.toString();
+
+    Color bgColor = AppColors.primary;
+    try { bgColor = Color(int.parse(bg.replaceFirst('#', '0xFF'))); } catch (_) {}
+
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.85,
+      decoration: BoxDecoration(
+        color: media != null ? Colors.black : bgColor,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: Stack(children: [
+        // Content
+        if (media != null && (item['media_type'] == 'image'))
+          Positioned.fill(child: ClipRRect(
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+            child: Image.network(media, fit: BoxFit.cover),
+          ))
+        else if (media == null && text.isNotEmpty)
+          Positioned.fill(child: Center(child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Text(text, textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white, fontSize: 22,
+                  fontWeight: FontWeight.w600, height: 1.5)),
+          ))),
+
+        // Progress bars
+        Positioned(top: 12, left: 12, right: 12,
+          child: Row(children: List.generate(items.length, (i) => Expanded(
+            child: Container(
+              height: 3,
+              margin: const EdgeInsets.symmetric(horizontal: 2),
+              decoration: BoxDecoration(
+                color: i <= _currentIndex
+                    ? Colors.white
+                    : Colors.white.withOpacity(0.3),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ))),
+        ),
+
+        // Header
+        Positioned(top: 24, left: 16, right: 16,
+          child: Row(children: [
+            Container(width: 36, height: 36,
+              decoration: const BoxDecoration(shape: BoxShape.circle,
+                  color: Colors.white24),
+              child: ClipOval(child: avatar != null && avatar.isNotEmpty
+                  ? Image.network(avatar, fit: BoxFit.cover)
+                  : Center(child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+                      style: const TextStyle(color: Colors.white,
+                          fontWeight: FontWeight.w800)))),
+            ),
+            const SizedBox(width: 8),
+            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(name, style: const TextStyle(color: Colors.white,
+                  fontWeight: FontWeight.w700, fontSize: 13)),
+              Text(items.length == 1 ? '1 status' : '${items.length} statuses',
+                  style: const TextStyle(color: Colors.white60, fontSize: 11)),
+            ]),
+            const Spacer(),
+            IconButton(icon: const Icon(Icons.close_rounded, color: Colors.white),
+                onPressed: () => Navigator.pop(context)),
+          ]),
+        ),
+
+        // Text overlay when has media
+        if (media != null && text.isNotEmpty)
+          Positioned(bottom: 80, left: 16, right: 16,
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.5),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 14)),
+            ),
+          ),
+
+        // Link
+        if (link != null)
+          Positioned(bottom: 80, left: 16, right: 16,
+            child: Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.6),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white30),
+              ),
+              child: Row(children: [
+                const Icon(Icons.link_rounded, color: Colors.white, size: 18),
+                const SizedBox(width: 8),
+                Expanded(child: Text(
+                    item['link_title']?.toString() ?? link,
+                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                    maxLines: 2, overflow: TextOverflow.ellipsis)),
+              ]),
+            ),
+          ),
+
+        // Tap navigation
+        Row(children: [
+          Expanded(child: GestureDetector(onTap: () {
+            if (_currentIndex > 0) setState(() {
+              _currentIndex--;
+              _markViewed();
+            });
+          })),
+          Expanded(child: GestureDetector(onTap: () {
+            if (_currentIndex < items.length - 1) setState(() {
+              _currentIndex++;
+              _markViewed();
+            }) ;else Navigator.pop(context);
+          })),
+        ]),
       ]),
     );
   }
