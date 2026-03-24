@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:shimmer/shimmer.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
@@ -8,7 +7,6 @@ import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 import '../../services/ad_service.dart';
 import '../../services/ad_manager.dart';
-import '../../widgets/app_widgets.dart';
 import '../../widgets/ad_widgets.dart';
 import '../ai/post_ai_sheet.dart';
 import 'create_status_screen.dart';
@@ -96,17 +94,16 @@ class _HomeScreenState extends State<HomeScreen>
   int _aiUsedToday = 0;
   static const int _dailyFreeLimit = 3;
 
-  // Feed state per tab
-  final _feeds   = {'for_you': <PostModel>[], 'following': <PostModel>[], 'trending': <PostModel>[]};
-  final _loading = {'for_you': false, 'following': false, 'trending': false};
-  final _offsets = {'for_you': 0, 'following': 0, 'trending': 0};
-  final _hasMore = {'for_you': true, 'following': true, 'trending': true};
-  final _tabs    = ['for_you', 'following', 'trending'];
-  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
-
-  // Status / Stories state
+  // Status/Stories
   List _statusUsers  = [];
   bool _statusLoaded = false;
+
+  // Feed state per tab
+  final _feeds = {'for_you': <PostModel>[], 'following': <PostModel>[], 'trending': <PostModel>[]};
+  final _loading = {'for_you': false, 'following': false, 'trending': false};
+  final _offsets = {'for_you': 0, 'following': 0, 'trending': 0};
+  final _tabs = ['for_you', 'following', 'trending'];
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   @override
   void initState() {
@@ -155,19 +152,13 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> _loadFeed(String tab, {bool refresh = false}) async {
     if (_loading[tab] == true) return;
-    // Don't load more if we know there's nothing left (unless refreshing)
-    if (!refresh && _hasMore[tab] == false) return;
-
     setState(() => _loading[tab] = true);
-    if (refresh) {
-      _offsets[tab] = 0;
-      _hasMore[tab] = true;
-    }
+
+    if (refresh) _offsets[tab] = 0;
 
     try {
       final data = await api.getFeed(tab: tab, limit: 20, offset: _offsets[tab]!);
       final posts = (data['posts'] as List? ?? []).map((p) => PostModel.fromApi(p as Map)).toList();
-      final hasMore = data['has_more'] as bool? ?? (posts.length == 20);
 
       if (mounted) {
         setState(() {
@@ -177,7 +168,6 @@ class _HomeScreenState extends State<HomeScreen>
             _feeds[tab] = [..._feeds[tab]!, ...posts];
           }
           _offsets[tab] = _offsets[tab]! + posts.length;
-          _hasMore[tab] = hasMore;
           _loading[tab] = false;
         });
       }
@@ -300,26 +290,16 @@ class _HomeScreenState extends State<HomeScreen>
           child: Column(children: [
             SizedBox(
               height: 92,
-              child: _statusLoaded && _statusUsers.isNotEmpty
-                  ? ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      itemCount: _statusUsers.length,
-                      itemBuilder: (_, i) {
-                        final u = _statusUsers[i] as Map;
-                        return _StoryItem(
-                          user: u,
-                          isDark: isDark,
-                          onTap: () => _viewStatus(u),
-                        );
-                      },
-                    )
-                  : ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      itemCount: 6,
-                      itemBuilder: (_, __) => _StoryPlaceholder(isDark: isDark),
-                    ),
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                itemCount: _statusUsers.length + 1,
+                itemBuilder: (_, i) {
+                  if (i == 0) return _StoryAddButton(isDark: isDark, onTap: () => context.push('/create-status'));
+                  final u = _statusUsers[i - 1] as Map;
+                  return _StoryItem(user: u, isDark: isDark, onTap: () => _viewStatus(u));
+                },
+              ),
             ),
             Divider(height: 1, color: borderColor),
           ]),
@@ -347,16 +327,11 @@ class _HomeScreenState extends State<HomeScreen>
           child: TabBarView(
             controller: _tabCtrl,
             children: _tabs.map((tab) {
-              final posts    = _feeds[tab]!;
+              final posts = _feeds[tab]!;
               final isLoading = _loading[tab] == true;
-              final hasMore  = _hasMore[tab] ?? true;
 
               if (isLoading && posts.isEmpty) {
-                // Shimmer skeleton instead of spinner
-                return ListView.builder(
-                  itemCount: 5,
-                  itemBuilder: (_, __) => const PostSkeleton(),
-                );
+                return const Center(child: CircularProgressIndicator(color: AppColors.primary));
               }
 
               if (posts.isEmpty) {
@@ -382,8 +357,6 @@ class _HomeScreenState extends State<HomeScreen>
                   itemBuilder: (_, i) {
                     final totalContent = adManager.feedItemCount(posts.length);
                     if (i == totalContent) {
-                      // Only show load-more when there are actually more pages
-                      if (!hasMore) return const SizedBox(height: 24);
                       return Padding(
                         padding: const EdgeInsets.all(16),
                         child: GestureDetector(
@@ -812,40 +785,6 @@ class _StoryAddButton extends StatelessWidget {
               fontWeight: FontWeight.w600)),
         ]),
       ),
-    );
-  }
-}
-
-
-// ── Story placeholder (shown while statuses load) ─────
-class _StoryPlaceholder extends StatelessWidget {
-  final bool isDark;
-  const _StoryPlaceholder({required this.isDark});
-
-  @override
-  Widget build(BuildContext context) {
-    final base = isDark ? const Color(0xFF1A1A1A) : Colors.grey.shade200;
-    final high = isDark ? const Color(0xFF2A2A2A) : Colors.grey.shade300;
-    return Padding(
-      padding: const EdgeInsets.only(right: 14),
-      child: Column(children: [
-        Shimmer.fromColors(
-          baseColor: base, highlightColor: high,
-          child: Container(
-            width: 58, height: 58,
-            decoration: BoxDecoration(shape: BoxShape.circle, color: base),
-          ),
-        ),
-        const SizedBox(height: 5),
-        Shimmer.fromColors(
-          baseColor: base, highlightColor: high,
-          child: Container(
-            width: 42, height: 9,
-            decoration: BoxDecoration(
-              color: base, borderRadius: BorderRadius.circular(4)),
-          ),
-        ),
-      ]),
     );
   }
 }
