@@ -11,7 +11,7 @@ final mainShellKey = GlobalKey<_MainShellState>();
 
 class MainShell extends StatefulWidget {
   final Widget child;
-  const MainShell({Key? key, required this.child}) : super(key: mainShellKey);
+  MainShell({Key? key, required this.child}) : super(key: mainShellKey);
 
   /// Call this from any screen to refresh nav-bar badge counts.
   static void refresh() {

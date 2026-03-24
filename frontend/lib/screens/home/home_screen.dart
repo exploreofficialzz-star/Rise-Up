@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shimmer/shimmer.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
@@ -102,6 +103,10 @@ class _HomeScreenState extends State<HomeScreen>
   final _hasMore = {'for_you': true, 'following': true, 'trending': true};
   final _tabs    = ['for_you', 'following', 'trending'];
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  // Status / Stories state
+  List _statusUsers  = [];
+  bool _statusLoaded = false;
 
   @override
   void initState() {
@@ -295,12 +300,26 @@ class _HomeScreenState extends State<HomeScreen>
           child: Column(children: [
             SizedBox(
               height: 92,
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                itemCount: 8,
-                itemBuilder: (_, i) => _StoryItem(index: i, isDark: isDark),
-              ),
+              child: _statusLoaded && _statusUsers.isNotEmpty
+                  ? ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      itemCount: _statusUsers.length,
+                      itemBuilder: (_, i) {
+                        final u = _statusUsers[i] as Map;
+                        return _StoryItem(
+                          user: u,
+                          isDark: isDark,
+                          onTap: () => _viewStatus(u),
+                        );
+                      },
+                    )
+                  : ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      itemCount: 6,
+                      itemBuilder: (_, __) => _StoryPlaceholder(isDark: isDark),
+                    ),
             ),
             Divider(height: 1, color: borderColor),
           ]),
@@ -793,6 +812,40 @@ class _StoryAddButton extends StatelessWidget {
               fontWeight: FontWeight.w600)),
         ]),
       ),
+    );
+  }
+}
+
+
+// ── Story placeholder (shown while statuses load) ─────
+class _StoryPlaceholder extends StatelessWidget {
+  final bool isDark;
+  const _StoryPlaceholder({required this.isDark});
+
+  @override
+  Widget build(BuildContext context) {
+    final base = isDark ? const Color(0xFF1A1A1A) : Colors.grey.shade200;
+    final high = isDark ? const Color(0xFF2A2A2A) : Colors.grey.shade300;
+    return Padding(
+      padding: const EdgeInsets.only(right: 14),
+      child: Column(children: [
+        Shimmer.fromColors(
+          baseColor: base, highlightColor: high,
+          child: Container(
+            width: 58, height: 58,
+            decoration: BoxDecoration(shape: BoxShape.circle, color: base),
+          ),
+        ),
+        const SizedBox(height: 5),
+        Shimmer.fromColors(
+          baseColor: base, highlightColor: high,
+          child: Container(
+            width: 42, height: 9,
+            decoration: BoxDecoration(
+              color: base, borderRadius: BorderRadius.circular(4)),
+          ),
+        ),
+      ]),
     );
   }
 }
