@@ -7,6 +7,7 @@ import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 import '../../services/ad_service.dart';
 import '../../services/ad_manager.dart';
+import '../../widgets/app_widgets.dart';
 import '../../widgets/ad_widgets.dart';
 import '../ai/post_ai_sheet.dart';
 import 'create_status_screen.dart';
@@ -94,15 +95,12 @@ class _HomeScreenState extends State<HomeScreen>
   int _aiUsedToday = 0;
   static const int _dailyFreeLimit = 3;
 
-  // Status/Stories
-  List _statusUsers  = [];
-  bool _statusLoaded = false;
-
   // Feed state per tab
-  final _feeds = {'for_you': <PostModel>[], 'following': <PostModel>[], 'trending': <PostModel>[]};
+  final _feeds   = {'for_you': <PostModel>[], 'following': <PostModel>[], 'trending': <PostModel>[]};
   final _loading = {'for_you': false, 'following': false, 'trending': false};
   final _offsets = {'for_you': 0, 'following': 0, 'trending': 0};
-  final _tabs = ['for_you', 'following', 'trending'];
+  final _hasMore = {'for_you': true, 'following': true, 'trending': true};
+  final _tabs    = ['for_you', 'following', 'trending'];
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   @override
@@ -152,13 +150,19 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> _loadFeed(String tab, {bool refresh = false}) async {
     if (_loading[tab] == true) return;
-    setState(() => _loading[tab] = true);
+    // Don't load more if we know there's nothing left (unless refreshing)
+    if (!refresh && _hasMore[tab] == false) return;
 
-    if (refresh) _offsets[tab] = 0;
+    setState(() => _loading[tab] = true);
+    if (refresh) {
+      _offsets[tab] = 0;
+      _hasMore[tab] = true;
+    }
 
     try {
       final data = await api.getFeed(tab: tab, limit: 20, offset: _offsets[tab]!);
       final posts = (data['posts'] as List? ?? []).map((p) => PostModel.fromApi(p as Map)).toList();
+      final hasMore = data['has_more'] as bool? ?? (posts.length == 20);
 
       if (mounted) {
         setState(() {
@@ -168,6 +172,7 @@ class _HomeScreenState extends State<HomeScreen>
             _feeds[tab] = [..._feeds[tab]!, ...posts];
           }
           _offsets[tab] = _offsets[tab]! + posts.length;
+          _hasMore[tab] = hasMore;
           _loading[tab] = false;
         });
       }
@@ -293,12 +298,8 @@ class _HomeScreenState extends State<HomeScreen>
               child: ListView.builder(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                itemCount: _statusUsers.length + 1,
-                itemBuilder: (_, i) {
-                  if (i == 0) return _StoryAddButton(isDark: isDark, onTap: () => context.push('/create-status'));
-                  final u = _statusUsers[i - 1] as Map;
-                  return _StoryItem(user: u, isDark: isDark, onTap: () => _viewStatus(u));
-                },
+                itemCount: 8,
+                itemBuilder: (_, i) => _StoryItem(index: i, isDark: isDark),
               ),
             ),
             Divider(height: 1, color: borderColor),
@@ -327,11 +328,16 @@ class _HomeScreenState extends State<HomeScreen>
           child: TabBarView(
             controller: _tabCtrl,
             children: _tabs.map((tab) {
-              final posts = _feeds[tab]!;
+              final posts    = _feeds[tab]!;
               final isLoading = _loading[tab] == true;
+              final hasMore  = _hasMore[tab] ?? true;
 
               if (isLoading && posts.isEmpty) {
-                return const Center(child: CircularProgressIndicator(color: AppColors.primary));
+                // Shimmer skeleton instead of spinner
+                return ListView.builder(
+                  itemCount: 5,
+                  itemBuilder: (_, __) => const PostSkeleton(),
+                );
               }
 
               if (posts.isEmpty) {
@@ -357,6 +363,8 @@ class _HomeScreenState extends State<HomeScreen>
                   itemBuilder: (_, i) {
                     final totalContent = adManager.feedItemCount(posts.length);
                     if (i == totalContent) {
+                      // Only show load-more when there are actually more pages
+                      if (!hasMore) return const SizedBox(height: 24);
                       return Padding(
                         padding: const EdgeInsets.all(16),
                         child: GestureDetector(

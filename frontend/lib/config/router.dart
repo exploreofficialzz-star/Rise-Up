@@ -56,6 +56,7 @@ import '../screens/crm/crm_screen.dart';
 import '../screens/portfolio/portfolio_screen.dart';
 
 import '../main_shell.dart';
+export '../main_shell.dart' show mainShellKey;
 
 final router = GoRouter(
   initialLocation: kIsWeb ? '/login' : '/splash',
@@ -93,7 +94,7 @@ final router = GoRouter(
 
     // ── Main shell ────────────────────────────────────
     ShellRoute(
-      builder: (context, state, child) => MainShell(child: child),
+      builder: (context, state, child) => MainShell(child: child), // key set inside MainShell
       routes: [
         GoRoute(path: '/home',          builder: (_, __) => const HomeScreen()),
         GoRoute(path: '/dashboard',     builder: (_, __) => const DashboardScreen()),

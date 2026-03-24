@@ -3,17 +3,53 @@ import 'package:dio/dio.dart';
 import '../config/app_constants.dart';
 import '../utils/storage_service.dart';
 
+// ── In-memory response cache with TTL ───────────────────────────────
+class _CacheEntry {
+  final dynamic data;
+  final DateTime expiresAt;
+  _CacheEntry(this.data, Duration ttl)
+      : expiresAt = DateTime.now().add(ttl);
+  bool get isValid => DateTime.now().isBefore(expiresAt);
+}
+
+class _ApiCache {
+  final _store = <String, _CacheEntry>{};
+
+  dynamic get(String key) {
+    final entry = _store[key];
+    if (entry == null || !entry.isValid) {
+      _store.remove(key);
+      return null;
+    }
+    return entry.data;
+  }
+
+  void set(String key, dynamic data, {Duration ttl = const Duration(minutes: 2)}) {
+    _store[key] = _CacheEntry(data, ttl);
+  }
+
+  void invalidate(String key) => _store.remove(key);
+
+  void invalidatePrefix(String prefix) {
+    _store.removeWhere((k, _) => k.startsWith(prefix));
+  }
+
+  void clear() => _store.clear();
+}
+
 class ApiService {
   static final ApiService _instance = ApiService._internal();
   factory ApiService() => _instance;
 
   late Dio _dio;
+  final _cache = _ApiCache();
 
   ApiService._internal() {
     _dio = Dio(BaseOptions(
       baseUrl: kApiBaseUrl,
-      connectTimeout: const Duration(seconds: 30),
-      receiveTimeout: const Duration(seconds: 60),
+      // Tighter timeouts: 15s connect, 30s receive (was 30s/60s)
+      connectTimeout: const Duration(seconds: 15),
+      receiveTimeout: const Duration(seconds: 30),
       headers: {'Content-Type': 'application/json'},
     ));
 
@@ -117,30 +153,69 @@ class ApiService {
   }
 
   // ── Generic HTTP helpers (used by Workflow Engine + new screens) ──
+  // All helpers wrap DioException so callers get a consistent ApiException
+  // instead of an unhandled async crash on network errors / non-2xx responses.
+
   Future<dynamic> get(String path, {Map<String, dynamic>? queryParams}) async {
-    final res = await _dio.get(path, queryParameters: queryParams);
-    return res.data;
+    try {
+      final res = await _dio.get(path, queryParameters: queryParams);
+      return res.data;
+    } on DioException catch (e) {
+      throw _mapError(e);
+    }
   }
 
   Future<dynamic> post(String path, Map<String, dynamic> data,
       {Map<String, dynamic>? queryParams}) async {
-    final res = await _dio.post(
-      path,
-      data: data,
-      queryParameters: queryParams,
-    );
-    return res.data;
+    try {
+      final res = await _dio.post(
+        path,
+        data: data,
+        queryParameters: queryParams,
+      );
+      return res.data;
+    } on DioException catch (e) {
+      throw _mapError(e);
+    }
   }
 
   Future<dynamic> patch(String path, Map<String, dynamic> data,
       {Map<String, dynamic>? queryParams}) async {
-    final res = await _dio.patch(path, data: data, queryParameters: queryParams);
-    return res.data;
+    try {
+      final res = await _dio.patch(path, data: data, queryParameters: queryParams);
+      return res.data;
+    } on DioException catch (e) {
+      throw _mapError(e);
+    }
   }
 
   Future<dynamic> delete(String path) async {
-    final res = await _dio.delete(path);
-    return res.data;
+    try {
+      final res = await _dio.delete(path);
+      return res.data;
+    } on DioException catch (e) {
+      throw _mapError(e);
+    }
+  }
+
+  /// Maps a [DioException] to a human-readable [Exception] with an error code.
+  Exception _mapError(DioException e) {
+    final status = e.response?.statusCode;
+    if (e.type == DioExceptionType.connectionTimeout ||
+        e.type == DioExceptionType.receiveTimeout ||
+        e.type == DioExceptionType.sendTimeout) {
+      return Exception('REQUEST_TIMEOUT: Server took too long to respond.');
+    }
+    if (e.type == DioExceptionType.connectionError) {
+      return Exception('NETWORK_ERROR: No internet connection.');
+    }
+    if (status == 401) return Exception('UNAUTHORIZED: Session expired. Please sign in again.');
+    if (status == 403) return Exception('FORBIDDEN: You don\'t have permission for this action.');
+    if (status == 404) return Exception('NOT_FOUND: The requested resource was not found.');
+    if (status == 413) return Exception('PAYLOAD_TOO_LARGE: File is too large.');
+    if (status == 429) return Exception('RATE_LIMITED: Too many requests. Please wait a moment.');
+    if (status != null && status >= 500) return Exception('SERVER_ERROR: Something went wrong on our end.');
+    return Exception(e.message ?? 'UNKNOWN_ERROR');
   }
 
   // ── AI Chat ──────────────────────────────────────────────────
@@ -283,7 +358,11 @@ class ApiService {
 
   // ── Progress ─────────────────────────────────────────────────
   Future<Map> getStats() async {
+    const key = 'stats';
+    final cached = _cache.get(key);
+    if (cached != null) return cached as Map;
     final res = await _dio.get('/progress/stats');
+    _cache.set(key, res.data, ttl: const Duration(minutes: 3));
     return res.data;
   }
 
@@ -293,17 +372,28 @@ class ApiService {
   }
 
   Future<Map> getRoadmap() async {
+    const key = 'roadmap';
+    final cached = _cache.get(key);
+    if (cached != null) return cached as Map;
     final res = await _dio.get('/progress/roadmap');
+    _cache.set(key, res.data, ttl: const Duration(minutes: 10));
     return res.data;
   }
 
   Future<Map> getProfile() async {
+    const key = 'profile';
+    final cached = _cache.get(key);
+    if (cached != null) return cached as Map;
     final res = await _dio.get('/progress/profile');
+    _cache.set(key, res.data, ttl: const Duration(minutes: 5));
     return res.data;
   }
 
   Future<Map> updateProfile(Map<String, dynamic> data) async {
     final res = await _dio.patch('/progress/profile', data: data);
+    // Bust profile + stats caches after an update
+    _cache.invalidate('profile');
+    _cache.invalidate('stats');
     return res.data;
   }
 
@@ -327,11 +417,17 @@ class ApiService {
   // ── Streaks ──────────────────────────────────────────────────
   Future<Map> checkIn() async {
     final res = await _dio.post('/streaks/check-in');
+    _cache.invalidate('streak');
+    _cache.invalidate('stats');
     return res.data;
   }
 
   Future<Map> getStreak() async {
+    const key = 'streak';
+    final cached = _cache.get(key);
+    if (cached != null) return cached as Map;
     final res = await _dio.get('/streaks/');
+    _cache.set(key, res.data, ttl: const Duration(minutes: 5));
     return res.data;
   }
 

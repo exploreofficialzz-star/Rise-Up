@@ -26,24 +26,9 @@ tenacity==8.3.0
 python-dateutil==2.9.0
 ujson==5.10.0
 
-# Rate Limiting
+# Rate Limiting (in-memory — upgrade to Redis for multi-instance)
 slowapi==0.1.9
 limits==3.13.0
 
-# Firebase Admin (push notifications)
+# Firebase Admin (optional — for server-side push notifications)
 firebase-admin==6.5.0
-
-# ── GrowthAI additions ─────────────────────────────────
-# Web scraping
-beautifulsoup4==4.12.3
-aiohttp==3.9.5
-fake-useragent==1.5.1
-
-# Background scheduler
-APScheduler==3.10.4
-
-# Reddit API (optional — falls back to public JSON)
-praw==7.7.1
-
-# Email
-sendgrid==6.11.0

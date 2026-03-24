@@ -31,60 +31,70 @@ async def get_feed(
     offset: int = 0,
     user: dict = Depends(get_current_user),
 ):
-    """Get social feed posts"""
+    """Get social feed posts with pagination and has_more flag"""
     try:
-        q = db.table("posts") \
-            .select(
-                "*, "
-                "profiles!posts_user_id_fkey(id, full_name, stage, avatar_url, is_verified, subscription_tier), "
-                "post_likes(user_id), "
-                "post_comments(count), "
-                "post_saves(user_id)"
-            ) \
-            .eq("is_visible", True) \
-            .order("created_at", desc=True) \
-            .range(offset, offset + limit - 1)
+        # Fetch limit+1 to cheaply determine has_more
+        fetch_limit = limit + 1
+
+        base_select = (
+            "*, "
+            "profiles!posts_user_id_fkey(id, full_name, stage, avatar_url, is_verified, subscription_tier), "
+            "post_likes(user_id), "
+            "post_comments(count), "
+            "post_saves(user_id)"
+        )
 
         if tab == "following":
-            # Get IDs of users this user follows
             follows = db.table("follows") \
                 .select("following_id") \
                 .eq("follower_id", user["id"]) \
                 .execute().data or []
             following_ids = [f["following_id"] for f in follows]
-            if following_ids:
-                q = q.in_("user_id", following_ids)
-            else:
-                return {"posts": [], "tab": tab}
+            if not following_ids:
+                return {"posts": [], "tab": tab, "has_more": False}
+            q = db.table("posts") \
+                .select(base_select) \
+                .eq("is_visible", True) \
+                .in_("user_id", following_ids) \
+                .order("created_at", desc=True) \
+                .range(offset, offset + fetch_limit - 1)
 
         elif tab == "trending":
             q = db.table("posts") \
-                .select(
-                    "*, "
-                    "profiles!posts_user_id_fkey(id, full_name, stage, avatar_url, is_verified, subscription_tier), "
-                    "post_likes(user_id), "
-                    "post_comments(count), "
-                    "post_saves(user_id)"
-                ) \
+                .select(base_select) \
                 .eq("is_visible", True) \
                 .order("likes_count", desc=True) \
-                .range(offset, offset + limit - 1)
+                .range(offset, offset + fetch_limit - 1)
 
-        posts = q.execute().data or []
+        else:  # for_you
+            q = db.table("posts") \
+                .select(base_select) \
+                .eq("is_visible", True) \
+                .order("created_at", desc=True) \
+                .range(offset, offset + fetch_limit - 1)
 
-        # Enrich each post with user-specific flags
+        raw = q.execute().data or []
+
+        # Determine pagination
+        has_more = len(raw) > limit
+        posts = raw[:limit]  # trim the extra probe row
+
+        # Enrich posts — O(n) using set lookups instead of O(n×m) loops
+        uid = user["id"]
         enriched = []
         for p in posts:
             likes = p.get("post_likes") or []
             saves = p.get("post_saves") or []
-            p["is_liked"] = any(l["user_id"] == user["id"] for l in likes)
-            p["is_saved"] = any(s["user_id"] == user["id"] for s in saves)
+            liked_ids = {l["user_id"] for l in likes}
+            saved_ids = {s["user_id"] for s in saves}
+            p["is_liked"] = uid in liked_ids
+            p["is_saved"] = uid in saved_ids
             p["likes_count"] = len(likes)
             comments_data = p.get("post_comments") or []
             p["comments_count"] = comments_data[0].get("count", 0) if comments_data else 0
             enriched.append(p)
 
-        return {"posts": enriched, "tab": tab, "offset": offset}
+        return {"posts": enriched, "tab": tab, "offset": offset, "has_more": has_more}
     except Exception as e:
         raise HTTPException(500, f"Failed to load feed: {str(e)}")
 

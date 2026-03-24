@@ -78,14 +78,6 @@ class Settings(BaseSettings):
     # ── Admin ──────────────────────────────────────────────────
     ADMIN_SECRET_KEY: Optional[str] = None
 
-    # ── GrowthAI Intelligence ──────────────────────────────────
-    # Reddit API (optional — scraper falls back to public JSON)
-    REDDIT_CLIENT_ID:     Optional[str] = None
-    REDDIT_CLIENT_SECRET: Optional[str] = None
-    # Feature flags
-    ENABLE_BACKGROUND_SCAN: bool = True
-    ENABLE_AI_SCORING:      bool = True
-
     @property
     def allowed_origins_list(self) -> List[str]:
         return [o.strip() for o in self.ALLOWED_ORIGINS.split(",")]

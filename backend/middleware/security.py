@@ -12,8 +12,13 @@ from starlette.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
-# Max body size: 512 KB (prevents giant AI prompt abuse)
+# Max body size: 512 KB for most requests (prevents giant AI prompt abuse)
+# Avatar uploads (/progress/avatar) are exempt — they allow up to 5 MB
 MAX_BODY_SIZE = 512 * 1024
+MAX_BODY_SIZE_UPLOAD = 6 * 1024 * 1024   # 6 MB ceiling for multipart uploads
+
+# Paths that bypass the body-size check (file upload endpoints)
+_UPLOAD_PATHS = {"/api/v1/progress/avatar"}
 
 # Paths that are completely public (no auth, no rate limit counting)
 PUBLIC_PATHS = {"/", "/health", "/docs", "/openapi.json"}
@@ -38,11 +43,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Check body size for mutation requests
         if request.method in ("POST", "PUT", "PATCH"):
             content_length = request.headers.get("content-length")
-            if content_length and int(content_length) > MAX_BODY_SIZE:
-                return JSONResponse(
-                    {"detail": "Request body too large"},
-                    status_code=413
-                )
+            if content_length:
+                limit = MAX_BODY_SIZE_UPLOAD if path in _UPLOAD_PATHS else MAX_BODY_SIZE
+                if int(content_length) > limit:
+                    return JSONResponse(
+                        {"detail": "Request body too large"},
+                        status_code=413
+                    )
 
         start = time.time()
         response: Response = await call_next(request)
@@ -56,7 +63,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Permissions-Policy"] = (
             "geolocation=(), microphone=(), camera=(), payment=()"
         )
-        response.headers["X-RiseUp-Version"] = "1.0.0"
+        response.headers["X-RiseUp-Version"] = "2.0.0"
         response.headers["X-Response-Time"] = f"{duration:.3f}s"
 
         # HSTS — only on HTTPS

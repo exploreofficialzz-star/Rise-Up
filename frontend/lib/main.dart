@@ -9,6 +9,7 @@ import 'services/ad_service.dart';
 import 'services/ad_manager.dart';
 import 'services/notification_service.dart';
 import 'utils/storage_service.dart';
+import 'utils/connectivity_wrapper.dart';
 import 'services/api_service.dart';
 import 'utils/version_check_service.dart';
 
@@ -125,7 +126,7 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
       builder: (context, child) {
         ErrorWidget.builder =
             (details) => _GlobalErrorWidget(details: details);
-        return child ?? const SizedBox.shrink();
+        return ConnectivityWrapper(child: child ?? const SizedBox.shrink());
       },
     );
   }

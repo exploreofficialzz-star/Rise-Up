@@ -4,32 +4,27 @@ import '../services/api_service.dart';
 import '../services/currency_service.dart';
 
 // ── Auth State ────────────────────────────────────────
+// autoDispose OK — cheap check, needed fresh on every auth-gated load
 final authStateProvider = FutureProvider<bool>((ref) async {
   return api.isAuthenticated();
 });
 
 // ── User Profile ──────────────────────────────────────
-final profileProvider = FutureProvider.autoDispose<Map>((ref) async {
+// NOT autoDispose — profile survives navigation; cache handles freshness
+final profileProvider = FutureProvider<Map>((ref) async {
   final data = await api.getProfile();
   final profile = data['profile'] as Map? ?? {};
-
-  // Initialise the global currency service whenever the profile loads
   final currencyCode = profile['currency']?.toString() ?? 'USD';
   currency.init(currencyCode);
-
   return profile;
 });
 
 // ── Currency (reactive) ───────────────────────────────
-// Reads the user's currency from their profile.
-// Falls back to USD for users who haven't set one yet.
 final currencyProvider = Provider<CurrencyService>((ref) {
-  // Trigger a reload when profile changes
   ref.watch(profileProvider);
   return currency;
 });
 
-// ── Currency Code (string only) ───────────────────────
 final currencyCodeProvider = Provider<String>((ref) {
   final profile = ref.watch(profileProvider);
   return profile.when(
@@ -40,17 +35,20 @@ final currencyCodeProvider = Provider<String>((ref) {
 });
 
 // ── Dashboard Stats ───────────────────────────────────
-final statsProvider = FutureProvider.autoDispose<Map>((ref) async {
+// NOT autoDispose — stats are expensive; survive navigation
+final statsProvider = FutureProvider<Map>((ref) async {
   return api.getStats();
 });
 
 // ── Tasks ─────────────────────────────────────────────
+// autoDispose OK — family provider, different per status key
 final tasksProvider = FutureProvider.autoDispose.family<List, String?>((ref, status) async {
   return api.getTasks(status: status);
 });
 
 // ── Skill Modules ─────────────────────────────────────
-final skillModulesProvider = FutureProvider.autoDispose<Map>((ref) async {
+// NOT autoDispose — rarely changes, keep alive
+final skillModulesProvider = FutureProvider<Map>((ref) async {
   return api.getSkillModules();
 });
 
@@ -59,12 +57,14 @@ final myCoursesProvider = FutureProvider.autoDispose<List>((ref) async {
 });
 
 // ── Roadmap ───────────────────────────────────────────
-final roadmapProvider = FutureProvider.autoDispose<Map>((ref) async {
+// NOT autoDispose — expensive AI-generated content
+final roadmapProvider = FutureProvider<Map>((ref) async {
   return api.getRoadmap();
 });
 
 // ── Subscription ──────────────────────────────────────
-final subscriptionProvider = FutureProvider.autoDispose<Map>((ref) async {
+// NOT autoDispose — critical for feature gating across screens
+final subscriptionProvider = FutureProvider<Map>((ref) async {
   return api.getSubscriptionStatus();
 });
 
@@ -80,7 +80,8 @@ final conversationsProvider = FutureProvider.autoDispose<List>((ref) async {
 });
 
 // ── AI Models ─────────────────────────────────────────
-final aiModelsProvider = FutureProvider.autoDispose<List>((ref) async {
+// NOT autoDispose — static list, keep alive
+final aiModelsProvider = FutureProvider<List>((ref) async {
   return api.getAvailableModels();
 });
 
@@ -123,3 +124,7 @@ class OnboardingNotifier extends StateNotifier<Map<String, dynamic>> {
 final onboardingProvider = StateNotifierProvider<OnboardingNotifier, Map<String, dynamic>>((ref) {
   return OnboardingNotifier();
 });
+
+// ── Profile Refresh Helper ────────────────────────────
+// Call ref.invalidate(profileProvider) to force a fresh fetch.
+// The ApiService cache will also be busted automatically on updateProfile().

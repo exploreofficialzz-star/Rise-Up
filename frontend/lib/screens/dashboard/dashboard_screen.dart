@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
+import '../../widgets/app_widgets.dart';
 import '../../widgets/stat_card.dart';
 import '../../widgets/stage_badge.dart';
 import '../../widgets/task_preview_card.dart';
@@ -145,9 +146,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    if (_loading)
-                      const Center(child: CircularProgressIndicator(color: AppColors.primary))
-                    else ...[
+                    if (_loading) ...[
+                      StatCardSkeleton(),
+                      const SizedBox(height: 16),
+                      Row(children: [
+                        Expanded(child: StatCardSkeleton()),
+                        SizedBox(width: 12),
+                        Expanded(child: StatCardSkeleton()),
+                        SizedBox(width: 12),
+                        Expanded(child: StatCardSkeleton()),
+                      ]),
+                      const SizedBox(height: 16),
+                      StatCardSkeleton(),
+                    ] else ...[
                       // Earnings hero
                       _EarningsHero(
                         total: totalEarned.toDouble(),

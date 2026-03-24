@@ -15,8 +15,9 @@ logger = logging.getLogger(__name__)
 
 
 def _client():
-    from supabase import create_client
-    return create_client(settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY)
+    """Return the shared anon Supabase client (singleton — no new client per request)."""
+    from services.supabase_service import get_supabase_anon
+    return get_supabase_anon()
 
 
 # ── Sign Up ───────────────────────────────────────────────────
