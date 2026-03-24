@@ -94,6 +94,10 @@ class _HomeScreenState extends State<HomeScreen>
   int _aiUsedToday = 0;
   static const int _dailyFreeLimit = 3;
 
+  // Status/Stories
+  List _statusUsers  = [];
+  bool _statusLoaded = false;
+
   // Feed state per tab
   final _feeds = {'for_you': <PostModel>[], 'following': <PostModel>[], 'trending': <PostModel>[]};
   final _loading = {'for_you': false, 'following': false, 'trending': false};
@@ -289,8 +293,12 @@ class _HomeScreenState extends State<HomeScreen>
               child: ListView.builder(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                itemCount: 8,
-                itemBuilder: (_, i) => _StoryItem(index: i, isDark: isDark),
+                itemCount: _statusUsers.length + 1,
+                itemBuilder: (_, i) {
+                  if (i == 0) return _StoryAddButton(isDark: isDark, onTap: () => context.push('/create-status'));
+                  final u = _statusUsers[i - 1] as Map;
+                  return _StoryItem(user: u, isDark: isDark, onTap: () => _viewStatus(u));
+                },
               ),
             ),
             Divider(height: 1, color: borderColor),
