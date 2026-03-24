@@ -18,7 +18,7 @@ class CurrencyService {
   /// Call this once after loading the user profile
   void init(String currencyCode) {
     _code   = currencyCode.toUpperCase();
-    _symbol = _symbolFor(_code);
+    _symbol = symbolFor(_code);
   }
 
   String get code   => _code;
@@ -28,7 +28,7 @@ class CurrencyService {
   /// Returns "₦ 50,000" or "$ 500" depending on the user's currency
   String format(num amount, {String? currency, bool compact = false}) {
     final code   = (currency ?? _code).toUpperCase();
-    final symbol = _symbolFor(code);
+    final symbol = symbolFor(code);
     final val    = compact ? _compact(amount) : _commify(amount);
     return '$symbol $val';
   }
@@ -38,13 +38,13 @@ class CurrencyService {
     final local = (localCode ?? _code).toUpperCase();
     if (local == 'USD') return format(usdAmount, currency: 'USD');
     final localAmount = usdAmount * rate;
-    return '\$ ${_compact(usdAmount)}  ·  ${_symbolFor(local)} ${_compact(localAmount)}';
+    return '\$ ${_compact(usdAmount)}  ·  ${symbolFor(local)} ${_compact(localAmount)}';
   }
 
   // ── Format a range ────────────────────────────────────
   /// e.g. "₦ 50K – ₦ 200K/mo"
   String range(num min, num max, {String? currency, String suffix = '/mo'}) {
-    final sym = _symbolFor((currency ?? _code).toUpperCase());
+    final sym = symbolFor((currency ?? _code).toUpperCase());
     return '$sym ${_compact(min)} – $sym ${_compact(max)}$suffix';
   }
 
@@ -73,7 +73,7 @@ class CurrencyService {
   }
 
   // ── Symbol lookup (50+ currencies) ───────────────────
-  static String _symbolFor(String code) {
+  static String symbolFor(String code) {
     const map = {
       'USD': '\$',   'EUR': '€',   'GBP': '£',   'JPY': '¥',
       'CNY': '¥',   'INR': '₹',   'NGN': '₦',   'KES': 'KSh',
