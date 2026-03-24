@@ -443,7 +443,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     }
 
     if (insight.isNotEmpty) {
-      buf.writeln('_$insight_');
+      buf.writeln('_$insight');
     }
 
     if (plan['warning']?.toString().isNotEmpty == true) {
