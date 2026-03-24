@@ -619,7 +619,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
               color: Colors.transparent,
               borderRadius: BorderRadius.circular(20),
               border: Border.all(
-                color: isDark ? Colors.white15 : Colors.black12,
+                color: isDark ? Colors.white12 : Colors.black12,
               ),
             ),
             child: Text(s,
@@ -639,7 +639,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
         decoration: BoxDecoration(
           color: isDark ? const Color(0xFF0A0A0A) : Colors.white,
           border: Border(top: BorderSide(
-              color: isDark ? Colors.white08 : Colors.black08, width: 0.5)),
+              color: isDark ? Colors.white10 : Colors.black12, width: 0.5)),
         ),
         child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
           Expanded(
@@ -649,7 +649,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
                 color: isDark ? const Color(0xFF1A1A1A) : const Color(0xFFF5F5F5),
                 borderRadius: BorderRadius.circular(26),
                 border: Border.all(
-                    color: isDark ? Colors.white10 : Colors.black08),
+                    color: isDark ? Colors.white10 : Colors.black12),
               ),
               child: TextField(
                 controller:  _inputCtrl,
@@ -663,7 +663,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
                   hintText: 'Message APEX...',
                   hintStyle: TextStyle(
                       fontSize: 15,
-                      color: isDark ? Colors.white28 : Colors.black26),
+                      color: isDark ? Colors.white24 : Colors.black26),
                   border:          InputBorder.none,
                   contentPadding:  const EdgeInsets.fromLTRB(18, 12, 18, 12),
                 ),
@@ -682,13 +682,13 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
                   begin: Alignment.topLeft, end: Alignment.bottomRight,
                 ),
                 color: _isStreaming
-                    ? (isDark ? Colors.white10 : Colors.black08) : null,
+                    ? (isDark ? Colors.white10 : Colors.black12) : null,
                 borderRadius: BorderRadius.circular(22),
               ),
               child: Icon(
                 Icons.arrow_upward_rounded,
                 color: _isStreaming
-                    ? (isDark ? Colors.white20 : Colors.black15)
+                    ? (isDark ? Colors.white24 : Colors.black12)
                     : Colors.white,
                 size: 20,
               ),
@@ -947,7 +947,7 @@ class _SystemMsg extends StatelessWidget {
         decoration: BoxDecoration(
           color: isDark ? const Color(0xFF1A1A1A) : const Color(0xFFF5F5F5),
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: isDark ? Colors.white08 : Colors.black06),
+          border: Border.all(color: isDark ? Colors.white10 : Colors.black.withOpacity(0.06)),
         ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(msg.text, style: TextStyle(fontSize: 13, height: 1.5,
@@ -1108,7 +1108,7 @@ class _LimitSheet extends StatelessWidget {
       child: Column(mainAxisSize: MainAxisSize.min, children: [
         Container(width: 36, height: 4,
             decoration: BoxDecoration(
-                color: isDark ? Colors.white20 : Colors.black12,
+                color: isDark ? Colors.white24 : Colors.black12,
                 borderRadius: BorderRadius.circular(2))),
         const SizedBox(height: 20),
         const Text('🔒', style: TextStyle(fontSize: 36)),
