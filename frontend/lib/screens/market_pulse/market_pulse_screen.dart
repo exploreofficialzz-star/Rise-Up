@@ -4,7 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
-// Import your existing ad service - adjust path as   needed
+// Import your existing ad service - adjust path as needed
 import '../../services/ads/ad_service_mobile.dart';
 
 class MarketPulseScreen extends StatefulWidget {
@@ -329,7 +329,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
           ).animate().slideY(begin: 0.1, curve: Curves.easeOutQuad).fadeIn(),
 
         _sectionHeader('EXPLODING DEMAND', sub),
-        ...trending.asMap().entries.map((e) => _trendCard(
+        ...(trending as List).asMap().entries.map((e) => _trendCard(
           e.value.toString(), 'High Volume', 
           [AppColors.primary, AppColors.accent, AppColors.gold][e.key % 3], 
           isDark, text, sub
@@ -350,7 +350,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
         if (actions.isNotEmpty) ...[
           const SizedBox(height: 24),
           _sectionHeader('ACTIONS FOR TODAY', sub),
-          ...actions.asMap().entries.map((e) => _actionCard('${e.key + 1}', e.value.toString(), AppColors.primary, isDark, text)),
+          ...(actions as List).asMap().entries.map((e) => _actionCard('${e.key + 1}', e.value.toString(), AppColors.primary, isDark, text)),
         ],
 
         const SizedBox(height: 40),
@@ -372,7 +372,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
 
     final globalTrends = _international['global_trends'] as Map? ?? {};
     final emergingSectors = _international['emerging_sectors'] as List? ?? [];
-    final geoArbitrage = _international['geographic_arbitrage'] as List? ?? {};
+    final geoArbitrage = _international['geographic_arbitrage'] as List? ?? [];
     final futureProofing = _international['future_proofing'] as Map? ?? {};
     final skillMatches = _international['your_skill_matches'] as List? ?? [];
 
@@ -409,7 +409,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
 
         const SizedBox(height: 20),
         _sectionHeader('EMERGING SECTORS', sub),
-        ...emergingSectors.asMap().entries.map((e) => _sectorCard(e.value, e.key, isDark, text, sub)),
+        ...(emergingSectors as List).asMap().entries.map((e) => _sectorCard(e.value, e.key, isDark, text, sub)),
 
         if (geoArbitrage.isNotEmpty) ...[
           const SizedBox(height: 20),
@@ -451,7 +451,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
 
     final economicIndicators = _local['economic_indicators'] as Map? ?? {};
     final skillDemand = _local['skill_demand'] as Map? ?? {};
-    final platforms = _local['platform_landscape'] as List? ?? {};
+    final platforms = _local['platform_landscape'] as List? ?? [];
     final recommendations = _local['local_recommendations'] as Map? ?? {};
 
     return ListView(
@@ -518,7 +518,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       return _buildLoadingState('Analyzing career paths...');
     }
 
-    final careerPaths = _careerForecast['career_paths'] as List? ?? {};
+    final careerPaths = _careerForecast['career_paths'] as List? ?? [];
     final recommendedPath = _careerForecast['recommended_path'] as Map?;
 
     return ListView(
@@ -567,9 +567,9 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       return _buildLoadingState('Finding opportunities...');
     }
 
-    final opportunities = _entrepreneurial['opportunities'] as List? ?? {};
+    final opportunities = _entrepreneurial['opportunities'] as List? ?? [];
     final recommendedFocus = _entrepreneurial['recommended_focus'] as Map?;
-    final nextSteps = _entrepreneurial['next_steps'] as List? ?? {};
+    final nextSteps = _entrepreneurial['next_steps'] as List? ?? [];
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -596,7 +596,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
         if (nextSteps.isNotEmpty) ...[
           const SizedBox(height: 24),
           _sectionHeader('NEXT STEPS', sub),
-          ...nextSteps.asMap().entries.map((e) => _actionCard('${e.key + 1}', e.value.toString(), AppColors.accent, isDark, text)),
+          ...(nextSteps as List).asMap().entries.map((e) => _actionCard('${e.key + 1}', e.value.toString(), AppColors.accent, isDark, text)),
         ],
 
         const SizedBox(height: 40),
@@ -616,9 +616,9 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       return _buildLoadingState('Calculating strategies...');
     }
 
-    final strategies = _wealthStrategies['strategies'] as List? ?? {};
-    final quickWins = _wealthStrategies['quick_wins'] as List? ?? {};
-    final longTerm = _wealthStrategies['long_term_builders'] as List? ?? {};
+    final strategies = _wealthStrategies['strategies'] as List? ?? [];
+    final quickWins = _wealthStrategies['quick_wins'] as List? ?? [];
+    final longTerm = _wealthStrategies['long_term_builders'] as List? ?? [];
     final userProfile = _wealthStrategies['user_profile'] as Map? ?? {};
 
     return ListView(
@@ -671,9 +671,9 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       return _buildLoadingState('Generating insights...');
     }
 
-    final insights = _personalGrowth['insights'] as List? ?? {};
+    final insights = _personalGrowth['insights'] as List? ?? [];
     final priorityAction = _personalGrowth['priority_action'] as Map?;
-    final focusAreas = _personalGrowth['focus_areas'] as List? ?? {};
+    final focusAreas = _personalGrowth['focus_areas'] as List? ?? [];
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -717,7 +717,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
   // ============================================================================
   Widget _buildScanTab(bool isDark, Color text, Color sub, Color card) {
     final scanData = _scan['scan_results'] as Map? ?? {};
-    final trending = _pulse['trending_now'] as List? ?? {};
+    final trending = _pulse['trending_now'] as List? ?? [];
     final suggestions = trending.take(8).toList();
 
     return SingleChildScrollView(
