@@ -4,7 +4,8 @@ import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
-import '../../services/ad_service.dart';
+// Import your existing ad service - adjust path as needed
+import '../../services/ads/ad_service_mobile.dart';
 
 class MarketPulseScreen extends StatefulWidget {
   const MarketPulseScreen({super.key});
@@ -44,10 +45,6 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
   String _selectedCapitalTier = 'bootstrap';
   String _selectedRiskTolerance = 'moderate';
   String _selectedTimeframe = 'all';
-  
-  // Ad states
-  bool _showHomeBanner = false;
-  bool _showInlineAd = false;
 
   @override
   void initState() {
@@ -55,24 +52,14 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
     _tabs = TabController(length: 8, vsync: this);
     _tabs.addListener(_onTabChanged);
     _load();
-    _loadAds();
   }
 
   void _onTabChanged() {
-    // Show interstitial ad every 3 tab changes
+    // Show interstitial ad every 3 tab changes using your existing ad service
     if (_tabs.indexIsChanging && _tabs.index % 3 == 0) {
-      _adService.showInterstitialAd();
+      // Use your existing ad service method - adjust as needed
+      _adService.showInterstitialAdIfAvailable();
     }
-  }
-
-  Future<void> _loadAds() async {
-    _adService.loadHomeBannerAd(onLoaded: () {
-      if (mounted) setState(() => _showHomeBanner = true);
-    });
-    _adService.loadInlineBannerAd(onLoaded: () {
-      if (mounted) setState(() => _showInlineAd = true);
-    });
-    _adService.loadInterstitialAd();
   }
 
   Future<void> _load() async {
@@ -196,8 +183,9 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
   }
 
   Future<void> _scanSkill(String skill) async {
-    // Show rewarded ad before scan
+    // Show rewarded ad before scan using your existing ad service
     _adService.showRewardedAd(
+      featureKey: 'skill_scan', // Required parameter in your AdService
       onRewarded: () async {
         setState(() { 
           _scanning = true; 
@@ -239,7 +227,8 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
   @override
   void dispose() { 
     _tabs.dispose(); 
-    _adService.dispose();
+    // Use your existing ad service dispose if available
+    // _adService.dispose();
     super.dispose(); 
   }
 
@@ -301,35 +290,21 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
           ],
         ),
       ),
-      body: Column(
-        children: [
-          // Home Banner Ad
-          if (_showHomeBanner)
-            BannerAdWidget(
-              ad: _adService.homeBannerAd,
-              isLoaded: _adService.isHomeBannerLoaded,
-              height: 100,
+      body: _loading
+          ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+          : TabBarView(
+              controller: _tabs,
+              children: [
+                _buildTodayTab(isDark, text, sub, card, border),
+                _buildInternationalTab(isDark, text, sub, card),
+                _buildLocalTab(isDark, text, sub, card),
+                _buildCareerTab(isDark, text, sub, card),
+                _buildEntrepreneurialTab(isDark, text, sub, card),
+                _buildWealthTab(isDark, text, sub, card),
+                _buildGrowthTab(isDark, text, sub, card),
+                _buildScanTab(isDark, text, sub, card),
+              ],
             ),
-          
-          Expanded(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
-                : TabBarView(
-                    controller: _tabs,
-                    children: [
-                      _buildTodayTab(isDark, text, sub, card, border),
-                      _buildInternationalTab(isDark, text, sub, card),
-                      _buildLocalTab(isDark, text, sub, card),
-                      _buildCareerTab(isDark, text, sub, card),
-                      _buildEntrepreneurialTab(isDark, text, sub, card),
-                      _buildWealthTab(isDark, text, sub, card),
-                      _buildGrowthTab(isDark, text, sub, card),
-                      _buildScanTab(isDark, text, sub, card),
-                    ],
-                  ),
-          ),
-        ],
-      ),
     );
   }
 
@@ -356,7 +331,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
               boxShadow: [BoxShadow(color: const Color(0xFFFF6B35).withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 4))]
             ),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('☀️ MORNING BRIEFING', style: TextStyle(color: Colors.white70, fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 1.2)),
+              const Text('MORNING BRIEFING', style: TextStyle(color: Colors.white70, fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 1.2)),
               const SizedBox(height: 8),
               Text(briefing, style: const TextStyle(color: Colors.white, fontSize: 14, height: 1.5, fontWeight: FontWeight.w500)),
               const SizedBox(height: 10),
@@ -364,10 +339,10 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
             ]),
           ).animate().slideY(begin: 0.1, curve: Curves.easeOutQuad).fadeIn(),
 
-        // Inline Ad
-        InlineAdWidget(ad: _adService.inlineBannerAd, isLoaded: _showInlineAd),
-
-        _sectionHeader('🔥 EXPLODING DEMAND', sub),
+        // Ad placeholder - use your existing BannerAdWidget
+        const SizedBox(height: 8),
+        
+        _sectionHeader('EXPLODING DEMAND', sub),
         ...trending.asMap().entries.map((e) => _trendCard(
           e.value.toString(), 'High Volume', 
           [AppColors.primary, AppColors.accent, AppColors.gold][e.key % 3], 
@@ -375,21 +350,20 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
         ).animate().fadeIn(delay: Duration(milliseconds: e.key * 100))),
 
         const SizedBox(height: 20),
-        _sectionHeader('🚀 EARLY OPPORTUNITIES', sub),
+        _sectionHeader('EARLY OPPORTUNITIES', sub),
         ...emerging.map((e) => _trendCard(e.toString(), 'Low Competition', AppColors.success, isDark, text, sub)),
 
         const SizedBox(height: 20),
-        _sectionHeader('⚠️ SATURATED MARKETS', sub),
+        _sectionHeader('SATURATED MARKETS', sub),
         ...avoid.map((e) => _avoidCard(e.toString(), text)),
 
         const SizedBox(height: 24),
-        _infoSection('📊 Platform Intelligence', _pulse['platform_intelligence'], isDark, text),
-        _infoSection('📈 Rate Trends', _pulse['rate_trends'], isDark, text),
+        _infoSection('Platform Intelligence', _pulse['platform_intelligence'], isDark, text),
+        _infoSection('Rate Trends', _pulse['rate_trends'], isDark, text),
         
-        // Action Today
         if (actions.isNotEmpty) ...[
           const SizedBox(height: 24),
-          _sectionHeader('✅ ACTIONS FOR TODAY', sub),
+          _sectionHeader('ACTIONS FOR TODAY', sub),
           ...actions.asMap().entries.map((e) => _actionCard('${e.key + 1}', e.value.toString(), AppColors.primary, isDark, text)),
         ],
 
@@ -420,64 +394,55 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(16),
       children: [
         _buildPremiumBanner(
-          '🌍 INTERNATIONAL MARKET IMPULSE',
+          'INTERNATIONAL MARKET IMPULSE',
           'Global trends & opportunities',
           [const Color(0xFF667eea), const Color(0xFF764ba2)],
         ),
 
-        // Inline Ad
-        InlineAdWidget(ad: _adService.inlineBannerAd, isLoaded: _showInlineAd),
-
-        // Tech Adoption Impact
+        _sectionHeader('TECH ADOPTION IMPACT', sub),
         if (globalTrends['tech_adoption_impact'] != null)
           _insightCard(
-            '⚡ Tech Adoption Impact',
+            'Tech Impact',
             globalTrends['tech_adoption_impact'].toString(),
             AppColors.info,
             isDark,
             text,
           ),
 
-        // Fastest Growing Roles
         if (globalTrends['fastest_growing_roles'] != null) ...[
           const SizedBox(height: 20),
-          _sectionHeader('📈 FASTEST GROWING ROLES', sub),
+          _sectionHeader('FASTEST GROWING ROLES', sub),
           ...(globalTrends['fastest_growing_roles'] as List).map((role) => _roleCard(role, isDark, text, sub)),
         ],
 
-        // Declining Roles
         if (globalTrends['declining_roles'] != null) ...[
           const SizedBox(height: 20),
-          _sectionHeader('📉 ROLES TO AVOID', sub),
+          _sectionHeader('ROLES TO AVOID', sub),
           ...(globalTrends['declining_roles'] as List).take(5).map((role) => _avoidCard(role.toString(), text)),
         ],
 
-        // Emerging Sectors
         const SizedBox(height: 20),
-        _sectionHeader('🚀 EMERGING SECTORS', sub),
+        _sectionHeader('EMERGING SECTORS', sub),
         ...emergingSectors.asMap().entries.map((e) => _sectorCard(e.value, e.key, isDark, text, sub)),
 
-        // Geographic Arbitrage
         if (geoArbitrage.isNotEmpty) ...[
           const SizedBox(height: 20),
-          _sectionHeader('🌏 GEOGRAPHIC ARBITRAGE', sub),
+          _sectionHeader('GEOGRAPHIC ARBITRAGE', sub),
           ...geoArbitrage.map((geo) => _geoArbitrageCard(geo, isDark, text, sub)),
         ],
 
-        // Future Proofing
         if (futureProofing.isNotEmpty) ...[
           const SizedBox(height: 20),
-          _sectionHeader('🛡️ FUTURE-PROOFING', sub),
+          _sectionHeader('FUTURE-PROOFING', sub),
           if (futureProofing['immediate_skills'] != null)
             _skillListCard('Skills to Acquire Now', futureProofing['immediate_skills'] as List, AppColors.success, isDark, text),
           if (futureProofing['ai_augmentation'] != null)
-            _insightCard('🤖 AI Strategy', futureProofing['ai_augmentation'].toString(), AppColors.accent, isDark, text),
+            _insightCard('AI Strategy', futureProofing['ai_augmentation'].toString(), AppColors.accent, isDark, text),
         ],
 
-        // Skill Matches
         if (skillMatches.isNotEmpty) ...[
           const SizedBox(height: 20),
-          _sectionHeader('🎯 YOUR SKILL MATCHES', sub),
+          _sectionHeader('YOUR SKILL MATCHES', sub),
           ...skillMatches.map((match) => _skillMatchCard(match, isDark, text, sub)),
         ],
 
@@ -507,53 +472,43 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(16),
       children: [
         _buildPremiumBanner(
-          '📍 LOCAL MARKET TRENDS',
+          'LOCAL MARKET TRENDS',
           'Country-specific insights',
           [const Color(0xFFf093fb), const Color(0xFFf5576c)],
         ),
 
-        // Inline Ad
-        InlineAdWidget(ad: _adService.inlineBannerAd, isLoaded: _showInlineAd),
-
-        // Economic Indicators
         if (economicIndicators.isNotEmpty) ...[
-          _sectionHeader('📊 ECONOMIC PULSE', sub),
+          _sectionHeader('ECONOMIC PULSE', sub),
           _economicIndicatorsCard(economicIndicators, isDark, text, sub),
         ],
 
-        // Hot Skills
         if (skillDemand['hot_skills'] != null) ...[
           const SizedBox(height: 20),
-          _sectionHeader('🔥 HOT SKILLS LOCALLY', sub),
+          _sectionHeader('HOT SKILLS LOCALLY', sub),
           ...(skillDemand['hot_skills'] as List).map((skill) => _hotSkillCard(skill, isDark, text, sub)),
         ],
 
-        // Oversaturated
         if (skillDemand['oversaturated'] != null) ...[
           const SizedBox(height: 20),
-          _sectionHeader('⚠️ OVERSATURATED SKILLS', sub),
+          _sectionHeader('OVERSATURATED SKILLS', sub),
           ...(skillDemand['oversaturated'] as List).take(5).map((skill) => _avoidCard(skill.toString(), text)),
         ],
 
-        // Platform Landscape
         if (platforms.isNotEmpty) ...[
           const SizedBox(height: 20),
-          _sectionHeader('💼 PLATFORM INTELLIGENCE', sub),
+          _sectionHeader('PLATFORM INTELLIGENCE', sub),
           ...platforms.map((platform) => _platformCard(platform, isDark, text, sub)),
         ],
 
-        // Seasonal Context
         if (_local['seasonal_context'] != null)
-          _infoSection('🗓️ SEASONAL CONTEXT', _local['seasonal_context'], isDark, text),
+          _infoSection('SEASONAL CONTEXT', _local['seasonal_context'], isDark, text),
 
-        // Cultural Notes
         if (_local['cultural_notes'] != null)
-          _infoSection('🎭 CULTURAL INSIGHTS', _local['cultural_notes'], isDark, text),
+          _infoSection('CULTURAL INSIGHTS', _local['cultural_notes'], isDark, text),
 
-        // Recommendations
         if (recommendations.isNotEmpty) ...[
           const SizedBox(height: 24),
-          _sectionHeader('💡 LOCAL RECOMMENDATIONS', sub),
+          _sectionHeader('LOCAL RECOMMENDATIONS', sub),
           if (recommendations['platforms_to_join'] != null)
             _skillListCard('Platforms to Join', recommendations['platforms_to_join'] as List, AppColors.primary, isDark, text),
           if (recommendations['skills_to_highlight'] != null)
@@ -584,34 +539,27 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(16),
       children: [
         _buildPremiumBanner(
-          '🎯 CAREER FORECAST',
+          'CAREER FORECAST',
           'Your personalized path forward',
           [const Color(0xFF4facfe), const Color(0xFF00f2fe)],
         ),
 
-        // Timeframe Filter
         _buildTimeframeFilter(isDark, text, sub),
 
-        // Inline Ad
-        InlineAdWidget(ad: _adService.inlineBannerAd, isLoaded: _showInlineAd),
-
-        // Recommended Path
         if (recommendedPath != null) ...[
-          _sectionHeader('⭐ RECOMMENDED PATH', sub),
+          _sectionHeader('RECOMMENDED PATH', sub),
           _careerPathCard(recommendedPath, true, isDark, text, sub),
         ],
 
-        // All Paths
         if (careerPaths.isNotEmpty) ...[
           const SizedBox(height: 20),
-          _sectionHeader('📋 ALL CAREER PATHS', sub),
+          _sectionHeader('ALL CAREER PATHS', sub),
           ...careerPaths.take(5).map((path) => _careerPathCard(path, false, isDark, text, sub)),
         ],
 
-        // Watch Ad for More
         const SizedBox(height: 24),
         _buildRewardAdButton(
-          '🔓 Unlock Premium Career Insights',
+          'Unlock Premium Career Insights',
           'Watch a short video to get 3 additional career paths',
           () => _loadCareerForecast(),
         ),
@@ -641,34 +589,27 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(16),
       children: [
         _buildPremiumBanner(
-          '🚀 ENTREPRENEURIAL OPPORTUNITIES',
+          'ENTREPRENEURIAL OPPORTUNITIES',
           'Start your business journey',
           [const Color(0xFFfa709a), const Color(0xFFfee140)],
         ),
 
-        // Capital Tier Filter
         _buildCapitalTierFilter(isDark, text, sub),
 
-        // Inline Ad
-        InlineAdWidget(ad: _adService.inlineBannerAd, isLoaded: _showInlineAd),
-
-        // Recommended Opportunity
         if (recommendedFocus != null) ...[
-          _sectionHeader('💎 TOP OPPORTUNITY', sub),
+          _sectionHeader('TOP OPPORTUNITY', sub),
           _opportunityCard(recommendedFocus, true, isDark, text, sub),
         ],
 
-        // All Opportunities
         if (opportunities.isNotEmpty) ...[
           const SizedBox(height: 20),
-          _sectionHeader('📊 MORE OPPORTUNITIES', sub),
+          _sectionHeader('MORE OPPORTUNITIES', sub),
           ...opportunities.skip(1).take(4).map((opp) => _opportunityCard(opp, false, isDark, text, sub)),
         ],
 
-        // Next Steps
         if (nextSteps.isNotEmpty) ...[
           const SizedBox(height: 24),
-          _sectionHeader('📝 NEXT STEPS', sub),
+          _sectionHeader('NEXT STEPS', sub),
           ...nextSteps.asMap().entries.map((e) => _actionCard('${e.key + 1}', e.value.toString(), AppColors.accent, isDark, text)),
         ],
 
@@ -698,38 +639,30 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(16),
       children: [
         _buildPremiumBanner(
-          '💰 WEALTH BUILDING',
+          'WEALTH BUILDING',
           'Strategies for financial growth',
           [const Color(0xFF30cfd0), const Color(0xFF330867)],
         ),
 
-        // Risk Filter
         _buildRiskFilter(isDark, text, sub),
 
-        // User Profile Summary
         if (userProfile.isNotEmpty)
           _userProfileCard(userProfile, isDark, text, sub),
 
-        // Inline Ad
-        InlineAdWidget(ad: _adService.inlineBannerAd, isLoaded: _showInlineAd),
-
-        // Quick Wins
         if (quickWins.isNotEmpty) ...[
-          _sectionHeader('⚡ QUICK WINS', sub),
+          _sectionHeader('QUICK WINS', sub),
           ...quickWins.map((s) => _strategyCard(s, AppColors.success, isDark, text, sub)),
         ],
 
-        // Long Term Builders
         if (longTerm.isNotEmpty) ...[
           const SizedBox(height: 20),
-          _sectionHeader('🏗️ LONG-TERM BUILDERS', sub),
+          _sectionHeader('LONG-TERM BUILDERS', sub),
           ...longTerm.map((s) => _strategyCard(s, AppColors.primary, isDark, text, sub)),
         ],
 
-        // All Strategies
         if (strategies.isNotEmpty) ...[
           const SizedBox(height: 20),
-          _sectionHeader('📈 ALL STRATEGIES', sub),
+          _sectionHeader('ALL STRATEGIES', sub),
           ...strategies.skip(quickWins.length + longTerm.length).take(3).map(
             (s) => _strategyCard(s, AppColors.accent, isDark, text, sub)
           ),
@@ -760,21 +693,16 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(16),
       children: [
         _buildPremiumBanner(
-          '🌱 PERSONAL GROWTH',
+          'PERSONAL GROWTH',
           'Level up your mindset & skills',
           [const Color(0xFFa8edea), const Color(0xFFfed6e3)],
         ),
 
-        // Inline Ad
-        InlineAdWidget(ad: _adService.inlineBannerAd, isLoaded: _showInlineAd),
-
-        // Priority Action
         if (priorityAction != null) ...[
-          _sectionHeader('🎯 PRIORITY ACTION', sub),
+          _sectionHeader('PRIORITY ACTION', sub),
           _growthCard(priorityAction, true, isDark, text, sub),
         ],
 
-        // Focus Areas
         if (focusAreas.isNotEmpty) ...[
           const SizedBox(height: 20),
           Wrap(
@@ -787,10 +715,9 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
           ),
         ],
 
-        // All Insights
         if (insights.isNotEmpty) ...[
           const SizedBox(height: 20),
-          _sectionHeader('💡 ALL INSIGHTS', sub),
+          _sectionHeader('ALL INSIGHTS', sub),
           ...insights.skip(1).map((insight) => _growthCard(insight, false, isDark, text, sub)),
         ],
 
@@ -811,7 +738,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(16),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         _buildPremiumBanner(
-          '🔍 SKILL SCANNER',
+          'SKILL SCANNER',
           'Deep market analysis for any skill',
           [const Color(0xFFffecd2), const Color(0xFFfcb69f)],
         ),
@@ -832,10 +759,9 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
         
         const SizedBox(height: 24),
         
-        // Reward Ad Prompt
         if (_selectedSkill.isEmpty && _scan.isEmpty)
           _buildRewardAdButton(
-            '🎁 Unlock Deep Scan',
+            'Unlock Deep Scan',
             'Watch a short video to get detailed market analysis for any skill',
             () {},
           ),
@@ -989,6 +915,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       margin: const EdgeInsets.symmetric(vertical: 16),
       child: ElevatedButton.icon(
         onPressed: () => _adService.showRewardedAd(
+          featureKey: 'market_pulse',
           onRewarded: onReward,
           onDismissed: () {},
         ),
@@ -1009,7 +936,6 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
     );
   }
 
-  // Card Components
   Widget _trendCard(String title, String subtitle, Color color, bool isDark, Color text, Color sub) {
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -1598,10 +1524,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
           Row(
             children: [
               Icon(Iconsax.clock, size: 14, color: sub),
-              const Sized SizedBox(width: 4),
-              Text('${strategy['time_commitment_hours_week']} hrs/week', style: TextStyle(fontSize: 11, color: sub)),
-              const SizedBox(width: 16),
-             Box(width: 4),
+              const SizedBox(width: 4),
               Text('${strategy['time_commitment_hours_week']} hrs/week', style: TextStyle(fontSize: 11, color: sub)),
               const SizedBox(width: 16),
               Icon(Iconsax.money, size: 14, color: sub),
@@ -1785,4 +1708,10 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
           children: [
             Icon(Iconsax.search_status, size: 64, color: sub.withOpacity(0.2)),
             const SizedBox(height: 16),
-            Text('Select a skill above to perform a live AI market scan', textAlign: TextAlign.center, ‌‍
+            Text('Select a skill above to perform a live AI market scan', textAlign: TextAlign.center, style: TextStyle(color: sub, fontSize: 13)),
+          ],
+        ),
+      ),
+    );
+  }
+}
