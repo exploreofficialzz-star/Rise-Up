@@ -4,7 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
-// Import your existing ad service - adjust path as needed
+// Import your existing ad service - adjust path as   needed
 import '../../services/ads/ad_service_mobile.dart';
 
 class MarketPulseScreen extends StatefulWidget {
