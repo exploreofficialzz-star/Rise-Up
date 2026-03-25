@@ -173,7 +173,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             const Text('💱 GLOBAL RATE ARBITRAGE', style: TextStyle(color: Colors.white70, fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 1.2)),
             const SizedBox(height: 12),
-            Text('International clients pay $multiplier\x more than local markets.',
+            Text('International clients pay ${multiplier}x more than local markets.',
                 style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w800, height: 1.2)),
             const SizedBox(height: 12),
             Container(
