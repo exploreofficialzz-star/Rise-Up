@@ -1,7 +1,4 @@
-"""Goals Router — Financial goal setting, tracking & AI-powered suggestions
-All monetary amounts are stored and calculated in USD by default.
-The user's preferred display currency is read from profile.currency.
-"""
+"""Goals Router — Financial goal setting, tracking & AI-powered suggestions"""
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -22,7 +19,7 @@ class GoalCreate(BaseModel):
     description: Optional[str] = None
     goal_type: str = "savings"
     target_amount: Optional[float] = None
-    currency: str = "USD"       # defaults to USD; user may pass their local currency
+    currency: str = "NGN"
     target_date: Optional[str] = None   # ISO date string
     priority: str = "medium"
     icon: str = "🎯"
@@ -84,23 +81,23 @@ async def create_goal(req: GoalCreate, request: Request, user: dict = Depends(ge
     milestones = []
     if req.target_amount:
         milestones = [
-            {"percent": 25,  "label": "Quarter way there! 🎉",      "reached_at": None},
-            {"percent": 50,  "label": "Halfway! You're doing it! 💪","reached_at": None},
-            {"percent": 75,  "label": "75% done! Almost there! 🔥",  "reached_at": None},
-            {"percent": 100, "label": "Goal Achieved! 🏆",           "reached_at": None},
+            {"percent": 25, "label": "Quarter way there! 🎉",     "reached_at": None},
+            {"percent": 50, "label": "Halfway! You're doing it! 💪", "reached_at": None},
+            {"percent": 75, "label": "75% done! Almost there! 🔥", "reached_at": None},
+            {"percent": 100, "label": "Goal Achieved! 🏆",          "reached_at": None},
         ]
 
     data = {
-        "user_id":       user_id,
-        "title":         req.title,
-        "description":   req.description,
-        "goal_type":     req.goal_type,
+        "user_id":      user_id,
+        "title":        req.title,
+        "description":  req.description,
+        "goal_type":    req.goal_type,
         "target_amount": req.target_amount,
-        "currency":      req.currency,
-        "target_date":   req.target_date,
-        "priority":      req.priority,
-        "icon":          req.icon,
-        "milestones":    milestones,
+        "currency":     req.currency,
+        "target_date":  req.target_date,
+        "priority":     req.priority,
+        "icon":         req.icon,
+        "milestones":   milestones,
     }
 
     res = supabase_service.db.table("goals").insert(data).execute()
@@ -167,14 +164,13 @@ async def contribute_to_goal(
 
     supabase_service.db.table("goals").update(update_data).eq("id", goal_id).execute()
 
-    goal_currency = goal.get("currency", "USD")
     return {
-        "current_amount":        new_amount,
-        "progress_percent":      round(progress, 1),
-        "milestones_reached":    newly_reached,
+        "current_amount":    new_amount,
+        "progress_percent":  round(progress, 1),
+        "milestones_reached": newly_reached,
         "achievements_unlocked": achievements_unlocked,
-        "completed":             progress >= 100,
-        "message":               f"💰 +{goal_currency} {req.amount:,.2f} added to goal!" + (
+        "completed":         progress >= 100,
+        "message":           f"💰 +{goal['currency']} {req.amount:,.0f} added to goal!" + (
             " 🏆 GOAL ACHIEVED!" if progress >= 100 else ""
         ),
     }
@@ -195,26 +191,14 @@ async def suggest_goals(request: Request, user: dict = Depends(get_current_user)
     if not profile:
         raise HTTPException(400, "Complete onboarding first")
 
-    # Use display currency for AI context, also show local currency if different
-    display_currency = profile.get("currency", "USD")
-    local_currency   = profile.get("local_currency", display_currency)
-    country          = profile.get("country", "your country")
-
-    currency_context = (
-        f"USD (show local equivalent in {local_currency} too)"
-        if local_currency != "USD"
-        else "USD"
-    )
-
     prompt = f"""Based on this user profile, suggest 3 specific, achievable financial goals.
 
 Profile:
 - Stage: {profile.get('stage', 'survival')}
-- Monthly Income: ${profile.get('monthly_income', 0):,.0f} USD
-- Monthly Expenses: ${profile.get('monthly_expenses', 0):,.0f} USD
+- Monthly Income: {profile.get('currency','NGN')} {profile.get('monthly_income', 0):,.0f}
+- Monthly Expenses: {profile.get('currency','NGN')} {profile.get('monthly_expenses', 0):,.0f}
 - Short-term goal: {profile.get('short_term_goal', 'not set')}
-- Country: {country}
-- Display Currency: {display_currency}
+- Country: {profile.get('country', 'Nigeria')}
 
 Return ONLY a JSON array of 3 goals:
 [
@@ -222,17 +206,14 @@ Return ONLY a JSON array of 3 goals:
     "title": "Goal title",
     "description": "Why this goal matters for them",
     "goal_type": "savings|income|skill|debt_payoff|emergency_fund",
-    "target_amount": 500,
-    "currency": "{display_currency}",
+    "target_amount": 50000,
+    "currency": "NGN",
     "target_date": "2026-06-30",
     "priority": "high",
     "icon": "🎯",
     "ai_notes": "Specific advice for achieving this goal"
   }}
-]
-
-IMPORTANT: All target_amount values must be in {currency_context}.
-Be realistic for someone in {country}."""
+]"""
 
     result = await ai_service.chat(
         [{"role": "user", "content": "Suggest goals for me"}],

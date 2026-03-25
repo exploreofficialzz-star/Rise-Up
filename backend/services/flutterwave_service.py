@@ -1,7 +1,4 @@
-"""Flutterwave payment service — global debit/credit + multi-currency
-Primary currency: USD. All prices are defined in USD and converted to the
-user's preferred currency at checkout using approximate rates.
-"""
+"""Flutterwave payment service — global debit/credit + multi-currency"""
 import hashlib
 import hmac
 import json
@@ -17,45 +14,6 @@ logger = logging.getLogger(__name__)
 
 FLW_BASE = "https://api.flutterwave.com/v3"
 
-# ── Approximate USD conversion rates (update via live API in production) ──
-# 1 USD = N units of local currency
-CURRENCY_RATES: dict[str, float] = {
-    "USD":  1.0,
-    "GBP":  0.79,
-    "EUR":  0.92,
-    "CAD":  1.36,
-    "AUD":  1.52,
-    "CHF":  0.90,
-    "SGD":  1.34,
-    "JPY":  150.0,
-    "CNY":  7.20,
-    # Africa
-    "NGN":  1600.0,
-    "GHS":  15.5,
-    "KES":  130.0,
-    "ZAR":  18.5,
-    "EGP":  48.0,
-    "TZS":  2600.0,
-    "UGX":  3750.0,
-    "XOF":  615.0,
-    "XAF":  615.0,
-    "MAD":  10.0,
-    "ETB":  56.0,
-    "ZMW":  27.0,
-    # Asia / Middle East
-    "INR":  83.5,
-    "PHP":  56.0,
-    "PKR":  278.0,
-    "BDT":  110.0,
-    "IDR":  15700.0,
-    "MYR":  4.70,
-    "AED":  3.67,
-    "SAR":  3.75,
-    # Americas / LatAm
-    "BRL":  5.00,
-    "MXN":  17.20,
-}
-
 
 class FlutterwaveService:
     def __init__(self):
@@ -69,30 +27,6 @@ class FlutterwaveService:
     def _generate_tx_ref(self, user_id: str) -> str:
         return f"riseup-{user_id[:8]}-{uuid.uuid4().hex[:8]}"
 
-    def usd_to_local(self, usd_amount: float, currency: str) -> float:
-        """Convert a USD amount to the target currency using stored rates."""
-        rate = CURRENCY_RATES.get(currency.upper(), 1.0)
-        return round(usd_amount * rate, 2)
-
-    def local_to_usd(self, local_amount: float, currency: str) -> float:
-        """Convert a local currency amount to USD."""
-        rate = CURRENCY_RATES.get(currency.upper(), 1.0)
-        if rate == 0:
-            return local_amount
-        return round(local_amount / rate, 2)
-
-    def get_price_for_currency(self, plan: str, currency: str) -> float:
-        """
-        Return subscription price in the user's preferred currency.
-        Base prices are always in USD; converted using CURRENCY_RATES.
-        """
-        usd_base = (
-            settings.SUBSCRIPTION_MONTHLY_USD
-            if plan == "monthly"
-            else settings.SUBSCRIPTION_YEARLY_USD
-        )
-        return self.usd_to_local(usd_base, currency)
-
     async def initiate_payment(
         self,
         user_id: str,
@@ -104,19 +38,14 @@ class FlutterwaveService:
         name: str = None,
         phone: str = None,
     ) -> dict:
-        """Create a Flutterwave payment link.
-        Amount should already be in the target currency (use get_price_for_currency first).
-        """
+        """Create a payment link for subscription or feature unlock"""
         tx_ref = self._generate_tx_ref(user_id)
         title = "RiseUp Premium Monthly" if plan == "monthly" else "RiseUp Premium Yearly"
-
-        # Also store the USD equivalent in meta for reconciliation
-        usd_equivalent = self.local_to_usd(amount, currency)
 
         payload = {
             "tx_ref": tx_ref,
             "amount": amount,
-            "currency": currency.upper(),
+            "currency": currency,
             "redirect_url": redirect_url or f"{settings.FRONTEND_URL}/payment/callback",
             "customer": {
                 "email": email,
@@ -131,8 +60,7 @@ class FlutterwaveService:
             "meta": {
                 "user_id": user_id,
                 "plan": plan,
-                "source": "riseup_app",
-                "usd_equivalent": usd_equivalent,
+                "source": "riseup_app"
             }
         }
 
@@ -151,15 +79,14 @@ class FlutterwaveService:
                 "tx_ref": tx_ref,
                 "payment_link": data["data"]["link"],
                 "amount": amount,
-                "currency": currency.upper(),
-                "usd_equivalent": usd_equivalent,
+                "currency": currency
             }
 
         logger.error(f"Flutterwave payment initiation failed: {data}")
         return {"success": False, "error": data.get("message", "Payment failed")}
 
     async def verify_payment(self, transaction_id: str) -> dict:
-        """Verify a payment by transaction ID."""
+        """Verify a payment by transaction ID"""
         async with httpx.AsyncClient() as client:
             res = await client.get(
                 f"{FLW_BASE}/transactions/{transaction_id}/verify",
@@ -185,7 +112,7 @@ class FlutterwaveService:
         return {"success": False, "error": data.get("message")}
 
     async def verify_by_tx_ref(self, tx_ref: str) -> dict:
-        """Verify payment by our tx_ref."""
+        """Verify payment by our tx_ref"""
         async with httpx.AsyncClient() as client:
             res = await client.get(
                 f"{FLW_BASE}/transactions",
@@ -210,7 +137,7 @@ class FlutterwaveService:
         return {"success": False, "error": "Transaction not found"}
 
     def verify_webhook_signature(self, payload: bytes, signature: str) -> bool:
-        """Verify Flutterwave webhook signature."""
+        """Verify Flutterwave webhook signature"""
         if not settings.FLUTTERWAVE_WEBHOOK_HASH:
             return True  # skip in dev
 
@@ -220,6 +147,22 @@ class FlutterwaveService:
             hashlib.sha256
         ).hexdigest()
         return hmac.compare_digest(expected, signature or "")
+
+    def get_price_for_currency(self, plan: str, currency: str) -> float:
+        """Get subscription price in appropriate currency"""
+        usd_monthly = settings.SUBSCRIPTION_MONTHLY_USD
+        usd_yearly = settings.SUBSCRIPTION_YEARLY_USD
+
+        base = usd_monthly if plan == "monthly" else usd_yearly
+
+        # Approximate conversion rates (use live rates in production)
+        rates = {
+            "NGN": 1600, "GHS": 15.5, "KES": 130, "ZAR": 18.5,
+            "USD": 1, "GBP": 0.79, "EUR": 0.92, "CAD": 1.36,
+            "AUD": 1.52, "INR": 83.5
+        }
+        rate = rates.get(currency.upper(), 1)
+        return round(base * rate, 2)
 
 
 flutterwave_service = FlutterwaveService()

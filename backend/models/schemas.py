@@ -71,10 +71,9 @@ class ProfileUpdate(BaseModel):
     full_name: Optional[str] = None
     phone: Optional[str] = None
     country: Optional[str] = None
-    currency: Optional[str] = None          # active display currency (USD or local)
-    local_currency: Optional[str] = None    # user's country currency
+    currency: Optional[str] = None
     bio: Optional[str] = None
-    status: Optional[str] = None            # e.g. "Building my YouTube channel 🚀"
+    status: Optional[str] = None          # e.g. "Building my YouTube channel 🚀"
     avatar_url: Optional[str] = None
     wealth_type: Optional[str] = None
     learning_style: Optional[str] = None
@@ -150,8 +149,8 @@ class ProgressUpdate(BaseModel):
 
 # ── Payments ──────────────────────────────────────────
 class PaymentInitRequest(BaseModel):
-    plan: str = "monthly"   # monthly | yearly
-    currency: str = "USD"   # USD is the global default; user may pass local currency
+    plan: str = "monthly"  # monthly | yearly
+    currency: str = "NGN"
 
 
 class PaymentVerifyRequest(BaseModel):
@@ -176,4 +175,4 @@ class EarningLog(BaseModel):
     source_type: str
     source_id: Optional[str] = None
     description: Optional[str] = None
-    currency: str = "USD"   # always log in USD; local display handled client-side
+    currency: str = "NGN"

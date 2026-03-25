@@ -1,6 +1,4 @@
-"""Expenses & Budget Router — Track spending, set budgets, get net income analysis
-All amounts default to USD. Users may log in their local currency if preferred.
-"""
+"""Expenses & Budget Router — Track spending, set budgets, get net income analysis"""
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -29,7 +27,7 @@ CATEGORY_ICONS = {
 
 class ExpenseCreate(BaseModel):
     amount: float
-    currency: str = "USD"       # USD by default; user can set to local currency
+    currency: str = "NGN"
     category: str = "other"
     description: Optional[str] = None
     spent_at: Optional[str] = None   # ISO date string YYYY-MM-DD
@@ -53,7 +51,7 @@ class BudgetSet(BaseModel):
     month: str          # 'YYYY-MM'
     category: str
     budget_amount: float
-    currency: str = "USD"   # USD by default
+    currency: str = "NGN"
 
 
 # ── Expenses ─────────────────────────────────────────────────
@@ -71,7 +69,9 @@ async def list_expenses(
          .eq("user_id", user["id"]))
 
     if month:
+        # Filter by month using text prefix on spent_at
         start = f"{month}-01"
+        # Determine end of month
         year, mon = int(month[:4]), int(month[5:7])
         if mon == 12:
             end = f"{year + 1}-01-01"
@@ -111,7 +111,7 @@ async def log_expense(req: ExpenseCreate, request: Request, user: dict = Depends
 
     return {
         "expense": expense,
-        "message": f"{expense['icon']} {req.currency} {req.amount:,.2f} logged under {req.category}",
+        "message": f"{expense['icon']} {req.currency} {req.amount:,.0f} logged under {req.category}",
     }
 
 
@@ -178,27 +178,22 @@ async def get_monthly_summary(month: Optional[str] = None, user: dict = Depends(
     profile = await supabase_service.get_profile(user_id)
     monthly_income = float(profile.get("monthly_income") or 0) if profile else 0
 
-    # Resolve display currency (USD default, or user's preferred)
-    display_currency = profile.get("currency", "USD") if profile else "USD"
-    local_currency   = profile.get("local_currency", display_currency) if profile else display_currency
-
-    total_spent    = sum(float(b.get("spent") or 0) for b in breakdown)
+    total_spent = sum(float(b.get("spent") or 0) for b in breakdown)
     total_budgeted = sum(float(b.get("budgeted") or 0) for b in breakdown)
-    net_income     = monthly_income - total_spent
+    net_income = monthly_income - total_spent
 
     # Add icons
     for b in breakdown:
-        b["icon"]       = CATEGORY_ICONS.get(b.get("category", "other"), "📦")
+        b["icon"] = CATEGORY_ICONS.get(b.get("category", "other"), "📦")
         b["over_budget"] = float(b.get("spent") or 0) > float(b.get("budgeted") or 0)
 
     return {
-        "month":            current_month,
-        "breakdown":        breakdown,
-        "total_spent":      total_spent,
-        "total_budgeted":   total_budgeted,
-        "monthly_income":   monthly_income,
-        "net_income":       net_income,
-        "savings_rate":     round((net_income / monthly_income * 100), 1) if monthly_income > 0 else 0,
-        "display_currency": display_currency,
-        "local_currency":   local_currency,
+        "month":          current_month,
+        "breakdown":      breakdown,
+        "total_spent":    total_spent,
+        "total_budgeted": total_budgeted,
+        "monthly_income": monthly_income,
+        "net_income":     net_income,
+        "savings_rate":   round((net_income / monthly_income * 100), 1) if monthly_income > 0 else 0,
+        "currency":       profile.get("currency", "NGN") if profile else "NGN",
     }

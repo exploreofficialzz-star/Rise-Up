@@ -1,8 +1,10 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:share_plus/share_plus.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 import '../../services/ad_service.dart';
@@ -27,6 +29,7 @@ class PostModel {
   final bool isPremiumPost;
   bool isLiked;
   bool isSaved;
+  bool isFollowing;
   final String userId;
 
   PostModel({
@@ -44,6 +47,7 @@ class PostModel {
     this.isPremiumPost = false,
     this.isLiked = false,
     this.isSaved = false,
+    this.isFollowing = false,
     this.userId = '',
   });
 
@@ -75,6 +79,7 @@ class PostModel {
       isPremiumPost: profile['subscription_tier'] == 'premium',
       isLiked: data['is_liked'] == true,
       isSaved: data['is_saved'] == true,
+      isFollowing: data['is_following'] == true,
       userId: profile['id']?.toString() ?? '',
     );
   }
@@ -91,6 +96,7 @@ class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabCtrl;
   Map _profile = {};
+  String? _myUserId;
   int _aiUsedToday = 0;
   static const int _dailyFreeLimit = 3;
 
@@ -108,7 +114,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void initState() {
     super.initState();
-        _loadStatus();
+    _loadStatus();
     _tabCtrl = TabController(length: 3, vsync: this);
     _tabCtrl.addListener(() {
       if (!_tabCtrl.indexIsChanging) {
@@ -123,7 +129,10 @@ class _HomeScreenState extends State<HomeScreen>
   Future<void> _loadProfile() async {
     try {
       final data = await api.getProfile();
-      if (mounted) setState(() => _profile = data['profile'] ?? {});
+      if (mounted) setState(() {
+        _profile = data['profile'] ?? {};
+        _myUserId = _profile['id']?.toString();
+      });
     } catch (_) {}
   }
 
@@ -138,7 +147,7 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-    Future<void> _loadStatus() async {
+  Future<void> _loadStatus() async {
     try {
       final data = await api.get('/posts/status/feed');
       if (mounted) setState(() {
@@ -218,13 +227,14 @@ class _HomeScreenState extends State<HomeScreen>
 
   void _openAi(PostModel post, {required bool isPrivate}) {
     if (isPrivate) {
-      context.go('/chat?mode=general&postContext=${Uri.encodeComponent(post.content)}&postAuthor=${Uri.encodeComponent(post.name)}');
+      context.push('/chat?mode=general&postContext=${Uri.encodeComponent(post.content)}&postAuthor=${Uri.encodeComponent(post.name)}');
     } else {
+      // Open AI sheet that ALSO posts the response as a comment
       showModalBottomSheet(
         context: context,
         isScrollControlled: true,
         backgroundColor: Colors.transparent,
-        builder: (_) => PostAiSheet(post: post),
+        builder: (_) => PostAiSheet(post: post, postAsComment: true),
       );
     }
   }
@@ -290,16 +300,39 @@ class _HomeScreenState extends State<HomeScreen>
           child: Column(children: [
             SizedBox(
               height: 92,
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                itemCount: _statusUsers.length + 1,
-                itemBuilder: (_, i) {
-                  if (i == 0) return _StoryAddButton(isDark: isDark, onTap: () => context.push('/create-status'));
-                  final u = _statusUsers[i - 1] as Map;
-                  return _StoryItem(user: u, isDark: isDark, onTap: () => _viewStatus(u));
-                },
-              ),
+              child: _statusLoaded
+                ? ListView.builder(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    itemCount: _statusUsers.length + 1,
+                    itemBuilder: (_, i) {
+                      if (i == 0) return _StoryAddButton(isDark: isDark, onTap: () => context.push('/create-status'));
+                      final u = _statusUsers[i - 1] as Map;
+                      return _StoryItem(user: u, isDark: isDark, onTap: () => _viewStatus(u));
+                    },
+                  )
+                : ListView.builder(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    itemCount: 5,
+                    itemBuilder: (_, i) {
+                      if (i == 0) return _StoryAddButton(isDark: isDark, onTap: () => context.push('/create-status'));
+                      return Padding(
+                        padding: const EdgeInsets.only(right: 14),
+                        child: Column(children: [
+                          Container(
+                            width: 58, height: 58,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: isDark ? AppColors.bgSurface : Colors.grey.shade200,
+                            ),
+                          ),
+                          const SizedBox(height: 5),
+                          Container(width: 40, height: 10, decoration: BoxDecoration(color: isDark ? AppColors.bgSurface : Colors.grey.shade200, borderRadius: BorderRadius.circular(5))),
+                        ]),
+                      );
+                    },
+                  ),
             ),
             Divider(height: 1, color: borderColor),
           ]),
@@ -367,14 +400,10 @@ class _HomeScreenState extends State<HomeScreen>
                         ),
                       );
                     }
-                    // Insert ad every kFeedAdFrequency posts
                     if (adManager.shouldShowFeedAd(i)) {
                       return FeedAdCard(
-                        isDark: isDark,
-                        cardColor: cardColor,
-                        borderColor: borderColor,
-                        textColor: textColor,
-                        subColor: subColor,
+                        isDark: isDark, cardColor: cardColor, borderColor: borderColor,
+                        textColor: textColor, subColor: subColor,
                       );
                     }
                     final postIndex = adManager.realPostIndex(i);
@@ -386,6 +415,7 @@ class _HomeScreenState extends State<HomeScreen>
                       borderColor: borderColor,
                       textColor: textColor,
                       subColor: subColor,
+                      myUserId: _myUserId,
                       onAskAI: (p) => _handleAiRequest(p, isPrivate: false),
                       onPrivateChat: (p) => _handleAiRequest(p, isPrivate: true),
                       isPremium: _isPremium,
@@ -401,7 +431,11 @@ class _HomeScreenState extends State<HomeScreen>
                         final res = await api.toggleSave(p.id);
                         setState(() => p.isSaved = res['saved'] == true);
                       },
-                      onComment: (p) => context.go('/comments/${p.id}?content=${Uri.encodeComponent(p.content)}&author=${Uri.encodeComponent(p.name)}'),
+                      onFollow: (p) async {
+                        final res = await api.toggleFollow(p.userId);
+                        setState(() => p.isFollowing = res['following'] == true);
+                      },
+                      onComment: (p) => context.push('/comments/${p.id}?content=${Uri.encodeComponent(p.content)}&author=${Uri.encodeComponent(p.name)}&userId=${p.userId}'),
                     ).animate().fadeIn(delay: Duration(milliseconds: i * 40));
                   },
                 ),
@@ -419,10 +453,12 @@ class PostCard extends StatefulWidget {
   final PostModel post;
   final bool isDark, isPremium;
   final Color cardColor, borderColor, textColor, subColor;
+  final String? myUserId;
   final Function(PostModel) onAskAI;
   final Function(PostModel) onPrivateChat;
   final Function(PostModel) onLike;
   final Function(PostModel) onSave;
+  final Function(PostModel) onFollow;
   final Function(PostModel) onComment;
   final int aiRemaining;
 
@@ -438,9 +474,11 @@ class PostCard extends StatefulWidget {
     required this.onPrivateChat,
     required this.onLike,
     required this.onSave,
+    required this.onFollow,
     required this.onComment,
     required this.isPremium,
     required this.aiRemaining,
+    this.myUserId,
   });
 
   @override
@@ -454,9 +492,101 @@ class _PostCardState extends State<PostCard> {
     return '$n';
   }
 
+  void _showMoreOptions(BuildContext context) {
+    final p = widget.post;
+    final isDark = widget.isDark;
+    final isOwnPost = widget.myUserId != null && widget.myUserId == p.userId;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Container(
+        decoration: BoxDecoration(
+          color: isDark ? AppColors.bgCard : Colors.white,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(width: 40, height: 4, margin: const EdgeInsets.only(bottom: 16),
+            decoration: BoxDecoration(color: Colors.grey.shade400, borderRadius: BorderRadius.circular(2))),
+          _OptionTile(
+            icon: Iconsax.copy, label: 'Copy post text', color: widget.textColor,
+            onTap: () {
+              Navigator.pop(context);
+              Clipboard.setData(ClipboardData(text: p.content));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Post copied to clipboard ✅'), backgroundColor: AppColors.success, duration: Duration(seconds: 1)));
+            },
+          ),
+          _OptionTile(
+            icon: Iconsax.link_1, label: 'Copy link', color: widget.textColor,
+            onTap: () {
+              Navigator.pop(context);
+              Clipboard.setData(ClipboardData(text: 'https://riseup.app/post/${p.id}'));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Link copied! 🔗'), backgroundColor: AppColors.success, duration: Duration(seconds: 1)));
+            },
+          ),
+          if (!isOwnPost) ...[
+            _OptionTile(
+              icon: p.isFollowing ? Icons.person_remove_outlined : Icons.person_add_outlined,
+              label: p.isFollowing ? 'Unfollow ${p.name}' : 'Follow ${p.name}',
+              color: AppColors.primary,
+              onTap: () {
+                Navigator.pop(context);
+                widget.onFollow(p);
+              },
+            ),
+            _OptionTile(
+              icon: Iconsax.message, label: 'Message ${p.name}', color: widget.textColor,
+              onTap: () {
+                Navigator.pop(context);
+                context.push('/conversation/${p.userId}?name=${Uri.encodeComponent(p.name)}&avatar=${Uri.encodeComponent(p.avatar)}');
+              },
+            ),
+            _OptionTile(
+              icon: Icons.flag_outlined, label: 'Report post', color: Colors.red,
+              onTap: () {
+                Navigator.pop(context);
+                api.post('/posts/${p.id}/report', {'reason': 'inappropriate'}).catchError((_) => {});
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Post reported. Thank you!'), backgroundColor: AppColors.success, duration: Duration(seconds: 2)));
+              },
+            ),
+          ] else ...[
+            _OptionTile(
+              icon: Icons.delete_outline_rounded, label: 'Delete post', color: Colors.red,
+              onTap: () async {
+                Navigator.pop(context);
+                final confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (_) => AlertDialog(
+                    title: const Text('Delete post?'),
+                    content: const Text('This action cannot be undone.'),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+                      TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete', style: TextStyle(color: Colors.red))),
+                    ],
+                  ),
+                );
+                if (confirm == true) {
+                  await api.deletePost(p.id).catchError((_) => {});
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Post deleted'), backgroundColor: AppColors.success));
+                }
+              },
+            ),
+          ],
+        ]),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final p = widget.post;
+    final isOwnPost = widget.myUserId != null && widget.myUserId == p.userId && widget.myUserId!.isNotEmpty;
+
     return Container(
       color: widget.cardColor,
       child: Column(
@@ -468,7 +598,7 @@ class _PostCardState extends State<PostCard> {
               // Header
               Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 GestureDetector(
-                  onTap: () => context.go('/user-profile/${p.userId}'),
+                  onTap: () => context.push('/user-profile/${p.userId}'),
                   child: Container(
                     width: 44, height: 44,
                     decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.12), shape: BoxShape.circle),
@@ -479,7 +609,7 @@ class _PostCardState extends State<PostCard> {
                 Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Row(children: [
                     GestureDetector(
-                      onTap: () => context.go('/user-profile/${p.userId}'),
+                      onTap: () => context.push('/user-profile/${p.userId}'),
                       child: Text(p.name, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: widget.textColor)),
                     ),
                     if (p.verified) ...[const SizedBox(width: 3), const Icon(Icons.verified_rounded, color: AppColors.primary, size: 14)],
@@ -490,19 +620,65 @@ class _PostCardState extends State<PostCard> {
                     Text(' · ${p.time}', style: TextStyle(fontSize: 12, color: widget.subColor)),
                   ]),
                 ])),
+                // Follow button (only for other users' posts)
+                if (!isOwnPost) ...[
+                  GestureDetector(
+                    onTap: () { HapticFeedback.lightImpact(); widget.onFollow(p); },
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: p.isFollowing ? Colors.transparent : AppColors.primary,
+                        border: Border.all(color: p.isFollowing ? widget.subColor : AppColors.primary),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        p.isFollowing ? 'Following' : 'Follow',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: p.isFollowing ? widget.subColor : Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                ],
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.1), borderRadius: BorderRadius.circular(20)),
                   child: Text(p.tag, style: const TextStyle(fontSize: 10, color: AppColors.primary, fontWeight: FontWeight.w600)),
                 ),
                 const SizedBox(width: 4),
-                Icon(Icons.more_horiz, color: widget.subColor, size: 20),
+                // Three dots menu — NOW WORKING
+                GestureDetector(
+                  onTap: () { HapticFeedback.lightImpact(); _showMoreOptions(context); },
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: Icon(Icons.more_horiz, color: widget.subColor, size: 20),
+                  ),
+                ),
               ]),
 
               const SizedBox(height: 12),
 
               // Content
               Text(p.content, style: TextStyle(fontSize: 14.5, color: widget.isDark ? const Color(0xFFE8E8F0) : Colors.black87, height: 1.6, letterSpacing: 0.1)),
+
+              // Media image (if post has one)
+              if (p is PostModel && _postHasMedia(p)) ...[
+                const SizedBox(height: 10),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Image.network(
+                    _getMediaUrl(p),
+                    fit: BoxFit.cover,
+                    width: double.infinity,
+                    height: 200,
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                  ),
+                ),
+              ],
 
               const SizedBox(height: 14),
 
@@ -517,11 +693,33 @@ class _PostCardState extends State<PostCard> {
                 const SizedBox(width: 18),
                 _ActionBtn(icon: Iconsax.message, label: _fmt(p.comments), color: widget.subColor, onTap: () => widget.onComment(p)),
                 const SizedBox(width: 18),
-                _ActionBtn(icon: Iconsax.send_1, label: _fmt(p.shares), color: widget.subColor, onTap: () => api.sharePost(p.id)),
+                // Share button — NOW WORKING (native share sheet)
+                _ActionBtn(
+                  icon: Iconsax.send_1,
+                  label: _fmt(p.shares),
+                  color: widget.subColor,
+                  onTap: () async {
+                    HapticFeedback.lightImpact();
+                    await api.sharePost(p.id).catchError((_) => {});
+                    await Share.share(
+                      '${p.content}\n\n— ${p.name} on RiseUp\nhttps://riseup.app/post/${p.id}',
+                      subject: 'Check this out on RiseUp',
+                    );
+                  },
+                ),
                 const Spacer(),
+                // Save button — NOW WORKING with visual feedback
                 GestureDetector(
                   onTap: () { HapticFeedback.lightImpact(); widget.onSave(p); },
-                  child: Icon(p.isSaved ? Iconsax.archive_tick : Iconsax.archive_add, color: p.isSaved ? AppColors.primary : widget.subColor, size: 20),
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 200),
+                    child: Icon(
+                      p.isSaved ? Iconsax.archive_tick : Iconsax.archive_add,
+                      key: ValueKey(p.isSaved),
+                      color: p.isSaved ? AppColors.primary : widget.subColor,
+                      size: 20,
+                    ),
+                  ),
                 ),
               ]),
 
@@ -568,6 +766,26 @@ class _PostCardState extends State<PostCard> {
       ),
     );
   }
+
+  bool _postHasMedia(PostModel p) {
+    // PostModel doesn't expose mediaUrl yet — will be safe to add later
+    return false;
+  }
+
+  String _getMediaUrl(PostModel p) => '';
+}
+
+class _OptionTile extends StatelessWidget {
+  final IconData icon; final String label; final Color color; final VoidCallback onTap;
+  const _OptionTile({required this.icon, required this.label, required this.color, required this.onTap});
+  @override
+  Widget build(BuildContext context) => ListTile(
+    leading: Icon(icon, color: color, size: 22),
+    title: Text(label, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: color)),
+    onTap: onTap,
+    contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+    dense: true,
+  );
 }
 
 class _ActionBtn extends StatelessWidget {
@@ -875,19 +1093,47 @@ class _StatusViewSheet extends StatefulWidget {
   State<_StatusViewSheet> createState() => _StatusViewSheetState();
 }
 
-class _StatusViewSheetState extends State<_StatusViewSheet> {
+class _StatusViewSheetState extends State<_StatusViewSheet> with SingleTickerProviderStateMixin {
   int _currentIndex = 0;
   late PageController _page;
+  late AnimationController _progressCtrl;
 
   @override
   void initState() {
     super.initState();
     _page = PageController();
+    _progressCtrl = AnimationController(vsync: this, duration: const Duration(seconds: 5));
+    _progressCtrl.addStatusListener((s) {
+      if (s == AnimationStatus.completed) _goNext();
+    });
     _markViewed();
+    _progressCtrl.forward();
   }
 
   @override
-  void dispose() { _page.dispose(); super.dispose(); }
+  void dispose() { _page.dispose(); _progressCtrl.dispose(); super.dispose(); }
+
+  void _goNext() {
+    final items = widget.user['items'] as List? ?? [];
+    if (_currentIndex < items.length - 1) {
+      setState(() { _currentIndex++; });
+      _page.animateToPage(_currentIndex, duration: const Duration(milliseconds: 300), curve: Curves.easeInOut);
+      _markViewed();
+      _progressCtrl.reset();
+      _progressCtrl.forward();
+    } else {
+      Navigator.pop(context);
+    }
+  }
+
+  void _goPrev() {
+    if (_currentIndex > 0) {
+      setState(() { _currentIndex--; });
+      _page.animateToPage(_currentIndex, duration: const Duration(milliseconds: 300), curve: Curves.easeInOut);
+      _progressCtrl.reset();
+      _progressCtrl.forward();
+    }
+  }
 
   void _markViewed() {
     final items = widget.user['items'] as List? ?? [];
@@ -915,58 +1161,92 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
     try { bgColor = Color(int.parse(bg.replaceFirst('#', '0xFF'))); } catch (_) {}
 
     return Container(
-      height: MediaQuery.of(context).size.height * 0.85,
+      height: MediaQuery.of(context).size.height * 0.88,
       decoration: BoxDecoration(
         color: media != null ? Colors.black : bgColor,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
       ),
       child: Stack(children: [
-        // Content
-        if (media != null && (item['media_type'] == 'image'))
-          Positioned.fill(child: ClipRRect(
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-            child: Image.network(media, fit: BoxFit.cover),
-          ))
-        else if (media == null && text.isNotEmpty)
-          Positioned.fill(child: Center(child: Padding(
-            padding: const EdgeInsets.all(32),
-            child: Text(text, textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white, fontSize: 22,
-                  fontWeight: FontWeight.w600, height: 1.5)),
-          ))),
+        // Content via PageView for swipe
+        PageView.builder(
+          controller: _page,
+          onPageChanged: (i) {
+            setState(() => _currentIndex = i);
+            _markViewed();
+            _progressCtrl.reset();
+            _progressCtrl.forward();
+          },
+          itemCount: items.length,
+          itemBuilder: (_, idx) {
+            final it   = items[idx] as Map;
+            final med  = it['media_url']?.toString();
+            final txt  = it['content']?.toString() ?? '';
+            final bg2  = it['background_color']?.toString() ?? '#6C5CE7';
+            Color bgC2 = AppColors.primary;
+            try { bgC2 = Color(int.parse(bg2.replaceFirst('#', '0xFF'))); } catch (_) {}
 
-        // Progress bars
+            if (med != null && (it['media_type'] == 'image')) {
+              return ClipRRect(
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+                child: Image.network(med, fit: BoxFit.cover,
+                    width: double.infinity,
+                    errorBuilder: (_, __, ___) => Container(color: bgC2,
+                        child: Center(child: Text(txt, textAlign: TextAlign.center,
+                            style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w600))))),
+              );
+            } else {
+              return Container(
+                color: bgC2,
+                child: Center(child: Padding(
+                  padding: const EdgeInsets.all(32),
+                  child: Text(txt, textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w600, height: 1.5)),
+                )),
+              );
+            }
+          },
+        ),
+
+        // Progress bars (animated)
         Positioned(top: 12, left: 12, right: 12,
-          child: Row(children: List.generate(items.length, (i) => Expanded(
-            child: Container(
-              height: 3,
-              margin: const EdgeInsets.symmetric(horizontal: 2),
-              decoration: BoxDecoration(
-                color: i <= _currentIndex
-                    ? Colors.white
-                    : Colors.white.withOpacity(0.3),
-                borderRadius: BorderRadius.circular(2),
+          child: Row(children: List.generate(items.length, (i) {
+            return Expanded(
+              child: Container(
+                height: 3,
+                margin: const EdgeInsets.symmetric(horizontal: 2),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(2),
+                  child: i < _currentIndex
+                    ? Container(color: Colors.white)
+                    : i > _currentIndex
+                    ? Container(color: Colors.white.withOpacity(0.3))
+                    : AnimatedBuilder(
+                        animation: _progressCtrl,
+                        builder: (_, __) => LinearProgressIndicator(
+                          value: _progressCtrl.value,
+                          backgroundColor: Colors.white.withOpacity(0.3),
+                          valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                        ),
+                      ),
+                ),
               ),
-            ),
-          ))),
+            );
+          })),
         ),
 
         // Header
         Positioned(top: 24, left: 16, right: 16,
           child: Row(children: [
             Container(width: 36, height: 36,
-              decoration: const BoxDecoration(shape: BoxShape.circle,
-                  color: Colors.white24),
+              decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.white24),
               child: ClipOval(child: avatar != null && avatar.isNotEmpty
                   ? Image.network(avatar, fit: BoxFit.cover)
                   : Center(child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
-                      style: const TextStyle(color: Colors.white,
-                          fontWeight: FontWeight.w800)))),
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800)))),
             ),
             const SizedBox(width: 8),
             Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(name, style: const TextStyle(color: Colors.white,
-                  fontWeight: FontWeight.w700, fontSize: 13)),
+              Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13)),
               Text(items.length == 1 ? '1 status' : '${items.length} statuses',
                   style: const TextStyle(color: Colors.white60, fontSize: 11)),
             ]),
@@ -981,10 +1261,7 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
           Positioned(bottom: 80, left: 16, right: 16,
             child: Container(
               padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.5),
-                borderRadius: BorderRadius.circular(12),
-              ),
+              decoration: BoxDecoration(color: Colors.black.withOpacity(0.5), borderRadius: BorderRadius.circular(12)),
               child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 14)),
             ),
           ),
@@ -994,36 +1271,20 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
           Positioned(bottom: 80, left: 16, right: 16,
             child: Container(
               padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.6),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white30),
-              ),
+              decoration: BoxDecoration(color: Colors.black.withOpacity(0.6), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.white30)),
               child: Row(children: [
                 const Icon(Icons.link_rounded, color: Colors.white, size: 18),
                 const SizedBox(width: 8),
-                Expanded(child: Text(
-                    item['link_title']?.toString() ?? link,
-                    style: const TextStyle(color: Colors.white, fontSize: 13),
-                    maxLines: 2, overflow: TextOverflow.ellipsis)),
+                Expanded(child: Text(item['link_title']?.toString() ?? link,
+                    style: const TextStyle(color: Colors.white, fontSize: 13), maxLines: 2, overflow: TextOverflow.ellipsis)),
               ]),
             ),
           ),
 
-        // Tap navigation
+        // Tap navigation (left = prev, right = next)
         Row(children: [
-          Expanded(child: GestureDetector(onTap: () {
-            if (_currentIndex > 0) setState(() {
-              _currentIndex--;
-              _markViewed();
-            });
-          })),
-          Expanded(child: GestureDetector(onTap: () {
-            if (_currentIndex < items.length - 1) setState(() {
-              _currentIndex++;
-              _markViewed();
-            }) ;else Navigator.pop(context);
-          })),
+          Expanded(child: GestureDetector(onTap: _goPrev, behavior: HitTestBehavior.translucent, child: const SizedBox.expand())),
+          Expanded(child: GestureDetector(onTap: _goNext, behavior: HitTestBehavior.translucent, child: const SizedBox.expand())),
         ]),
       ]),
     );

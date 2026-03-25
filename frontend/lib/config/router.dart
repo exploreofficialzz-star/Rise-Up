@@ -46,15 +46,12 @@ import '../screens/agent/agent_screen.dart';
 import '../screens/profile/edit_profile_screen.dart';
 import '../screens/profile/user_profile_screen.dart';
 import '../screens/home/create_status_screen.dart';
-
 import '../screens/market_pulse/market_pulse_screen.dart';
 import '../screens/contracts/contracts_screen.dart';
 import '../screens/memory/income_memory_screen.dart';
-
 import '../screens/challenges/challenges_screen.dart';
 import '../screens/crm/crm_screen.dart';
 import '../screens/portfolio/portfolio_screen.dart';
-
 import '../main_shell.dart';
 export '../main_shell.dart' show mainShellKey;
 
@@ -72,29 +69,34 @@ final router = GoRouter(
     GoRoute(path: '/terms',           builder: (_, __) => const TermsScreen()),
     GoRoute(path: '/onboarding',      builder: (_, __) => const OnboardingChatScreen()),
 
-    // ── Full screen modals ────────────────────────────
-    GoRoute(path: '/premium',         builder: (_, __) => const PremiumScreen()),
+    // ── Full screen modals (outside shell so back works) ──
+    GoRoute(path: '/premium', builder: (_, __) => const PremiumScreen()),
+
+    // FIX: Comments now receives postUserId and back button returns correctly
     GoRoute(
       path: '/comments/:postId',
       builder: (_, s) => CommentsScreen(
-        postId: s.pathParameters['postId'] ?? '',
+        postId:      s.pathParameters['postId'] ?? '',
         postContent: s.uri.queryParameters['content'] ?? '',
-        postAuthor: s.uri.queryParameters['author'] ?? '',
+        postAuthor:  s.uri.queryParameters['author']  ?? '',
+        postUserId:  s.uri.queryParameters['userId'],
       ),
     ),
+
+    // FIX: Conversation route accepts conversationId OR userId
     GoRoute(
       path: '/conversation/:userId',
       builder: (_, s) => ConversationScreen(
         userId: s.pathParameters['userId'] ?? '',
-        name: s.uri.queryParameters['name'] ?? 'User',
+        name:   s.uri.queryParameters['name']   ?? 'User',
         avatar: s.uri.queryParameters['avatar'] ?? '👤',
-        isAI: s.uri.queryParameters['isAI'] == 'true',
+        isAI:   s.uri.queryParameters['isAI']   == 'true',
       ),
     ),
 
     // ── Main shell ────────────────────────────────────
     ShellRoute(
-      builder: (context, state, child) => MainShell(child: child), // key set inside MainShell
+      builder: (context, state, child) => MainShell(child: child),
       routes: [
         GoRoute(path: '/home',          builder: (_, __) => const HomeScreen()),
         GoRoute(path: '/dashboard',     builder: (_, __) => const DashboardScreen()),
@@ -110,31 +112,27 @@ final router = GoRouter(
           path: '/live-viewer/:id',
           builder: (_, s) => LiveViewerScreen(
             sessionId: s.pathParameters['id']!,
-            host: s.uri.queryParameters['host'] ?? 'Host',
-            title: s.uri.queryParameters['title'] ?? 'Live Session',
+            host:      s.uri.queryParameters['host']  ?? 'Host',
+            title:     s.uri.queryParameters['title'] ?? 'Live Session',
           ),
         ),
-        GoRoute(path: '/groups',        builder: (_, __) => const GroupsScreen()),
+        GoRoute(path: '/groups', builder: (_, __) => const GroupsScreen()),
         GoRoute(
           path: '/group/:id',
           builder: (_, s) => GroupDetailScreen(
-            groupId: s.pathParameters['id']!,
+            groupId:   s.pathParameters['id']!,
             groupName: s.uri.queryParameters['name'] ?? 'Group',
           ),
         ),
-
-        // AI Chat
         GoRoute(
           path: '/chat',
           builder: (_, s) => ChatScreen(
             conversationId: s.uri.queryParameters['cid'],
-            mode: s.uri.queryParameters['mode'] ?? 'general',
-            postContext: s.uri.queryParameters['postContext'],
-            postAuthor: s.uri.queryParameters['postAuthor'],
+            mode:           s.uri.queryParameters['mode']        ?? 'general',
+            postContext:    s.uri.queryParameters['postContext'],
+            postAuthor:     s.uri.queryParameters['postAuthor'],
           ),
         ),
-
-        // Other screens
         GoRoute(path: '/tasks',        builder: (_, __) => const TasksScreen()),
         GoRoute(path: '/skills',       builder: (_, __) => const SkillsScreen()),
         GoRoute(path: '/skills/:id',   builder: (_, s) => SkillDetailScreen(moduleId: s.pathParameters['id']!)),
@@ -147,30 +145,17 @@ final router = GoRouter(
         GoRoute(path: '/referrals',    builder: (_, __) => const ReferralsScreen()),
         GoRoute(path: '/streak',       builder: (_, __) => const StreakScreen()),
         GoRoute(path: '/payment',      builder: (_, s) => PaymentScreen(plan: s.uri.queryParameters['plan'] ?? 'monthly')),
-
-        // ── AI Workflow Engine ────────────────────────────────
-        GoRoute(path: '/workflow',        builder: (_, __) => const WorkflowHubScreen()),
-        GoRoute(path: '/workflow/new',    builder: (_, __) => const WorkflowResearchScreen()),
-        GoRoute(path: '/workflow/:id',    builder: (_, s) => WorkflowDetailScreen(workflowId: s.pathParameters['id']!)),
-
-        // ── Collaboration ─────────────────────────────────────
-        GoRoute(path: '/collaboration',   builder: (_, __) => const CollaborationScreen()),
-
-        // ── Agentic AI ────────────────────────────────────────
-        GoRoute(path: '/agent',            builder: (_, __) => const AgentScreen()),
-        GoRoute(
-          path: '/agent/:workflowId',
-          builder: (_, s) => AgentScreen(workflowId: s.pathParameters['workflowId']),
-        ),
-
-        // ── Edit Profile ──────────────────────────────────────
-        GoRoute(path: '/edit-profile',     builder: (_, __) => const EditProfileScreen()),
-        GoRoute(path: '/create-status',    builder: (_, __) => const CreateStatusScreen()),
-
-        // ── New Superpower Features ───────────────────────────
+        GoRoute(path: '/workflow',     builder: (_, __) => const WorkflowHubScreen()),
+        GoRoute(path: '/workflow/new', builder: (_, __) => const WorkflowResearchScreen()),
+        GoRoute(path: '/workflow/:id', builder: (_, s) => WorkflowDetailScreen(workflowId: s.pathParameters['id']!)),
+        GoRoute(path: '/collaboration',builder: (_, __) => const CollaborationScreen()),
+        GoRoute(path: '/agent',        builder: (_, __) => const AgentScreen()),
+        GoRoute(path: '/agent/:workflowId', builder: (_, s) => AgentScreen(workflowId: s.pathParameters['workflowId'])),
+        GoRoute(path: '/edit-profile', builder: (_, __) => const EditProfileScreen()),
+        GoRoute(path: '/create-status',builder: (_, __) => const CreateStatusScreen()),
         GoRoute(path: '/pulse',        builder: (_, __) => const MarketPulseScreen()),
         GoRoute(path: '/contracts',    builder: (_, __) => const ContractsScreen()),
-        GoRoute(path: '/memory',        builder: (_, __) => const IncomeMemoryScreen()),
+        GoRoute(path: '/memory',       builder: (_, __) => const IncomeMemoryScreen()),
         GoRoute(path: '/challenges',   builder: (_, __) => const ChallengesScreen()),
         GoRoute(path: '/crm',          builder: (_, __) => const CrmScreen()),
         GoRoute(path: '/portfolio',    builder: (_, __) => const PortfolioScreen()),

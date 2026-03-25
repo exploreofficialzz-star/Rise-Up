@@ -81,7 +81,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
       final r = await api.getOrCreateConversation(widget.userId);
       final convId = r['conversation_id']?.toString() ?? r['id']?.toString();
       if (convId != null && mounted) {
-        context.push('/messages/$convId');
+        context.push('/conversation/${widget.userId}?name=${Uri.encodeComponent(_profile['full_name']?.toString() ?? 'User')}&avatar=${Uri.encodeComponent(_profile['avatar_url']?.toString() ?? '👤')}');
       }
     } catch (_) {
       if (mounted) {
