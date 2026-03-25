@@ -1,9 +1,8 @@
 """
 RiseUp AI Workflow Engine
 ─────────────────────────
-Core Vision: Don't just give tips — research deeply, break down the work,
-automate what's possible, find free tools, create a managed workflow,
-and track real revenue per task.
+Primary currency: USD (global default).
+Users can view amounts in their local currency via the toggle on the frontend.
 """
 
 import json
@@ -25,40 +24,40 @@ logger = logging.getLogger(__name__)
 
 # ── Request / Response Models ─────────────────────────────────────
 class ResearchRequest(BaseModel):
-    goal: str                          # "I want to earn on YouTube in 2 months"
-    currency: Optional[str] = "NGN"
+    goal: str
+    currency: Optional[str] = "USD"              # defaults to USD
     available_hours_per_day: Optional[float] = 2.0
-    budget: Optional[float] = 0.0     # How much they can invest ($0 = free tools only)
+    budget: Optional[float] = 0.0               # investment budget in USD
 
 
 class CreateWorkflowRequest(BaseModel):
     title: str
     goal: str
-    income_type: str                   # youtube, freelance, physical, ecommerce, etc.
-    research_data: dict                # The AI research result
-    currency: Optional[str] = "NGN"
+    income_type: str
+    research_data: dict
+    currency: Optional[str] = "USD"
 
 
 class LogRevenueRequest(BaseModel):
     amount: float
-    currency: Optional[str] = "NGN"
+    currency: Optional[str] = "USD"
     source: Optional[str] = ""
     note: Optional[str] = ""
 
 
 class UpdateStepRequest(BaseModel):
-    status: str                        # pending / in_progress / done / skipped
+    status: str     # pending / in_progress / done / skipped
 
 
 # ── AI Research Prompt ────────────────────────────────────────────
 def _build_research_prompt(goal: str, budget: float, hours: float, currency: str) -> str:
-    budget_label = "ZERO ($0 / free tools only)" if budget == 0 else f"${budget}"
+    budget_label = "ZERO ($0 / free tools only)" if budget == 0 else f"${budget} USD"
     return f"""You are RiseUp's deep research engine. A user has an income goal and you must do REAL research and give EXECUTION-READY results — not generic tips.
 
 USER GOAL: {goal}
 DAILY TIME AVAILABLE: {hours} hours/day
 STARTING BUDGET: {budget_label}
-PREFERRED CURRENCY: {currency}
+PRIMARY CURRENCY: {currency}
 
 YOUR JOB — Analyze this goal and return a JSON object (NO markdown, NO backticks, ONLY raw JSON) with this EXACT structure:
 
@@ -68,9 +67,9 @@ YOUR JOB — Analyze this goal and return a JSON object (NO markdown, NO backtic
   "viability_score": 85,
   "realistic_timeline": "6-8 weeks",
   "potential_monthly_income": {{
-    "min": 15000,
-    "max": 80000,
-    "currency": "{currency}"
+    "min": 200,
+    "max": 800,
+    "currency": "USD"
   }},
   "what_is_working_now": [
     "Specific thing that works in 2025/2026 for this income type",
@@ -98,7 +97,7 @@ YOUR JOB — Analyze this goal and return a JSON object (NO markdown, NO backtic
     {{"name": "DaVinci Resolve Free", "url": "blackmagicdesign.com/products/davinciresolve", "purpose": "Professional video editing — free", "category": "editing"}}
   ],
   "paid_tools_when_ready": [
-    {{"name": "TubeBuddy Pro", "cost_monthly": 9, "currency": "USD", "purpose": "Advanced A/B testing + analytics", "unlock_at_revenue": 10000}}
+    {{"name": "TubeBuddy Pro", "cost_monthly": 9, "currency": "USD", "purpose": "Advanced A/B testing + analytics", "unlock_at_revenue": 500}}
   ],
   "step_by_step_workflow": [
     {{"order": 1, "title": "Set up your YouTube channel", "description": "Create channel, add art, write description with keywords", "type": "manual", "time_minutes": 45, "tools": ["Canva Free"]}},
@@ -118,7 +117,7 @@ YOUR JOB — Analyze this goal and return a JSON object (NO markdown, NO backtic
   ],
   "revenue_milestones": [
     {{"milestone": "First 1,000 subscribers", "action": "Apply for YouTube Partner Program", "expected_at_week": 8}},
-    {{"milestone": "First monetized video", "action": "Enable ads, add affiliate links", "expected_revenue": 2000, "currency": "{currency}"}}
+    {{"milestone": "First monetized video", "action": "Enable ads, add affiliate links", "expected_revenue_usd": 50}}
   ],
   "success_factors": [
     "Consistency is everything — post 2-3 times/week minimum",
@@ -129,10 +128,11 @@ YOUR JOB — Analyze this goal and return a JSON object (NO markdown, NO backtic
 }}
 
 CRITICAL RULES:
-- Be SPECIFIC to what's actually working in 2025/2026
-- If budget is $0, ALL tools must be free — no exceptions  
+- All revenue figures must be in USD (the app converts to local currency automatically)
+- If budget is $0, ALL tools must be free — no exceptions
 - Steps must be ACTIONABLE today, not vague
 - Revenue estimates must be REALISTIC for a beginner, not hype numbers
+- Be SPECIFIC to what's actually working in 2025/2026
 - Return ONLY the JSON object. No explanation. No markdown."""
 
 
@@ -145,15 +145,15 @@ async def research_income_goal(
     request: Request,
     user: dict = Depends(get_current_user)
 ):
-    """
-    Deep AI research on an income goal.
-    Returns breakdown: what AI can do, what user must do,
-    free tools, step-by-step workflow, and revenue milestones.
-    """
+    """Deep AI research on an income goal."""
+    # Use user profile currency as context if not specified
+    profile = await supabase_service.get_profile(user["id"])
+    effective_currency = req.currency or (profile.get("currency") if profile else None) or "USD"
+
     prompt = _build_research_prompt(
         req.goal, req.budget or 0.0,
         req.available_hours_per_day or 2.0,
-        req.currency or "NGN"
+        effective_currency
     )
 
     result = await ai_service.chat(
@@ -163,7 +163,6 @@ async def research_income_goal(
     )
 
     content = result["content"].strip()
-    # Strip markdown code blocks if model added them despite instructions
     if content.startswith("```"):
         content = content.split("```")[1]
         if content.startswith("json"):
@@ -173,7 +172,6 @@ async def research_income_goal(
     try:
         research_data = json.loads(content)
     except json.JSONDecodeError:
-        # Fallback — try to extract JSON from response
         start = content.find("{")
         end = content.rfind("}") + 1
         if start >= 0 and end > start:
@@ -199,84 +197,82 @@ async def create_workflow(
     user_id = user["id"]
     sb = supabase_service.client
 
-    # 1. Create the main workflow record
+    effective_currency = req.currency or "USD"
+
     workflow_resp = sb.table("workflows").insert({
-        "user_id": user_id,
-        "title": req.title,
-        "goal": req.goal,
-        "income_type": req.income_type,
-        "currency": req.currency or "NGN",
-        "status": "active",
-        "total_revenue": 0.0,
-        "viability_score": req.research_data.get("viability_score", 75),
+        "user_id":            user_id,
+        "title":              req.title,
+        "goal":               req.goal,
+        "income_type":        req.income_type,
+        "currency":           effective_currency,
+        "status":             "active",
+        "total_revenue":      0.0,
+        "viability_score":    req.research_data.get("viability_score", 75),
         "realistic_timeline": req.research_data.get("realistic_timeline", ""),
-        "potential_min": req.research_data.get("potential_monthly_income", {}).get("min", 0),
-        "potential_max": req.research_data.get("potential_monthly_income", {}).get("max", 0),
-        "honest_warning": req.research_data.get("honest_warning", ""),
-        "research_snapshot": json.dumps(req.research_data),
+        "potential_min":      req.research_data.get("potential_monthly_income", {}).get("min", 0),
+        "potential_max":      req.research_data.get("potential_monthly_income", {}).get("max", 0),
+        "honest_warning":     req.research_data.get("honest_warning", ""),
+        "research_snapshot":  json.dumps(req.research_data),
     }).execute()
 
     workflow = workflow_resp.data[0]
     workflow_id = workflow["id"]
 
-    # 2. Save workflow steps
+    # Save workflow steps
     steps = req.research_data.get("step_by_step_workflow", [])
     if steps:
         step_rows = [{
-            "workflow_id": workflow_id,
-            "user_id": user_id,
-            "order_index": s.get("order", i + 1),
-            "title": s.get("title", ""),
-            "description": s.get("description", ""),
-            "step_type": s.get("type", "manual"),  # automated / manual
+            "workflow_id":  workflow_id,
+            "user_id":      user_id,
+            "order_index":  s.get("order", i + 1),
+            "title":        s.get("title", ""),
+            "description":  s.get("description", ""),
+            "step_type":    s.get("type", "manual"),
             "time_minutes": s.get("time_minutes", 30),
-            "tools": json.dumps(s.get("tools", [])),
-            "status": "pending",
+            "tools":        json.dumps(s.get("tools", [])),
+            "status":       "pending",
         } for i, s in enumerate(steps)]
         sb.table("workflow_steps").insert(step_rows).execute()
 
-    # 3. Save free tools
+    # Save free tools
     free_tools = req.research_data.get("free_tools", [])
     if free_tools:
         tool_rows = [{
             "workflow_id": workflow_id,
-            "name": t.get("name", ""),
-            "url": t.get("url", ""),
-            "purpose": t.get("purpose", ""),
-            "category": t.get("category", ""),
-            "is_free": True,
+            "name":        t.get("name", ""),
+            "url":         t.get("url", ""),
+            "purpose":     t.get("purpose", ""),
+            "category":    t.get("category", ""),
+            "is_free":     True,
         } for t in free_tools]
         sb.table("workflow_tools").insert(tool_rows).execute()
 
-    # 4. Save paid tools (for later)
+    # Save paid tools
     paid_tools = req.research_data.get("paid_tools_when_ready", [])
     if paid_tools:
         paid_rows = [{
-            "workflow_id": workflow_id,
-            "name": t.get("name", ""),
-            "url": "",
-            "purpose": t.get("purpose", ""),
-            "category": "upgrade",
-            "is_free": False,
-            "cost_monthly": t.get("cost_monthly", 0),
+            "workflow_id":       workflow_id,
+            "name":              t.get("name", ""),
+            "url":               "",
+            "purpose":           t.get("purpose", ""),
+            "category":          "upgrade",
+            "is_free":           False,
+            "cost_monthly":      t.get("cost_monthly", 0),
             "unlock_at_revenue": t.get("unlock_at_revenue", 0),
         } for t in paid_tools]
         sb.table("workflow_tools").insert(paid_rows).execute()
 
     return {
         "workflow_id": workflow_id,
-        "title": req.title,
-        "status": "created",
-        "message": "Workflow created! Your income execution plan is ready.",
+        "title":       req.title,
+        "status":      "created",
+        "message":     "Workflow created! Your income execution plan is ready.",
     }
 
 
 @router.get("/")
 @limiter.limit(GENERAL_LIMIT)
-async def list_my_workflows(
-    request: Request,
-    user: dict = Depends(get_current_user)
-):
+async def list_my_workflows(request: Request, user: dict = Depends(get_current_user)):
     """Get all workflows for the current user."""
     user_id = user["id"]
     sb = supabase_service.client
@@ -293,15 +289,12 @@ async def list_my_workflows(
 @router.get("/{workflow_id}")
 @limiter.limit(GENERAL_LIMIT)
 async def get_workflow_detail(
-    workflow_id: str,
-    request: Request,
-    user: dict = Depends(get_current_user)
+    workflow_id: str, request: Request, user: dict = Depends(get_current_user)
 ):
     """Get full workflow details — steps, tools, revenue."""
     user_id = user["id"]
     sb = supabase_service.client
 
-    # Main workflow
     wf_resp = sb.table("workflows")\
         .select("*")\
         .eq("id", workflow_id)\
@@ -313,29 +306,10 @@ async def get_workflow_detail(
         raise HTTPException(status_code=404, detail="Workflow not found")
 
     workflow = wf_resp.data
+    steps_resp  = sb.table("workflow_steps").select("*").eq("workflow_id", workflow_id).order("order_index").execute()
+    tools_resp  = sb.table("workflow_tools").select("*").eq("workflow_id", workflow_id).execute()
+    revenue_resp = sb.table("workflow_revenue").select("*").eq("workflow_id", workflow_id).order("created_at", desc=True).limit(20).execute()
 
-    # Steps
-    steps_resp = sb.table("workflow_steps")\
-        .select("*")\
-        .eq("workflow_id", workflow_id)\
-        .order("order_index")\
-        .execute()
-
-    # Tools
-    tools_resp = sb.table("workflow_tools")\
-        .select("*")\
-        .eq("workflow_id", workflow_id)\
-        .execute()
-
-    # Recent revenue logs
-    revenue_resp = sb.table("workflow_revenue")\
-        .select("*")\
-        .eq("workflow_id", workflow_id)\
-        .order("created_at", desc=True)\
-        .limit(20)\
-        .execute()
-
-    # Parse steps tools field
     steps = steps_resp.data or []
     for s in steps:
         if isinstance(s.get("tools"), str):
@@ -346,10 +320,10 @@ async def get_workflow_detail(
 
     return {
         "workflow": workflow,
-        "steps": steps,
-        "tools": {
-            "free": [t for t in (tools_resp.data or []) if t.get("is_free")],
-            "paid_upgrades": [t for t in (tools_resp.data or []) if not t.get("is_free")],
+        "steps":    steps,
+        "tools":    {
+            "free":         [t for t in (tools_resp.data or []) if t.get("is_free")],
+            "paid_upgrades":[t for t in (tools_resp.data or []) if not t.get("is_free")],
         },
         "revenue_logs": revenue_resp.data or [],
     }
@@ -358,11 +332,8 @@ async def get_workflow_detail(
 @router.patch("/{workflow_id}/step/{step_id}")
 @limiter.limit(GENERAL_LIMIT)
 async def update_step_status(
-    workflow_id: str,
-    step_id: str,
-    req: UpdateStepRequest,
-    request: Request,
-    user: dict = Depends(get_current_user)
+    workflow_id: str, step_id: str, req: UpdateStepRequest,
+    request: Request, user: dict = Depends(get_current_user)
 ):
     """Mark a workflow step as done / in_progress / skipped."""
     user_id = user["id"]
@@ -370,26 +341,15 @@ async def update_step_status(
 
     sb.table("workflow_steps")\
         .update({"status": req.status, "updated_at": datetime.now(timezone.utc).isoformat()})\
-        .eq("id", step_id)\
-        .eq("workflow_id", workflow_id)\
-        .eq("user_id", user_id)\
+        .eq("id", step_id).eq("workflow_id", workflow_id).eq("user_id", user_id)\
         .execute()
 
-    # Calculate progress
-    all_steps = sb.table("workflow_steps")\
-        .select("status")\
-        .eq("workflow_id", workflow_id)\
-        .execute()
-
+    all_steps = sb.table("workflow_steps").select("status").eq("workflow_id", workflow_id).execute()
     total = len(all_steps.data or [])
-    done = sum(1 for s in (all_steps.data or []) if s["status"] == "done")
+    done  = sum(1 for s in (all_steps.data or []) if s["status"] == "done")
     progress_pct = int((done / total * 100)) if total > 0 else 0
 
-    # Update workflow progress
-    sb.table("workflows")\
-        .update({"progress_percent": progress_pct})\
-        .eq("id", workflow_id)\
-        .execute()
+    sb.table("workflows").update({"progress_percent": progress_pct}).eq("id", workflow_id).execute()
 
     return {"step_id": step_id, "status": req.status, "overall_progress": progress_pct}
 
@@ -397,95 +357,72 @@ async def update_step_status(
 @router.post("/{workflow_id}/log-revenue")
 @limiter.limit(GENERAL_LIMIT)
 async def log_revenue(
-    workflow_id: str,
-    req: LogRevenueRequest,
-    request: Request,
-    user: dict = Depends(get_current_user)
+    workflow_id: str, req: LogRevenueRequest,
+    request: Request, user: dict = Depends(get_current_user)
 ):
-    """Log revenue earned from this specific workflow."""
+    """Log revenue earned from this workflow. Defaults to USD."""
     user_id = user["id"]
     sb = supabase_service.client
+    effective_currency = req.currency or "USD"
 
-    # Save revenue log
     sb.table("workflow_revenue").insert({
         "workflow_id": workflow_id,
-        "user_id": user_id,
-        "amount": req.amount,
-        "currency": req.currency or "NGN",
-        "source": req.source or "",
-        "note": req.note or "",
+        "user_id":     user_id,
+        "amount":      req.amount,
+        "currency":    effective_currency,
+        "source":      req.source or "",
+        "note":        req.note or "",
     }).execute()
 
-    # Update workflow total_revenue
-    wf = sb.table("workflows")\
-        .select("total_revenue")\
-        .eq("id", workflow_id)\
-        .single()\
-        .execute()
-
-    current = float(wf.data.get("total_revenue", 0) if wf.data else 0)
+    wf = sb.table("workflows").select("total_revenue").eq("id", workflow_id).single().execute()
+    current   = float(wf.data.get("total_revenue", 0) if wf.data else 0)
     new_total = current + req.amount
 
-    sb.table("workflows")\
-        .update({"total_revenue": new_total})\
-        .eq("id", workflow_id)\
-        .execute()
+    sb.table("workflows").update({"total_revenue": new_total}).eq("id", workflow_id).execute()
 
-    # Also log to general earnings table
     try:
         sb.table("earnings").insert({
-            "user_id": user_id,
-            "amount": req.amount,
-            "currency": req.currency or "NGN",
-            "source": f"Workflow: {req.source or 'workflow'}",
-            "note": req.note or "",
+            "user_id":     user_id,
+            "amount":      req.amount,
+            "currency":    effective_currency,
+            "source":      f"Workflow: {req.source or 'workflow'}",
+            "note":        req.note or "",
             "workflow_id": workflow_id,
         }).execute()
     except Exception:
-        pass  # earnings table field may differ — non-critical
+        pass
 
     return {
-        "logged": req.amount,
-        "workflow_total": new_total,
-        "currency": req.currency,
-        "message": f"Revenue logged! Total from this workflow: {req.currency} {new_total:,.0f}",
+        "logged":          req.amount,
+        "workflow_total":  new_total,
+        "currency":        effective_currency,
+        "message":         f"Revenue logged! Total from this workflow: {effective_currency} {new_total:,.2f}",
     }
 
 
 @router.get("/{workflow_id}/analytics")
 @limiter.limit(GENERAL_LIMIT)
 async def workflow_analytics(
-    workflow_id: str,
-    request: Request,
-    user: dict = Depends(get_current_user)
+    workflow_id: str, request: Request, user: dict = Depends(get_current_user)
 ):
-    """Get analytics for a specific workflow — revenue over time, step completion rate."""
+    """Analytics for a workflow — revenue over time, step completion rate."""
     user_id = user["id"]
     sb = supabase_service.client
 
-    # Revenue logs
     rev_resp = sb.table("workflow_revenue")\
         .select("amount, currency, created_at, source")\
-        .eq("workflow_id", workflow_id)\
-        .eq("user_id", user_id)\
-        .order("created_at")\
-        .execute()
+        .eq("workflow_id", workflow_id).eq("user_id", user_id)\
+        .order("created_at").execute()
 
     logs = rev_resp.data or []
 
-    # Steps summary
-    steps_resp = sb.table("workflow_steps")\
-        .select("status, step_type")\
-        .eq("workflow_id", workflow_id)\
-        .execute()
+    steps_resp = sb.table("workflow_steps").select("status, step_type").eq("workflow_id", workflow_id).execute()
+    steps    = steps_resp.data or []
+    total    = len(steps)
+    done     = sum(1 for s in steps if s["status"] == "done")
+    automated= sum(1 for s in steps if s["step_type"] == "automated")
+    manual   = sum(1 for s in steps if s["step_type"] == "manual")
 
-    steps = steps_resp.data or []
-    total = len(steps)
-    done = sum(1 for s in steps if s["status"] == "done")
-    automated = sum(1 for s in steps if s["step_type"] == "automated")
-    manual = sum(1 for s in steps if s["step_type"] == "manual")
-
-    # Daily revenue aggregation
     daily = {}
     for log in logs:
         day = log["created_at"][:10]
@@ -494,17 +431,16 @@ async def workflow_analytics(
     total_revenue = sum(float(l["amount"]) for l in logs)
 
     return {
-        "workflow_id": workflow_id,
-        "total_revenue": total_revenue,
-        "revenue_logs": logs,
-        "daily_revenue": [{"date": d, "amount": a} for d, a in sorted(daily.items())],
-        "steps_summary": {
-            "total": total,
-            "done": done,
+        "workflow_id":    workflow_id,
+        "total_revenue":  total_revenue,
+        "currency":       "USD",
+        "revenue_logs":   logs,
+        "daily_revenue":  [{"date": d, "amount": a} for d, a in sorted(daily.items())],
+        "steps_summary":  {
+            "total": total, "done": done,
             "remaining": total - done,
             "progress_percent": int(done / total * 100) if total > 0 else 0,
-            "automated_steps": automated,
-            "manual_steps": manual,
+            "automated_steps": automated, "manual_steps": manual,
         },
     }
 
@@ -512,20 +448,12 @@ async def workflow_analytics(
 @router.post("/{workflow_id}/ai-assist")
 @limiter.limit(AI_LIMIT)
 async def ai_assist_on_step(
-    workflow_id: str,
-    request: Request,
-    step_title: str,
-    user_question: Optional[str] = None,
+    workflow_id: str, request: Request,
+    step_title: str, user_question: Optional[str] = None,
     user: dict = Depends(get_current_user)
 ):
-    """
-    AI executes or assists on a specific workflow step.
-    e.g., "Write me a script for my first YouTube video about budgeting"
-    """
-    user_id = user["id"]
+    """AI executes or assists on a specific workflow step."""
     sb = supabase_service.client
-
-    # Get workflow context
     wf = sb.table("workflows").select("title, goal, income_type").eq("id", workflow_id).single().execute()
     wf_data = wf.data or {}
 
@@ -539,7 +467,7 @@ INCOME TYPE: {wf_data.get('income_type', '')}
 CURRENT STEP: {step_title}
 USER REQUEST: {question}
 
-Provide specific, actionable, ready-to-use output for this step. 
+Provide specific, actionable, ready-to-use output for this step.
 If it's content (script, description, tags) — write the full content, ready to copy-paste.
 If it's strategy — give exact steps to take TODAY.
 Be specific, not generic. This user is counting on you to get real results."""
@@ -551,7 +479,7 @@ Be specific, not generic. This user is counting on you to get real results."""
     )
 
     return {
-        "step": step_title,
-        "ai_output": result["content"],
+        "step":       step_title,
+        "ai_output":  result["content"],
         "model_used": result.get("model", "unknown"),
     }
