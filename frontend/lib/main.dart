@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_localizations/flutter_localizations.dart'; // ADD THIS
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'config/app_constants.dart';
 import 'config/router.dart';
@@ -12,6 +13,8 @@ import 'utils/storage_service.dart';
 import 'utils/connectivity_wrapper.dart';
 import 'services/api_service.dart';
 import 'utils/version_check_service.dart';
+import 'providers/locale_provider.dart'; // ADD THIS
+import 'providers/currency_provider.dart'; // ADD THIS
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -115,18 +118,38 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp.router(
-      title: 'RiseUp',
-      debugShowCheckedModeBanner: false,
-      // ← Fixed: support system theme
-      theme: AppTheme.light,
-      darkTheme: AppTheme.dark,
-      themeMode: ThemeMode.system,
-      routerConfig: router,
-      builder: (context, child) {
-        ErrorWidget.builder =
-            (details) => _GlobalErrorWidget(details: details);
-        return ConnectivityWrapper(child: child ?? const SizedBox.shrink());
+    return Consumer( // WRAP WITH CONSUMER
+      builder: (context, ref, child) {
+        final locale = ref.watch(localeProvider);
+        
+        return MaterialApp.router(
+          title: 'RiseUp',
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.light,
+          darkTheme: AppTheme.dark,
+          themeMode: ThemeMode.system,
+          
+          // ADD LOCALIZATION
+          locale: locale,
+          supportedLocales: const [
+            Locale('en'), Locale('es'), Locale('fr'), Locale('de'),
+            Locale('pt'), Locale('hi'), Locale('ar'), Locale('zh'),
+            Locale('ja'), Locale('ru'), Locale('sw'), Locale('yo'),
+            Locale('ig'), Locale('ha'),
+          ],
+          localizationsDelegates: const [
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          
+          routerConfig: router,
+          builder: (context, child) {
+            ErrorWidget.builder =
+                (details) => _GlobalErrorWidget(details: details);
+            return ConnectivityWrapper(child: child ?? const SizedBox.shrink());
+          },
+        );
       },
     );
   }
