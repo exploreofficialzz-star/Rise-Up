@@ -3,6 +3,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
 import 'package:percent_indicator/percent_indicator.dart';
+import 'package:intl/intl.dart'; // Added for global currency/number formatting
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 import '../../widgets/gradient_button.dart';
@@ -21,27 +22,39 @@ class _SkillsScreenState extends State<SkillsScreen>
   List _enrollments = [];
   bool _loading = true;
   bool _isPremium = false;
+  String _currentLocale = 'en';
 
   @override
   void initState() {
     super.initState();
     _tabs = TabController(length: 2, vsync: this);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Capture the device's locale to pass to the backend for localized content
+    _currentLocale = Localizations.localeOf(context).languageCode;
     _load();
   }
 
   Future<void> _load() async {
     setState(() => _loading = true);
     try {
-      final modulesData = await api.getSkillModules();
-      final enrollData = await api.getMyCourses();
-      setState(() {
-        _modules = modulesData['modules'] as List? ?? [];
-        _isPremium = modulesData['is_premium'] ?? false;
-        _enrollments = enrollData;
-        _loading = false;
-      });
+      // Passing locale to API service to fetch globally localized data
+      final modulesData = await api.getSkillModules(locale: _currentLocale);
+      final enrollData = await api.getMyCourses(locale: _currentLocale);
+      
+      if (mounted) {
+        setState(() {
+          _modules = modulesData['modules'] as List? ?? [];
+          _isPremium = modulesData['is_premium'] ?? false;
+          _enrollments = enrollData;
+          _loading = false;
+        });
+      }
     } catch (_) {
-      setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 
@@ -82,7 +95,8 @@ class _SkillsScreenState extends State<SkillsScreen>
 class _ModuleGrid extends StatelessWidget {
   final List modules;
   final bool isPremium;
-  final Future<void> Function() onRefresh; // ← Fixed
+  final Future<void> Function() onRefresh;
+  
   const _ModuleGrid(
       {required this.modules,
       required this.isPremium,
@@ -125,7 +139,8 @@ class _ModuleGrid extends StatelessWidget {
 class _ModuleCard extends StatelessWidget {
   final Map module;
   final bool isPremium;
-  final Future<void> Function() onRefresh; // ← Fixed
+  final Future<void> Function() onRefresh;
+  
   const _ModuleCard(
       {required this.module,
       required this.isPremium,
@@ -154,6 +169,10 @@ class _ModuleCard extends StatelessWidget {
 
   Future<void> _enroll(BuildContext context) async {
     if (_isLocked) {
+      // Dynamically fetch the subscription price if available in your config
+      final subPrice = AppConstants.globalSubscriptionPrice ?? 15.99;
+      final subCurrency = AppConstants.globalSubscriptionCurrency ?? 'USD';
+      
       await showModalBottomSheet(
         context: context,
         backgroundColor: AppColors.bgCard,
@@ -162,6 +181,8 @@ class _ModuleCard extends StatelessWidget {
                 BorderRadius.vertical(top: Radius.circular(20))),
         builder: (_) => _UnlockModal(
           featureKey: FeatureKeys.premiumSkills,
+          subscriptionPrice: subPrice,
+          currencyCode: subCurrency,
           onUnlocked: onRefresh,
           onSubscribe: () => context.go('/payment'),
         ),
@@ -196,6 +217,7 @@ class _ModuleCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Replaced hardcoded '$' icon with a global payments icon to fit all currencies
     return GestureDetector(
       onTap: () => context.go('/skills/${module['id']}'),
       child: Container(
@@ -212,44 +234,46 @@ class _ModuleCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(children: [
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                    color: _categoryColor.withOpacity(0.15),
-                    borderRadius: AppRadius.pill),
-                child: Text(
-                  _formatCategory(module['category']),
-                  style: AppTextStyles.caption.copyWith(
-                      color: _categoryColor, fontWeight: FontWeight.w600),
-                ),
-              ),
-              const Spacer(),
-              if (_isLocked)
+            Row(
+              children: [
                 Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
-                      color: AppColors.gold.withOpacity(0.15),
+                      color: _categoryColor.withOpacity(0.15),
                       borderRadius: AppRadius.pill),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.workspace_premium,
-                          color: AppColors.gold, size: 12),
-                      const SizedBox(width: 4),
-                      Text('Premium',
-                          style: AppTextStyles.caption.copyWith(
-                              color: AppColors.gold,
-                              fontWeight: FontWeight.w600)),
-                    ],
+                  child: Text(
+                    _formatCategory(module['category']),
+                    style: AppTextStyles.caption.copyWith(
+                        color: _categoryColor, fontWeight: FontWeight.w600),
                   ),
-                )
-              else
-                Text('${module['duration_days']} days',
-                    style: AppTextStyles.caption),
-            ]),
+                ),
+                const Spacer(),
+                if (_isLocked)
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                        color: AppColors.gold.withOpacity(0.15),
+                        borderRadius: AppRadius.pill),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.workspace_premium,
+                            color: AppColors.gold, size: 12),
+                        const SizedBox(width: 4),
+                        Text('Premium',
+                            style: AppTextStyles.caption.copyWith(
+                                color: AppColors.gold,
+                                fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+                  )
+                else
+                  Text('${module['duration_days']} days',
+                      style: AppTextStyles.caption),
+              ],
+            ),
             const SizedBox(height: 10),
             Text(module['title'] ?? '',
                 style: AppTextStyles.h4.copyWith(fontSize: 15)),
@@ -259,17 +283,20 @@ class _ModuleCard extends StatelessWidget {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis),
             const SizedBox(height: 10),
-            Row(children: [
-              const Icon(Icons.attach_money,
-                  color: AppColors.success, size: 14),
-              Text(module['income_potential'] ?? '',
-                  style: AppTextStyles.caption
-                      .copyWith(color: AppColors.success)),
-              const Spacer(),
-              Text('${module['difficulty']}',
-                  style: AppTextStyles.caption
-                      .copyWith(color: _diffColor(module['difficulty']))),
-            ]),
+            Row(
+              children: [
+                const Icon(Icons.payments_outlined,
+                    color: AppColors.success, size: 14),
+                const SizedBox(width: 4),
+                Text(module['income_potential'] ?? '',
+                    style: AppTextStyles.caption
+                        .copyWith(color: AppColors.success)),
+                const Spacer(),
+                Text('${module['difficulty']}',
+                    style: AppTextStyles.caption
+                        .copyWith(color: _diffColor(module['difficulty']))),
+              ],
+            ),
             const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
@@ -311,7 +338,8 @@ class _ModuleCard extends StatelessWidget {
 
 class _MyLearning extends StatelessWidget {
   final List enrollments;
-  final Future<void> Function() onRefresh; // ← Fixed
+  final Future<void> Function() onRefresh;
+  
   const _MyLearning(
       {required this.enrollments, required this.onRefresh});
 
@@ -343,6 +371,12 @@ class _MyLearning extends StatelessWidget {
           final e = enrollments[i];
           final module = e['skill_modules'] as Map? ?? {};
           final progress = (e['progress_percent'] ?? 0) / 100.0;
+          
+          // Dynamic global currency formatting instead of hardcoded ₦
+          final currencyCode = e['currency_code'] ?? 'USD'; 
+          final earningsFormatter = NumberFormat.simpleCurrency(name: currencyCode);
+          final formattedEarnings = earningsFormatter.format(e['earnings_from_skill'] ?? 0);
+
           return Container(
             margin: const EdgeInsets.only(bottom: 12),
             padding: const EdgeInsets.all(16),
@@ -380,7 +414,7 @@ class _MyLearning extends StatelessWidget {
                           style: AppTextStyles.caption
                               .copyWith(color: AppColors.success))
                     else
-                      Text('Earned: ₦${e['earnings_from_skill'] ?? 0}',
+                      Text('Earned: $formattedEarnings',
                           style: AppTextStyles.caption
                               .copyWith(color: AppColors.success)),
                   ],
@@ -396,15 +430,24 @@ class _MyLearning extends StatelessWidget {
 
 class _UnlockModal extends StatelessWidget {
   final String featureKey;
+  final double subscriptionPrice;
+  final String currencyCode;
   final VoidCallback onUnlocked;
   final VoidCallback onSubscribe;
+  
   const _UnlockModal(
       {required this.featureKey,
+      required this.subscriptionPrice,
+      required this.currencyCode,
       required this.onUnlocked,
       required this.onSubscribe});
 
   @override
   Widget build(BuildContext context) {
+    // Dynamically format the subscription price for the UI
+    final subFormatter = NumberFormat.simpleCurrency(name: currencyCode);
+    final formattedPrice = subFormatter.format(subscriptionPrice);
+
     return Padding(
       padding: const EdgeInsets.all(24),
       child: Column(
@@ -442,9 +485,9 @@ class _UnlockModal extends StatelessWidget {
               style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.gold,
                   padding: const EdgeInsets.symmetric(vertical: 14)),
-              child: const Text(
-                  '👑 Upgrade to Premium · \$15.99/mo',
-                  style: TextStyle(
+              child: Text(
+                  '👑 Upgrade to Premium · $formattedPrice/mo',
+                  style: const TextStyle(
                       color: Colors.white, fontWeight: FontWeight.w600)),
             ),
           ),
