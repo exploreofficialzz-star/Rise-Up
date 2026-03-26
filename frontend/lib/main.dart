@@ -2,7 +2,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_localizations/flutter_localizations.dart'; // ADD THIS
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'config/app_constants.dart';
 import 'config/router.dart';
@@ -13,8 +13,8 @@ import 'utils/storage_service.dart';
 import 'utils/connectivity_wrapper.dart';
 import 'services/api_service.dart';
 import 'utils/version_check_service.dart';
-import 'providers/locale_provider.dart'; // ADD THIS
-import 'providers/currency_provider.dart'; // ADD THIS
+import 'providers/locale_provider.dart';
+import 'providers/currency_provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -118,7 +118,7 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer( // WRAP WITH CONSUMER
+    return Consumer(
       builder: (context, ref, child) {
         final locale = ref.watch(localeProvider);
         
@@ -129,13 +129,23 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
           darkTheme: AppTheme.dark,
           themeMode: ThemeMode.system,
           
-          // ADD LOCALIZATION
+          // Localization
           locale: locale,
           supportedLocales: const [
-            Locale('en'), Locale('es'), Locale('fr'), Locale('de'),
-            Locale('pt'), Locale('hi'), Locale('ar'), Locale('zh'),
-            Locale('ja'), Locale('ru'), Locale('sw'), Locale('yo'),
-            Locale('ig'), Locale('ha'),
+            Locale('en'), // English
+            Locale('es'), // Spanish
+            Locale('fr'), // French
+            Locale('de'), // German
+            Locale('pt'), // Portuguese
+            Locale('hi'), // Hindi
+            Locale('ar'), // Arabic
+            Locale('zh'), // Chinese
+            Locale('ja'), // Japanese
+            Locale('ru'), // Russian
+            Locale('sw'), // Swahili
+            Locale('yo'), // Yoruba
+            Locale('ig'), // Igbo
+            Locale('ha'), // Hausa
           ],
           localizationsDelegates: const [
             GlobalMaterialLocalizations.delegate,
