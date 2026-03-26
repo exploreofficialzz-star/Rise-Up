@@ -1082,3 +1082,12 @@ async def get_income_tasks(user_profile: Dict, count: int = 5) -> List[Dict]:
 async def get_trending_opportunities(country_code: str = None) -> Dict:
     """Production: Get trending opportunities"""
     return await riseup_engine.get_trending_opportunities(country_code)
+
+
+# ============================================================
+# ALIASES — Required by routers/ai_agent.py
+# ============================================================
+
+ai_service = riseup_engine
+RISEUP_SYSTEM_PROMPT = RISEUP_MENTOR_PROMPT
+ONBOARDING_PROMPT = ONBOARDING_ARCHITECT_PROMPT
