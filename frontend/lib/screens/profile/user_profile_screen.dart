@@ -102,10 +102,10 @@ class _UserProfileScreenState extends State<UserProfileScreen>
   }
 
   String _fmt(dynamic n) {
-    final num = (n as num?)?.toInt() ?? 0;
-    if (num >= 1000000) return '${(num / 1000000).toStringAsFixed(1)}M';
-    if (num >= 1000)    return '${(num / 1000).toStringAsFixed(1)}K';
-    return '$num';
+    final val = (n as num?)?.toInt() ?? 0;
+    if (val >= 1000000) return '${(val / 1000000).toStringAsFixed(1)}M';
+    if (val >= 1000)    return '${(val / 1000).toStringAsFixed(1)}K';
+    return '$val';
   }
 
   String _timeAgo(String? iso) {

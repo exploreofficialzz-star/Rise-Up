@@ -101,6 +101,10 @@ class _HomeScreenState extends State<HomeScreen>
   final _tabs = ['for_you', 'following', 'trending'];
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
+  // Status feed state
+  List _statusUsers = [];
+  bool _statusLoaded = false;
+
   @override
   void initState() {
     super.initState();
@@ -289,8 +293,12 @@ class _HomeScreenState extends State<HomeScreen>
               child: ListView.builder(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                itemCount: 8,
-                itemBuilder: (_, i) => _StoryItem(index: i, isDark: isDark),
+                itemCount: _statusUsers.isEmpty ? 0 : _statusUsers.length,
+                itemBuilder: (_, i) => _StoryItem(
+                  user: _statusUsers[i] as Map,
+                  isDark: isDark,
+                  onTap: () => _viewStatus(_statusUsers[i] as Map),
+                ),
               ),
             ),
             Divider(height: 1, color: borderColor),
