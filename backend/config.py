@@ -1,5 +1,8 @@
 from pydantic_settings import BaseSettings
 from typing import Optional, List
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -9,9 +12,12 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:3000"
 
     # ── Supabase ───────────────────────────────────────────────
-    SUPABASE_URL: str
-    SUPABASE_ANON_KEY: str
-    SUPABASE_SERVICE_ROLE_KEY: str
+    # Optional so Settings() never crashes at import time.
+    # validate_supabase() is called in main.py on startup to fail
+    # fast with a clear error instead of a confusing ImportError.
+    SUPABASE_URL: Optional[str] = None
+    SUPABASE_ANON_KEY: Optional[str] = None
+    SUPABASE_SERVICE_ROLE_KEY: Optional[str] = None
 
     # ── AI Keys ────────────────────────────────────────────────
     GROQ_API_KEY: Optional[str] = None
@@ -25,31 +31,25 @@ class Settings(BaseSettings):
     OPENROUTER_MODEL: str = "mistralai/mistral-7b-instruct:free"
 
     # ── Web Search (for agent real-world research) ─────────────
-    # Get Serper key at: serper.dev (free 2,500 searches/month)
     SERPER_API_KEY: Optional[str] = None
-    # Get Tavily key at: tavily.com (free 1,000 searches/month)
     TAVILY_API_KEY: Optional[str] = None
 
     # ── Email Sending ──────────────────────────────────────────
-    # SendGrid (preferred): sendgrid.com — free 100 emails/day
     SENDGRID_API_KEY: Optional[str] = None
     EMAIL_FROM: str = "agent@riseup.app"
     EMAIL_FROM_NAME: str = "RiseUp Agent"
-    # SMTP fallback (Gmail, Zoho, etc.)
     SMTP_HOST: Optional[str] = None
     SMTP_PORT: int = 465
     SMTP_USER: Optional[str] = None
     SMTP_PASSWORD: Optional[str] = None
 
     # ── Social Media ───────────────────────────────────────────
-    # Twitter/X — developer.twitter.com (free basic tier)
     TWITTER_CLIENT_ID: Optional[str] = None
     TWITTER_CLIENT_SECRET: Optional[str] = None
-    TWITTER_ACCESS_TOKEN: Optional[str] = None         # App-level fallback
-    # LinkedIn — linkedin.com/developers (free)
+    TWITTER_ACCESS_TOKEN: Optional[str] = None
     LINKEDIN_CLIENT_ID: Optional[str] = None
     LINKEDIN_CLIENT_SECRET: Optional[str] = None
-    LINKEDIN_ACCESS_TOKEN: Optional[str] = None        # App-level fallback
+    LINKEDIN_ACCESS_TOKEN: Optional[str] = None
     LINKEDIN_PERSON_URN: Optional[str] = None
 
     # ── Payments ───────────────────────────────────────────────
@@ -78,17 +78,26 @@ class Settings(BaseSettings):
     # ── Admin ──────────────────────────────────────────────────
     ADMIN_SECRET_KEY: Optional[str] = None
 
-    # ── GrowthAI Intelligence ──────────────────────────────────
-    # Reddit API (optional — scraper falls back to public JSON)
-    REDDIT_CLIENT_ID:     Optional[str] = None
-    REDDIT_CLIENT_SECRET: Optional[str] = None
-    # Feature flags
-    ENABLE_BACKGROUND_SCAN: bool = True
-    ENABLE_AI_SCORING:      bool = True
-
     @property
     def allowed_origins_list(self) -> List[str]:
         return [o.strip() for o in self.ALLOWED_ORIGINS.split(",")]
+
+    def validate_supabase(self) -> None:
+        """Call on startup — fails fast with a clear error if Supabase vars are missing."""
+        missing = [
+            name for name, val in [
+                ("SUPABASE_URL", self.SUPABASE_URL),
+                ("SUPABASE_ANON_KEY", self.SUPABASE_ANON_KEY),
+                ("SUPABASE_SERVICE_ROLE_KEY", self.SUPABASE_SERVICE_ROLE_KEY),
+            ] if not val
+        ]
+        if missing:
+            raise RuntimeError(
+                f"\n\n❌ RiseUp startup failed — missing environment variables:\n"
+                f"   {', '.join(missing)}\n\n"
+                f"   → Go to Render dashboard → your service → Environment tab\n"
+                f"   → Add the missing variables and redeploy.\n"
+            )
 
     class Config:
         env_file = ".env"
