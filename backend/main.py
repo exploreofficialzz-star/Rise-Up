@@ -18,11 +18,6 @@ from routers import (
     crm, challenges, portfolio,
 )
 
-# ── Validate critical env vars at startup ─────────────────────
-# This must run BEFORE app = FastAPI() so Render logs show the real
-# error ("missing SUPABASE_URL") instead of a confusing ImportError.
-settings.validate_supabase()
-
 app = FastAPI(
     title="RiseUp API",
     description="AI-powered wealth platform with social features",
@@ -62,7 +57,7 @@ app.include_router(referrals.router,     prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")
 app.include_router(admin.router,         prefix="/api/v1")
 
-# ── Social routers ─────────────────────────────────────
+# ── New social routers ─────────────────────────────────
 app.include_router(posts.router,         prefix="/api/v1")
 app.include_router(messages.router,      prefix="/api/v1")
 app.include_router(live.router,          prefix="/api/v1")
@@ -79,7 +74,6 @@ app.include_router(crm.router,            prefix="/api/v1")
 app.include_router(challenges.router,     prefix="/api/v1")
 app.include_router(portfolio.router,      prefix="/api/v1")
 
-
 @app.get("/")
 async def root():
     return {
@@ -88,7 +82,6 @@ async def root():
         "status": "running",
         "platform": "Social Wealth Platform",
     }
-
 
 @app.get("/health")
 async def health():

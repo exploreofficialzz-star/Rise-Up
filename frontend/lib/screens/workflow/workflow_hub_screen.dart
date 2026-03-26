@@ -130,7 +130,7 @@ class _WorkflowHubScreenState extends State<WorkflowHubScreen> {
                                   style: AppTextStyles.h3.copyWith(color: Colors.white)),
                               const Spacer(),
                               GestureDetector(
-                                onTap: () => context.go('/workflow/new'),
+                                onTap: () => context.push('/workflow/new'),
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                                   decoration: BoxDecoration(
@@ -179,7 +179,7 @@ class _WorkflowHubScreenState extends State<WorkflowHubScreen> {
             // ── Empty state ─────────────────────────────────────
             if (!_loading && _workflows.isEmpty)
               SliverFillRemaining(
-                child: _EmptyWorkflowState(onTap: () => context.go('/workflow/new')),
+                child: _EmptyWorkflowState(onTap: () => context.push('/workflow/new')),
               ),
 
             // ── Loading ─────────────────────────────────────────
@@ -207,7 +207,7 @@ class _WorkflowHubScreenState extends State<WorkflowHubScreen> {
                   delegate: SliverChildBuilderDelegate(
                     (ctx, i) => _WorkflowCard(
                       workflow: _workflows[i],
-                      onTap: () => context.go('/workflow/${_workflows[i].id}'),
+                      onTap: () => context.push('/workflow/${_workflows[i].id}'),
                     ).animate().fadeIn(delay: (i * 80).ms).slideY(begin: 0.2, end: 0),
                     childCount: _workflows.length,
                   ),

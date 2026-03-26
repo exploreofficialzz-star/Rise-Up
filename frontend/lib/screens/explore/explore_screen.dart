@@ -261,7 +261,7 @@ class _ExploreScreenState extends State<ExploreScreen>
                     GestureDetector(
                       onTap: () {
                         HapticFeedback.lightImpact();
-                        if (c['id'] != null) context.go('/user-profile/${c['id']}');
+                        if (c['id'] != null) context.push('/user-profile/${c['id']}');
                       },
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -484,7 +484,7 @@ class _ExploreScreenState extends State<ExploreScreen>
                       if (active) ...[
                         const SizedBox(height: 10),
                         GestureDetector(
-                          onTap: () => context.go('/challenges'),
+                          onTap: () => context.push('/challenges'),
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                             decoration: BoxDecoration(

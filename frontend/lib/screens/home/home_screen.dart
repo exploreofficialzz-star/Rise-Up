@@ -101,13 +101,10 @@ class _HomeScreenState extends State<HomeScreen>
   final _tabs = ['for_you', 'following', 'trending'];
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
-  // Status feed state
-  List _statusUsers = [];
-  bool _statusLoaded = false;
-
   @override
   void initState() {
     super.initState();
+        _loadStatus();
     _tabCtrl = TabController(length: 3, vsync: this);
     _tabCtrl.addListener(() {
       if (!_tabCtrl.indexIsChanging) {
@@ -116,7 +113,6 @@ class _HomeScreenState extends State<HomeScreen>
       }
     });
     _loadProfile();
-    _loadStatus();
     _loadFeed('for_you');
   }
 
@@ -138,7 +134,7 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  Future<void> _loadStatus() async {
+    Future<void> _loadStatus() async {
     try {
       final data = await api.get('/posts/status/feed');
       if (mounted) setState(() {
@@ -293,12 +289,8 @@ class _HomeScreenState extends State<HomeScreen>
               child: ListView.builder(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                itemCount: _statusUsers.isEmpty ? 0 : _statusUsers.length,
-                itemBuilder: (_, i) => _StoryItem(
-                  user: _statusUsers[i] as Map,
-                  isDark: isDark,
-                  onTap: () => _viewStatus(_statusUsers[i] as Map),
-                ),
+                itemCount: 8,
+                itemBuilder: (_, i) => _StoryItem(index: i, isDark: isDark),
               ),
             ),
             Divider(height: 1, color: borderColor),
@@ -640,21 +632,21 @@ class _AppDrawer extends StatelessWidget {
                 children: [
                   _DSection('INCOME TOOLS', sub),
                   _DItem(Iconsax.chart, 'Dashboard', 'Earnings, stats & tasks', isDark, onTap: () { Navigator.pop(context); context.go('/dashboard'); }),
-                  _DItem(Icons.auto_awesome_rounded, 'Agentic AI', 'Execute ANY income task', isDark, badge: 'HEAVY', badgeColor: AppColors.accent, onTap: () { Navigator.pop(context); context.go('/agent'); }),
-                  _DItem(Iconsax.flash, 'Workflow Engine', 'AI-powered income execution', isDark, badge: 'NEW', badgeColor: AppColors.success, onTap: () { Navigator.pop(context); context.go('/workflow'); }),
-                  _DItem(Iconsax.chart_3, 'Market Pulse', 'What pays right now', isDark, badge: '🔥 LIVE', badgeColor: const Color(0xFFFF6B35), onTap: () { Navigator.pop(context); context.go('/pulse'); }),
-                  _DItem(Icons.emoji_events_rounded, 'Challenges', '30-day income sprints', isDark, onTap: () { Navigator.pop(context); context.go('/challenges'); }),
-                  _DItem(Iconsax.briefcase, 'Client CRM', 'Track prospects & clients', isDark, onTap: () { Navigator.pop(context); context.go('/crm'); }),
-                  _DItem(Iconsax.document_text, 'Contracts & Invoices', 'Pro contract generation', isDark, onTap: () { Navigator.pop(context); context.go('/contracts'); }),
-                  _DItem(Icons.psychology_rounded, 'Income Memory', 'Your income DNA', isDark, onTap: () { Navigator.pop(context); context.go('/memory'); }),
-                  _DItem(Iconsax.gallery, 'My Portfolio', 'Shareable project showcase', isDark, onTap: () { Navigator.pop(context); context.go('/portfolio'); }),
+                  _DItem(Icons.auto_awesome_rounded, 'Agentic AI', 'Execute ANY income task', isDark, badge: 'HEAVY', badgeColor: AppColors.accent, onTap: () { Navigator.pop(context); context.push('/agent'); }),
+                  _DItem(Iconsax.flash, 'Workflow Engine', 'AI-powered income execution', isDark, badge: 'NEW', badgeColor: AppColors.success, onTap: () { Navigator.pop(context); context.push('/workflow'); }),
+                  _DItem(Iconsax.chart_3, 'Market Pulse', 'What pays right now', isDark, badge: '🔥 LIVE', badgeColor: const Color(0xFFFF6B35), onTap: () { Navigator.pop(context); context.push('/pulse'); }),
+                  _DItem(Icons.emoji_events_rounded, 'Challenges', '30-day income sprints', isDark, onTap: () { Navigator.pop(context); context.push('/challenges'); }),
+                  _DItem(Iconsax.briefcase, 'Client CRM', 'Track prospects & clients', isDark, onTap: () { Navigator.pop(context); context.push('/crm'); }),
+                  _DItem(Iconsax.document_text, 'Contracts & Invoices', 'Pro contract generation', isDark, onTap: () { Navigator.pop(context); context.push('/contracts'); }),
+                  _DItem(Icons.psychology_rounded, 'Income Memory', 'Your income DNA', isDark, onTap: () { Navigator.pop(context); context.push('/memory'); }),
+                  _DItem(Iconsax.gallery, 'My Portfolio', 'Shareable project showcase', isDark, onTap: () { Navigator.pop(context); context.push('/portfolio'); }),
                   _DItem(Iconsax.task_square, 'My Tasks', 'Daily income tasks', isDark, onTap: () { Navigator.pop(context); context.go('/tasks'); }),
                   _DItem(Iconsax.map_1, 'Wealth Roadmap', '3-stage wealth plan', isDark, onTap: () { Navigator.pop(context); context.go('/roadmap'); }),
                   _DItem(Iconsax.book, 'Skills', 'Earn-while-learning', isDark, onTap: () { Navigator.pop(context); context.go('/skills'); }),
                   const SizedBox(height: 4),
                   Divider(color: border, height: 1),
                   _DSection('SOCIAL', sub),
-                  _DItem(Iconsax.people, 'Collaboration', 'Build bigger goals together', isDark, badge: 'NEW', badgeColor: AppColors.primary, onTap: () { Navigator.pop(context); context.go('/collaboration'); }),
+                  _DItem(Iconsax.people, 'Collaboration', 'Build bigger goals together', isDark, badge: 'NEW', badgeColor: AppColors.primary, onTap: () { Navigator.pop(context); context.push('/collaboration'); }),
                   _DItem(Iconsax.message, 'Messages', 'DMs & group chats', isDark, onTap: () { Navigator.pop(context); context.go('/messages'); }),
                   _DItem(Icons.radio_button_checked_rounded, 'Go Live', 'Stream to your community', isDark, onTap: () { Navigator.pop(context); context.go('/live'); }),
                   _DItem(Iconsax.people, 'Groups', 'Wealth-building groups', isDark, onTap: () { Navigator.pop(context); context.go('/groups'); }),

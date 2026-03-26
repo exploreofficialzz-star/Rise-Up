@@ -120,68 +120,24 @@ async def upload_avatar(
 
 @router.get("/leaderboard")
 async def get_leaderboard(request: Request = None, user: dict = Depends(get_current_user)):
-    """Real earnings leaderboard — verified, not fake. Includes the requesting user's rank."""
+    """Real earnings leaderboard — verified, not fake"""
     try:
         leaders = supabase_service.client.table("profiles").select(
             "id, full_name, stage, country, total_earned, currency, xp_points, subscription_tier"
         ).gt("total_earned", 0).order("total_earned", desc=True).limit(50).execute()
 
         result = []
-        self_rank = None
-        self_entry = None
-
         for i, p in enumerate(leaders.data or []):
-            entry = {
+            result.append({
                 "rank": i + 1,
-                "user_id": p.get("id", ""),
                 "full_name": p.get("full_name", "User"),
                 "stage": p.get("stage", "survival"),
                 "country": p.get("country", ""),
                 "total_earned": p.get("total_earned", 0),
                 "currency": p.get("currency", "USD"),
                 "xp_points": p.get("xp_points", 0),
-                "is_self": p.get("id") == user["id"],
-            }
-            result.append(entry)
-            if p.get("id") == user["id"]:
-                self_rank = i + 1
-                self_entry = entry
+            })
 
-        # If the user is not in the top 50, find their actual rank
-        if self_rank is None:
-            try:
-                user_profile = supabase_service.client.table("profiles").select(
-                    "id, full_name, stage, country, total_earned, currency, xp_points"
-                ).eq("id", user["id"]).single().execute()
-                up = user_profile.data or {}
-                user_earned = up.get("total_earned", 0)
-
-                # Count how many users have strictly more earned
-                count_res = supabase_service.client.table("profiles").select(
-                    "id", count="exact"
-                ).gt("total_earned", user_earned).execute()
-                approx_rank = (count_res.count or 0) + 1
-
-                self_entry = {
-                    "rank": approx_rank,
-                    "user_id": user["id"],
-                    "full_name": up.get("full_name", "You"),
-                    "stage": up.get("stage", "survival"),
-                    "country": up.get("country", ""),
-                    "total_earned": user_earned,
-                    "currency": up.get("currency", "USD"),
-                    "xp_points": up.get("xp_points", 0),
-                    "is_self": True,
-                }
-                self_rank = approx_rank
-            except Exception:
-                pass
-
-        return {
-            "leaders": result,
-            "total": len(result),
-            "self_rank": self_rank,
-            "self_entry": self_entry,
-        }
+        return {"leaders": result, "total": len(result)}
     except Exception as e:
-        return {"leaders": [], "total": 0, "self_rank": None, "self_entry": None}
+        return {"leaders": [], "total": 0}

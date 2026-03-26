@@ -137,7 +137,7 @@ class _CreateStatusScreenState extends State<CreateStatusScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Status posted!'),
               backgroundColor: AppColors.success));
-        if (context.canPop()) context.pop(); else context.go('/home');
+        context.pop();
       }
     } catch (e) {
       setState(() => _posting = false);
@@ -164,7 +164,7 @@ class _CreateStatusScreenState extends State<CreateStatusScreen> {
         surfaceTintColor: Colors.transparent,
         leading: IconButton(
             icon: Icon(Icons.close_rounded, color: text),
-            onPressed: () => context.canPop() ? context.pop() : context.go('/home')),
+            onPressed: () => context.pop()),
         title: Text('New Status',
             style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: text)),
         actions: [

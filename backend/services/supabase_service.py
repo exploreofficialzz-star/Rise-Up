@@ -16,11 +16,6 @@ def get_supabase() -> Client:
     """Service-role client — full DB access (server-side only)"""
     global _service_client
     if _service_client is None:
-        if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_ROLE_KEY:
-            raise RuntimeError(
-                "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set. "
-                "Add them in your Render dashboard → Environment tab."
-            )
         _service_client = create_client(
             settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY
         )
@@ -31,11 +26,6 @@ def get_supabase_anon() -> Client:
     """Anon client — used for auth operations"""
     global _anon_client
     if _anon_client is None:
-        if not settings.SUPABASE_URL or not settings.SUPABASE_ANON_KEY:
-            raise RuntimeError(
-                "SUPABASE_URL and SUPABASE_ANON_KEY must be set. "
-                "Add them in your Render dashboard → Environment tab."
-            )
         _anon_client = create_client(
             settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY
         )
@@ -102,6 +92,7 @@ class SupabaseService:
             "ai_model": ai_model,
             "metadata": metadata or {},
         }).execute()
+        # Best-effort: update conversation message count
         try:
             self.db.rpc("increment_message_count", {"conv_id": conversation_id}).execute()
         except Exception:
@@ -218,6 +209,7 @@ class SupabaseService:
             "description": description,
             "currency": currency,
         }).execute()
+        # Best-effort: update profile total_earned
         try:
             self.db.rpc(
                 "increment_total_earned", {"uid": user_id, "amount": amount}
@@ -258,6 +250,7 @@ class SupabaseService:
     async def check_feature_access(self, user_id: str, feature_key: str) -> bool:
         profile = await self.get_profile(user_id)
         if profile and profile.get("subscription_tier") == "premium":
+            # Verify premium hasn't expired
             expires = profile.get("subscription_expires_at")
             if expires:
                 from datetime import datetime, timezone
@@ -265,7 +258,7 @@ class SupabaseService:
                 if parse_dt(expires) > datetime.now(timezone.utc):
                     return True
             else:
-                return True
+                return True  # lifetime premium (no expiry set)
 
         from datetime import datetime, timezone
         from dateutil.parser import parse as parse_dt

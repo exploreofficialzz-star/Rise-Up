@@ -443,7 +443,7 @@ class _MyCollabsTab extends StatelessWidget {
           Text('Start or join a collaboration to build bigger income goals with others.', textAlign: TextAlign.center, style: TextStyle(fontSize: 13, color: sub, height: 1.5)),
           const SizedBox(height: 24),
           GestureDetector(
-            onTap: () => context.go('/collaboration'),
+            onTap: () => context.push('/collaboration'),
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
               decoration: BoxDecoration(color: AppColors.primary, borderRadius: BorderRadius.circular(12)),

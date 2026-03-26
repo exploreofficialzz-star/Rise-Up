@@ -398,7 +398,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
           ),
         if (_workflowId != null)
           TextButton.icon(
-            onPressed: () => context.go('/workflow/$_workflowId'),
+            onPressed: () => context.push('/workflow/$_workflowId'),
             icon: const Icon(Iconsax.flash, size: 14, color: AppColors.primary),
             label: const Text('Workflow',
                 style: TextStyle(color: AppColors.primary, fontSize: 12, fontWeight: FontWeight.w600)),
@@ -692,7 +692,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
             ])),
             if (_workflowId != null)
               GestureDetector(
-                onTap: () => context.go('/workflow/$_workflowId'),
+                onTap: () => context.push('/workflow/$_workflowId'),
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
@@ -1861,7 +1861,7 @@ class _CurrencyInfoSheet extends StatelessWidget {
         const SizedBox(height: 16),
         _GradientBtn(
           label: 'Go to Settings',
-          onTap: () { Navigator.pop(context); context.go('/settings'); },
+          onTap: () { Navigator.pop(context); context.push('/settings'); },
           fullWidth: true,
         ),
         const SizedBox(height: 8),

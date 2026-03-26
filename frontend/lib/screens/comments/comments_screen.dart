@@ -205,7 +205,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
         // ── Post preview with poster profile + follow ─────────────
         GestureDetector(
           onTap: posterId != null
-              ? () => context.go('/user-profile/$posterId')
+              ? () => context.push('/user-profile/$posterId')
               : null,
           child: Container(
             color: card,
@@ -214,7 +214,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
               // Poster avatar — tap to go to profile
               GestureDetector(
                 onTap: posterId != null
-                    ? () => context.go('/user-profile/$posterId')
+                    ? () => context.push('/user-profile/$posterId')
                     : null,
                 child: Container(
                   width: 44, height: 44,
@@ -234,7 +234,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
                 Row(children: [
                   GestureDetector(
                     onTap: posterId != null
-                        ? () => context.go('/user-profile/$posterId')
+                        ? () => context.push('/user-profile/$posterId')
                         : null,
                     child: Text(posterName, style: TextStyle(
                         fontSize: 14, fontWeight: FontWeight.w700, color: text)),
@@ -325,7 +325,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
                           onProfileTap: () {
                             final uid = (c['profiles'] as Map?)?['id']?.toString()
                                 ?? c['user_id']?.toString();
-                            if (uid != null) context.go('/user-profile/$uid');
+                            if (uid != null) context.push('/user-profile/$uid');
                           },
                           onReply: () {
                             final name = (c['profiles'] as Map?)?['full_name']?.toString() ?? 'User';

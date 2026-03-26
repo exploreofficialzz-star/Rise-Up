@@ -55,9 +55,8 @@ void main() async {
     bool isPremium = false;
     try {
       final token = await storageService.read(key: 'access_token');
-      if (token != null && token.isNotEmpty) {
-        final profile = await api.getProfile()
-            .timeout(const Duration(seconds: 5));
+      if (token != null) {
+        final profile = await api.getProfile();
         isPremium = (profile['profile']?['subscription_tier'] ?? 'free') == 'premium';
       }
     } catch (_) {}
