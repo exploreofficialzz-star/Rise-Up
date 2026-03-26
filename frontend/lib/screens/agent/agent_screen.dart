@@ -1,9 +1,7 @@
 // frontend/lib/screens/agent/agent_screen.dart
 //
-// APEX Agent — Claude-style conversation interface
-//
-// Design: conversation-first, no forms upfront, clean input at bottom,
-// messages flow naturally, agent thinking shown inline, power is invisible.
+// APEX Agent — Kimi/Claude-style conversation interface
+// Enhanced for global users with persistent chat sessions
 
 import 'dart:async';
 import 'dart:convert';
@@ -33,6 +31,7 @@ class _Msg {
   final String? toolCategory;
   final bool    isCollapsed;
   final String? metadata;
+  final String? modelTier;
 
   const _Msg({
     required this.role,
@@ -41,13 +40,14 @@ class _Msg {
     this.toolCategory,
     this.isCollapsed = false,
     this.metadata,
+    this.modelTier,
   });
 
   _Msg copyWith({bool? isCollapsed, String? text}) => _Msg(
     role: role, text: text ?? this.text, toolName: toolName,
     toolCategory: toolCategory,
     isCollapsed: isCollapsed ?? this.isCollapsed,
-    metadata: metadata,
+    metadata: metadata, modelTier: modelTier,
   );
 }
 
@@ -57,7 +57,8 @@ class _Msg {
 
 class AgentScreen extends ConsumerStatefulWidget {
   final String? workflowId;
-  const AgentScreen({super.key, this.workflowId});
+  final String? sessionId;
+  const AgentScreen({super.key, this.workflowId, this.sessionId});
   @override
   ConsumerState<AgentScreen> createState() => _AgentScreenState();
 }
@@ -69,25 +70,18 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
 
   List<_Msg> _msgs      = [];
   bool   _isStreaming   = false;
-  bool   _inputEnabled  = true;
+  bool   _inputEnabled    = true;
   String? _workflowId;
   String? _sessionId;
-  int    _thinkIdx      = -1;   // index of current thinking bubble
-
-  static const _suggestions = [
-    'I want to land my first freelance client this week',
-    'Start a YouTube channel from zero — no budget',
-    'Find me a business partner in my niche',
-    'Write a contract for a client project',
-    'Sell products on WhatsApp and Instagram',
-    'Scan for income opportunities matching my skills',
-  ];
+  int    _thinkIdx      = -1;
+  bool   _showSidebar    = false;
 
   @override
   void initState() {
     super.initState();
     _workflowId = widget.workflowId;
-    WidgetsBinding.instance.addPostFrameCallback((_) => _greet());
+    _sessionId = widget.sessionId;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _init());
   }
 
   @override
@@ -98,18 +92,60 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     super.dispose();
   }
 
-  // ── Greeting ─────────────────────────────────────────
+  // ── Initialize ─────────────────────────────────────────
+  void _init() async {
+    if (_sessionId != null) {
+      // Load existing session
+      await _loadSession(_sessionId!);
+    } else {
+      _greet();
+    }
+  }
+
   void _greet() {
     final profile = ref.read(profileProvider).valueOrNull ?? {};
-    final name    = (profile['full_name']?.toString() ?? '').split(' ').first;
-    final hi      = name.isNotEmpty ? 'Hey $name 👋' : 'Hey 👋';
+    final name = (profile['full_name']?.toString() ?? '').split(' ').first;
+    final currency = profile['currency']?.toString() ?? 'USD';
+    final country = profile['country']?.toString() ?? '';
+    
     setState(() => _msgs.add(_Msg(
       role: _Role.agent,
-      text: '$hi I\'m APEX — your AI agent.\n\n'
-            'I don\'t just plan. I research, write content, find real job leads, '
-            'draft contracts, send outreach, and post to social media — all on your behalf.\n\n'
-            'What do you want to earn or build?',
+      text: name.isNotEmpty 
+          ? '**Hey $name** 👋\n\nI\'m **APEX** — your autonomous AI agent. I can research, write, find opportunities, draft contracts, and even post to social media for you.\n\nWhat do you want us to work on today?'
+          : '**Hey** 👋\n\nI\'m **APEX** — your autonomous AI agent. I can research, write, find opportunities, draft contracts, and even post to social media for you.\n\nWhat do you want us to work on today?',
+      modelTier: 'free',
     )));
+  }
+
+  // ── Load existing session ─────────────────────────────
+  Future<void> _loadSession(String sessionId) async {
+    try {
+      final response = await api.get('/agent/chat/sessions/$sessionId');
+      final messages = response['recent_messages'] as List? ?? [];
+      
+      setState(() {
+        _msgs = messages.map((m) => _Msg(
+          role: _parseRole(m['role']),
+          text: m['content'] ?? '',
+          modelTier: m['metadata']?['model_tier'],
+        )).toList();
+        _sessionId = sessionId;
+      });
+      
+      _scrollDown();
+    } catch (e) {
+      _greet();
+    }
+  }
+
+  _Role _parseRole(String? role) {
+    return switch (role) {
+      'user' => _Role.user,
+      'assistant' => _Role.agent,
+      'tool' => _Role.tool,
+      'system' => _Role.system,
+      _ => _Role.agent,
+    };
   }
 
   // ── Submit message ───────────────────────────────────
@@ -134,13 +170,13 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     }
     adManager.recordAgentUse();
 
-    final profile  = ref.read(profileProvider).valueOrNull ?? {};
+    final profile = ref.read(profileProvider).valueOrNull ?? {};
     final currCode = profile['currency']?.toString() ?? 'USD';
     currency.init(currCode);
 
-    // First user message = full agent run; subsequent = chat
-    final isFirst = _msgs.where((m) => m.role == _Role.user).length == 1;
-    if (isFirst) {
+    // Check if this is first message or continuing chat
+    final userMsgCount = _msgs.where((m) => m.role == _Role.user).length;
+    if (userMsgCount == 1 && _sessionId == null) {
       await _agentRun(text, currCode);
     } else {
       await _chatRound(text);
@@ -149,10 +185,9 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
 
   // ── Full agent run (SSE streaming) ───────────────────
   Future<void> _agentRun(String task, String currCode) async {
-    // Insert thinking bubble
     setState(() {
       _thinkIdx = _msgs.length;
-      _msgs.add(const _Msg(role: _Role.thinking, text: 'Analysing your goal...'));
+      _msgs.add(const _Msg(role: _Role.thinking, text: 'Understanding your goal...'));
     });
     _scrollDown();
 
@@ -162,8 +197,11 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
         'budget':            0.0,
         'hours_per_day':     2.0,
         'currency':          currCode,
+        'country':           ref.read(profileProvider).valueOrNull?['country'],
+        'language':          ref.read(profileProvider).valueOrNull?['language'] ?? 'en',
         'allow_email':       false,
         'allow_social_post': false,
+        'session_id':        _sessionId,
         if (_workflowId != null) 'workflow_id': _workflowId,
       });
 
@@ -179,7 +217,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
           _thinkIdx = -1;
         }
         _msgs.removeWhere((m) => m.role == _Role.tool);
-        _msgs.add(const _Msg(role: _Role.error, text: 'Agent hit a snag. Please try again.'));
+        _msgs.add(const _Msg(role: _Role.error, text: 'Connection issue. Please try again.'));
         _isStreaming  = false;
         _inputEnabled = true;
       });
@@ -189,6 +227,9 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
   void _onEvent(StreamEvent event) {
     setState(() {
       switch (event.type) {
+        case 'quota_check':
+          // Silent check, show indicator in UI if needed
+          break;
 
         case 'thinking':
           final thought = event.data['thought']?.toString() ?? '';
@@ -196,6 +237,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
             _msgs[_thinkIdx] = _Msg(
               role: _Role.thinking,
               text: thought.isEmpty ? 'Thinking...' : thought,
+              modelTier: event.data['tier']?.toString(),
             );
           }
 
@@ -203,13 +245,15 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
           final tool = event.data['tool']?.toString() ?? '';
           final cat  = event.data['category']?.toString() ?? 'thinking';
           _msgs.add(_Msg(
-            role: _Role.tool, text: _toolLabel(tool),
-            toolName: tool, toolCategory: cat,
+            role: _Role.tool, 
+            text: _toolLabel(tool),
+            toolName: tool, 
+            toolCategory: cat,
+            modelTier: event.data['tier']?.toString(),
           ));
           _scrollDown();
 
         case 'tool_result':
-          // Mark tool bubble as done (will be cleaned up on complete)
           final tool = event.data['tool']?.toString() ?? '';
           for (int i = _msgs.length - 1; i >= 0; i--) {
             if (_msgs[i].role == _Role.tool && _msgs[i].toolName == tool) {
@@ -225,11 +269,12 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
           _msgs.add(_Msg(
             role: _Role.action,
             text: ok
-                ? '✅ ${_toolLabel(tool)} — done'
-                : '📋 ${_toolLabel(tool)} — ready to send',
-            toolName:     tool,
+                ? '✅ ${_toolLabel(tool)} — completed'
+                : '📋 ${_toolLabel(tool)} — ready',
+            toolName: tool,
             toolCategory: 'action',
-            metadata:     jsonEncode(result),
+            metadata: jsonEncode(result),
+            modelTier: event.data['tier']?.toString(),
           ));
           _scrollDown();
 
@@ -240,7 +285,6 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
           }
 
         case 'complete':
-          // Clean up
           if (_thinkIdx >= 0 && _thinkIdx < _msgs.length) {
             _msgs.removeAt(_thinkIdx);
             _thinkIdx = -1;
@@ -248,12 +292,13 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
           _msgs.removeWhere((m) => m.role == _Role.tool);
 
           _workflowId = event.data['workflow_id']?.toString() ?? _workflowId;
-          _sessionId ??= 'apex_${DateTime.now().millisecondsSinceEpoch}';
+          _sessionId = event.data['session_id']?.toString() ?? _sessionId;
 
           _msgs.add(_Msg(
-            role:     _Role.agent,
-            text:     _buildResponse(Map<String, dynamic>.from(event.data)),
+            role: _Role.agent,
+            text: _buildResponse(Map<String, dynamic>.from(event.data)),
             metadata: jsonEncode(event.data),
+            modelTier: event.data['model_tier']?.toString() ?? 'free',
           ));
           _isStreaming  = false;
           _inputEnabled = true;
@@ -267,11 +312,15 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
           _msgs.removeWhere((m) => m.role == _Role.tool);
           final msg = event.data['message']?.toString() ?? '';
           if (msg.contains('limit')) {
-            _msgs.add(const _Msg(role: _Role.system,
-              text: '🔒 You\'ve used all 3 free runs today.\nWatch an ad for 1 more or upgrade to Premium for 25/day.'));
+            _msgs.add(_Msg(
+              role: _Role.system,
+              text: '**Daily limit reached** 🔒\n\nYou\'ve used all your free runs today. Watch an ad for 1 more, or upgrade to Premium for unlimited access.',
+            ));
           } else {
-            _msgs.add(const _Msg(role: _Role.error,
-              text: 'Agent hit an issue. Try rephrasing your goal.'));
+            _msgs.add(const _Msg(
+              role: _Role.error,
+              text: 'Something went wrong. Please try rephrasing your request.',
+            ));
           }
           _isStreaming  = false;
           _inputEnabled = true;
@@ -290,17 +339,24 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
 
     try {
       final r = await api.post('/agent/chat', {
-        'message':    message,
-        if (_sessionId  != null) 'session_id':  _sessionId,
-        if (_workflowId != null) 'workflow_id': _workflowId,
+        'message':     message,
+        'session_id':  _sessionId,
+        'workflow_id': _workflowId,
+        'stream':      false,
       });
+      
       _sessionId = r['session_id']?.toString() ?? _sessionId;
+      
       setState(() {
         if (_thinkIdx >= 0 && _thinkIdx < _msgs.length) {
           _msgs.removeAt(_thinkIdx);
           _thinkIdx = -1;
         }
-        _msgs.add(_Msg(role: _Role.agent, text: r['content']?.toString() ?? '...'));
+        _msgs.add(_Msg(
+          role: _Role.agent, 
+          text: r['content']?.toString() ?? '...',
+          modelTier: r['model_tier']?.toString(),
+        ));
         _isStreaming  = false;
         _inputEnabled = true;
       });
@@ -310,7 +366,10 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
           _msgs.removeAt(_thinkIdx);
           _thinkIdx = -1;
         }
-        _msgs.add(const _Msg(role: _Role.error, text: 'Connection issue. Please try again.'));
+        _msgs.add(const _Msg(
+          role: _Role.error, 
+          text: 'Connection issue. Please try again.',
+        ));
         _isStreaming  = false;
         _inputEnabled = true;
       });
@@ -340,6 +399,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
       _thinkIdx   = -1;
     });
     _greet();
+    _inputFocus.requestFocus();
   }
 
   void _showLimitDialog() {
@@ -417,17 +477,17 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     if (docs.isNotEmpty) {
       buf.writeln('**Documents generated:** '
           '${docs.map((d) => (d as Map)['type']).join(', ')}');
-      buf.writeln('_Copy them from the Workflow screen._');
+      buf.writeln('_View in Workflow tab_');
       buf.writeln();
     }
 
     if (msgs.isNotEmpty) {
-      buf.writeln('**${msgs.length} outreach message(s) written** and ready to send.');
+      buf.writeln('**${msgs.length} outreach message(s)** ready to send.');
       buf.writeln();
     }
 
     if (posts.isNotEmpty) {
-      buf.writeln('**${posts.length} social post(s)** written.');
+      buf.writeln('**${posts.length} social post(s)** drafted.');
       buf.writeln();
     }
 
@@ -438,7 +498,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     }
 
     if (now.isNotEmpty) {
-      buf.writeln('⚡ **Do this right now:** $now');
+      buf.writeln('⚡ **Do this now:** $now');
       buf.writeln();
     }
 
@@ -485,6 +545,13 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
       'generate_invoice':     'Generating invoice',
       'generate_proposal':    'Generating proposal',
       'generate_pitch_deck':  'Generating pitch deck',
+      'scrape_live_opportunities': 'Finding live opportunities',
+      'score_opportunity':    'Scoring opportunity',
+      'analyze_market_trends': 'Analyzing market trends',
+      'create_daily_action_plan': 'Creating action plan',
+      'create_follow_up_plan': 'Creating follow-up plan',
+      'track_earnings_insight': 'Analyzing earnings',
+      'growth_milestone_check': 'Checking milestones',
     };
     return map[tool] ?? tool.replaceAll('_', ' ');
   }
@@ -502,21 +569,37 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     return Scaffold(
       backgroundColor: bg,
       appBar: _buildAppBar(isDark, text),
-      body: Column(children: [
-        Expanded(child: _buildMessages(isDark)),
-        _buildInput(isDark, text),
+      body: Row(children: [
+        // Sidebar for sessions (collapsible)
+        if (_showSidebar) _buildSidebar(isDark),
+        
+        // Main chat area
+        Expanded(
+          child: Column(children: [
+            Expanded(child: _buildMessages(isDark)),
+            _buildInput(isDark, text),
+          ]),
+        ),
       ]),
     );
   }
 
   AppBar _buildAppBar(bool isDark, Color text) {
+    final profile = ref.watch(profileProvider).valueOrNull ?? {};
+    final runsRemaining = adManager.agentUsesRemaining;
+    final isPremium = adManager.isPremium;
+
     return AppBar(
       backgroundColor: isDark ? const Color(0xFF0A0A0A) : Colors.white,
       elevation: 0,
       surfaceTintColor: Colors.transparent,
       leading: IconButton(
-        icon: Icon(Icons.arrow_back_rounded, color: text, size: 22),
-        onPressed: () => context.pop(),
+        icon: Icon(
+          _showSidebar ? Iconsax.close_square : Iconsax.menu_1,
+          color: text, 
+          size: 22
+        ),
+        onPressed: () => setState(() => _showSidebar = !_showSidebar),
       ),
       title: Row(mainAxisSize: MainAxisSize.min, children: [
         Container(
@@ -531,35 +614,45 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
           child: const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 15),
         ),
         const SizedBox(width: 9),
-        Text('APEX', style: TextStyle(
-            fontSize: 16, fontWeight: FontWeight.w700, color: text)),
+        const Text(
+          'APEX', 
+          style: TextStyle(
+            fontSize: 17, 
+            fontWeight: FontWeight.w800, 
+            letterSpacing: 0.5,
+          ),
+        ),
       ]),
       actions: [
-        if (!adManager.isPremium)
+        // Model tier indicator
+        if (!isPremium)
           Container(
-            margin: const EdgeInsets.only(right: 6),
-            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+            margin: const EdgeInsets.only(right: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
-              color: adManager.agentUsesRemaining > 0
+              color: runsRemaining > 0
                   ? AppColors.success.withOpacity(0.12)
                   : AppColors.error.withOpacity(0.12),
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
-              '${adManager.agentUsesRemaining}/3',
+              isPremium ? 'Premium' : '$runsRemaining left',
               style: TextStyle(
-                fontSize: 12, fontWeight: FontWeight.w700,
-                color: adManager.agentUsesRemaining > 0
-                    ? AppColors.success : AppColors.error,
+                fontSize: 11, 
+                fontWeight: FontWeight.w600,
+                color: runsRemaining > 0 ? AppColors.success : AppColors.error,
               ),
             ),
           ),
-        if (_msgs.length > 1)
-          IconButton(
-            icon: Icon(Icons.add_rounded, color: text, size: 22),
-            tooltip: 'New conversation',
-            onPressed: _newChat,
-          ),
+        
+        // New chat button
+        IconButton(
+          icon: Icon(Icons.add_rounded, color: text, size: 22),
+          tooltip: 'New conversation',
+          onPressed: _newChat,
+        ),
+        
+        // View workflow if exists
         if (_workflowId != null)
           IconButton(
             icon: const Icon(Iconsax.flash, color: AppColors.primary, size: 18),
@@ -570,22 +663,138 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     );
   }
 
-  Widget _buildMessages(bool isDark) {
-    // Show suggestion chips after the initial greeting
-    final showSuggestions = _msgs.length == 1 &&
-        _msgs.first.role == _Role.agent;
+  Widget _buildSidebar(bool isDark) {
+    return Container(
+      width: 260,
+      color: isDark ? const Color(0xFF111111) : const Color(0xFFF8F8F8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // New chat button
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: GestureDetector(
+              onTap: _newChat,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: isDark ? Colors.white.withOpacity(0.05) : Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: isDark ? Colors.white12 : Colors.black12,
+                  ),
+                ),
+                child: Row(children: [
+                  Icon(Icons.add, size: 18, color: isDark ? Colors.white70 : Colors.black54),
+                  const SizedBox(width: 8),
+                  Text(
+                    'New conversation',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: isDark ? Colors.white70 : Colors.black87,
+                    ),
+                  ),
+                ]),
+              ),
+            ),
+          ),
+          
+          // Sessions list
+          Expanded(
+            child: FutureBuilder(
+              future: api.get('/agent/chat/sessions'),
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) {
+                  return const Center(child: CircularProgressIndicator(strokeWidth: 2));
+                }
+                
+                final sessions = snapshot.data?['sessions'] as List? ?? [];
+                
+                return ListView.builder(
+                  itemCount: sessions.length,
+                  itemBuilder: (context, index) {
+                    final session = sessions[index];
+                    final isActive = session['id'] == _sessionId;
+                    
+                    return ListTile(
+                      dense: true,
+                      selected: isActive,
+                      selectedTileColor: AppColors.primary.withOpacity(0.1),
+                      leading: Icon(
+                        Iconsax.message_text,
+                        size: 18,
+                        color: isActive ? AppColors.primary : (isDark ? Colors.white54 : Colors.black54),
+                      ),
+                      title: Text(
+                        session['title'] ?? 'Untitled',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
+                          color: isDark ? Colors.white : Colors.black87,
+                        ),
+                      ),
+                      subtitle: Text(
+                        _formatDate(session['updated_at']),
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: isDark ? Colors.white38 : Colors.black38,
+                        ),
+                      ),
+                      onTap: () {
+                        setState(() => _showSidebar = false);
+                        _loadSession(session['id']);
+                      },
+                      trailing: isActive ? Container(
+                        width: 6, height: 6,
+                        decoration: const BoxDecoration(
+                          color: AppColors.primary,
+                          shape: BoxShape.circle,
+                        ),
+                      ) : null,
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
+  String _formatDate(String? dateStr) {
+    if (dateStr == null) return '';
+    final date = DateTime.tryParse(dateStr);
+    if (date == null) return '';
+    
+    final now = DateTime.now();
+    final diff = now.difference(date);
+    
+    if (diff.inDays == 0) {
+      return 'Today';
+    } else if (diff.inDays == 1) {
+      return 'Yesterday';
+    } else if (diff.inDays < 7) {
+      return '${diff.inDays} days ago';
+    } else {
+      return '${date.day}/${date.month}/${date.year}';
+    }
+  }
+
+  Widget _buildMessages(bool isDark) {
     return ListView.builder(
       controller: _scrollCtrl,
       padding: const EdgeInsets.fromLTRB(0, 8, 0, 16),
-      itemCount: _msgs.length + (showSuggestions ? 1 : 0),
+      itemCount: _msgs.length,
       itemBuilder: (_, i) {
-        if (i == _msgs.length) return _buildSuggestions(isDark);
         final msg = _msgs[i];
         return switch (msg.role) {
           _Role.user     => _UserBubble(msg: msg),
           _Role.agent    => _AgentBubble(
-              msg: msg, isDark: isDark,
+              msg: msg, 
+              isDark: isDark,
               onWorkflow: _workflowId != null
                   ? () => context.push('/workflow/$_workflowId') : null,
             ),
@@ -594,7 +803,8 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
           _Role.action   => _ActionLine(msg: msg),
           _Role.error    => _ErrorLine(msg: msg),
           _Role.system   => _SystemMsg(
-              msg: msg, isDark: isDark,
+              msg: msg, 
+              isDark: isDark,
               onUpgrade: () => context.push('/premium'),
               onWatchAd: () => adManager.watchAdForAgentUse(context)
                   .then((ok) { if (ok && mounted) _submit(); }),
@@ -604,38 +814,11 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     );
   }
 
-  Widget _buildSuggestions(bool isDark) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-      child: Wrap(spacing: 8, runSpacing: 8,
-        children: _suggestions.map((s) => GestureDetector(
-          onTap: () {
-            _inputCtrl.text = s;
-            _inputFocus.requestFocus();
-          },
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
-            decoration: BoxDecoration(
-              color: Colors.transparent,
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                color: isDark ? Colors.white12 : Colors.black12,
-              ),
-            ),
-            child: Text(s,
-              style: TextStyle(fontSize: 13,
-                  color: isDark ? Colors.white60 : Colors.black54)),
-          ),
-        )).toList(),
-      ),
-    );
-  }
-
   Widget _buildInput(bool isDark, Color text) {
     return SafeArea(
       top: false,
       child: Container(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
         decoration: BoxDecoration(
           color: isDark ? const Color(0xFF0A0A0A) : Colors.white,
           border: Border(top: BorderSide(
@@ -644,10 +827,10 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
         child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
           Expanded(
             child: Container(
-              constraints: const BoxConstraints(maxHeight: 180),
+              constraints: const BoxConstraints(maxHeight: 200),
               decoration: BoxDecoration(
                 color: isDark ? const Color(0xFF1A1A1A) : const Color(0xFFF5F5F5),
-                borderRadius: BorderRadius.circular(26),
+                borderRadius: BorderRadius.circular(24),
                 border: Border.all(
                     color: isDark ? Colors.white10 : Colors.black12),
               ),
@@ -660,17 +843,17 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
                 textInputAction: TextInputAction.newline,
                 style: TextStyle(fontSize: 15, color: text, height: 1.45),
                 decoration: InputDecoration(
-                  hintText: 'Message APEX...',
+                  hintText: 'What do you want us to work on?',
                   hintStyle: TextStyle(
                       fontSize: 15,
-                      color: isDark ? Colors.white24 : Colors.black26),
+                      color: isDark ? Colors.white30 : Colors.black30),
                   border:          InputBorder.none,
-                  contentPadding:  const EdgeInsets.fromLTRB(18, 12, 18, 12),
+                  contentPadding:  const EdgeInsets.fromLTRB(20, 14, 20, 14),
                 ),
               ),
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 10),
           GestureDetector(
             onTap: _isStreaming ? null : _submit,
             child: AnimatedContainer(
@@ -713,29 +896,39 @@ class _UserBubble extends StatelessWidget {
     return Align(
       alignment: Alignment.centerRight,
       child: Container(
-        margin: const EdgeInsets.fromLTRB(72, 3, 16, 3),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        margin: const EdgeInsets.fromLTRB(80, 4, 16, 4),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
         decoration: const BoxDecoration(
           color: AppColors.primary,
           borderRadius: BorderRadius.only(
             topLeft:     Radius.circular(20),
             topRight:    Radius.circular(20),
             bottomLeft:  Radius.circular(20),
-            bottomRight: Radius.circular(5),
+            bottomRight: Radius.circular(6),
           ),
         ),
-        child: Text(msg.text,
-            style: const TextStyle(color: Colors.white, fontSize: 15, height: 1.45)),
+        child: Text(
+          msg.text,
+          style: const TextStyle(
+            color: Colors.white, 
+            fontSize: 15, 
+            height: 1.45,
+          ),
+        ),
       ),
     ).animate().fadeIn(duration: 180.ms).slideY(begin: 0.08, curve: Curves.easeOut);
   }
 }
 
 class _AgentBubble extends StatelessWidget {
-  final _Msg         msg;
-  final bool         isDark;
+  final _Msg msg;
+  final bool isDark;
   final VoidCallback? onWorkflow;
-  const _AgentBubble({required this.msg, required this.isDark, this.onWorkflow});
+  const _AgentBubble({
+    required this.msg, 
+    required this.isDark, 
+    this.onWorkflow,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -743,57 +936,114 @@ class _AgentBubble extends StatelessWidget {
     final subColor  = isDark ? Colors.white38 : Colors.black38;
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 6, 72, 6),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // APEX label
-        Padding(
-          padding: const EdgeInsets.only(bottom: 5),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Container(
-              width: 20, height: 20,
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                    colors: [AppColors.primary, AppColors.accent]),
-                borderRadius: BorderRadius.circular(5),
-              ),
-              child: const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 11),
+      padding: const EdgeInsets.fromLTRB(16, 8, 80, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // APEX label with model tier
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 22, height: 22,
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [AppColors.primary, AppColors.accent],
+                    ),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Icon(
+                    Icons.auto_awesome_rounded, 
+                    color: Colors.white, 
+                    size: 12,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const Text(
+                  'APEX',
+                  style: TextStyle(
+                    fontSize: 12, 
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                if (msg.modelTier != null) ...[
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: msg.modelTier == 'premium' 
+                          ? Colors.amber.withOpacity(0.2)
+                          : Colors.grey.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      msg.modelTier!.toUpperCase(),
+                      style: TextStyle(
+                        fontSize: 9,
+                        fontWeight: FontWeight.w700,
+                        color: msg.modelTier == 'premium' 
+                            ? Colors.amber
+                            : subColor,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
             ),
-            const SizedBox(width: 6),
-            Text('APEX', style: TextStyle(
-                fontSize: 11, fontWeight: FontWeight.w600, color: subColor)),
-          ]),
-        ),
-
-        // Message body
-        _MdText(text: msg.text, isDark: isDark),
-
-        // Action row
-        const SizedBox(height: 8),
-        Row(children: [
-          _IconBtn(
-            icon: Icons.copy_outlined,
-            color: subColor,
-            onTap: () {
-              Clipboard.setData(ClipboardData(text: msg.text));
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                  content: Text('Copied'), duration: Duration(seconds: 1)));
-            },
           ),
-          if (onWorkflow != null) ...[
-            const SizedBox(width: 12),
-            GestureDetector(
-              onTap: onWorkflow,
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                const Icon(Iconsax.flash, size: 13, color: AppColors.primary),
-                const SizedBox(width: 4),
-                const Text('View Workflow',
-                    style: TextStyle(fontSize: 12, color: AppColors.primary,
-                        fontWeight: FontWeight.w600)),
-              ]),
-            ),
-          ],
-        ]),
-      ]),
+
+          // Message body
+          _MdText(text: msg.text, isDark: isDark),
+
+          // Action row
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              _IconBtn(
+                icon: Icons.copy_outlined,
+                color: subColor,
+                onTap: () {
+                  Clipboard.setData(ClipboardData(text: msg.text));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Copied to clipboard'), 
+                      duration: Duration(seconds: 1),
+                    ),
+                  );
+                },
+              ),
+              if (onWorkflow != null) ...[
+                const SizedBox(width: 14),
+                GestureDetector(
+                  onTap: onWorkflow,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Iconsax.flash, 
+                        size: 14, 
+                        color: AppColors.primary,
+                      ),
+                      const SizedBox(width: 4),
+                      const Text(
+                        'View Workflow',
+                        style: TextStyle(
+                          fontSize: 12, 
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
     ).animate().fadeIn(duration: 280.ms).slideY(begin: 0.05, curve: Curves.easeOut);
   }
 }
@@ -802,6 +1052,7 @@ class _ThinkingBubble extends StatefulWidget {
   final _Msg msg;
   final bool isDark;
   const _ThinkingBubble({required this.msg, required this.isDark});
+  
   @override
   State<_ThinkingBubble> createState() => _ThinkingBubbleState();
 }
@@ -813,40 +1064,61 @@ class _ThinkingBubbleState extends State<_ThinkingBubble>
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(vsync: this, duration: 1200.ms)..repeat();
+    _ctrl = AnimationController(
+      vsync: this, 
+      duration: 1200.ms,
+    )..repeat();
   }
 
   @override
-  void dispose() { _ctrl.dispose(); super.dispose(); }
+  void dispose() { 
+    _ctrl.dispose(); 
+    super.dispose(); 
+  }
 
   @override
   Widget build(BuildContext context) {
-    final sub   = widget.isDark ? Colors.white38 : Colors.black38;
+    final sub = widget.isDark ? Colors.white38 : Colors.black38;
     final empty = widget.msg.text.isEmpty || widget.msg.isCollapsed;
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 72, 4),
-      child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
-        Container(
-          width: 20, height: 20,
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-                colors: [AppColors.primary, AppColors.accent]),
-            borderRadius: BorderRadius.circular(5),
+      padding: const EdgeInsets.fromLTRB(16, 6, 80, 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            width: 22, height: 22,
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [AppColors.primary, AppColors.accent],
+              ),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: const Icon(
+              Icons.auto_awesome_rounded, 
+              color: Colors.white, 
+              size: 12,
+            ),
           ),
-          child: const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 11),
-        ),
-        const SizedBox(width: 10),
-        if (!empty)
-          Expanded(child: Text(
-            widget.msg.text,
-            maxLines: 2, overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 13, color: sub,
-                fontStyle: FontStyle.italic, height: 1.4),
-          )),
-        if (!empty) const SizedBox(width: 8),
-        _Dots(controller: _ctrl),
-      ]),
+          const SizedBox(width: 12),
+          if (!empty)
+            Expanded(
+              child: Text(
+                widget.msg.text,
+                maxLines: 2, 
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 13, 
+                  color: sub,
+                  fontStyle: FontStyle.italic, 
+                  height: 1.4,
+                ),
+              ),
+            ),
+          if (!empty) const SizedBox(width: 8),
+          _Dots(controller: _ctrl),
+        ],
+      ),
     ).animate().fadeIn(duration: 200.ms);
   }
 }
@@ -859,38 +1131,58 @@ class _ToolLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (msg.isCollapsed) return const SizedBox.shrink();
-    final color = _c(msg.toolCategory);
-    final emoji = _e(msg.toolCategory);
+    
+    final color = _categoryColor(msg.toolCategory);
+    final icon = _categoryIcon(msg.toolCategory);
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(46, 2, 72, 2),
-      child: Row(children: [
-        Container(width: 2, height: 12,
+      padding: const EdgeInsets.fromLTRB(50, 2, 80, 2),
+      child: Row(
+        children: [
+          Container(
+            width: 2, 
+            height: 12,
             decoration: BoxDecoration(
-                color: color.withOpacity(0.35),
-                borderRadius: BorderRadius.circular(1))),
-        const SizedBox(width: 8),
-        Text('$emoji ${msg.text}',
-            style: TextStyle(fontSize: 12, color: color.withOpacity(0.75))),
-        const SizedBox(width: 6),
-        SizedBox(width: 9, height: 9,
-          child: CircularProgressIndicator(
-              strokeWidth: 1.2, color: color.withOpacity(0.4))),
-      ]),
+              color: color.withOpacity(0.4),
+              borderRadius: BorderRadius.circular(1),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            '$icon ${msg.text}',
+            style: TextStyle(
+              fontSize: 12, 
+              color: color.withOpacity(0.8),
+            ),
+          ),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 10, 
+            height: 10,
+            child: CircularProgressIndicator(
+              strokeWidth: 1.5, 
+              color: color.withOpacity(0.5),
+            ),
+          ),
+        ],
+      ),
     ).animate().fadeIn(duration: 150.ms);
   }
 
-  Color _c(String? cat) => switch (cat) {
+  Color _categoryColor(String? cat) => switch (cat) {
     'research' => AppColors.info,
     'action'   => AppColors.success,
-    'document' => AppColors.gold,
+    'document' => Colors.amber,
+    'thinking' => AppColors.primary,
     _          => AppColors.primary,
   };
-  String _e(String? cat) => switch (cat) {
+
+  String _categoryIcon(String? cat) => switch (cat) {
     'research' => '🔍',
-    'action'   => '📤',
+    'action'   => '⚡',
     'document' => '📄',
-    _          => '🧠',
+    'thinking' => '💭',
+    _          => '●',
   };
 }
 
@@ -901,9 +1193,15 @@ class _ActionLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(46, 2, 72, 2),
-      child: Text(msg.text,
-          style: const TextStyle(fontSize: 12, color: AppColors.success)),
+      padding: const EdgeInsets.fromLTRB(50, 2, 80, 2),
+      child: Text(
+        msg.text,
+        style: const TextStyle(
+          fontSize: 12, 
+          color: AppColors.success,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
     ).animate().fadeIn();
   }
 }
@@ -915,93 +1213,125 @@ class _ErrorLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 72, 4),
+      padding: const EdgeInsets.fromLTRB(16, 6, 80, 6),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
           color: AppColors.error.withOpacity(0.08),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppColors.error.withOpacity(0.18)),
+          border: Border.all(color: AppColors.error.withOpacity(0.2)),
         ),
-        child: Text(msg.text,
-            style: const TextStyle(fontSize: 14, color: AppColors.error, height: 1.4)),
+        child: Text(
+          msg.text,
+          style: const TextStyle(
+            fontSize: 14, 
+            color: AppColors.error, 
+            height: 1.4,
+          ),
+        ),
       ),
     ).animate().fadeIn();
   }
 }
 
 class _SystemMsg extends StatelessWidget {
-  final _Msg         msg;
-  final bool         isDark;
+  final _Msg msg;
+  final bool isDark;
   final VoidCallback onUpgrade;
   final VoidCallback onWatchAd;
-  const _SystemMsg({required this.msg, required this.isDark,
-      required this.onUpgrade, required this.onWatchAd});
+  
+  const _SystemMsg({
+    required this.msg, 
+    required this.isDark,
+    required this.onUpgrade, 
+    required this.onWatchAd,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
       child: Container(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
           color: isDark ? const Color(0xFF1A1A1A) : const Color(0xFFF5F5F5),
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: isDark ? Colors.white10 : Colors.black.withOpacity(0.06)),
+          border: Border.all(
+            color: isDark ? Colors.white10 : Colors.black.withOpacity(0.06),
+          ),
         ),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(msg.text, style: TextStyle(fontSize: 13, height: 1.5,
-              color: isDark ? Colors.white60 : Colors.black54)),
-          const SizedBox(height: 14),
-          Row(children: [
-            Expanded(child: OutlinedButton(
-              onPressed: onWatchAd,
-              style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: AppColors.primary),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10)),
-                padding: const EdgeInsets.symmetric(vertical: 11),
-              ),
-              child: const Text('Watch Ad',
-                  style: TextStyle(color: AppColors.primary,
-                      fontWeight: FontWeight.w600, fontSize: 13)),
-            )),
-            const SizedBox(width: 10),
-            Expanded(child: ElevatedButton(
-              onPressed: onUpgrade,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.primary,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10)),
-                padding: const EdgeInsets.symmetric(vertical: 11),
-              ),
-              child: const Text('Upgrade',
-                  style: TextStyle(color: Colors.white,
-                      fontWeight: FontWeight.w600, fontSize: 13)),
-            )),
-          ]),
-        ]),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _MdText(text: msg.text, isDark: isDark),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: onWatchAd,
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: AppColors.primary),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text(
+                      'Watch Ad',
+                      style: TextStyle(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w600, 
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: onUpgrade,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text(
+                      'Upgrade',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600, 
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     ).animate().fadeIn();
   }
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Small helpers
+// Helper widgets
 // ─────────────────────────────────────────────────────────────────
 
-// Light markdown parser: **bold**, _italic_, `code`, > blockquote
 class _MdText extends StatelessWidget {
   final String text;
-  final bool   isDark;
+  final bool isDark;
   const _MdText({required this.text, required this.isDark});
 
   @override
   Widget build(BuildContext context) {
-    final base    = isDark ? Colors.white    : Colors.black87;
-    final muted   = isDark ? Colors.white54  : Colors.black45;
-    final spans   = <TextSpan>[];
-    final lines   = text.split('\n');
+    final base = isDark ? Colors.white : Colors.black87;
+    final muted = isDark ? Colors.white60 : Colors.black54;
+    final spans = <TextSpan>[];
+    final lines = text.split('\n');
 
     for (int li = 0; li < lines.length; li++) {
       if (li > 0) spans.add(const TextSpan(text: '\n'));
@@ -1010,42 +1340,82 @@ class _MdText extends StatelessWidget {
       // Blockquote
       if (line.startsWith('> ')) {
         spans.add(TextSpan(
-            text: '  ${line.substring(2)}',
-            style: TextStyle(color: muted, fontSize: 13,
-                height: 1.5, fontStyle: FontStyle.italic)));
+          text: '  ${line.substring(2)}',
+          style: TextStyle(
+            color: muted, 
+            fontSize: 13,
+            height: 1.5, 
+            fontStyle: FontStyle.italic,
+          ),
+        ));
         continue;
       }
 
-      // Inline parsing
+      // Inline parsing: **bold**, _italic_, `code`
       final re = RegExp(r'\*\*(.*?)\*\*|_(.*?)_|`(.*?)`');
       int last = 0;
+      
       for (final m in re.allMatches(line)) {
         if (m.start > last) {
-          spans.add(TextSpan(text: line.substring(last, m.start),
-              style: TextStyle(color: base, fontSize: 15, height: 1.5)));
+          spans.add(TextSpan(
+            text: line.substring(last, m.start),
+            style: TextStyle(
+              color: base, 
+              fontSize: 15, 
+              height: 1.5,
+            ),
+          ));
         }
+        
         if (m.group(1) != null) {
-          spans.add(TextSpan(text: m.group(1),
-              style: TextStyle(color: base, fontSize: 15, height: 1.5,
-                  fontWeight: FontWeight.w700)));
+          // Bold
+          spans.add(TextSpan(
+            text: m.group(1),
+            style: TextStyle(
+              color: base, 
+              fontSize: 15, 
+              height: 1.5,
+              fontWeight: FontWeight.w700,
+            ),
+          ));
         } else if (m.group(2) != null) {
-          spans.add(TextSpan(text: m.group(2),
-              style: TextStyle(color: muted, fontSize: 14, height: 1.5,
-                  fontStyle: FontStyle.italic)));
+          // Italic
+          spans.add(TextSpan(
+            text: m.group(2),
+            style: TextStyle(
+              color: muted, 
+              fontSize: 14, 
+              height: 1.5,
+              fontStyle: FontStyle.italic,
+            ),
+          ));
         } else if (m.group(3) != null) {
-          spans.add(TextSpan(text: m.group(3),
-              style: TextStyle(
-                  color: AppColors.accent, fontSize: 13, height: 1.5,
-                  fontFamily: 'monospace',
-                  backgroundColor: isDark
-                      ? Colors.white.withOpacity(0.06)
-                      : Colors.black.withOpacity(0.04))));
+          // Code
+          spans.add(TextSpan(
+            text: m.group(3),
+            style: TextStyle(
+              color: AppColors.accent, 
+              fontSize: 13, 
+              height: 1.5,
+              fontFamily: 'monospace',
+              backgroundColor: isDark
+                  ? Colors.white.withOpacity(0.06)
+                  : Colors.black.withOpacity(0.04),
+            ),
+          ));
         }
         last = m.end;
       }
+      
       if (last < line.length) {
-        spans.add(TextSpan(text: line.substring(last),
-            style: TextStyle(color: base, fontSize: 15, height: 1.5)));
+        spans.add(TextSpan(
+          text: line.substring(last),
+          style: TextStyle(
+            color: base, 
+            fontSize: 15, 
+            height: 1.5,
+          ),
+        ));
       }
     }
 
@@ -1053,7 +1423,6 @@ class _MdText extends StatelessWidget {
   }
 }
 
-// Animated typing dots
 class _Dots extends StatelessWidget {
   final AnimationController controller;
   const _Dots({required this.controller});
@@ -1062,16 +1431,19 @@ class _Dots extends StatelessWidget {
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: controller,
-      builder: (_, __) => Row(mainAxisSize: MainAxisSize.min,
+      builder: (_, __) => Row(
+        mainAxisSize: MainAxisSize.min,
         children: List.generate(3, (i) {
           final phase = ((controller.value + i / 3.0) % 1.0);
-          final op    = 0.2 + 0.8 * (phase < 0.5 ? phase * 2 : (1 - phase) * 2);
+          final op = 0.2 + 0.8 * (phase < 0.5 ? phase * 2 : (1 - phase) * 2);
           return Container(
             margin: const EdgeInsets.only(right: 3),
-            width: 5, height: 5,
+            width: 5, 
+            height: 5,
             decoration: BoxDecoration(
-                color: AppColors.primary.withOpacity(op),
-                shape: BoxShape.circle),
+              color: AppColors.primary.withOpacity(op),
+              shape: BoxShape.circle,
+            ),
           );
         }),
       ),
@@ -1081,21 +1453,30 @@ class _Dots extends StatelessWidget {
 
 class _IconBtn extends StatelessWidget {
   final IconData icon;
-  final Color    color;
+  final Color color;
   final VoidCallback onTap;
-  const _IconBtn({required this.icon, required this.color, required this.onTap});
+  
+  const _IconBtn({
+    required this.icon, 
+    required this.color, 
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) => GestureDetector(
     onTap: onTap,
-    child: Icon(icon, size: 16, color: color),
+    child: Icon(icon, size: 18, color: color),
   );
 }
 
 class _LimitSheet extends StatelessWidget {
   final bool isDark;
   final VoidCallback onWatchAd;
-  const _LimitSheet({required this.isDark, required this.onWatchAd});
+  
+  const _LimitSheet({
+    required this.isDark, 
+    required this.onWatchAd,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1103,55 +1484,92 @@ class _LimitSheet extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
       decoration: BoxDecoration(
         color: isDark ? const Color(0xFF111111) : Colors.white,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        borderRadius: const BorderRadius.vertical(
+          top: Radius.circular(24),
+        ),
       ),
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(width: 36, height: 4,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 36, 
+            height: 4,
             decoration: BoxDecoration(
-                color: isDark ? Colors.white24 : Colors.black12,
-                borderRadius: BorderRadius.circular(2))),
-        const SizedBox(height: 20),
-        const Text('🔒', style: TextStyle(fontSize: 36)),
-        const SizedBox(height: 12),
-        Text('Daily limit reached',
-            style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700,
-                color: isDark ? Colors.white : Colors.black87)),
-        const SizedBox(height: 6),
-        Text('3 free runs/day. Watch an ad for 1 more,\nor upgrade to Premium for 25/day.',
+              color: isDark ? Colors.white24 : Colors.black12,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 24),
+          const Icon(Iconsax.lock_1, size: 48, color: AppColors.primary),
+          const SizedBox(height: 16),
+          const Text(
+            'Daily limit reached',
+            style: TextStyle(
+              fontSize: 18, 
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'You\'ve used all your free runs today.\nWatch an ad for 1 more, or upgrade to Premium for unlimited access.',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 13, height: 1.5,
-                color: isDark ? Colors.white54 : Colors.black45)),
-        const SizedBox(height: 20),
-        Row(children: [
-          Expanded(child: OutlinedButton(
-            onPressed: onWatchAd,
-            style: OutlinedButton.styleFrom(
-              side: const BorderSide(color: AppColors.primary),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
-              padding: const EdgeInsets.symmetric(vertical: 13),
+            style: TextStyle(
+              fontSize: 14, 
+              height: 1.5,
+              color: isDark ? Colors.white60 : Colors.black60,
             ),
-            child: const Text('Watch Ad',
-                style: TextStyle(color: AppColors.primary,
-                    fontWeight: FontWeight.w600)),
-          )),
-          const SizedBox(width: 10),
-          Expanded(child: ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              context.push('/premium');
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
-              padding: const EdgeInsets.symmetric(vertical: 13),
-            ),
-            child: const Text('Upgrade',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-          )),
-        ]),
-      ]),
+          ),
+          const SizedBox(height: 24),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: onWatchAd,
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: AppColors.primary),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  child: const Text(
+                    'Watch Ad',
+                    style: TextStyle(
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(context);
+                    context.push('/premium');
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  child: const Text(
+                    'Upgrade',
+                    style: TextStyle(
+                      color: Colors.white, 
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }
