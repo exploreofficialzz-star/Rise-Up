@@ -25,6 +25,7 @@ python-multipart==0.0.9
 tenacity==8.3.0
 python-dateutil==2.9.0
 ujson==5.10.0
+babel==2.15.0
 
 # Rate Limiting
 slowapi==0.1.9
