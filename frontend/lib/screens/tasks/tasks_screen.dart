@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:iconsax/iconsax.dart';
-import 'package:intl/intl.dart'; // Added for global currency & number formatting
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 import '../../widgets/gradient_button.dart';
@@ -18,48 +17,34 @@ class _TasksScreenState extends State<TasksScreen> with SingleTickerProviderStat
   late TabController _tabs;
   List _suggested = [], _active = [], _completed = [];
   bool _loading = false, _generating = false;
-  String _currentLocale = 'en';
 
   @override
   void initState() {
     super.initState();
     _tabs = TabController(length: 3, vsync: this);
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    // Capture locale to ensure backend returns region-relevant tasks
-    _currentLocale = Localizations.localeOf(context).languageCode;
     _load();
   }
 
   Future<void> _load() async {
     setState(() => _loading = true);
     try {
-      // Passing locale and timezone context for global task filtering
-      final all = await api.getTasks(locale: _currentLocale) as List;
-      if (mounted) {
-        setState(() {
-          _suggested = all.where((t) => t['status'] == 'suggested').toList();
-          _active = all.where((t) => t['status'] == 'in_progress').toList();
-          _completed = all.where((t) => t['status'] == 'completed').toList();
-          _loading = false;
-        });
-      }
-    } catch (_) {
-      if (mounted) setState(() => _loading = false);
-    }
+      final all = await api.getTasks() as List;
+      setState(() {
+        _suggested = all.where((t) => t['status'] == 'suggested').toList();
+        _active = all.where((t) => t['status'] == 'in_progress').toList();
+        _completed = all.where((t) => t['status'] == 'completed').toList();
+        _loading = false;
+      });
+    } catch (_) { setState(() => _loading = false); }
   }
 
   Future<void> _generateTasks() async {
     setState(() => _generating = true);
     try {
-      // Backend AI uses locale to suggest region-specific income streams
-      await api.generateTasks(count: 5, locale: _currentLocale);
+      await api.generateTasks(count: 5);
       await _load();
     } catch (_) {
-      if (mounted) setState(() => _generating = false);
+      setState(() => _generating = false);
     }
   }
 
@@ -68,34 +53,26 @@ class _TasksScreenState extends State<TasksScreen> with SingleTickerProviderStat
     await _load();
   }
 
-  Future<void> _completeTask(String id, String taskCurrency) async {
+  Future<void> _completeTask(String id) async {
     double? earned;
     await showModalBottomSheet(
-      context: context,
-      isScrollControlled: true, // Better for global keyboards
-      backgroundColor: AppColors.bgCard,
+      context: context, backgroundColor: AppColors.bgCard,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => _EarningsModal(
-        onSave: (v) => earned = v,
-        currencyCode: taskCurrency, // Pass task-specific currency to modal
-      ),
+      builder: (_) => _EarningsModal(onSave: (v) => earned = v),
     );
-
-    if (earned != null) {
-      await api.updateTask(id, status: 'completed', earnings: earned);
-      await _load();
-      if (mounted && earned! > 0) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: const Text('🎉 Earning logged! Keep it up!'),
-          backgroundColor: AppColors.success,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        ));
-      }
-      await adService.showInterstitialIfReady();
-      if (mounted) await appReviewService.onTaskCompleted(context);
+    await api.updateTask(id, status: 'completed', earnings: earned);
+    await _load();
+    if (mounted && earned != null && earned! > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: const Text('🎉 Earning logged! Keep it up!'),
+        backgroundColor: AppColors.success,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ));
     }
+    await adService.showInterstitialIfReady();
+    if (mounted) await appReviewService.onTaskCompleted(context);
   }
 
   @override
@@ -126,7 +103,7 @@ class _TasksScreenState extends State<TasksScreen> with SingleTickerProviderStat
                 _TaskList(
                   tasks: _suggested,
                   emptyTitle: 'No tasks yet',
-                  emptySubtitle: 'Generate AI-powered income tasks tailored for your region',
+                  emptySubtitle: 'Generate AI-powered income tasks tailored for you',
                   emptyAction: GradientButton(
                     text: _generating ? 'Generating...' : '⚡ Generate Tasks',
                     onTap: _generating ? null : _generateTasks,
@@ -139,10 +116,7 @@ class _TasksScreenState extends State<TasksScreen> with SingleTickerProviderStat
                   tasks: _active,
                   emptyTitle: 'No active tasks',
                   emptySubtitle: 'Accept tasks from suggestions to start working',
-                  onComplete: (id) {
-                    final task = _active.firstWhere((t) => t['id'] == id);
-                    _completeTask(id, task['currency'] ?? 'USD');
-                  },
+                  onComplete: _completeTask,
                   onRefresh: _load,
                 ),
                 _TaskList(
@@ -172,7 +146,7 @@ class _TaskList extends StatelessWidget {
   final String emptyTitle, emptySubtitle;
   final Widget? emptyAction;
   final Function(String)? onAccept, onComplete;
-  final Future<void> Function() onRefresh;
+  final Future<void> Function() onRefresh; // ← Fixed: was Function()
   final bool isCompleted;
 
   const _TaskList({
@@ -251,10 +225,6 @@ class _TaskCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Dynamic currency formatting for global users
-    final currencyCode = task['currency'] ?? 'USD';
-    final formatter = NumberFormat.simpleCurrency(name: currencyCode);
-
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(16),
@@ -275,7 +245,7 @@ class _TaskCard extends StatelessWidget {
               decoration: BoxDecoration(
                   color: _categoryColor.withOpacity(0.15),
                   borderRadius: AppRadius.pill),
-              child: Text(_formatCategory(task['category'] ?? 'Task'),
+              child: Text(task['category'] ?? '',
                   style: AppTextStyles.caption.copyWith(
                       color: _categoryColor, fontWeight: FontWeight.w600)),
             ),
@@ -297,12 +267,12 @@ class _TaskCard extends StatelessWidget {
               overflow: TextOverflow.ellipsis),
           const SizedBox(height: 10),
           Row(children: [
-            const Icon(Icons.payments_outlined, color: AppColors.success, size: 14),
-            const SizedBox(width: 4),
+            const Icon(Icons.attach_money, color: AppColors.success, size: 14),
             Text(
-              task['actual_earnings'] != null && (task['actual_earnings'] as num) > 0
-                  ? 'Earned: ${formatter.format(task['actual_earnings'])}'
-                  : 'Potential: ${formatter.format(task['estimated_earnings'] ?? 0)}',
+              task['actual_earnings'] != null &&
+                      (task['actual_earnings'] as num) > 0
+                  ? 'Earned: ${task['currency'] ?? 'NGN'} ${task['actual_earnings']}'
+                  : 'Potential: ${task['currency'] ?? 'NGN'} ${task['estimated_earnings'] ?? '~'}',
               style: AppTextStyles.caption.copyWith(color: AppColors.success),
             ),
             if (task['platform'] != null) ...[
@@ -356,12 +326,6 @@ class _TaskCard extends StatelessWidget {
     );
   }
 
-  String _formatCategory(String cat) => cat
-      .replaceAll('_', ' ')
-      .split(' ')
-      .map((w) => w.isEmpty ? '' : w[0].toUpperCase() + w.substring(1))
-      .join(' ');
-
   String _diffLabel(String d) {
     switch (d) {
       case 'easy':   return '🟢 Easy';
@@ -408,8 +372,7 @@ class _StepsPreview extends StatelessWidget {
 
 class _EarningsModal extends StatefulWidget {
   final Function(double?) onSave;
-  final String currencyCode;
-  const _EarningsModal({required this.onSave, required this.currencyCode});
+  const _EarningsModal({required this.onSave});
   @override
   State<_EarningsModal> createState() => _EarningsModalState();
 }
@@ -419,9 +382,6 @@ class _EarningsModalState extends State<_EarningsModal> {
 
   @override
   Widget build(BuildContext context) {
-    // Dynamic currency prefix for the input field
-    final symbol = NumberFormat.simpleCurrency(name: widget.currencyCode).currencySymbol;
-
     return Padding(
       padding: EdgeInsets.fromLTRB(
           24, 24, 24, MediaQuery.of(context).viewInsets.bottom + 24),
@@ -431,17 +391,16 @@ class _EarningsModalState extends State<_EarningsModal> {
         children: [
           Text('🎉 Amazing! How much did you earn?', style: AppTextStyles.h4),
           const SizedBox(height: 6),
-          Text('Log your earnings to track your global progress',
+          Text('Log your earnings to track your progress',
               style: AppTextStyles.bodySmall),
           const SizedBox(height: 20),
           TextField(
             controller: _ctrl,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            keyboardType: TextInputType.number,
             style: AppTextStyles.body,
-            autofocus: true,
             decoration: InputDecoration(
               hintText: 'Amount earned (optional)',
-              prefixText: '$symbol ',
+              prefixText: '₦ ',
               prefixStyle:
                   AppTextStyles.body.copyWith(color: AppColors.success),
             ),

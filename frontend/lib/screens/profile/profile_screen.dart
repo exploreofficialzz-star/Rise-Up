@@ -237,13 +237,13 @@ class _ProfileScreenState extends State<ProfileScreen>
                   color: cardColor,
                   padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
                   child: Row(children: [
-                    _ProfileFeatureTile('🎨', 'Portfolio', () => context.push('/portfolio')),
+                    _ProfileFeatureTile('🎨', 'Portfolio', () => context.go('/portfolio')),
                     const SizedBox(width: 8),
-                    _ProfileFeatureTile('🏆', 'Challenges', () => context.push('/challenges')),
+                    _ProfileFeatureTile('🏆', 'Challenges', () => context.go('/challenges')),
                     const SizedBox(width: 8),
-                    _ProfileFeatureTile('🧠', 'Memory', () => context.push('/memory')),
+                    _ProfileFeatureTile('🧠', 'Memory', () => context.go('/memory')),
                     const SizedBox(width: 8),
-                    _ProfileFeatureTile('💼', 'CRM', () => context.push('/crm')),
+                    _ProfileFeatureTile('💼', 'CRM', () => context.go('/crm')),
                   ]),
                 ),
 

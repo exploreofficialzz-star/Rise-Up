@@ -37,6 +37,7 @@ extension ApiStreamExtension on ApiService {
 
       if (response.statusCode != 200) {
         yield StreamEvent('error', {'message': 'HTTP ${response.statusCode}'});
+        await response.stream.drain<void>();
         return;
       }
 

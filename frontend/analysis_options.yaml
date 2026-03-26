@@ -17,6 +17,8 @@ analyzer:
     dead_code: warning
     unused_import: warning
     unused_local_variable: warning
+    deprecated_member_use: ignore
+    deprecated_member_use_from_same_package: ignore
   exclude:
     - lib/**.g.dart
     - lib/**.freezed.dart

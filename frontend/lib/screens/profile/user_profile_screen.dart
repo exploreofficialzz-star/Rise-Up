@@ -78,11 +78,13 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
   Future<void> _sendMessage() async {
     try {
-      final r = await api.getOrCreateConversation(widget.userId);
-      final convId = r['conversation_id']?.toString() ?? r['id']?.toString();
-      if (convId != null && mounted) {
-        context.push('/conversation/${widget.userId}?name=${Uri.encodeComponent(_profile['full_name']?.toString() ?? 'User')}&avatar=${Uri.encodeComponent(_profile['avatar_url']?.toString() ?? '👤')}');
-      }
+      await api.getOrCreateConversation(widget.userId);
+      if (!mounted) return;
+      final name   = Uri.encodeComponent(_profile['full_name']?.toString() ?? 'User');
+      final stage  = _profile['stage']?.toString() ?? 'survival';
+      final avatar = Uri.encodeComponent(
+          {'survival': '🆘', 'earning': '💪', 'growing': '🚀', 'wealth': '💎'}[stage] ?? '👤');
+      context.push('/conversation/${widget.userId}?name=$name&avatar=$avatar');
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -100,10 +102,10 @@ class _UserProfileScreenState extends State<UserProfileScreen>
   }
 
   String _fmt(dynamic n) {
-    final val = (n as num?)?.toInt() ?? 0;
-    if (val >= 1000000) return '${(val / 1000000).toStringAsFixed(1)}M';
-    if (val >= 1000)    return '${(val / 1000).toStringAsFixed(1)}K';
-    return '$val';
+    final num = (n as num?)?.toInt() ?? 0;
+    if (num >= 1000000) return '${(num / 1000000).toStringAsFixed(1)}M';
+    if (num >= 1000)    return '${(num / 1000).toStringAsFixed(1)}K';
+    return '$num';
   }
 
   String _timeAgo(String? iso) {

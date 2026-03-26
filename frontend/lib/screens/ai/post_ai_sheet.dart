@@ -8,8 +8,7 @@ import '../home/home_screen.dart';
 
 class PostAiSheet extends StatefulWidget {
   final PostModel post;
-  final bool postAsComment;
-  const PostAiSheet({super.key, required this.post, this.postAsComment = false});
+  const PostAiSheet({super.key, required this.post});
   @override
   State<PostAiSheet> createState() => _PostAiSheetState();
 }
@@ -53,24 +52,18 @@ class _PostAiSheetState extends State<PostAiSheet> {
       );
       _convId = res['conversation_id'];
 
-      final aiResponse = res['content'] ?? '...';
-
       if (mounted) {
         setState(() {
-          _messages.add(_AiMessage(aiResponse, false));
+          _messages.add(_AiMessage(res['content'] ?? '...', false));
           _loading = false;
         });
         _scrollDown();
-
-        // FIX: Post AI response as a comment on the original post
-        if (widget.postAsComment && aiResponse.isNotEmpty) {
-          api.addComment(widget.post.id, '🤖 RiseUp AI: $aiResponse').catchError((_) => {});
-        }
       }
     } catch (_) {
       if (mounted) {
         setState(() {
-          _messages.add(_AiMessage('Unable to connect. Please try again! 🔄', false));
+          _messages.add(_AiMessage(
+              'Unable to connect. Please try again! 🔄', false));
           _loading = false;
         });
       }

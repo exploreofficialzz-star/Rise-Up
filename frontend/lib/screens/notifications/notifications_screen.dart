@@ -3,7 +3,6 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
 import '../../config/app_constants.dart';
-import '../../main_shell.dart';
 import '../../services/api_service.dart';
 
 class NotificationsScreen extends StatefulWidget {
@@ -34,7 +33,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       setState(() {
         for (final n in _notifs) n['is_read'] = true;
       });
-      MainShell.refresh(); // update badge count in nav bar
     } catch (_) {}
   }
 
@@ -137,7 +135,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                         onTap: () async {
                           if (!isRead) {
                             await api.markNotificationsRead(ids: [n['id'].toString()]);
-                            MainShell.refresh();
                             setState(() => n['is_read'] = true);
                           }
                           // Navigate based on type

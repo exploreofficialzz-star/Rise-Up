@@ -135,14 +135,9 @@ class _CreateStatusScreenState extends State<CreateStatusScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Status posted! 🎉'),
+          const SnackBar(content: Text('Status posted!'),
               backgroundColor: AppColors.success));
-        // go back and refresh home feed stories
-        if (context.canPop()) {
-          context.pop();
-        } else {
-          context.go('/home');
-        }
+        if (context.canPop()) context.pop(); else context.go('/home');
       }
     } catch (e) {
       setState(() => _posting = false);
@@ -169,7 +164,7 @@ class _CreateStatusScreenState extends State<CreateStatusScreen> {
         surfaceTintColor: Colors.transparent,
         leading: IconButton(
             icon: Icon(Icons.close_rounded, color: text),
-            onPressed: () => context.pop()),
+            onPressed: () => context.canPop() ? context.pop() : context.go('/home')),
         title: Text('New Status',
             style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: text)),
         actions: [

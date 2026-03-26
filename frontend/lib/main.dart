@@ -2,7 +2,6 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'config/app_constants.dart';
 import 'config/router.dart';
@@ -10,11 +9,8 @@ import 'services/ad_service.dart';
 import 'services/ad_manager.dart';
 import 'services/notification_service.dart';
 import 'utils/storage_service.dart';
-import 'utils/connectivity_wrapper.dart';
 import 'services/api_service.dart';
 import 'utils/version_check_service.dart';
-import 'providers/locale_provider.dart';
-import 'providers/currency_provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -59,8 +55,9 @@ void main() async {
     bool isPremium = false;
     try {
       final token = await storageService.read(key: 'access_token');
-      if (token != null) {
-        final profile = await api.getProfile();
+      if (token != null && token.isNotEmpty) {
+        final profile = await api.getProfile()
+            .timeout(const Duration(seconds: 5));
         isPremium = (profile['profile']?['subscription_tier'] ?? 'free') == 'premium';
       }
     } catch (_) {}
@@ -118,48 +115,18 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer(
-      builder: (context, ref, child) {
-        final locale = ref.watch(localeProvider);
-        
-        return MaterialApp.router(
-          title: 'RiseUp',
-          debugShowCheckedModeBanner: false,
-          theme: AppTheme.light,
-          darkTheme: AppTheme.dark,
-          themeMode: ThemeMode.system,
-          
-          // Localization
-          locale: locale,
-          supportedLocales: const [
-            Locale('en'), // English
-            Locale('es'), // Spanish
-            Locale('fr'), // French
-            Locale('de'), // German
-            Locale('pt'), // Portuguese
-            Locale('hi'), // Hindi
-            Locale('ar'), // Arabic
-            Locale('zh'), // Chinese
-            Locale('ja'), // Japanese
-            Locale('ru'), // Russian
-            Locale('sw'), // Swahili
-            Locale('yo'), // Yoruba
-            Locale('ig'), // Igbo
-            Locale('ha'), // Hausa
-          ],
-          localizationsDelegates: const [
-            GlobalMaterialLocalizations.delegate,
-            GlobalWidgetsLocalizations.delegate,
-            GlobalCupertinoLocalizations.delegate,
-          ],
-          
-          routerConfig: router,
-          builder: (context, child) {
-            ErrorWidget.builder =
-                (details) => _GlobalErrorWidget(details: details);
-            return ConnectivityWrapper(child: child ?? const SizedBox.shrink());
-          },
-        );
+    return MaterialApp.router(
+      title: 'RiseUp',
+      debugShowCheckedModeBanner: false,
+      // ← Fixed: support system theme
+      theme: AppTheme.light,
+      darkTheme: AppTheme.dark,
+      themeMode: ThemeMode.system,
+      routerConfig: router,
+      builder: (context, child) {
+        ErrorWidget.builder =
+            (details) => _GlobalErrorWidget(details: details);
+        return child ?? const SizedBox.shrink();
       },
     );
   }

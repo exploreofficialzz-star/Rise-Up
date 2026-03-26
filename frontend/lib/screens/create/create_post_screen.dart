@@ -1,11 +1,9 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:dio/dio.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 
@@ -17,15 +15,11 @@ class CreatePostScreen extends StatefulWidget {
 
 class _CreatePostScreenState extends State<CreatePostScreen> {
   final _contentCtrl = TextEditingController();
-  String  _selectedTag = '💰 Wealth';
-  bool    _loading     = false;
-  bool    _uploading   = false;
-  int     _charCount   = 0;
-  File?   _mediaFile;
-  String? _mediaUrl;
-  String? _mediaType;   // 'image' | 'video'
-
+  String _selectedTag = '💰 Wealth';
+  bool _loading = false;
+  int _charCount = 0;
   static const int _maxChars = 500;
+
   static const _tags = [
     '💰 Wealth', '📈 Investing', '💼 Business', '🧠 Mindset',
     '⚡ Hustle', '🎯 Skills', '🏠 Real Estate', '💻 Tech',
@@ -41,83 +35,12 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   @override
   void dispose() { _contentCtrl.dispose(); super.dispose(); }
 
-  // ── Pick + upload image/video ─────────────────────────────────
-  Future<void> _pickMedia({required bool isVideo}) async {
-    HapticFeedback.lightImpact();
-    final picker = ImagePicker();
-    XFile? xfile;
-    if (isVideo) {
-      xfile = await picker.pickVideo(source: ImageSource.gallery, maxDuration: const Duration(minutes: 3));
-    } else {
-      xfile = await picker.pickImage(source: ImageSource.gallery, maxWidth: 1920, imageQuality: 85);
-    }
-    if (xfile == null) return;
-
-    final file = File(xfile.path);
-    setState(() { _mediaFile = file; _uploading = true; _mediaType = isVideo ? 'video' : 'image'; });
-
-    try {
-      final token = await api.getToken();
-      if (token == null) throw Exception('Not authenticated');
-
-      final formData = FormData.fromMap({
-        'file': await MultipartFile.fromFile(
-          file.path,
-          filename: isVideo ? 'post_video.mp4' : 'post_image.jpg',
-          contentType: DioMediaType(isVideo ? 'video' : 'image', isVideo ? 'mp4' : 'jpeg'),
-        ),
-      });
-
-      final baseUrl = const String.fromEnvironment('API_BASE_URL', defaultValue: 'https://riseup-api.onrender.com/api/v1');
-      final dio = Dio();
-      final resp = await dio.post(
-        '$baseUrl/posts/status/upload-media',
-        data: formData,
-        options: Options(
-          headers: {'Authorization': 'Bearer $token'},
-          validateStatus: (s) => s != null && s < 600,
-        ),
-      );
-
-      if (resp.statusCode == 200) {
-        setState(() {
-          _mediaUrl  = resp.data['url']?.toString();
-          _mediaType = resp.data['media_type']?.toString() ?? _mediaType;
-          _uploading = false;
-        });
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('${isVideo ? 'Video' : 'Photo'} attached ✅'), backgroundColor: AppColors.success, duration: const Duration(seconds: 2)),
-          );
-        }
-      } else {
-        throw Exception('Upload failed: ${resp.statusCode}');
-      }
-    } catch (e) {
-      setState(() { _mediaFile = null; _mediaUrl = null; _mediaType = null; _uploading = false; });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Upload failed. Check your connection.'), backgroundColor: AppColors.error),
-        );
-      }
-    }
-  }
-
-  void _removeMedia() {
-    setState(() { _mediaFile = null; _mediaUrl = null; _mediaType = null; });
-  }
-
   Future<void> _post() async {
     final content = _contentCtrl.text.trim();
-    if (content.isEmpty || _loading || _uploading) return;
+    if (content.isEmpty || _loading) return;
     setState(() => _loading = true);
     try {
-      await api.createPost(
-        content:   content,
-        tag:       _selectedTag,
-        mediaUrl:  _mediaUrl,
-        mediaType: _mediaType,
-      );
+      await api.createPost(content: content, tag: _selectedTag);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Post shared! 🚀'), backgroundColor: AppColors.success, duration: Duration(seconds: 2)),
@@ -136,16 +59,16 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isDark       = Theme.of(context).brightness == Brightness.dark;
-    final bgColor      = isDark ? Colors.black : Colors.white;
-    final cardColor    = isDark ? AppColors.bgCard : Colors.white;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bgColor = isDark ? Colors.black : Colors.white;
+    final cardColor = isDark ? AppColors.bgCard : Colors.white;
     final surfaceColor = isDark ? AppColors.bgSurface : Colors.grey.shade100;
-    final borderColor  = isDark ? AppColors.bgSurface : Colors.grey.shade200;
-    final textColor    = isDark ? Colors.white : Colors.black87;
-    final subColor     = isDark ? Colors.white54 : Colors.black45;
-    final remaining    = _maxChars - _charCount;
-    final isOverLimit  = remaining < 0;
-    final canPost      = _charCount > 0 && !isOverLimit && !_loading && !_uploading;
+    final borderColor = isDark ? AppColors.bgSurface : Colors.grey.shade200;
+    final textColor = isDark ? Colors.white : Colors.black87;
+    final subColor = isDark ? Colors.white54 : Colors.black45;
+    final remaining = _maxChars - _charCount;
+    final isOverLimit = remaining < 0;
+    final canPost = _charCount > 0 && !isOverLimit && !_loading;
 
     return Scaffold(
       backgroundColor: bgColor,
@@ -215,59 +138,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                 ),
               ).animate().fadeIn(delay: 100.ms),
 
-              // ── Media preview ─────────────────────────────────
-              if (_uploading)
-                Container(
-                  margin: const EdgeInsets.only(bottom: 12),
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(color: surfaceColor, borderRadius: BorderRadius.circular(12)),
-                  child: Row(children: [
-                    const CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2),
-                    const SizedBox(width: 12),
-                    Text('Uploading ${_mediaType ?? 'media'}...', style: TextStyle(color: subColor, fontSize: 13)),
-                  ]),
-                )
-              else if (_mediaFile != null) ...[
-                const SizedBox(height: 12),
-                Stack(children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: _mediaType == 'video'
-                        ? Container(
-                            height: 180, color: Colors.black,
-                            child: const Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                              Icon(Icons.videocam_rounded, color: Colors.white, size: 48),
-                              SizedBox(height: 8),
-                              Text('Video attached', style: TextStyle(color: Colors.white70, fontSize: 13)),
-                            ])),
-                          )
-                        : Image.file(_mediaFile!, fit: BoxFit.cover, width: double.infinity, height: 180),
-                  ),
-                  Positioned(top: 8, right: 8,
-                    child: GestureDetector(
-                      onTap: _removeMedia,
-                      child: Container(
-                        width: 30, height: 30,
-                        decoration: BoxDecoration(color: Colors.black.withOpacity(0.6), shape: BoxShape.circle),
-                        child: const Icon(Icons.close_rounded, color: Colors.white, size: 18),
-                      ),
-                    ),
-                  ),
-                  if (_mediaUrl != null)
-                    Positioned(bottom: 8, left: 8,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(color: AppColors.success.withOpacity(0.9), borderRadius: BorderRadius.circular(8)),
-                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                          Icon(Icons.check_circle_rounded, color: Colors.white, size: 12),
-                          SizedBox(width: 4),
-                          Text('Uploaded', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600)),
-                        ]),
-                      ),
-                    ),
-                ]),
-              ],
-
               const SizedBox(height: 16),
 
               // Tag selector
@@ -296,46 +166,45 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
           ),
         ),
 
-        // ── Bottom toolbar ────────────────────────────────────────
+        // Bottom toolbar
         Container(
           decoration: BoxDecoration(color: cardColor, border: Border(top: BorderSide(color: borderColor))),
           padding: EdgeInsets.fromLTRB(16, 10, 16, MediaQuery.of(context).padding.bottom + 10),
           child: Row(children: [
-            // Photo picker — now ACTUALLY attaches to post
             GestureDetector(
-              onTap: _uploading ? null : () => _pickMedia(isVideo: false),
-              child: Container(
-                width: 40, height: 40,
-                decoration: BoxDecoration(
-                  color: _mediaFile != null && _mediaType == 'image' ? AppColors.primary.withOpacity(0.15) : surfaceColor,
-                  borderRadius: BorderRadius.circular(10),
-                  border: _mediaFile != null && _mediaType == 'image' ? Border.all(color: AppColors.primary, width: 1.5) : null,
-                ),
-                child: Icon(Iconsax.image, color: _mediaFile != null && _mediaType == 'image' ? AppColors.primary : subColor, size: 20),
-              ),
-            ),
+              onTap: () async {
+                HapticFeedback.lightImpact();
+                final picker = ImagePicker();
+                final file = await picker.pickImage(source: ImageSource.gallery);
+                if (file != null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Photo selected ✅'), backgroundColor: AppColors.success, duration: Duration(seconds: 1)),
+                  );
+                }
+              },
+              child: Container(width: 40, height: 40, decoration: BoxDecoration(color: surfaceColor, borderRadius: BorderRadius.circular(10)), child: Icon(Iconsax.image, color: subColor, size: 20))),
             const SizedBox(width: 10),
-            // Video picker — now ACTUALLY attaches to post
             GestureDetector(
-              onTap: _uploading ? null : () => _pickMedia(isVideo: true),
-              child: Container(
-                width: 40, height: 40,
-                decoration: BoxDecoration(
-                  color: _mediaFile != null && _mediaType == 'video' ? AppColors.primary.withOpacity(0.15) : surfaceColor,
-                  borderRadius: BorderRadius.circular(10),
-                  border: _mediaFile != null && _mediaType == 'video' ? Border.all(color: AppColors.primary, width: 1.5) : null,
-                ),
-                child: Icon(Iconsax.video, color: _mediaFile != null && _mediaType == 'video' ? AppColors.primary : subColor, size: 20),
-              ),
-            ),
+              onTap: () async {
+                HapticFeedback.lightImpact();
+                final picker = ImagePicker();
+                final file = await picker.pickVideo(source: ImageSource.gallery);
+                if (file != null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Video selected ✅'), backgroundColor: AppColors.success, duration: Duration(seconds: 1)),
+                  );
+                }
+              },
+              child: Container(width: 40, height: 40, decoration: BoxDecoration(color: surfaceColor, borderRadius: BorderRadius.circular(10)), child: Icon(Iconsax.video, color: subColor, size: 20))),
             const SizedBox(width: 10),
             GestureDetector(
               onTap: () {
                 HapticFeedback.lightImpact();
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Polls coming soon 🗳️'), duration: Duration(seconds: 1)));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Polls coming soon 🗳️'), duration: Duration(seconds: 1)),
+                );
               },
-              child: Container(width: 40, height: 40, decoration: BoxDecoration(color: surfaceColor, borderRadius: BorderRadius.circular(10)), child: Icon(Iconsax.chart_2, color: subColor, size: 20)),
-            ),
+              child: Container(width: 40, height: 40, decoration: BoxDecoration(color: surfaceColor, borderRadius: BorderRadius.circular(10)), child: Icon(Iconsax.chart_2, color: subColor, size: 20))),
             const Spacer(),
             Text(
               '$remaining',
