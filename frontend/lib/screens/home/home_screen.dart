@@ -1,3 +1,4 @@
+// frontend/lib/screens/home/home_screen.dart
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -261,7 +262,7 @@ class _HomeScreenState extends State<HomeScreen>
               'Watch a 30-second ad to unlock more, or upgrade to '
               'Premium for unlimited access.',
               style: TextStyle(
-                color:  isDark ? Colors.white60 : Colors.black54,
+                color:  isDark ? Colors.white.withOpacity(0.6) : Colors.black54,
                 height: 1.5,
               ),
             ),
@@ -328,8 +329,8 @@ class _HomeScreenState extends State<HomeScreen>
     final cardColor    = isDark ? AppColors.bgCard : Colors.white;
     final borderColor  = isDark ? AppColors.bgSurface : Colors.grey.shade200;
     final textColor    = isDark ? Colors.white : Colors.black87;
-    final subColor     = isDark ? Colors.white54 : Colors.black45;
-    final iconColor    = isDark ? Colors.white70 : Colors.black54;
+    final subColor     = isDark ? Colors.white.withOpacity(0.54) : Colors.black45;
+    final iconColor    = isDark ? Colors.white.withOpacity(0.7) : Colors.black54;
 
     return Scaffold(
       backgroundColor: bgColor,
@@ -1091,7 +1092,7 @@ class _AppDrawer extends StatelessWidget {
   Widget build(BuildContext context) {
     final bg       = isDark ? Colors.black : Colors.white;
     final border   = isDark ? AppColors.bgSurface : Colors.grey.shade200;
-    final sub      = isDark ? Colors.white54 : Colors.black45;
+    final sub      = isDark ? Colors.white.withOpacity(0.54) : Colors.black45;
     final name     = profile['full_name']?.toString() ?? 'User';
     final stage    = profile['stage']?.toString() ?? 'survival';
     final stageInfo = StageInfo.get(stage);
@@ -1337,7 +1338,7 @@ class _DItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final textC = isDark ? Colors.white : Colors.black87;
-    final subC  = isDark ? Colors.white54 : Colors.black45;
+    final subC  = isDark ? Colors.white.withOpacity(0.54) : Colors.black45;
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -1362,7 +1363,7 @@ class _DItem extends StatelessWidget {
                 child: Icon(icon,
                     size: 17,
                     color: isDark
-                        ? Colors.white70
+                        ? Colors.white.withOpacity(0.7)
                         : Colors.black54),
               ),
               const SizedBox(width: 13),
@@ -1729,9 +1730,10 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
                 Container(
                   width:  36,
                   height: 36,
-                  decoration: const BoxDecoration(
+                  decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: Colors.white24,
+                    // FIX 8: Colors.white24 doesn't exist
+                    color: Colors.white.withOpacity(0.24),
                   ),
                   child: ClipOval(
                     child: avatar != null && avatar.isNotEmpty
@@ -1765,8 +1767,10 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
                       items.length == 1
                           ? '1 status'
                           : '${items.length} statuses',
-                      style: const TextStyle(
-                          color: Colors.white60, fontSize: 11),
+                      style: TextStyle(
+                          // FIX 9: Colors.white60 doesn't exist
+                          color: Colors.white.withOpacity(0.6), 
+                          fontSize: 11),
                     ),
                   ],
                 ),
@@ -1817,7 +1821,8 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
                     color:        Colors.black.withOpacity(0.6),
                     borderRadius: BorderRadius.circular(12),
                     border:
-                        Border.all(color: Colors.white30),
+                        // FIX 10: Colors.white30 doesn't exist
+                        Border.all(color: Colors.white.withOpacity(0.3)),
                   ),
                   child: Row(
                     children: [
