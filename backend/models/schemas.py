@@ -14,25 +14,33 @@ import re
 # ═════════════════════════════════════════════════════════════════════════════
 
 class CurrencyCode(str, Enum):
-    """Global currencies supported."""
     USD = "USD"
     EUR = "EUR"
     GBP = "GBP"
+    JPY = "JPY"
+    CNY = "CNY"
     NGN = "NGN"
     INR = "INR"
+    BRL = "BRL"
+    MXN = "MXN"
     ZAR = "ZAR"
     KES = "KES"
     GHS = "GHS"
-    BRL = "BRL"
-    MXN = "MXN"
+    PHP = "PHP"
+    IDR = "IDR"
+    PKR = "PKR"
+    BDT = "BDT"
+    EGP = "EGP"
+    TRY = "TRY"
+    RUB = "RUB"
     AUD = "AUD"
     CAD = "CAD"
-    JPY = "JPY"
-    CNY = "CNY"
+    BTC = "BTC"
+    ETH = "ETH"
+    USDT = "USDT"
 
 
 class LanguageCode(str, Enum):
-    """Supported languages."""
     EN = "en"
     ES = "es"
     FR = "fr"
@@ -43,14 +51,14 @@ class LanguageCode(str, Enum):
     ZH = "zh"
     JA = "ja"
     RU = "ru"
+    BN = "bn"
+    SW = "sw"
     YO = "yo"
     IG = "ig"
     HA = "ha"
-    SW = "sw"
 
 
 class RegionCode(str, Enum):
-    """Global regions."""
     NORTH_AMERICA = "north_america"
     EUROPE = "europe"
     LATIN_AMERICA = "latin_america"
@@ -65,7 +73,6 @@ class RegionCode(str, Enum):
 
 
 class PaymentMethod(str, Enum):
-    """Global payment methods."""
     PAYPAL = "paypal"
     WISE = "wise"
     PAYONEER = "payoneer"
@@ -74,43 +81,40 @@ class PaymentMethod(str, Enum):
     CRYPTO_USDT = "crypto_usdt"
     BANK_TRANSFER = "bank_transfer"
     MOBILE_MONEY = "mobile_money"
+    MPESA = "mpesa"
+    UPI = "upi"
 
 
 class UserStage(str, Enum):
-    """User journey stages."""
-    SURVIVAL = "survival"           # Just trying to get by
-    STABILITY = "stability"         # Bills covered, building buffer
-    GROWTH = "growth"               # Investing in skills & side income
-    WEALTH = "wealth"               # Multiple income streams
-    LEGACY = "legacy"               # Building generational wealth
+    SURVIVAL = "survival"
+    STABILITY = "stability"
+    GROWTH = "growth"
+    WEALTH = "wealth"
+    LEGACY = "legacy"
 
 
 class WealthType(str, Enum):
-    """Types of wealth building."""
-    ACTIVE = "active"               # Trading time for money
-    PASSIVE = "passive"             # Income without active work
-    PORTFOLIO = "portfolio"         # Investment-based
-    HYBRID = "hybrid"               # Mix of above
+    ACTIVE = "active"
+    PASSIVE = "passive"
+    PORTFOLIO = "portfolio"
+    HYBRID = "hybrid"
 
 
 class LearningStyle(str, Enum):
-    """How users prefer to learn."""
     VISUAL = "visual"
     AUDITORY = "auditory"
     READING = "reading"
-    KINESTHETIC = "kinesthetic"      # Learning by doing
-    SOCIAL = "social"               # Learning with others
+    KINESTHETIC = "kinesthetic"
+    SOCIAL = "social"
 
 
 class RiskTolerance(str, Enum):
-    """Risk appetite for investments."""
     CONSERVATIVE = "conservative"
     MODERATE = "moderate"
     AGGRESSIVE = "aggressive"
 
 
 class TaskStatus(str, Enum):
-    """Task statuses."""
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
@@ -118,12 +122,54 @@ class TaskStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class NotificationType(str, Enum):
+    SYSTEM = "system"
+    GOAL_ACHIEVED = "goal_achieved"
+    TASK_DUE = "task_due"
+    STREAK_BROKEN = "streak_broken"
+    REFERRAL = "referral"
+    PAYMENT = "payment"
+    AI_INSIGHT = "ai_insight"
+
+
+class PaymentStatus(str, Enum):
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    REFUNDED = "refunded"
+
+
+class IncomeType(str, Enum):
+    YOUTUBE = "youtube"
+    TIKTOK = "tiktok"
+    INSTAGRAM = "instagram"
+    FREELANCE = "freelance"
+    ECOMMERCE = "ecommerce"
+    DROPSHIPPING = "dropshipping"
+    AFFILIATE = "affiliate"
+    CONTENT = "content"
+    SAAS = "saas"
+    APP_DEVELOPMENT = "app_development"
+    ONLINE_COURSES = "online_courses"
+    DIGITAL_PRODUCTS = "digital_products"
+    PRINT_ON_DEMAND = "print_on_demand"
+    VIRTUAL_ASSISTANT = "virtual_assistant"
+    TRANSLATION = "translation"
+    PHYSICAL = "physical"
+    FOOD_DELIVERY = "food_delivery"
+    RIDE_SHARING = "ride_sharing"
+    REAL_ESTATE = "real_estate"
+    STOCK_TRADING = "stock_trading"
+    CRYPTO_TRADING = "crypto_trading"
+    REMOTE_JOB = "remote_job"
+    OTHER = "other"
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # BASE CONFIGURATION
 # ═════════════════════════════════════════════════════════════════════════════
 
 class BaseSchema(BaseModel):
-    """Base schema with Pydantic v2 configuration."""
     model_config = ConfigDict(
         from_attributes=True,
         populate_by_name=True,
@@ -134,15 +180,15 @@ class BaseSchema(BaseModel):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# AUTHENTICATION MODELS
+# AUTH MODELS
 # ═════════════════════════════════════════════════════════════════════════════
 
 class SignUpRequest(BaseSchema):
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
     full_name: Optional[str] = Field(default=None, max_length=100)
-    country_code: Optional[str] = Field(default=None, max_length=2, examples=["US", "NG", "KE"])
-    timezone: Optional[str] = Field(default="UTC", examples=["Africa/Lagos", "America/New_York"])
+    country_code: Optional[str] = Field(default=None, max_length=2)
+    timezone: Optional[str] = Field(default="UTC")
     currency: CurrencyCode = Field(default=CurrencyCode.USD)
     language: LanguageCode = Field(default=LanguageCode.EN)
     referral_code: Optional[str] = Field(default=None, max_length=20)
@@ -161,15 +207,47 @@ class SignUpRequest(BaseSchema):
             raise ValueError('Password must be at least 8 characters')
         if len(v) > 128:
             raise ValueError('Password too long (max 128 characters)')
-        # Optional: Add complexity check
         if not re.search(r'[A-Za-z]', v) or not re.search(r'\d', v):
             raise ValueError('Password must contain at least one letter and one number')
         return v
 
 
+class SignUpResponse(BaseSchema):
+    user_id: str
+    email: str
+    access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
+    token_type: str = "bearer"
+    email_confirmed: bool = False
+    onboarding_complete: bool = False
+    currency: str = "USD"
+    language: str = "en"
+    message: str
+
+
 class SignInRequest(BaseSchema):
     email: EmailStr
     password: str
+
+
+class SignInResponse(BaseSchema):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int = 3600
+    user_id: str
+    email: str
+    email_confirmed: bool = False
+    onboarding_complete: bool = False
+    currency: str = "USD"
+    language: str = "en"
+
+
+class TokenRefreshResponse(BaseSchema):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int = 3600
 
 
 class PasswordResetRequest(BaseSchema):
@@ -192,75 +270,64 @@ class PasswordUpdateRequest(BaseSchema):
         return v
 
 
+class MessageResponse(BaseSchema):
+    message: str
+    success: bool = True
+
+
 class VersionCheckResponse(BaseSchema):
     current_version: str
     min_required_version: str
     update_required: bool
     update_message: Optional[str] = None
     download_url: Optional[str] = None
+    force_update: bool = False
+    release_notes: Optional[str] = None
 
 
 class AuthResponse(BaseSchema):
     access_token: str
-    refresh_token: Optional[str] = None
     token_type: str = "bearer"
-    expires_in: int = Field(default=3600, description="Token expiry in seconds")
     user_id: str
     email: str
-    onboarding_complete: bool = False
-    currency: str = "USD"
-    language: str = "en"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# PROFILE MODELS (Global Enhanced)
+# PROFILE MODELS
 # ═════════════════════════════════════════════════════════════════════════════
 
 class ProfileUpdate(BaseSchema):
     full_name: Optional[str] = Field(default=None, max_length=100)
     phone: Optional[str] = Field(default=None, max_length=20)
-    country: Optional[str] = Field(default=None, max_length=2, examples=["US", "NG", "KE", "IN"])
+    country: Optional[str] = Field(default=None, max_length=2)
     country_region: Optional[RegionCode] = None
     currency: Optional[CurrencyCode] = Field(default=CurrencyCode.USD)
     language: Optional[LanguageCode] = Field(default=LanguageCode.EN)
-    timezone: Optional[str] = Field(default="UTC", examples=["Africa/Lagos", "Asia/Mumbai"])
-    
+    timezone: Optional[str] = Field(default="UTC")
     bio: Optional[str] = Field(default=None, max_length=500)
-    status: Optional[str] = Field(default=None, max_length=200, examples=["Building my YouTube channel 🚀"])
+    status: Optional[str] = Field(default=None, max_length=200)
     avatar_url: Optional[str] = None
-    
-    # Wealth & Finance Profile
     wealth_type: Optional[WealthType] = None
     learning_style: Optional[LearningStyle] = None
     risk_tolerance: Optional[RiskTolerance] = None
-    stage: Optional[UserStage] = Field(default=UserStage.SURVIVAL, description="Current financial stage")
-    
-    # Income & Expenses (multi-currency)
+    stage: Optional[UserStage] = Field(default=UserStage.SURVIVAL)
     monthly_income: Optional[float] = Field(default=None, ge=0)
     monthly_income_currency: CurrencyCode = Field(default=CurrencyCode.USD)
     income_sources: Optional[List[str]] = None
     monthly_expenses: Optional[float] = Field(default=None, ge=0)
     monthly_expenses_currency: CurrencyCode = Field(default=CurrencyCode.USD)
-    
-    # Skills & Goals
     current_skills: Optional[List[str]] = None
     desired_skills: Optional[List[str]] = None
     short_term_goal: Optional[str] = Field(default=None, max_length=200)
     long_term_goal: Optional[str] = Field(default=None, max_length=200)
     ambitions: Optional[str] = Field(default=None, max_length=500)
-    
-    # Personal Context
     health_energy: Optional[str] = None
     obstacles: Optional[str] = Field(default=None, max_length=500)
     available_hours_per_day: Optional[float] = Field(default=None, ge=0, le=24)
-    
-    # Platform Preferences
     onboarding_completed: Optional[bool] = None
-    survival_mode: Optional[bool] = Field(default=False, description="User in financial survival mode")
+    survival_mode: Optional[bool] = Field(default=False)
     preferred_payment_methods: Optional[List[PaymentMethod]] = None
-    
-    # Social
-    social_links: Optional[Dict[str, str]] = Field(default=None, examples=[{"twitter": "@user", "linkedin": "profile"}])
+    social_links: Optional[Dict[str, str]] = None
 
 
 class ProfileResponse(BaseSchema):
@@ -273,28 +340,22 @@ class ProfileResponse(BaseSchema):
     currency: str = "USD"
     language: str = "en"
     timezone: str = "UTC"
-    
     bio: Optional[str] = None
     status: Optional[str] = None
     avatar_url: Optional[str] = None
-    
     wealth_type: Optional[str] = None
     learning_style: Optional[str] = None
     risk_tolerance: Optional[str] = None
     stage: str = "survival"
-    
     monthly_income: Optional[float] = None
     income_sources: Optional[List[str]] = None
     monthly_expenses: Optional[float] = None
     current_skills: Optional[List[str]] = None
-    
     short_term_goal: Optional[str] = None
     long_term_goal: Optional[str] = None
     ambitions: Optional[str] = None
-    
     onboarding_completed: bool = False
     survival_mode: bool = False
-    
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -304,7 +365,7 @@ class ProfileResponse(BaseSchema):
 # ═════════════════════════════════════════════════════════════════════════════
 
 class ChatMessage(BaseSchema):
-    role: str = Field(..., pattern="^(system|user|assistant)$")  # FIXED: regex -> pattern
+    role: str = Field(..., pattern="^(system|user|assistant)$")
     content: str = Field(..., max_length=8000)
     timestamp: Optional[datetime] = None
 
@@ -312,10 +373,10 @@ class ChatMessage(BaseSchema):
 class ChatRequest(BaseSchema):
     message: str = Field(..., min_length=1, max_length=4000)
     conversation_id: Optional[str] = None
-    mode: str = Field(default="general", pattern="^(general|workflow|coach|agent)$")  # FIXED
+    mode: str = Field(default="general", pattern="^(general|workflow|coach|agent)$")
     preferred_model: Optional[str] = None
     language: Optional[LanguageCode] = None
-    context_data: Optional[Dict[str, Any]] = None  # For passing workflow/task context
+    context_data: Optional[Dict[str, Any]] = None
 
     @field_validator('message')
     @classmethod
@@ -341,7 +402,7 @@ class ChatResponse(BaseSchema):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# TASK MODELS (Global Enhanced)
+# TASK MODELS
 # ═════════════════════════════════════════════════════════════════════════════
 
 class TaskCreate(BaseSchema):
@@ -395,7 +456,47 @@ class GenerateTasksRequest(BaseSchema):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# SKILLS MODELS
+# GOAL MODELS
+# ═════════════════════════════════════════════════════════════════════════════
+
+class GoalCreate(BaseSchema):
+    title: str = Field(..., min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=1000)
+    category: str = Field(default="income")
+    target_amount: Optional[float] = Field(default=None, ge=0)
+    target_currency: CurrencyCode = Field(default=CurrencyCode.USD)
+    deadline: Optional[datetime] = None
+    is_public: bool = False
+
+
+class GoalUpdate(BaseSchema):
+    title: Optional[str] = Field(default=None, max_length=200)
+    description: Optional[str] = None
+    target_amount: Optional[float] = Field(default=None, ge=0)
+    deadline: Optional[datetime] = None
+    is_public: Optional[bool] = None
+    status: Optional[str] = Field(default=None, pattern="^(active|completed|abandoned)$")
+
+
+class GoalResponse(BaseSchema):
+    id: str
+    user_id: str
+    title: str
+    description: Optional[str] = None
+    category: str
+    target_amount: Optional[float] = None
+    target_currency: str = "USD"
+    current_amount: float = 0.0
+    progress_percent: float = 0.0
+    deadline: Optional[datetime] = None
+    status: str
+    is_public: bool = False
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SKILL MODELS
 # ═════════════════════════════════════════════════════════════════════════════
 
 class EnrollRequest(BaseSchema):
@@ -426,11 +527,11 @@ class SkillModuleResponse(BaseSchema):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# PAYMENTS MODELS (Global Multi-Currency)
+# PAYMENT MODELS
 # ═════════════════════════════════════════════════════════════════════════════
 
 class PaymentInitRequest(BaseSchema):
-    plan: str = Field(default="monthly", pattern="^(monthly|yearly|lifetime)$")  # FIXED
+    plan: str = Field(default="monthly", pattern="^(monthly|yearly|lifetime)$")
     currency: CurrencyCode = Field(default=CurrencyCode.USD)
     payment_method: Optional[PaymentMethod] = Field(default=PaymentMethod.FLUTTERWAVE)
     country_code: Optional[str] = Field(default=None, max_length=2)
@@ -440,7 +541,7 @@ class PaymentInitRequest(BaseSchema):
 class PaymentVerifyRequest(BaseSchema):
     tx_ref: str
     transaction_id: Optional[str] = None
-    payment_provider: str = Field(default="flutterwave", pattern="^(flutterwave|stripe|paypal)$")  # FIXED
+    payment_provider: str = Field(default="flutterwave", pattern="^(flutterwave|stripe|paypal)$")
 
 
 class PaymentResponse(BaseSchema):
@@ -464,35 +565,35 @@ class SubscriptionStatus(BaseSchema):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# UNLOCKS MODELS
+# UNLOCK MODELS
 # ═════════════════════════════════════════════════════════════════════════════
 
 class AdUnlockRequest(BaseSchema):
-    feature_key: str = Field(..., pattern="^[a-z_]+$")  # FIXED
+    feature_key: str = Field(..., pattern="^[a-z_]+$")
     ad_unit_id: str
     duration_hours: int = Field(default=1, ge=1, le=24)
 
 
 class FeatureCheckRequest(BaseSchema):
-    feature_key: str = Field(..., pattern="^[a-z_]+$")  # FIXED
+    feature_key: str = Field(..., pattern="^[a-z_]+$")
 
 
 class FeatureUnlockResponse(BaseSchema):
     feature_key: str
     unlocked: bool
     unlocked_until: Optional[datetime] = None
-    unlock_method: str  # "ad", "subscription", "purchase"
+    unlock_method: str
     remaining_uses: Optional[int] = None
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# PROGRESS & EARNINGS MODELS (Global Multi-Currency)
+# PROGRESS & EARNINGS MODELS
 # ═════════════════════════════════════════════════════════════════════════════
 
 class EarningLog(BaseSchema):
     amount: float = Field(..., gt=0)
     currency: CurrencyCode = Field(default=CurrencyCode.USD)
-    source_type: str = Field(..., pattern="^(task|skill|workflow|referral|bonus|other)$")  # FIXED
+    source_type: str = Field(..., pattern="^(task|skill|workflow|referral|bonus|other)$")
     source_id: Optional[str] = None
     description: Optional[str] = Field(default=None, max_length=500)
     payment_method: Optional[PaymentMethod] = None
@@ -522,7 +623,7 @@ class WeeklyInsight(BaseSchema):
     summary: str
     achievements: List[str] = []
     suggestions: List[str] = []
-    trend: str = "stable"  # "up", "down", "stable"
+    trend: str = "stable"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -530,7 +631,7 @@ class WeeklyInsight(BaseSchema):
 # ═════════════════════════════════════════════════════════════════════════════
 
 class ReferralCreate(BaseSchema):
-    code: Optional[str] = None  # Auto-generated if not provided
+    code: Optional[str] = None
 
 
 class ReferralResponse(BaseSchema):
@@ -549,7 +650,7 @@ class ReferralResponse(BaseSchema):
 
 class NotificationCreate(BaseSchema):
     user_id: str
-    type: str = Field(..., pattern="^(system|goal|task|earning|referral|payment|achievement)$")  # FIXED
+    type: str = Field(..., pattern="^(system|goal|task|earning|referral|payment|achievement)$")
     title: str = Field(..., max_length=100)
     message: str = Field(..., max_length=500)
     action_url: Optional[str] = None
@@ -582,6 +683,37 @@ class AdminStats(BaseSchema):
 
 class UserAdminUpdate(BaseSchema):
     is_active: Optional[bool] = None
-    role: Optional[str] = Field(default=None, pattern="^(user|premium|admin|super_admin)$")  # FIXED
+    role: Optional[str] = Field(default=None, pattern="^(user|premium|admin|super_admin)$")
     stage: Optional[str] = None
     notes: Optional[str] = None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# WORKFLOW MODELS
+# ═════════════════════════════════════════════════════════════════════════════
+
+class WorkflowCreate(BaseSchema):
+    title: str = Field(..., min_length=1, max_length=200)
+    goal: str = Field(..., min_length=1, max_length=500)
+    income_type: IncomeType
+    currency: CurrencyCode = Field(default=CurrencyCode.USD)
+    language: LanguageCode = Field(default=LanguageCode.EN)
+    timezone: Optional[str] = Field(default="UTC")
+
+
+class WorkflowUpdate(BaseSchema):
+    title: Optional[str] = Field(default=None, max_length=200)
+    status: Optional[str] = Field(default=None, pattern="^(active|paused|completed|abandoned)$")
+
+
+class WorkflowStepUpdate(BaseSchema):
+    status: str = Field(..., pattern="^(pending|in_progress|completed|skipped|blocked)$")
+    notes: Optional[str] = None
+
+
+class RevenueLog(BaseSchema):
+    amount: float = Field(..., gt=0)
+    currency: CurrencyCode = Field(default=CurrencyCode.USD)
+    source: Optional[str] = Field(default=None, max_length=200)
+    note: Optional[str] = Field(default=None, max_length=500)
+    payment_method: Optional[str] = None
