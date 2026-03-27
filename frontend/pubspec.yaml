@@ -10,6 +10,10 @@ dependencies:
   flutter:
     sdk: flutter
 
+  # ── ADD THIS ──
+  flutter_localizations:
+    sdk: flutter
+
   # State Management
   flutter_riverpod: ^2.5.1
   riverpod_annotation: ^2.3.3
@@ -71,8 +75,8 @@ dependencies:
   pdf: ^3.11.1
   printing: ^5.13.2
 
-  # Icons
-  iconsax: ^0.0.8
+  # Icons ── CHANGED VERSION ──
+  iconsax: ^1.0.0
   font_awesome_flutter: ^10.7.0
 
 dev_dependencies:
