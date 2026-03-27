@@ -10,8 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-// ── FIXED: Changed from iconsax to iconsax_flutter ──
-import 'package:iconsax_flutter/iconsax_flutter.dart';
+import 'package:iconsax/iconsax.dart'; // FIX 1: was iconsax_flutter — wrong package
 import 'package:intl/intl.dart';
 import '../../config/app_constants.dart';
 import '../../providers/app_providers.dart';
@@ -46,11 +45,14 @@ class _Msg {
   });
 
   _Msg copyWith({bool? isCollapsed, String? text}) => _Msg(
-    role: role, text: text ?? this.text, toolName: toolName,
-    toolCategory: toolCategory,
-    isCollapsed: isCollapsed ?? this.isCollapsed,
-    metadata: metadata, modelTier: modelTier,
-  );
+        role:         role,
+        text:         text ?? this.text,
+        toolName:     toolName,
+        toolCategory: toolCategory,
+        isCollapsed:  isCollapsed ?? this.isCollapsed,
+        metadata:     metadata,
+        modelTier:    modelTier,
+      );
 }
 
 // ─────────────────────────────────────────────────────
@@ -61,6 +63,7 @@ class AgentScreen extends ConsumerStatefulWidget {
   final String? workflowId;
   final String? sessionId;
   const AgentScreen({super.key, this.workflowId, this.sessionId});
+
   @override
   ConsumerState<AgentScreen> createState() => _AgentScreenState();
 }
@@ -70,19 +73,19 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
   final _scrollCtrl = ScrollController();
   final _inputFocus = FocusNode();
 
-  List<_Msg> _msgs      = [];
-  bool   _isStreaming   = false;
-  bool   _inputEnabled    = true;
-  String? _workflowId;
-  String? _sessionId;
-  int    _thinkIdx      = -1;
-  bool   _showSidebar    = false;
+  List<_Msg> _msgs        = [];
+  bool       _isStreaming  = false;
+  bool       _inputEnabled = true;
+  String?    _workflowId;
+  String?    _sessionId;
+  int        _thinkIdx    = -1;
+  bool       _showSidebar = false;
 
   @override
   void initState() {
     super.initState();
     _workflowId = widget.workflowId;
-    _sessionId = widget.sessionId;
+    _sessionId  = widget.sessionId;
     WidgetsBinding.instance.addPostFrameCallback((_) => _init());
   }
 
@@ -94,10 +97,9 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     super.dispose();
   }
 
-  // ── Initialize ─────────────────────────────────────────
+  // ── Initialize ─────────────────────────────────────
   void _init() async {
     if (_sessionId != null) {
-      // Load existing session
       await _loadSession(_sessionId!);
     } else {
       _greet();
@@ -106,34 +108,37 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
 
   void _greet() {
     final profile = ref.read(profileProvider).valueOrNull ?? {};
-    final name = (profile['full_name']?.toString() ?? '').split(' ').first;
-    final currency = profile['currency']?.toString() ?? 'USD';
-    final country = profile['country']?.toString() ?? '';
-    
+    final name    = (profile['full_name']?.toString() ?? '').split(' ').first;
+
     setState(() => _msgs.add(_Msg(
-      role: _Role.agent,
-      text: name.isNotEmpty 
-          ? '**Hey $name** 👋\n\nI\'m **APEX** — your autonomous AI agent. I can research, write, find opportunities, draft contracts, and even post to social media for you.\n\nWhat do you want us to work on today?'
-          : '**Hey** 👋\n\nI\'m **APEX** — your autonomous AI agent. I can research, write, find opportunities, draft contracts, and even post to social media for you.\n\nWhat do you want us to work on today?',
-      modelTier: 'free',
-    )));
+          role: _Role.agent,
+          text: name.isNotEmpty
+              ? '**Hey $name** 👋\n\nI\'m **APEX** — your autonomous AI agent. '
+                'I can research, write, find opportunities, draft contracts, and even '
+                'post to social media for you.\n\nWhat do you want us to work on today?'
+              : '**Hey** 👋\n\nI\'m **APEX** — your autonomous AI agent. '
+                'I can research, write, find opportunities, draft contracts, and even '
+                'post to social media for you.\n\nWhat do you want us to work on today?',
+          modelTier: 'free',
+        )));
   }
 
-  // ── Load existing session ─────────────────────────────
+  // ── Load existing session ───────────────────────────
   Future<void> _loadSession(String sessionId) async {
     try {
       final response = await api.get('/agent/chat/sessions/$sessionId');
       final messages = response['recent_messages'] as List? ?? [];
-      
+
       setState(() {
-        _msgs = messages.map((m) => _Msg(
-          role: _parseRole(m['role']),
-          text: m['content'] ?? '',
-          modelTier: m['metadata']?['model_tier'],
-        )).toList();
+        _msgs = messages
+            .map((m) => _Msg(
+                  role:      _parseRole(m['role']),
+                  text:      m['content'] ?? '',
+                  modelTier: m['metadata']?['model_tier'],
+                ))
+            .toList();
         _sessionId = sessionId;
       });
-      
       _scrollDown();
     } catch (e) {
       _greet();
@@ -142,15 +147,15 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
 
   _Role _parseRole(String? role) {
     return switch (role) {
-      'user' => _Role.user,
+      'user'      => _Role.user,
       'assistant' => _Role.agent,
-      'tool' => _Role.tool,
-      'system' => _Role.system,
-      _ => _Role.agent,
+      'tool'      => _Role.tool,
+      'system'    => _Role.system,
+      _           => _Role.agent,
     };
   }
 
-  // ── Submit message ───────────────────────────────────
+  // ── Submit message ──────────────────────────────────
   Future<void> _submit() async {
     final text = _inputCtrl.text.trim();
     if (text.isEmpty || _isStreaming) return;
@@ -167,16 +172,18 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
 
     if (!adManager.canUseAgent) {
       _showLimitDialog();
-      setState(() { _isStreaming = false; _inputEnabled = true; });
+      setState(() {
+        _isStreaming  = false;
+        _inputEnabled = true;
+      });
       return;
     }
     adManager.recordAgentUse();
 
-    final profile = ref.read(profileProvider).valueOrNull ?? {};
+    final profile  = ref.read(profileProvider).valueOrNull ?? {};
     final currCode = profile['currency']?.toString() ?? 'USD';
     currency.init(currCode);
 
-    // Check if this is first message or continuing chat
     final userMsgCount = _msgs.where((m) => m.role == _Role.user).length;
     if (userMsgCount == 1 && _sessionId == null) {
       await _agentRun(text, currCode);
@@ -185,22 +192,24 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     }
   }
 
-  // ── Full agent run (SSE streaming) ───────────────────
+  // ── Full agent run (SSE streaming) ──────────────────
   Future<void> _agentRun(String task, String currCode) async {
     setState(() {
       _thinkIdx = _msgs.length;
-      _msgs.add(const _Msg(role: _Role.thinking, text: 'Understanding your goal...'));
+      _msgs.add(const _Msg(
+          role: _Role.thinking, text: 'Understanding your goal...'));
     });
     _scrollDown();
 
     try {
-      final stream = api.streamPost('/agent/run-stream', {
+      final profile = ref.read(profileProvider).valueOrNull ?? {};
+      final stream  = api.streamPost('/agent/run-stream', {
         'task':              task,
         'budget':            0.0,
         'hours_per_day':     2.0,
         'currency':          currCode,
-        'country':           ref.read(profileProvider).valueOrNull?['country'],
-        'language':          ref.read(profileProvider).valueOrNull?['language'] ?? 'en',
+        'country':           profile['country'],
+        'language':          profile['language'] ?? 'en',
         'allow_email':       false,
         'allow_social_post': false,
         'session_id':        _sessionId,
@@ -219,7 +228,9 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
           _thinkIdx = -1;
         }
         _msgs.removeWhere((m) => m.role == _Role.tool);
-        _msgs.add(const _Msg(role: _Role.error, text: 'Connection issue. Please try again.'));
+        _msgs.add(const _Msg(
+            role: _Role.error,
+            text: 'Connection issue. Please try again.'));
         _isStreaming  = false;
         _inputEnabled = true;
       });
@@ -230,15 +241,14 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     setState(() {
       switch (event.type) {
         case 'quota_check':
-          // Silent check, show indicator in UI if needed
           break;
 
         case 'thinking':
           final thought = event.data['thought']?.toString() ?? '';
           if (_thinkIdx >= 0 && _thinkIdx < _msgs.length) {
             _msgs[_thinkIdx] = _Msg(
-              role: _Role.thinking,
-              text: thought.isEmpty ? 'Thinking...' : thought,
+              role:      _Role.thinking,
+              text:      thought.isEmpty ? 'Thinking...' : thought,
               modelTier: event.data['tier']?.toString(),
             );
           }
@@ -247,18 +257,19 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
           final tool = event.data['tool']?.toString() ?? '';
           final cat  = event.data['category']?.toString() ?? 'thinking';
           _msgs.add(_Msg(
-            role: _Role.tool, 
-            text: _toolLabel(tool),
-            toolName: tool, 
+            role:         _Role.tool,
+            text:         _toolLabel(tool),
+            toolName:     tool,
             toolCategory: cat,
-            modelTier: event.data['tier']?.toString(),
+            modelTier:    event.data['tier']?.toString(),
           ));
           _scrollDown();
 
         case 'tool_result':
           final tool = event.data['tool']?.toString() ?? '';
           for (int i = _msgs.length - 1; i >= 0; i--) {
-            if (_msgs[i].role == _Role.tool && _msgs[i].toolName == tool) {
+            if (_msgs[i].role == _Role.tool &&
+                _msgs[i].toolName == tool) {
               _msgs[i] = _msgs[i].copyWith(isCollapsed: true);
               break;
             }
@@ -267,16 +278,17 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
         case 'action_done':
           final tool   = event.data['tool']?.toString() ?? '';
           final result = event.data['result'] as Map? ?? {};
-          final ok     = result['posted'] == true || result['sent'] == true;
+          final ok =
+              result['posted'] == true || result['sent'] == true;
           _msgs.add(_Msg(
-            role: _Role.action,
-            text: ok
+            role:         _Role.action,
+            text:         ok
                 ? '✅ ${_toolLabel(tool)} — completed'
                 : '📋 ${_toolLabel(tool)} — ready',
-            toolName: tool,
+            toolName:     tool,
             toolCategory: 'action',
-            metadata: jsonEncode(result),
-            modelTier: event.data['tier']?.toString(),
+            metadata:     jsonEncode(result),
+            modelTier:    event.data['tier']?.toString(),
           ));
           _scrollDown();
 
@@ -293,13 +305,16 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
           }
           _msgs.removeWhere((m) => m.role == _Role.tool);
 
-          _workflowId = event.data['workflow_id']?.toString() ?? _workflowId;
-          _sessionId = event.data['session_id']?.toString() ?? _sessionId;
+          _workflowId =
+              event.data['workflow_id']?.toString() ?? _workflowId;
+          _sessionId =
+              event.data['session_id']?.toString() ?? _sessionId;
 
           _msgs.add(_Msg(
-            role: _Role.agent,
-            text: _buildResponse(Map<String, dynamic>.from(event.data)),
-            metadata: jsonEncode(event.data),
+            role:      _Role.agent,
+            text:      _buildResponse(
+                Map<String, dynamic>.from(event.data)),
+            metadata:  jsonEncode(event.data),
             modelTier: event.data['model_tier']?.toString() ?? 'free',
           ));
           _isStreaming  = false;
@@ -312,11 +327,13 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
             _thinkIdx = -1;
           }
           _msgs.removeWhere((m) => m.role == _Role.tool);
-          final msg = event.data['message']?.toString() ?? '';
-          if (msg.contains('limit')) {
-            _msgs.add(_Msg(
+          final errMsg = event.data['message']?.toString() ?? '';
+          if (errMsg.contains('limit')) {
+            _msgs.add(const _Msg(
               role: _Role.system,
-              text: '**Daily limit reached** 🔒\n\nYou\'ve used all your free runs today. Watch an ad for 1 more, or upgrade to Premium for unlimited access.',
+              text: '**Daily limit reached** 🔒\n\nYou\'ve used all your '
+                  'free runs today. Watch an ad for 1 more, or upgrade to '
+                  'Premium for unlimited access.',
             ));
           } else {
             _msgs.add(const _Msg(
@@ -331,7 +348,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     _scrollDown();
   }
 
-  // ── Follow-up chat ───────────────────────────────────
+  // ── Follow-up chat ──────────────────────────────────
   Future<void> _chatRound(String message) async {
     setState(() {
       _thinkIdx = _msgs.length;
@@ -346,17 +363,17 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
         'workflow_id': _workflowId,
         'stream':      false,
       });
-      
+
       _sessionId = r['session_id']?.toString() ?? _sessionId;
-      
+
       setState(() {
         if (_thinkIdx >= 0 && _thinkIdx < _msgs.length) {
           _msgs.removeAt(_thinkIdx);
           _thinkIdx = -1;
         }
         _msgs.add(_Msg(
-          role: _Role.agent, 
-          text: r['content']?.toString() ?? '...',
+          role:      _Role.agent,
+          text:      r['content']?.toString() ?? '...',
           modelTier: r['model_tier']?.toString(),
         ));
         _isStreaming  = false;
@@ -369,7 +386,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
           _thinkIdx = -1;
         }
         _msgs.add(const _Msg(
-          role: _Role.error, 
+          role: _Role.error,
           text: 'Connection issue. Please try again.',
         ));
         _isStreaming  = false;
@@ -393,12 +410,12 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
 
   void _newChat() {
     setState(() {
-      _msgs       = [];
-      _workflowId = null;
-      _sessionId  = null;
-      _isStreaming = false;
+      _msgs         = [];
+      _workflowId   = null;
+      _sessionId    = null;
+      _isStreaming  = false;
       _inputEnabled = true;
-      _thinkIdx   = -1;
+      _thinkIdx     = -1;
     });
     _greet();
     _inputFocus.requestFocus();
@@ -413,36 +430,40 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
         isDark: isDark,
         onWatchAd: () {
           Navigator.pop(context);
-          adManager.watchAdForAgentUse(context)
-              .then((ok) { if (ok && mounted) _submit(); });
+          adManager
+              .watchAdForAgentUse(context)
+              .then((ok) {
+            if (ok && mounted) _submit();
+          });
         },
       ),
     );
   }
 
-  // ── Build natural language response from agent data ──
+  // ── Build natural language response from agent data ─
   String _buildResponse(Map<String, dynamic> data) {
     final buf     = StringBuffer();
-    final resp    = data['agent_response']?.toString() ?? '';
-    final plan    = data['plan']   as Map?  ?? {};
-    final steps   = data['steps']  as List? ?? [];
+    final resp    = data['agent_response']?.toString()       ?? '';
+    final plan    = data['plan']                  as Map?  ?? {};
+    final steps   = data['steps']                as List? ?? [];
     final tools   = data['free_tools']           as List? ?? [];
     final opps    = data['opportunities_found']  as List? ?? [];
     final docs    = data['documents_generated']  as List? ?? [];
     final msgs    = data['outreach_messages']    as List? ?? [];
     final posts   = data['social_posts']         as List? ?? [];
-    final now     = data['immediate_action']?.toString() ?? '';
-    final insight = data['wealth_insight']?.toString() ?? '';
+    final now     = data['immediate_action']?.toString()     ?? '';
+    final insight = data['wealth_insight']?.toString()       ?? '';
 
     if (resp.isNotEmpty) { buf.writeln(resp); buf.writeln(); }
 
     if (plan['title'] != null) {
       buf.writeln('**${plan['title']}**');
       final r   = plan['income_range'] as Map? ?? {};
-      // ── FIXED: Use NumberFormat instead of CurrencyService.symbolFor ──
-      final sym = _getCurrencySymbol(r['currency']?.toString() ?? currency.code);
+      final sym = _getCurrencySymbol(
+          r['currency']?.toString() ?? currency.code);
       if ((r['max'] ?? 0) > 0) {
-        buf.writeln('$sym${_fmt(r['min'] ?? 0)} – $sym${_fmt(r['max'] ?? 0)}/mo  ·  '
+        buf.writeln(
+            '$sym${_fmt(r['min'] ?? 0)} – $sym${_fmt(r['max'] ?? 0)}/mo  ·  '
             '${plan['timeline'] ?? ''}  ·  ${plan['viability'] ?? 75}% viable');
       }
       buf.writeln();
@@ -451,8 +472,8 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     if (steps.isNotEmpty) {
       buf.writeln('**Your ${steps.length}-step plan:**');
       for (final s in steps.take(7)) {
-        final step  = s as Map;
-        final auto  = step['type'] == 'automated' ? ' _(AI handles this)_' : '';
+        final step = s as Map;
+        final auto = step['type'] == 'automated' ? ' _(AI handles this)_' : '';
         buf.writeln('**${step['order'] ?? ''}. ${step['title']}**$auto');
         buf.writeln(step['description'] ?? '');
         final out = step['ai_output']?.toString() ?? '';
@@ -467,8 +488,11 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
       buf.writeln('**${opps.length} real opportunities found:**');
       for (final o in opps.take(4)) {
         final opp = o as Map;
-        final fit = opp['fit_score'] != null ? ' (${opp['fit_score']}% fit)' : '';
-        buf.writeln('• **${opp['title']}** — ${opp['platform'] ?? ''}$fit');
+        final fit = opp['fit_score'] != null
+            ? ' (${opp['fit_score']}% fit)'
+            : '';
+        buf.writeln(
+            '• **${opp['title']}** — ${opp['platform'] ?? ''}$fit');
         if (opp['url']?.toString().isNotEmpty == true) {
           buf.writeln('  ${opp['url']}');
         }
@@ -484,7 +508,8 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     }
 
     if (msgs.isNotEmpty) {
-      buf.writeln('**${msgs.length} outreach message(s)** ready to send.');
+      buf.writeln(
+          '**${msgs.length} outreach message(s)** ready to send.');
       buf.writeln();
     }
 
@@ -516,14 +541,14 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     return buf.toString().trim();
   }
 
-  // ── FIXED: Helper method to get currency symbol ──
+  // FIX 2: Safe currency symbol extraction
   String _getCurrencySymbol(String currencyCode) {
     try {
-      final format = NumberFormat.currency(name: currencyCode, symbol: null);
-      // Extract symbol from a formatted zero
-      final formatted = format.format(0);
-      // Remove the zero to get just the symbol
-      return formatted.replaceAll('0', '').replaceAll('.', '').replaceAll(',', '').trim();
+      final formatted = NumberFormat.simpleCurrency(name: currencyCode)
+          .format(0);
+      return formatted
+          .replaceAll(RegExp(r'[\d,. ]'), '')
+          .trim();
     } catch (e) {
       return currencyCode;
     }
@@ -538,35 +563,35 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
 
   String _toolLabel(String tool) {
     const map = {
-      'web_search':           'Searching the web',
-      'deep_research':        'Deep researching',
-      'find_freelance_jobs':  'Finding freelance jobs',
-      'find_partners':        'Finding business partners',
-      'find_free_resources':  'Finding free tools',
-      'market_research':      'Analysing the market',
-      'scan_opportunities':   'Scanning for opportunities',
-      'write_content':        'Writing content',
-      'create_plan':          'Building execution plan',
-      'estimate_income':      'Estimating income',
-      'generate_ideas':       'Generating ideas',
-      'write_cold_outreach':  'Writing outreach',
-      'build_profile_content':'Building profile',
-      'breakdown_task':       'Breaking down task',
-      'create_template':      'Creating template',
-      'send_email':           'Sending email',
-      'post_twitter':         'Posting to Twitter/X',
-      'post_linkedin':        'Posting to LinkedIn',
-      'generate_contract':    'Generating contract',
-      'generate_invoice':     'Generating invoice',
-      'generate_proposal':    'Generating proposal',
-      'generate_pitch_deck':  'Generating pitch deck',
+      'web_search':                'Searching the web',
+      'deep_research':             'Deep researching',
+      'find_freelance_jobs':       'Finding freelance jobs',
+      'find_partners':             'Finding business partners',
+      'find_free_resources':       'Finding free tools',
+      'market_research':           'Analysing the market',
+      'scan_opportunities':        'Scanning for opportunities',
+      'write_content':             'Writing content',
+      'create_plan':               'Building execution plan',
+      'estimate_income':           'Estimating income',
+      'generate_ideas':            'Generating ideas',
+      'write_cold_outreach':       'Writing outreach',
+      'build_profile_content':     'Building profile',
+      'breakdown_task':            'Breaking down task',
+      'create_template':           'Creating template',
+      'send_email':                'Sending email',
+      'post_twitter':              'Posting to Twitter/X',
+      'post_linkedin':             'Posting to LinkedIn',
+      'generate_contract':         'Generating contract',
+      'generate_invoice':          'Generating invoice',
+      'generate_proposal':         'Generating proposal',
+      'generate_pitch_deck':       'Generating pitch deck',
       'scrape_live_opportunities': 'Finding live opportunities',
-      'score_opportunity':    'Scoring opportunity',
-      'analyze_market_trends': 'Analyzing market trends',
-      'create_daily_action_plan': 'Creating action plan',
-      'create_follow_up_plan': 'Creating follow-up plan',
-      'track_earnings_insight': 'Analyzing earnings',
-      'growth_milestone_check': 'Checking milestones',
+      'score_opportunity':         'Scoring opportunity',
+      'analyze_market_trends':     'Analyzing market trends',
+      'create_daily_action_plan':  'Creating action plan',
+      'create_follow_up_plan':     'Creating follow-up plan',
+      'track_earnings_insight':    'Analyzing earnings',
+      'growth_milestone_check':    'Checking milestones',
     };
     return map[tool] ?? tool.replaceAll('_', ' ');
   }
@@ -584,65 +609,73 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     return Scaffold(
       backgroundColor: bg,
       appBar: _buildAppBar(isDark, text),
-      body: Row(children: [
-        // Sidebar for sessions (collapsible)
-        if (_showSidebar) _buildSidebar(isDark),
-        
-        // Main chat area
-        Expanded(
-          child: Column(children: [
-            Expanded(child: _buildMessages(isDark)),
-            _buildInput(isDark, text),
-          ]),
-        ),
-      ]),
+      body: Row(
+        children: [
+          if (_showSidebar) _buildSidebar(isDark),
+          Expanded(
+            child: Column(
+              children: [
+                Expanded(child: _buildMessages(isDark)),
+                _buildInput(isDark, text),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 
   AppBar _buildAppBar(bool isDark, Color text) {
-    final profile = ref.watch(profileProvider).valueOrNull ?? {};
     final runsRemaining = adManager.agentUsesRemaining;
-    final isPremium = adManager.isPremium;
+    final isPremium     = adManager.isPremium;
 
     return AppBar(
-      backgroundColor: isDark ? const Color(0xFF0A0A0A) : Colors.white,
-      elevation: 0,
-      surfaceTintColor: Colors.transparent,
+      backgroundColor:    isDark ? const Color(0xFF0A0A0A) : Colors.white,
+      elevation:          0,
+      surfaceTintColor:   Colors.transparent,
       leading: IconButton(
         icon: Icon(
           _showSidebar ? Iconsax.close_square : Iconsax.menu_1,
-          color: text, 
-          size: 22
+          color: text,
+          size: 22,
         ),
         onPressed: () => setState(() => _showSidebar = !_showSidebar),
       ),
-      title: Row(mainAxisSize: MainAxisSize.min, children: [
-        Container(
-          width: 28, height: 28,
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              colors: [AppColors.primary, AppColors.accent],
-              begin: Alignment.topLeft, end: Alignment.bottomRight,
+      title: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [AppColors.primary, AppColors.accent],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(7),
             ),
-            borderRadius: BorderRadius.circular(7),
+            child: const Icon(
+              Icons.auto_awesome_rounded,
+              color: Colors.white,
+              size: 15,
+            ),
           ),
-          child: const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 15),
-        ),
-        const SizedBox(width: 9),
-        const Text(
-          'APEX', 
-          style: TextStyle(
-            fontSize: 17, 
-            fontWeight: FontWeight.w800, 
-            letterSpacing: 0.5,
+          const SizedBox(width: 9),
+          const Text(
+            'APEX',
+            style: TextStyle(
+              fontSize:      17,
+              fontWeight:    FontWeight.w800,
+              letterSpacing: 0.5,
+            ),
           ),
-        ),
-      ]),
+        ],
+      ),
       actions: [
-        // Model tier indicator
         if (!isPremium)
           Container(
-            margin: const EdgeInsets.only(right: 8),
+            margin:  const EdgeInsets.only(right: 8),
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
               color: runsRemaining > 0
@@ -651,26 +684,28 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
-              isPremium ? 'Premium' : '$runsRemaining left',
+              '$runsRemaining left',
               style: TextStyle(
-                fontSize: 11, 
+                fontSize:   11,
                 fontWeight: FontWeight.w600,
-                color: runsRemaining > 0 ? AppColors.success : AppColors.error,
+                color: runsRemaining > 0
+                    ? AppColors.success
+                    : AppColors.error,
               ),
             ),
           ),
-        
-        // New chat button
         IconButton(
-          icon: Icon(Icons.add_rounded, color: text, size: 22),
+          icon:    Icon(Icons.add_rounded, color: text, size: 22),
           tooltip: 'New conversation',
           onPressed: _newChat,
         ),
-        
-        // View workflow if exists
         if (_workflowId != null)
           IconButton(
-            icon: const Icon(Iconsax.flash, color: AppColors.primary, size: 18),
+            icon: const Icon(
+              Iconsax.flash,
+              color: AppColors.primary,
+              size: 18,
+            ),
             tooltip: 'View Workflow',
             onPressed: () => context.push('/workflow/$_workflowId'),
           ),
@@ -681,93 +716,124 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
   Widget _buildSidebar(bool isDark) {
     return Container(
       width: 260,
-      color: isDark ? const Color(0xFF111111) : const Color(0xFFF8F8F8),
+      color: isDark
+          ? const Color(0xFF111111)
+          : const Color(0xFFF8F8F8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // New chat button
           Padding(
             padding: const EdgeInsets.all(16),
             child: GestureDetector(
               onTap: _newChat,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 10),
                 decoration: BoxDecoration(
-                  color: isDark ? Colors.white.withOpacity(0.05) : Colors.white,
+                  color: isDark
+                      ? Colors.white.withOpacity(0.05)
+                      : Colors.white,
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(
                     color: isDark ? Colors.white12 : Colors.black12,
                   ),
                 ),
-                child: Row(children: [
-                  Icon(Icons.add, size: 18, color: isDark ? Colors.white70 : Colors.black54),
-                  const SizedBox(width: 8),
-                  Text(
-                    'New conversation',
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: isDark ? Colors.white70 : Colors.black87,
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.add,
+                      size: 18,
+                      color: isDark
+                          ? Colors.white70
+                          : Colors.black54,
                     ),
-                  ),
-                ]),
+                    const SizedBox(width: 8),
+                    Text(
+                      'New conversation',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: isDark
+                            ? Colors.white70
+                            : Colors.black87,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
-          
-          // Sessions list
           Expanded(
             child: FutureBuilder(
               future: api.get('/agent/chat/sessions'),
               builder: (context, snapshot) {
                 if (!snapshot.hasData) {
-                  return const Center(child: CircularProgressIndicator(strokeWidth: 2));
+                  return const Center(
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2),
+                  );
                 }
-                
-                final sessions = snapshot.data?['sessions'] as List? ?? [];
-                
+
+                final sessions =
+                    snapshot.data?['sessions'] as List? ?? [];
+
                 return ListView.builder(
                   itemCount: sessions.length,
                   itemBuilder: (context, index) {
-                    final session = sessions[index];
+                    final session  = sessions[index];
                     final isActive = session['id'] == _sessionId;
-                    
+
                     return ListTile(
-                      dense: true,
+                      dense:    true,
                       selected: isActive,
-                      selectedTileColor: AppColors.primary.withOpacity(0.1),
+                      selectedTileColor:
+                          AppColors.primary.withOpacity(0.1),
                       leading: Icon(
                         Iconsax.message_text,
                         size: 18,
-                        color: isActive ? AppColors.primary : (isDark ? Colors.white54 : Colors.black54),
+                        color: isActive
+                            ? AppColors.primary
+                            : (isDark
+                                ? Colors.white54
+                                : Colors.black54),
                       ),
                       title: Text(
                         session['title'] ?? 'Untitled',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
-                          color: isDark ? Colors.white : Colors.black87,
+                          fontSize:   13,
+                          fontWeight: isActive
+                              ? FontWeight.w600
+                              : FontWeight.normal,
+                          color: isDark
+                              ? Colors.white
+                              : Colors.black87,
                         ),
                       ),
                       subtitle: Text(
                         _formatDate(session['updated_at']),
                         style: TextStyle(
                           fontSize: 11,
-                          color: isDark ? Colors.white38 : Colors.black38,
+                          color: isDark
+                              ? Colors.white38
+                              : Colors.black38,
                         ),
                       ),
                       onTap: () {
-                        setState(() => _showSidebar = false);
+                        setState(
+                            () => _showSidebar = false);
                         _loadSession(session['id']);
                       },
-                      trailing: isActive ? Container(
-                        width: 6, height: 6,
-                        decoration: const BoxDecoration(
-                          color: AppColors.primary,
-                          shape: BoxShape.circle,
-                        ),
-                      ) : null,
+                      trailing: isActive
+                          ? Container(
+                              width: 6,
+                              height: 6,
+                              decoration: const BoxDecoration(
+                                color: AppColors.primary,
+                                shape: BoxShape.circle,
+                              ),
+                            )
+                          : null,
                     );
                   },
                 );
@@ -783,19 +849,11 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     if (dateStr == null) return '';
     final date = DateTime.tryParse(dateStr);
     if (date == null) return '';
-    
-    final now = DateTime.now();
-    final diff = now.difference(date);
-    
-    if (diff.inDays == 0) {
-      return 'Today';
-    } else if (diff.inDays == 1) {
-      return 'Yesterday';
-    } else if (diff.inDays < 7) {
-      return '${diff.inDays} days ago';
-    } else {
-      return '${date.day}/${date.month}/${date.year}';
-    }
+    final diff = DateTime.now().difference(date);
+    if (diff.inDays == 0) return 'Today';
+    if (diff.inDays == 1) return 'Yesterday';
+    if (diff.inDays < 7)  return '${diff.inDays} days ago';
+    return '${date.day}/${date.month}/${date.year}';
   }
 
   Widget _buildMessages(bool isDark) {
@@ -808,21 +866,25 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
         return switch (msg.role) {
           _Role.user     => _UserBubble(msg: msg),
           _Role.agent    => _AgentBubble(
-              msg: msg, 
-              isDark: isDark,
+              msg:        msg,
+              isDark:     isDark,
               onWorkflow: _workflowId != null
-                  ? () => context.push('/workflow/$_workflowId') : null,
+                  ? () => context.push('/workflow/$_workflowId')
+                  : null,
             ),
           _Role.thinking => _ThinkingBubble(msg: msg, isDark: isDark),
           _Role.tool     => _ToolLine(msg: msg, isDark: isDark),
           _Role.action   => _ActionLine(msg: msg),
           _Role.error    => _ErrorLine(msg: msg),
           _Role.system   => _SystemMsg(
-              msg: msg, 
-              isDark: isDark,
+              msg:       msg,
+              isDark:    isDark,
               onUpgrade: () => context.push('/premium'),
-              onWatchAd: () => adManager.watchAdForAgentUse(context)
-                  .then((ok) { if (ok && mounted) _submit(); }),
+              onWatchAd: () => adManager
+                  .watchAdForAgentUse(context)
+                  .then((ok) {
+                if (ok && mounted) _submit();
+              }),
             ),
         };
       },
@@ -830,71 +892,100 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
   }
 
   Widget _buildInput(bool isDark, Color text) {
+    // FIX 3: Colors.black30/black24 don't exist — use withOpacity
+    final hintColor = isDark
+        ? Colors.white.withOpacity(0.3)
+        : Colors.black.withOpacity(0.3);
+    final disabledIconColor = isDark
+        ? Colors.white.withOpacity(0.24)
+        : Colors.black.withOpacity(0.24);
+
     return SafeArea(
       top: false,
       child: Container(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
         decoration: BoxDecoration(
           color: isDark ? const Color(0xFF0A0A0A) : Colors.white,
-          border: Border(top: BorderSide(
-              color: isDark ? Colors.white10 : Colors.black12, width: 0.5)),
+          border: Border(
+            top: BorderSide(
+              color: isDark ? Colors.white10 : Colors.black12,
+              width: 0.5,
+            ),
+          ),
         ),
-        child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-          Expanded(
-            child: Container(
-              constraints: const BoxConstraints(maxHeight: 200),
-              decoration: BoxDecoration(
-                color: isDark ? const Color(0xFF1A1A1A) : const Color(0xFFF5F5F5),
-                borderRadius: BorderRadius.circular(24),
-                border: Border.all(
-                    color: isDark ? Colors.white10 : Colors.black12),
-              ),
-              child: TextField(
-                controller:  _inputCtrl,
-                focusNode:   _inputFocus,
-                enabled:     _inputEnabled,
-                maxLines:    null,
-                minLines:    1,
-                textInputAction: TextInputAction.newline,
-                style: TextStyle(fontSize: 15, color: text, height: 1.45),
-                decoration: InputDecoration(
-                  hintText: 'What do you want us to work on?',
-                  hintStyle: TextStyle(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Expanded(
+              child: Container(
+                constraints: const BoxConstraints(maxHeight: 200),
+                decoration: BoxDecoration(
+                  color: isDark
+                      ? const Color(0xFF1A1A1A)
+                      : const Color(0xFFF5F5F5),
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(
+                    color: isDark
+                        ? Colors.white10
+                        : Colors.black12,
+                  ),
+                ),
+                child: TextField(
+                  controller:      _inputCtrl,
+                  focusNode:       _inputFocus,
+                  enabled:         _inputEnabled,
+                  maxLines:        null,
+                  minLines:        1,
+                  textInputAction: TextInputAction.newline,
+                  style: TextStyle(
+                    fontSize: 15,
+                    color:    text,
+                    height:   1.45,
+                  ),
+                  decoration: InputDecoration(
+                    hintText:       'What do you want us to work on?',
+                    hintStyle:      TextStyle(
                       fontSize: 15,
-                      // ── FIXED: Colors.black30 doesn't exist, use withOpacity ──
-                      color: isDark ? Colors.white.withOpacity(0.3) : Colors.black.withOpacity(0.3)),
-                  border:          InputBorder.none,
-                  contentPadding:  const EdgeInsets.fromLTRB(20, 14, 20, 14),
+                      color:    hintColor,
+                    ),
+                    border:         InputBorder.none,
+                    contentPadding: const EdgeInsets.fromLTRB(
+                        20, 14, 20, 14),
+                  ),
                 ),
               ),
             ),
-          ),
-          const SizedBox(width: 10),
-          GestureDetector(
-            onTap: _isStreaming ? null : _submit,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              width: 44, height: 44,
-              decoration: BoxDecoration(
-                gradient: _isStreaming ? null : const LinearGradient(
-                  colors: [AppColors.primary, AppColors.accent],
-                  begin: Alignment.topLeft, end: Alignment.bottomRight,
+            const SizedBox(width: 10),
+            GestureDetector(
+              onTap: _isStreaming ? null : _submit,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                width:  44,
+                height: 44,
+                decoration: BoxDecoration(
+                  gradient: _isStreaming
+                      ? null
+                      : const LinearGradient(
+                          colors: [AppColors.primary, AppColors.accent],
+                          begin: Alignment.topLeft,
+                          end:   Alignment.bottomRight,
+                        ),
+                  color: _isStreaming
+                      ? (isDark
+                          ? Colors.white.withOpacity(0.1)
+                          : Colors.black.withOpacity(0.1))
+                      : null,
+                  borderRadius: BorderRadius.circular(22),
                 ),
-                color: _isStreaming
-                    ? (isDark ? Colors.white.withOpacity(0.1) : Colors.black.withOpacity(0.1)) : null,
-                borderRadius: BorderRadius.circular(22),
-              ),
-              child: Icon(
-                Icons.arrow_upward_rounded,
-                color: _isStreaming
-                    // ── FIXED: Colors.black24 doesn't exist, use withOpacity ──
-                    ? (isDark ? Colors.white.withOpacity(0.24) : Colors.black.withOpacity(0.24))
-                    : Colors.white,
-                size: 20,
+                child: Icon(
+                  Icons.arrow_upward_rounded,
+                  color: _isStreaming ? disabledIconColor : Colors.white,
+                  size: 20,
+                ),
               ),
             ),
-          ),
-        ]),
+          ],
+        ),
       ),
     );
   }
@@ -913,7 +1004,7 @@ class _UserBubble extends StatelessWidget {
     return Align(
       alignment: Alignment.centerRight,
       child: Container(
-        margin: const EdgeInsets.fromLTRB(80, 4, 16, 4),
+        margin:  const EdgeInsets.fromLTRB(80, 4, 16, 4),
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
         decoration: const BoxDecoration(
           color: AppColors.primary,
@@ -927,45 +1018,49 @@ class _UserBubble extends StatelessWidget {
         child: Text(
           msg.text,
           style: const TextStyle(
-            color: Colors.white, 
-            fontSize: 15, 
-            height: 1.45,
+            color:    Colors.white,
+            fontSize: 15,
+            height:   1.45,
           ),
         ),
       ),
-    ).animate().fadeIn(duration: 180.ms).slideY(begin: 0.08, curve: Curves.easeOut);
+    ).animate().fadeIn(duration: 180.ms).slideY(
+        begin: 0.08, curve: Curves.easeOut);
   }
 }
 
 class _AgentBubble extends StatelessWidget {
-  final _Msg msg;
-  final bool isDark;
+  final _Msg         msg;
+  final bool         isDark;
   final VoidCallback? onWorkflow;
+
   const _AgentBubble({
-    required this.msg, 
-    required this.isDark, 
+    required this.msg,
+    required this.isDark,
     this.onWorkflow,
   });
 
   @override
   Widget build(BuildContext context) {
     final textColor = isDark ? Colors.white : Colors.black87;
-    // ── FIXED: Colors.black38 doesn't exist, use withOpacity ──
-    final subColor  = isDark ? Colors.white.withOpacity(0.38) : Colors.black.withOpacity(0.38);
+    // FIX 4: Colors.black38/white38 don't exist — use withOpacity
+    final subColor = isDark
+        ? Colors.white.withOpacity(0.38)
+        : Colors.black.withOpacity(0.38);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 80, 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // APEX label with model tier
           Padding(
             padding: const EdgeInsets.only(bottom: 6),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
-                  width: 22, height: 22,
+                  width: 22,
+                  height: 22,
                   decoration: BoxDecoration(
                     gradient: const LinearGradient(
                       colors: [AppColors.primary, AppColors.accent],
@@ -973,8 +1068,8 @@ class _AgentBubble extends StatelessWidget {
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: const Icon(
-                    Icons.auto_awesome_rounded, 
-                    color: Colors.white, 
+                    Icons.auto_awesome_rounded,
+                    color: Colors.white,
                     size: 12,
                   ),
                 ),
@@ -982,17 +1077,18 @@ class _AgentBubble extends StatelessWidget {
                 const Text(
                   'APEX',
                   style: TextStyle(
-                    fontSize: 12, 
-                    fontWeight: FontWeight.w800,
+                    fontSize:      12,
+                    fontWeight:    FontWeight.w800,
                     letterSpacing: 0.5,
                   ),
                 ),
                 if (msg.modelTier != null) ...[
                   const SizedBox(width: 6),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
-                      color: msg.modelTier == 'premium' 
+                      color: msg.modelTier == 'premium'
                           ? Colors.amber.withOpacity(0.2)
                           : Colors.grey.withOpacity(0.2),
                       borderRadius: BorderRadius.circular(4),
@@ -1000,9 +1096,9 @@ class _AgentBubble extends StatelessWidget {
                     child: Text(
                       msg.modelTier!.toUpperCase(),
                       style: TextStyle(
-                        fontSize: 9,
+                        fontSize:   9,
                         fontWeight: FontWeight.w700,
-                        color: msg.modelTier == 'premium' 
+                        color: msg.modelTier == 'premium'
                             ? Colors.amber
                             : subColor,
                       ),
@@ -1012,22 +1108,19 @@ class _AgentBubble extends StatelessWidget {
               ],
             ),
           ),
-
-          // Message body
           _MdText(text: msg.text, isDark: isDark),
-
-          // Action row
           const SizedBox(height: 10),
           Row(
             children: [
               _IconBtn(
-                icon: Icons.copy_outlined,
+                icon:  Icons.copy_outlined,
                 color: subColor,
                 onTap: () {
-                  Clipboard.setData(ClipboardData(text: msg.text));
+                  Clipboard.setData(
+                      ClipboardData(text: msg.text));
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                      content: Text('Copied to clipboard'), 
+                      content:  Text('Copied to clipboard'),
                       duration: Duration(seconds: 1),
                     ),
                   );
@@ -1037,20 +1130,17 @@ class _AgentBubble extends StatelessWidget {
                 const SizedBox(width: 14),
                 GestureDetector(
                   onTap: onWorkflow,
-                  child: Row(
+                  child: const Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(
-                        Iconsax.flash, 
-                        size: 14, 
-                        color: AppColors.primary,
-                      ),
-                      const SizedBox(width: 4),
-                      const Text(
+                      Icon(Iconsax.flash,
+                          size: 14, color: AppColors.primary),
+                      SizedBox(width: 4),
+                      Text(
                         'View Workflow',
                         style: TextStyle(
-                          fontSize: 12, 
-                          color: AppColors.primary,
+                          fontSize:   12,
+                          color:      AppColors.primary,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -1062,7 +1152,8 @@ class _AgentBubble extends StatelessWidget {
           ),
         ],
       ),
-    ).animate().fadeIn(duration: 280.ms).slideY(begin: 0.05, curve: Curves.easeOut);
+    ).animate().fadeIn(duration: 280.ms).slideY(
+        begin: 0.05, curve: Curves.easeOut);
   }
 }
 
@@ -1070,7 +1161,7 @@ class _ThinkingBubble extends StatefulWidget {
   final _Msg msg;
   final bool isDark;
   const _ThinkingBubble({required this.msg, required this.isDark});
-  
+
   @override
   State<_ThinkingBubble> createState() => _ThinkingBubbleState();
 }
@@ -1082,23 +1173,24 @@ class _ThinkingBubbleState extends State<_ThinkingBubble>
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(
-      vsync: this, 
-      duration: 1200.ms,
-    )..repeat();
+    _ctrl = AnimationController(vsync: this, duration: 1200.ms)
+      ..repeat();
   }
 
   @override
-  void dispose() { 
-    _ctrl.dispose(); 
-    super.dispose(); 
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // ── FIXED: Colors.black38 doesn't exist, use withOpacity ──
-    final sub = widget.isDark ? Colors.white.withOpacity(0.38) : Colors.black.withOpacity(0.38);
-    final empty = widget.msg.text.isEmpty || widget.msg.isCollapsed;
+    // FIX 5: Colors.black38/white38 don't exist — use withOpacity
+    final sub = widget.isDark
+        ? Colors.white.withOpacity(0.38)
+        : Colors.black.withOpacity(0.38);
+    final empty =
+        widget.msg.text.isEmpty || widget.msg.isCollapsed;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 6, 80, 6),
@@ -1106,7 +1198,8 @@ class _ThinkingBubbleState extends State<_ThinkingBubble>
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Container(
-            width: 22, height: 22,
+            width: 22,
+            height: 22,
             decoration: BoxDecoration(
               gradient: const LinearGradient(
                 colors: [AppColors.primary, AppColors.accent],
@@ -1114,8 +1207,8 @@ class _ThinkingBubbleState extends State<_ThinkingBubble>
               borderRadius: BorderRadius.circular(6),
             ),
             child: const Icon(
-              Icons.auto_awesome_rounded, 
-              color: Colors.white, 
+              Icons.auto_awesome_rounded,
+              color: Colors.white,
               size: 12,
             ),
           ),
@@ -1124,13 +1217,13 @@ class _ThinkingBubbleState extends State<_ThinkingBubble>
             Expanded(
               child: Text(
                 widget.msg.text,
-                maxLines: 2, 
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  fontSize: 13, 
-                  color: sub,
-                  fontStyle: FontStyle.italic, 
-                  height: 1.4,
+                  fontSize:   13,
+                  color:      sub,
+                  fontStyle:  FontStyle.italic,
+                  height:     1.4,
                 ),
               ),
             ),
@@ -1150,19 +1243,19 @@ class _ToolLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (msg.isCollapsed) return const SizedBox.shrink();
-    
+
     final color = _categoryColor(msg.toolCategory);
-    final icon = _categoryIcon(msg.toolCategory);
+    final icon  = _categoryIcon(msg.toolCategory);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(50, 2, 80, 2),
       child: Row(
         children: [
           Container(
-            width: 2, 
+            width: 2,
             height: 12,
             decoration: BoxDecoration(
-              color: color.withOpacity(0.4),
+              color:        color.withOpacity(0.4),
               borderRadius: BorderRadius.circular(1),
             ),
           ),
@@ -1170,17 +1263,17 @@ class _ToolLine extends StatelessWidget {
           Text(
             '$icon ${msg.text}',
             style: TextStyle(
-              fontSize: 12, 
-              color: color.withOpacity(0.8),
+              fontSize: 12,
+              color:    color.withOpacity(0.8),
             ),
           ),
           const SizedBox(width: 8),
           SizedBox(
-            width: 10, 
+            width:  10,
             height: 10,
             child: CircularProgressIndicator(
-              strokeWidth: 1.5, 
-              color: color.withOpacity(0.5),
+              strokeWidth: 1.5,
+              color:       color.withOpacity(0.5),
             ),
           ),
         ],
@@ -1189,20 +1282,20 @@ class _ToolLine extends StatelessWidget {
   }
 
   Color _categoryColor(String? cat) => switch (cat) {
-    'research' => AppColors.info,
-    'action'   => AppColors.success,
-    'document' => Colors.amber,
-    'thinking' => AppColors.primary,
-    _          => AppColors.primary,
-  };
+        'research' => AppColors.info,
+        'action'   => AppColors.success,
+        'document' => Colors.amber,
+        'thinking' => AppColors.primary,
+        _          => AppColors.primary,
+      };
 
   String _categoryIcon(String? cat) => switch (cat) {
-    'research' => '🔍',
-    'action'   => '⚡',
-    'document' => '📄',
-    'thinking' => '💭',
-    _          => '●',
-  };
+        'research' => '🔍',
+        'action'   => '⚡',
+        'document' => '📄',
+        'thinking' => '💭',
+        _          => '●',
+      };
 }
 
 class _ActionLine extends StatelessWidget {
@@ -1216,8 +1309,8 @@ class _ActionLine extends StatelessWidget {
       child: Text(
         msg.text,
         style: const TextStyle(
-          fontSize: 12, 
-          color: AppColors.success,
+          fontSize:   12,
+          color:      AppColors.success,
           fontWeight: FontWeight.w500,
         ),
       ),
@@ -1234,18 +1327,20 @@ class _ErrorLine extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 6, 80, 6),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        padding: const EdgeInsets.symmetric(
+            horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
-          color: AppColors.error.withOpacity(0.08),
+          color:        AppColors.error.withOpacity(0.08),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppColors.error.withOpacity(0.2)),
+          border:       Border.all(
+              color: AppColors.error.withOpacity(0.2)),
         ),
         child: Text(
           msg.text,
           style: const TextStyle(
-            fontSize: 14, 
-            color: AppColors.error, 
-            height: 1.4,
+            fontSize: 14,
+            color:    AppColors.error,
+            height:   1.4,
           ),
         ),
       ),
@@ -1254,15 +1349,15 @@ class _ErrorLine extends StatelessWidget {
 }
 
 class _SystemMsg extends StatelessWidget {
-  final _Msg msg;
-  final bool isDark;
+  final _Msg         msg;
+  final bool         isDark;
   final VoidCallback onUpgrade;
   final VoidCallback onWatchAd;
-  
+
   const _SystemMsg({
-    required this.msg, 
+    required this.msg,
     required this.isDark,
-    required this.onUpgrade, 
+    required this.onUpgrade,
     required this.onWatchAd,
   });
 
@@ -1273,11 +1368,15 @@ class _SystemMsg extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
-          color: isDark ? const Color(0xFF1A1A1A) : const Color(0xFFF5F5F5),
+          color: isDark
+              ? const Color(0xFF1A1A1A)
+              : const Color(0xFFF5F5F5),
           borderRadius: BorderRadius.circular(16),
+          // FIX 6: Colors.black12 → withOpacity(0.12)
           border: Border.all(
-            // ── FIXED: Colors.black.withOpacity(0.06) instead of black12 ──
-            color: isDark ? Colors.white.withOpacity(0.1) : Colors.black.withOpacity(0.06),
+            color: isDark
+                ? Colors.white.withOpacity(0.1)
+                : Colors.black.withOpacity(0.06),
           ),
         ),
         child: Column(
@@ -1291,18 +1390,19 @@ class _SystemMsg extends StatelessWidget {
                   child: OutlinedButton(
                     onPressed: onWatchAd,
                     style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: AppColors.primary),
+                      side: const BorderSide(
+                          color: AppColors.primary),
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
+                          borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 12),
                     ),
                     child: const Text(
                       'Watch Ad',
                       style: TextStyle(
-                        color: AppColors.primary,
-                        fontWeight: FontWeight.w600, 
-                        fontSize: 13,
+                        color:      AppColors.primary,
+                        fontWeight: FontWeight.w600,
+                        fontSize:   13,
                       ),
                     ),
                   ),
@@ -1314,16 +1414,16 @@ class _SystemMsg extends StatelessWidget {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.primary,
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
+                          borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 12),
                     ),
                     child: const Text(
                       'Upgrade',
                       style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600, 
-                        fontSize: 13,
+                        color:      Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize:   13,
                       ),
                     ),
                   ),
@@ -1343,14 +1443,17 @@ class _SystemMsg extends StatelessWidget {
 
 class _MdText extends StatelessWidget {
   final String text;
-  final bool isDark;
+  final bool   isDark;
   const _MdText({required this.text, required this.isDark});
 
   @override
   Widget build(BuildContext context) {
-    final base = isDark ? Colors.white : Colors.black87;
-    // ── FIXED: Colors.black60 doesn't exist, use withOpacity ──
-    final muted = isDark ? Colors.white.withOpacity(0.6) : Colors.black.withOpacity(0.6);
+    final base  = isDark ? Colors.white : Colors.black87;
+    // FIX 7: Colors.black60/white60 don't exist — use withOpacity
+    final muted = isDark
+        ? Colors.white.withOpacity(0.6)
+        : Colors.black.withOpacity(0.6);
+
     final spans = <TextSpan>[];
     final lines = text.split('\n');
 
@@ -1358,67 +1461,59 @@ class _MdText extends StatelessWidget {
       if (li > 0) spans.add(const TextSpan(text: '\n'));
       final line = lines[li];
 
-      // Blockquote
       if (line.startsWith('> ')) {
         spans.add(TextSpan(
           text: '  ${line.substring(2)}',
           style: TextStyle(
-            color: muted, 
-            fontSize: 13,
-            height: 1.5, 
-            fontStyle: FontStyle.italic,
+            color:      muted,
+            fontSize:   13,
+            height:     1.5,
+            fontStyle:  FontStyle.italic,
           ),
         ));
         continue;
       }
 
-      // Inline parsing: **bold**, _italic_, `code`
-      final re = RegExp(r'\*\*(.*?)\*\*|_(.*?)_|`(.*?)`');
-      int last = 0;
-      
+      final re   = RegExp(r'\*\*(.*?)\*\*|_(.*?)_|`(.*?)`');
+      int   last = 0;
+
       for (final m in re.allMatches(line)) {
         if (m.start > last) {
           spans.add(TextSpan(
-            text: line.substring(last, m.start),
+            text:  line.substring(last, m.start),
             style: TextStyle(
-              color: base, 
-              fontSize: 15, 
-              height: 1.5,
-            ),
+              color: base, fontSize: 15, height: 1.5),
           ));
         }
-        
+
         if (m.group(1) != null) {
-          // Bold
           spans.add(TextSpan(
-            text: m.group(1),
+            text:  m.group(1),
             style: TextStyle(
-              color: base, 
-              fontSize: 15, 
-              height: 1.5,
+              color:      base,
+              fontSize:   15,
+              height:     1.5,
               fontWeight: FontWeight.w700,
             ),
           ));
         } else if (m.group(2) != null) {
-          // Italic
           spans.add(TextSpan(
-            text: m.group(2),
+            text:  m.group(2),
             style: TextStyle(
-              color: muted, 
-              fontSize: 14, 
-              height: 1.5,
+              color:     muted,
+              fontSize:  14,
+              height:    1.5,
               fontStyle: FontStyle.italic,
             ),
           ));
         } else if (m.group(3) != null) {
-          // Code
           spans.add(TextSpan(
-            text: m.group(3),
+            text:  m.group(3),
             style: TextStyle(
-              color: AppColors.accent, 
-              fontSize: 13, 
-              height: 1.5,
-              fontFamily: 'monospace',
+              color:           AppColors.accent,
+              fontSize:        13,
+              height:          1.5,
+              fontFamily:      'monospace',
               backgroundColor: isDark
                   ? Colors.white.withOpacity(0.06)
                   : Colors.black.withOpacity(0.04),
@@ -1427,15 +1522,12 @@ class _MdText extends StatelessWidget {
         }
         last = m.end;
       }
-      
+
       if (last < line.length) {
         spans.add(TextSpan(
-          text: line.substring(last),
+          text:  line.substring(last),
           style: TextStyle(
-            color: base, 
-            fontSize: 15, 
-            height: 1.5,
-          ),
+            color: base, fontSize: 15, height: 1.5),
         ));
       }
     }
@@ -1455,11 +1547,15 @@ class _Dots extends StatelessWidget {
       builder: (_, __) => Row(
         mainAxisSize: MainAxisSize.min,
         children: List.generate(3, (i) {
-          final phase = ((controller.value + i / 3.0) % 1.0);
-          final op = 0.2 + 0.8 * (phase < 0.5 ? phase * 2 : (1 - phase) * 2);
+          final phase = (controller.value + i / 3.0) % 1.0;
+          final op    = 0.2 +
+              0.8 *
+                  (phase < 0.5
+                      ? phase * 2
+                      : (1 - phase) * 2);
           return Container(
             margin: const EdgeInsets.only(right: 3),
-            width: 5, 
+            width:  5,
             height: 5,
             decoration: BoxDecoration(
               color: AppColors.primary.withOpacity(op),
@@ -1473,34 +1569,43 @@ class _Dots extends StatelessWidget {
 }
 
 class _IconBtn extends StatelessWidget {
-  final IconData icon;
-  final Color color;
+  final IconData     icon;
+  final Color        color;
   final VoidCallback onTap;
-  
+
   const _IconBtn({
-    required this.icon, 
-    required this.color, 
+    required this.icon,
+    required this.color,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) => GestureDetector(
-    onTap: onTap,
-    child: Icon(icon, size: 18, color: color),
-  );
+        onTap:  onTap,
+        child: Icon(icon, size: 18, color: color),
+      );
 }
 
 class _LimitSheet extends StatelessWidget {
-  final bool isDark;
+  final bool         isDark;
   final VoidCallback onWatchAd;
-  
+
   const _LimitSheet({
-    required this.isDark, 
+    required this.isDark,
     required this.onWatchAd,
   });
 
   @override
   Widget build(BuildContext context) {
+    // FIX 8: Colors.white24/black12 don't exist — use withOpacity
+    final handleColor = isDark
+        ? Colors.white.withOpacity(0.24)
+        : Colors.black.withOpacity(0.12);
+    // FIX 9: Colors.black60/white60 don't exist — use withOpacity
+    final subColor = isDark
+        ? Colors.white.withOpacity(0.6)
+        : Colors.black.withOpacity(0.6);
+
     return Container(
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
       decoration: BoxDecoration(
@@ -1513,33 +1618,34 @@ class _LimitSheet extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 36, 
+            width:  36,
             height: 4,
             decoration: BoxDecoration(
-              // ── FIXED: Colors.white24 doesn't exist, use withOpacity ──
-              color: isDark ? Colors.white.withOpacity(0.24) : Colors.black.withOpacity(0.12),
+              color:        handleColor,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
           const SizedBox(height: 24),
-          const Icon(Iconsax.lock_1, size: 48, color: AppColors.primary),
+          const Icon(Iconsax.lock_1,
+              size: 48, color: AppColors.primary),
           const SizedBox(height: 16),
           const Text(
             'Daily limit reached',
             style: TextStyle(
-              fontSize: 18, 
+              fontSize:   18,
               fontWeight: FontWeight.w700,
             ),
           ),
           const SizedBox(height: 8),
           Text(
-            'You\'ve used all your free runs today.\nWatch an ad for 1 more, or upgrade to Premium for unlimited access.',
+            'You\'ve used all your free runs today.\n'
+            'Watch an ad for 1 more, or upgrade to Premium '
+            'for unlimited access.',
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontSize: 14, 
-              height: 1.5,
-              // ── FIXED: Colors.black60 doesn't exist, use withOpacity ──
-              color: isDark ? Colors.white.withOpacity(0.6) : Colors.black.withOpacity(0.6),
+              fontSize: 14,
+              height:   1.5,
+              color:    subColor,
             ),
           ),
           const SizedBox(height: 24),
@@ -1549,18 +1655,19 @@ class _LimitSheet extends StatelessWidget {
                 child: OutlinedButton(
                   onPressed: onWatchAd,
                   style: OutlinedButton.styleFrom(
-                    side: const BorderSide(color: AppColors.primary),
+                    side: const BorderSide(
+                        color: AppColors.primary),
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
+                        borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(
+                        vertical: 14),
                   ),
                   child: const Text(
                     'Watch Ad',
                     style: TextStyle(
-                      color: AppColors.primary,
+                      color:      AppColors.primary,
                       fontWeight: FontWeight.w600,
-                      fontSize: 14,
+                      fontSize:   14,
                     ),
                   ),
                 ),
@@ -1575,16 +1682,16 @@ class _LimitSheet extends StatelessWidget {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.primary,
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
+                        borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(
+                        vertical: 14),
                   ),
                   child: const Text(
                     'Upgrade',
                     style: TextStyle(
-                      color: Colors.white, 
+                      color:      Colors.white,
                       fontWeight: FontWeight.w600,
-                      fontSize: 14,
+                      fontSize:   14,
                     ),
                   ),
                 ),
