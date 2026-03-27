@@ -20,15 +20,16 @@ def _get_user_or_ip(request: Request) -> str:
         token = auth[7:]
         if token:
             # Use the last 16 chars of the token as a stable-enough key
-            # (avoids decoding the JWT on every request while still being user-specific)
             return f"user:{token[-16:]}"
     return get_remote_address(request)
 
 
-limiter = Limiter(key_func=_get_user_or_ip, default_limits=["200/minute"])
+# Initialize limiter with default limits
+limiter = Limiter(key_func=_get_user_or_ip)
 
 
 def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
+    """Custom handler for rate limit exceeded."""
     return JSONResponse(
         status_code=429,
         content={
@@ -40,7 +41,7 @@ def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
 
 
 # ── Per-endpoint limits ──────────────────────────────────────
-AI_LIMIT      = "20/minute"   # AI endpoints — expensive
-AUTH_LIMIT    = "10/minute"   # Prevent brute force
-GENERAL_LIMIT = "60/minute"   # Standard API
-PAYMENT_LIMIT = "5/minute"    # Very strict
+AI_LIMIT = "20/minute"      # AI endpoints — expensive
+AUTH_LIMIT = "10/minute"    # Prevent brute force
+GENERAL_LIMIT = "60/minute" # Standard API
+PAYMENT_LIMIT = "5/minute"  # Very strict
