@@ -1,8 +1,6 @@
 """
-RiseUp Auth Router — Global Production Ready
-Supabase-backed authentication with rate limiting and global context
+RiseUp Auth Router — Global Production Ready (DEBUG VERSION)
 """
-
 import logging
 from typing import Optional
 from datetime import datetime
@@ -34,29 +32,95 @@ def _get_auth_client():
     return create_client(settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY)
 
 
-def _handle_auth_error(e: Exception, context: str) -> HTTPException:
+def _handle_auth_error(e: Exception, context: str, email: str = None) -> HTTPException:
     """Convert Supabase auth errors to user-friendly messages."""
     err_str = str(e).lower()
-    error_messages = {
-        "already registered": "An account with this email already exists.",
-        "already exists": "An account with this email already exists.",
-        "invalid login credentials": "Invalid email or password.",
-        "user not found": "No account found with this email.",
-        "email not confirmed": "Please verify your email before signing in.",
-        "password": "Password does not meet security requirements.",
-        "rate limit": "Too many attempts. Please try again later.",
-        "jwt expired": "Your session has expired. Please sign in again.",
-        "invalid jwt": "Invalid session. Please sign in again.",
-        "user banned": "This account has been suspended. Contact support.",
+    error_msg = str(e)
+    
+    logger.error(f"Auth error in {context}: {error_msg} | Email: {email}")
+    
+    # Specific error patterns
+    if "already registered" in err_str or "already exists" in err_str:
+        return HTTPException(status_code=400, detail="An account with this email already exists.")
+    
+    if "invalid login credentials" in err_str:
+        return HTTPException(status_code=401, detail="Invalid email or password. Please check your credentials.")
+    
+    if "email not confirmed" in err_str:
+        return HTTPException(status_code=401, detail="Please verify your email before signing in. Check your inbox.")
+    
+    if "user not found" in err_str:
+        return HTTPException(status_code=401, detail="No account found with this email.")
+    
+    if "password" in err_str and "strength" in err_str:
+        return HTTPException(status_code=400, detail="Password is too weak. Use at least 8 characters with letters and numbers.")
+    
+    if "jwt" in err_str or "token" in err_str:
+        return HTTPException(status_code=401, detail="Session expired. Please sign in again.")
+    
+    if "rate limit" in err_str:
+        return HTTPException(status_code=429, detail="Too many attempts. Please try again later.")
+    
+    # Default
+    return HTTPException(status_code=500, detail=f"Authentication error: {str(e)}")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# DEBUG ENDPOINT
+# ═════════════════════════════════════════════════════════════════════════════
+
+@router.post("/debug-signin")
+async def debug_signin(req: SignInRequest, request: Request):
+    """
+    Debug endpoint to see exactly what's happening during signin.
+    """
+    debug_info = {
+        "email_received": req.email,
+        "email_normalized": req.email.lower().strip(),
+        "password_length": len(req.password) if req.password else 0,
+        "supabase_url": settings.SUPABASE_URL[:20] + "..." if settings.SUPABASE_URL else None,
+        "has_anon_key": bool(settings.SUPABASE_ANON_KEY),
+        "timestamp": datetime.utcnow().isoformat(),
     }
     
-    for key, message in error_messages.items():
-        if key in err_str:
-            status_code = 400 if "already" in key else 401
-            return HTTPException(status_code=status_code, detail=message)
-    
-    logger.error(f"{context} error: {e}")
-    return HTTPException(status_code=500, detail="An unexpected error occurred. Please try again.")
+    try:
+        client = _get_auth_client()
+        
+        # Try to sign in
+        res = client.auth.sign_in_with_password({
+            "email": req.email.lower().strip(),
+            "password": req.password
+        })
+        
+        debug_info["supabase_response"] = {
+            "has_user": res.user is not None,
+            "has_session": res.session is not None,
+            "user_id": res.user.id if res.user else None,
+            "email_confirmed": res.user.email_confirmed_at is not None if res.user else None,
+        }
+        
+        if res.user and res.session:
+            return {
+                "success": True,
+                "debug": debug_info,
+                "user_id": res.user.id,
+                "access_token": res.session.access_token[:20] + "...",
+            }
+        else:
+            return {
+                "success": False,
+                "debug": debug_info,
+                "error": "No user or session returned",
+            }
+            
+    except Exception as e:
+        debug_info["error"] = str(e)
+        debug_info["error_type"] = type(e).__name__
+        return {
+            "success": False,
+            "debug": debug_info,
+            "error": str(e),
+        }
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -72,22 +136,26 @@ async def signup(req: SignUpRequest, request: Request, background_tasks: Backgro
     try:
         client = _get_auth_client()
         
+        # Normalize email
+        email = req.email.lower().strip()
+        
         user_metadata = {
-            "full_name": req.full_name or "",
+            "full_name": (req.full_name or "").strip(),
             "country_code": req.country_code,
-            "timezone": req.timezone,
+            "timezone": req.timezone or "UTC",
             "currency": req.currency.value if req.currency else "USD",
             "language": req.language.value if req.language else "en",
             "signup_source": "mobile_app",
             "referral_code": req.referral_code,
-            "signup_ip": request.client.host if request.client else None,
-            "signup_at": datetime.utcnow().isoformat(),
         }
         
+        # Remove None values
         user_metadata = {k: v for k, v in user_metadata.items() if v is not None}
         
+        logger.info(f"Attempting signup for: {email}")
+        
         res = client.auth.sign_up({
-            "email": req.email,
+            "email": email,
             "password": req.password,
             "options": {
                 "data": user_metadata,
@@ -98,7 +166,7 @@ async def signup(req: SignUpRequest, request: Request, background_tasks: Backgro
         if not res.user:
             raise HTTPException(status_code=400, detail="Signup failed. Please try again.")
         
-        logger.info(f"New user signup: {res.user.id} from {req.country_code or 'unknown'}")
+        logger.info(f"Signup successful: {res.user.id}")
         
         return {
             "user_id": res.user.id,
@@ -116,7 +184,7 @@ async def signup(req: SignUpRequest, request: Request, background_tasks: Backgro
     except HTTPException:
         raise
     except Exception as e:
-        raise _handle_auth_error(e, "Signup")
+        raise _handle_auth_error(e, "Signup", req.email)
 
 
 @router.post("/signin", response_model=SignInResponse)
@@ -128,18 +196,31 @@ async def signin(req: SignInRequest, request: Request):
     try:
         client = _get_auth_client()
         
+        # Normalize email
+        email = req.email.lower().strip()
+        
+        logger.info(f"Attempting signin for: {email}")
+        
         res = client.auth.sign_in_with_password({
-            "email": req.email,
+            "email": email,
             "password": req.password
         })
         
         if not res.user or not res.session:
+            logger.warning(f"Signin failed for {email}: No user or session")
             raise HTTPException(status_code=401, detail="Invalid email or password.")
         
         email_confirmed = res.user.email_confirmed_at is not None
         user_metadata = res.user.user_metadata or {}
         
-        logger.info(f"User signin: {res.user.id}")
+        # Check if email is confirmed
+        if not email_confirmed:
+            logger.warning(f"Signin attempt for unconfirmed email: {email}")
+            # Still allow signin but warn
+            # Or uncomment below to block:
+            # raise HTTPException(status_code=401, detail="Please verify your email before signing in.")
+        
+        logger.info(f"Signin successful: {res.user.id}")
         
         return {
             "access_token": res.session.access_token,
@@ -157,7 +238,7 @@ async def signin(req: SignInRequest, request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        raise _handle_auth_error(e, "Signin")
+        raise _handle_auth_error(e, "Signin", req.email)
 
 
 @router.post("/refresh", response_model=TokenRefreshResponse)
@@ -238,7 +319,7 @@ async def forgot_password(req: PasswordResetRequest, request: Request):
         client = _get_auth_client()
         
         client.auth.reset_password_email(
-            req.email,
+            req.email.lower().strip(),
             options={"redirect_to": f"{settings.FRONTEND_URL}/auth/callback?type=recovery"}
         )
         
@@ -253,35 +334,6 @@ async def forgot_password(req: PasswordResetRequest, request: Request):
     }
 
 
-@router.post("/reset-password", response_model=MessageResponse)
-@limiter.limit("5/minute")
-async def reset_password(req: PasswordUpdateRequest, request: Request):
-    """
-    Reset password with token from email.
-    """
-    try:
-        client = _get_auth_client()
-        
-        res = client.auth.update_user({
-            "password": req.new_password
-        })
-        
-        if not res.user:
-            raise HTTPException(status_code=400, detail="Password reset failed. Please try again.")
-        
-        logger.info(f"Password reset successful for: {res.user.id}")
-        
-        return {
-            "message": "Password updated successfully. Please sign in with your new password.",
-            "success": True
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise _handle_auth_error(e, "Password reset")
-
-
 @router.post("/resend-verification", response_model=MessageResponse)
 @limiter.limit("3/minute")
 async def resend_verification(req: PasswordResetRequest, request: Request):
@@ -293,7 +345,7 @@ async def resend_verification(req: PasswordResetRequest, request: Request):
         
         client.auth.resend({
             "type": "signup",
-            "email": req.email,
+            "email": req.email.lower().strip(),
             "options": {
                 "email_redirect_to": f"{settings.FRONTEND_URL}/auth/callback?type=signup"
             }
@@ -309,41 +361,6 @@ async def resend_verification(req: PasswordResetRequest, request: Request):
         "success": True
     }
 
-
-@router.get("/verify-email")
-async def verify_email(token: str, type: str = "signup"):
-    """
-    Handle email verification callback from Supabase.
-    """
-    try:
-        client = _get_auth_client()
-        
-        res = client.auth.verify_otp({
-            "token_hash": token,
-            "type": type
-        })
-        
-        if res.user:
-            return {
-                "success": True,
-                "message": "Email verified successfully!",
-                "user_id": res.user.id,
-                "redirect_to": f"{settings.FRONTEND_URL}/login?verified=true"
-            }
-        
-    except Exception as e:
-        logger.error(f"Email verification failed: {e}")
-    
-    return {
-        "success": False,
-        "message": "Verification failed or link expired. Please request a new one.",
-        "redirect_to": f"{settings.FRONTEND_URL}/login?error=verification_failed"
-    }
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# VERSION & HEALTH CHECKS
-# ═════════════════════════════════════════════════════════════════════════════
 
 @router.get("/version", response_model=VersionCheckResponse)
 @limiter.limit("100/minute")
