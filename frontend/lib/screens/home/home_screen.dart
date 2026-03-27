@@ -11,6 +11,26 @@ import '../../widgets/ad_widgets.dart';
 import '../ai/post_ai_sheet.dart';
 import 'create_status_screen.dart';
 
+// ── Sound Service Placeholder ─────────────────────────
+// Replace with your actual sound service or add audioplayers package
+class SoundService {
+  static void play(String sound) {
+    // TODO: Integrate with audioplayers or flutter_soloud
+    // Example: await _player.play(AssetSource('sounds/$sound.mp3'));
+    debugPrint('🔊 Sound: $sound');
+  }
+  
+  static void like() => play('like');
+  static void comment() => play('comment');
+  static void share() => play('share');
+  static void save() => play('save');
+  static void follow() => play('follow');
+  static void post() => play('post');
+  static void success() => play('success');
+  static void tap() => play('tap');
+  static void refresh() => play('refresh');
+}
+
 // ── Post Model ────────────────────────────────────────
 class PostModel {
   final String id;
@@ -94,6 +114,10 @@ class _HomeScreenState extends State<HomeScreen>
   int _aiUsedToday = 0;
   static const int _dailyFreeLimit = 3;
 
+  // ── ADDED: Status fields that were missing ───────────
+  List _statusUsers = [];
+  bool _statusLoaded = false;
+
   // Feed state per tab
   final _feeds = {'for_you': <PostModel>[], 'following': <PostModel>[], 'trending': <PostModel>[]};
   final _loading = {'for_you': false, 'following': false, 'trending': false};
@@ -104,7 +128,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void initState() {
     super.initState();
-        _loadStatus();
+    _loadStatus(); // Load status first
     _tabCtrl = TabController(length: 3, vsync: this);
     _tabCtrl.addListener(() {
       if (!_tabCtrl.indexIsChanging) {
@@ -124,6 +148,7 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _viewStatus(Map user) {
+    SoundService.tap();
     final items = user['items'] as List? ?? [];
     if (items.isEmpty) return;
     showModalBottomSheet(
@@ -134,13 +159,14 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-    Future<void> _loadStatus() async {
+  Future<void> _loadStatus() async {
     try {
       final data = await api.get('/posts/status/feed');
       if (mounted) setState(() {
-        _statusUsers  = (data as Map?)?['users'] as List? ?? [];
+        _statusUsers = (data as Map?)?['users'] as List? ?? [];
         _statusLoaded = true;
       });
+      SoundService.refresh();
     } catch (_) {
       if (mounted) setState(() => _statusLoaded = true);
     }
@@ -167,6 +193,7 @@ class _HomeScreenState extends State<HomeScreen>
           _loading[tab] = false;
         });
       }
+      if (refresh) SoundService.refresh();
     } catch (e) {
       if (mounted) setState(() => _loading[tab] = false);
     }
@@ -176,6 +203,7 @@ class _HomeScreenState extends State<HomeScreen>
   int get _aiRemaining => (_dailyFreeLimit - _aiUsedToday).clamp(0, _dailyFreeLimit);
 
   Future<void> _handleAiRequest(PostModel post, {required bool isPrivate}) async {
+    SoundService.tap();
     if (_isPremium) { _openAi(post, isPrivate: isPrivate); return; }
     if (_aiUsedToday < _dailyFreeLimit) {
       setState(() => _aiUsedToday++);
@@ -186,12 +214,16 @@ class _HomeScreenState extends State<HomeScreen>
     if (!confirmed) return;
     await adService.showRewardedAd(
       featureKey: 'post_ai',
-      onRewarded: () { setState(() => _aiUsedToday = 0); _openAi(post, isPrivate: isPrivate); },
+      onRewarded: () { 
+        setState(() => _aiUsedToday = 0); 
+        _openAi(post, isPrivate: isPrivate); 
+      },
       onDismissed: () {},
     );
   }
 
   Future<bool> _showAdPrompt() async {
+    SoundService.tap();
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return await showDialog<bool>(
           context: context,
@@ -213,6 +245,7 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _openAi(PostModel post, {required bool isPrivate}) {
+    SoundService.tap();
     if (isPrivate) {
       context.go('/chat?mode=general&postContext=${Uri.encodeComponent(post.content)}&postAuthor=${Uri.encodeComponent(post.name)}');
     } else {
@@ -222,6 +255,19 @@ class _HomeScreenState extends State<HomeScreen>
         backgroundColor: Colors.transparent,
         builder: (_) => PostAiSheet(post: post),
       );
+    }
+  }
+
+  // ── ADDED: Follow functionality ──────────────────────
+  Future<void> _handleFollow(String userId) async {
+    HapticFeedback.mediumImpact();
+    SoundService.follow();
+    try {
+      await api.post('/users/$userId/follow', {});
+      // Optionally refresh feed to show follow status
+      _loadFeed('for_you', refresh: true);
+    } catch (e) {
+      debugPrint('Follow error: $e');
     }
   }
 
@@ -252,7 +298,11 @@ class _HomeScreenState extends State<HomeScreen>
         titleSpacing: 0,
         leading: IconButton(
           icon: Icon(Icons.menu_rounded, color: iconColor, size: 24),
-          onPressed: () { HapticFeedback.lightImpact(); _scaffoldKey.currentState?.openDrawer(); },
+          onPressed: () { 
+            HapticFeedback.lightImpact();
+            SoundService.tap();
+            _scaffoldKey.currentState?.openDrawer(); 
+          },
         ),
         title: ShaderMask(
           shaderCallback: (bounds) => const LinearGradient(
@@ -270,8 +320,22 @@ class _HomeScreenState extends State<HomeScreen>
               decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.12), borderRadius: BorderRadius.circular(20)),
               child: Text('🤖 $_aiRemaining left', style: const TextStyle(color: AppColors.primary, fontSize: 11, fontWeight: FontWeight.w600)),
             ),
-          IconButton(icon: Icon(Iconsax.search_normal, color: iconColor, size: 20), onPressed: () => context.go('/explore')),
-          IconButton(icon: Icon(Iconsax.notification, color: iconColor, size: 20), onPressed: () => context.go('/notifications')),
+          IconButton(
+            icon: Icon(Iconsax.search_normal, color: iconColor, size: 20), 
+            onPressed: () {
+              HapticFeedback.lightImpact();
+              SoundService.tap();
+              context.go('/explore');
+            }
+          ),
+          IconButton(
+            icon: Icon(Iconsax.notification, color: iconColor, size: 20), 
+            onPressed: () {
+              HapticFeedback.lightImpact();
+              SoundService.tap();
+              context.go('/notifications');
+            }
+          ),
           const SizedBox(width: 4),
         ],
         bottom: PreferredSize(
@@ -289,8 +353,30 @@ class _HomeScreenState extends State<HomeScreen>
               child: ListView.builder(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                itemCount: 8,
-                itemBuilder: (_, i) => _StoryItem(index: i, isDark: isDark),
+                // ── FIXED: Use actual status users count + 1 for add button ──
+                itemCount: _statusUsers.length + 1,
+                itemBuilder: (_, i) {
+                  if (i == 0) {
+                    // Add status button
+                    return _StoryAddButton(
+                      isDark: isDark,
+                      onTap: () {
+                        SoundService.tap();
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const CreateStatusScreen()),
+                        ).then((_) => _loadStatus()); // Refresh after creating
+                      },
+                    );
+                  }
+                  // ── FIXED: Pass actual user data to _StoryItem ────────────
+                  final user = _statusUsers[i - 1] as Map;
+                  return _StoryItem(
+                    user: user,
+                    isDark: isDark,
+                    onTap: () => _viewStatus(user),
+                  );
+                },
               ),
             ),
             Divider(height: 1, color: borderColor),
@@ -333,14 +419,20 @@ class _HomeScreenState extends State<HomeScreen>
                   Text('No posts yet', style: TextStyle(color: subColor, fontSize: 14)),
                   const SizedBox(height: 8),
                   GestureDetector(
-                    onTap: () => _loadFeed(tab, refresh: true),
+                    onTap: () {
+                      SoundService.refresh();
+                      _loadFeed(tab, refresh: true);
+                    },
                     child: Text('Refresh', style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.w600)),
                   ),
                 ]));
               }
 
               return RefreshIndicator(
-                onRefresh: () => _loadFeed(tab, refresh: true),
+                onRefresh: () {
+                  SoundService.refresh();
+                  return _loadFeed(tab, refresh: true);
+                },
                 color: AppColors.primary,
                 child: ListView.separated(
                   padding: EdgeInsets.zero,
@@ -352,7 +444,10 @@ class _HomeScreenState extends State<HomeScreen>
                       return Padding(
                         padding: const EdgeInsets.all(16),
                         child: GestureDetector(
-                          onTap: () => _loadFeed(tab),
+                          onTap: () {
+                            SoundService.tap();
+                            _loadFeed(tab);
+                          },
                           child: Center(child: isLoading
                               ? const CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2)
                               : Text('Load more', style: TextStyle(color: subColor, fontSize: 13))),
@@ -383,6 +478,8 @@ class _HomeScreenState extends State<HomeScreen>
                       isPremium: _isPremium,
                       aiRemaining: _aiRemaining,
                       onLike: (p) async {
+                        HapticFeedback.mediumImpact();
+                        SoundService.like();
                         final res = await api.toggleLike(p.id);
                         setState(() {
                           p.isLiked = res['liked'] == true;
@@ -390,10 +487,21 @@ class _HomeScreenState extends State<HomeScreen>
                         });
                       },
                       onSave: (p) async {
+                        HapticFeedback.mediumImpact();
+                        SoundService.save();
                         final res = await api.toggleSave(p.id);
                         setState(() => p.isSaved = res['saved'] == true);
                       },
-                      onComment: (p) => context.go('/comments/${p.id}?content=${Uri.encodeComponent(p.content)}&author=${Uri.encodeComponent(p.name)}'),
+                      onComment: (p) {
+                        SoundService.comment();
+                        context.go('/comments/${p.id}?content=${Uri.encodeComponent(p.content)}&author=${Uri.encodeComponent(p.name)}');
+                      },
+                      onShare: (p) async {
+                        HapticFeedback.mediumImpact();
+                        SoundService.share();
+                        await api.sharePost(p.id);
+                      },
+                      onFollow: (userId) => _handleFollow(userId),
                     ).animate().fadeIn(delay: Duration(milliseconds: i * 40));
                   },
                 ),
@@ -416,6 +524,8 @@ class PostCard extends StatefulWidget {
   final Function(PostModel) onLike;
   final Function(PostModel) onSave;
   final Function(PostModel) onComment;
+  final Function(PostModel) onShare;
+  final Function(String) onFollow; // ── ADDED: Follow callback
   final int aiRemaining;
 
   const PostCard({
@@ -431,6 +541,8 @@ class PostCard extends StatefulWidget {
     required this.onLike,
     required this.onSave,
     required this.onComment,
+    required this.onShare, // ── ADDED
+    required this.onFollow, // ── ADDED
     required this.isPremium,
     required this.aiRemaining,
   });
@@ -460,7 +572,10 @@ class _PostCardState extends State<PostCard> {
               // Header
               Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 GestureDetector(
-                  onTap: () => context.go('/user-profile/${p.userId}'),
+                  onTap: () {
+                    SoundService.tap();
+                    context.go('/user-profile/${p.userId}');
+                  },
                   child: Container(
                     width: 44, height: 44,
                     decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.12), shape: BoxShape.circle),
@@ -471,7 +586,10 @@ class _PostCardState extends State<PostCard> {
                 Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Row(children: [
                     GestureDetector(
-                      onTap: () => context.go('/user-profile/${p.userId}'),
+                      onTap: () {
+                        SoundService.tap();
+                        context.go('/user-profile/${p.userId}');
+                      },
                       child: Text(p.name, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: widget.textColor)),
                     ),
                     if (p.verified) ...[const SizedBox(width: 3), const Icon(Icons.verified_rounded, color: AppColors.primary, size: 14)],
@@ -482,13 +600,33 @@ class _PostCardState extends State<PostCard> {
                     Text(' · ${p.time}', style: TextStyle(fontSize: 12, color: widget.subColor)),
                   ]),
                 ])),
+                // ── ADDED: Follow Button ────────────────────────────────
+                if (p.userId.isNotEmpty && p.userId != widget._currentUserId)
+                  TextButton(
+                    onPressed: () => widget.onFollow(p.userId),
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.primary,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: const Text('Follow', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12)),
+                  ),
+                const SizedBox(width: 4),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.1), borderRadius: BorderRadius.circular(20)),
                   child: Text(p.tag, style: const TextStyle(fontSize: 10, color: AppColors.primary, fontWeight: FontWeight.w600)),
                 ),
                 const SizedBox(width: 4),
-                Icon(Icons.more_horiz, color: widget.subColor, size: 20),
+                GestureDetector(
+                  onTap: () {
+                    SoundService.tap();
+                    // Show post options menu
+                    _showPostOptions();
+                  },
+                  child: Icon(Icons.more_horiz, color: widget.subColor, size: 20),
+                ),
               ]),
 
               const SizedBox(height: 12),
@@ -504,15 +642,25 @@ class _PostCardState extends State<PostCard> {
                   icon: p.isLiked ? Icons.favorite_rounded : Icons.favorite_border_rounded,
                   label: _fmt(p.likes),
                   color: p.isLiked ? Colors.red : widget.subColor,
-                  onTap: () { HapticFeedback.lightImpact(); widget.onLike(p); },
+                  onTap: () => widget.onLike(p),
                 ),
                 const SizedBox(width: 18),
-                _ActionBtn(icon: Iconsax.message, label: _fmt(p.comments), color: widget.subColor, onTap: () => widget.onComment(p)),
+                _ActionBtn(
+                  icon: Iconsax.message, 
+                  label: _fmt(p.comments), 
+                  color: widget.subColor, 
+                  onTap: () => widget.onComment(p)
+                ),
                 const SizedBox(width: 18),
-                _ActionBtn(icon: Iconsax.send_1, label: _fmt(p.shares), color: widget.subColor, onTap: () => api.sharePost(p.id)),
+                _ActionBtn(
+                  icon: Iconsax.send_1, 
+                  label: _fmt(p.shares), 
+                  color: widget.subColor, 
+                  onTap: () => widget.onShare(p)
+                ),
                 const Spacer(),
                 GestureDetector(
-                  onTap: () { HapticFeedback.lightImpact(); widget.onSave(p); },
+                  onTap: () => widget.onSave(p),
                   child: Icon(p.isSaved ? Iconsax.archive_tick : Iconsax.archive_add, color: p.isSaved ? AppColors.primary : widget.subColor, size: 20),
                 ),
               ]),
@@ -560,13 +708,68 @@ class _PostCardState extends State<PostCard> {
       ),
     );
   }
+
+  void _showPostOptions() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: widget.isDark ? AppColors.bgCard : Colors.white,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Iconsax.flag),
+              title: const Text('Report post'),
+              onTap: () {
+                SoundService.tap();
+                Navigator.pop(context);
+                // Implement report
+              },
+            ),
+            ListTile(
+              leading: const Icon(Iconsax.copy),
+              title: const Text('Copy text'),
+              onTap: () {
+                SoundService.tap();
+                Clipboard.setData(ClipboardData(text: widget.post.content));
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Copied to clipboard')),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Iconsax.share),
+              title: const Text('Share to...'),
+              onTap: () {
+                SoundService.share();
+                Navigator.pop(context);
+              },
+            ),
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Helper to get current user ID for follow button logic
+  String get _currentUserId => ''; // TODO: Get from your auth service
 }
 
 class _ActionBtn extends StatelessWidget {
   final IconData icon; final String label; final Color color; final VoidCallback onTap;
   const _ActionBtn({required this.icon, required this.label, required this.color, required this.onTap});
   @override
-  Widget build(BuildContext context) => GestureDetector(onTap: onTap, child: Row(children: [Icon(icon, color: color, size: 20), const SizedBox(width: 5), Text(label, style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w500))]));
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: onTap, 
+    child: Row(children: [
+      Icon(icon, color: color, size: 20), 
+      const SizedBox(width: 5), 
+      Text(label, style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w500))
+    ])
+  );
 }
 
 // ── App Drawer ────────────────────────────────────────
@@ -620,7 +823,13 @@ class _AppDrawer extends StatelessWidget {
                         child: const Text('⭐ Pro', style: TextStyle(fontSize: 10, color: AppColors.gold, fontWeight: FontWeight.w600)))],
                   ]),
                 ])),
-                IconButton(icon: Icon(Icons.close_rounded, color: sub, size: 20), onPressed: () => Navigator.of(context).pop()),
+                IconButton(
+                  icon: Icon(Icons.close_rounded, color: sub, size: 20), 
+                  onPressed: () {
+                    SoundService.tap();
+                    Navigator.of(context).pop();
+                  }
+                ),
               ]),
             ),
             Divider(color: border, height: 1),
@@ -631,38 +840,38 @@ class _AppDrawer extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(vertical: 4),
                 children: [
                   _DSection('INCOME TOOLS', sub),
-                  _DItem(Iconsax.chart, 'Dashboard', 'Earnings, stats & tasks', isDark, onTap: () { Navigator.pop(context); context.go('/dashboard'); }),
-                  _DItem(Icons.auto_awesome_rounded, 'Agentic AI', 'Execute ANY income task', isDark, badge: 'HEAVY', badgeColor: AppColors.accent, onTap: () { Navigator.pop(context); context.push('/agent'); }),
-                  _DItem(Iconsax.flash, 'Workflow Engine', 'AI-powered income execution', isDark, badge: 'NEW', badgeColor: AppColors.success, onTap: () { Navigator.pop(context); context.push('/workflow'); }),
-                  _DItem(Iconsax.chart_3, 'Market Pulse', 'What pays right now', isDark, badge: '🔥 LIVE', badgeColor: const Color(0xFFFF6B35), onTap: () { Navigator.pop(context); context.push('/pulse'); }),
-                  _DItem(Icons.emoji_events_rounded, 'Challenges', '30-day income sprints', isDark, onTap: () { Navigator.pop(context); context.push('/challenges'); }),
-                  _DItem(Iconsax.briefcase, 'Client CRM', 'Track prospects & clients', isDark, onTap: () { Navigator.pop(context); context.push('/crm'); }),
-                  _DItem(Iconsax.document_text, 'Contracts & Invoices', 'Pro contract generation', isDark, onTap: () { Navigator.pop(context); context.push('/contracts'); }),
-                  _DItem(Icons.psychology_rounded, 'Income Memory', 'Your income DNA', isDark, onTap: () { Navigator.pop(context); context.push('/memory'); }),
-                  _DItem(Iconsax.gallery, 'My Portfolio', 'Shareable project showcase', isDark, onTap: () { Navigator.pop(context); context.push('/portfolio'); }),
-                  _DItem(Iconsax.task_square, 'My Tasks', 'Daily income tasks', isDark, onTap: () { Navigator.pop(context); context.go('/tasks'); }),
-                  _DItem(Iconsax.map_1, 'Wealth Roadmap', '3-stage wealth plan', isDark, onTap: () { Navigator.pop(context); context.go('/roadmap'); }),
-                  _DItem(Iconsax.book, 'Skills', 'Earn-while-learning', isDark, onTap: () { Navigator.pop(context); context.go('/skills'); }),
+                  _DItem(Iconsax.chart, 'Dashboard', 'Earnings, stats & tasks', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/dashboard'); }),
+                  _DItem(Icons.auto_awesome_rounded, 'Agentic AI', 'Execute ANY income task', isDark, badge: 'HEAVY', badgeColor: AppColors.accent, onTap: () { SoundService.tap(); Navigator.pop(context); context.push('/agent'); }),
+                  _DItem(Iconsax.flash, 'Workflow Engine', 'AI-powered income execution', isDark, badge: 'NEW', badgeColor: AppColors.success, onTap: () { SoundService.tap(); Navigator.pop(context); context.push('/workflow'); }),
+                  _DItem(Iconsax.chart_3, 'Market Pulse', 'What pays right now', isDark, badge: '🔥 LIVE', badgeColor: const Color(0xFFFF6B35), onTap: () { SoundService.tap(); Navigator.pop(context); context.push('/pulse'); }),
+                  _DItem(Icons.emoji_events_rounded, 'Challenges', '30-day income sprints', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.push('/challenges'); }),
+                  _DItem(Iconsax.briefcase, 'Client CRM', 'Track prospects & clients', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.push('/crm'); }),
+                  _DItem(Iconsax.document_text, 'Contracts & Invoices', 'Pro contract generation', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.push('/contracts'); }),
+                  _DItem(Icons.psychology_rounded, 'Income Memory', 'Your income DNA', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.push('/memory'); }),
+                  _DItem(Iconsax.gallery, 'My Portfolio', 'Shareable project showcase', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.push('/portfolio'); }),
+                  _DItem(Iconsax.task_square, 'My Tasks', 'Daily income tasks', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/tasks'); }),
+                  _DItem(Iconsax.map_1, 'Wealth Roadmap', '3-stage wealth plan', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/roadmap'); }),
+                  _DItem(Iconsax.book, 'Skills', 'Earn-while-learning', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/skills'); }),
                   const SizedBox(height: 4),
                   Divider(color: border, height: 1),
                   _DSection('SOCIAL', sub),
-                  _DItem(Iconsax.people, 'Collaboration', 'Build bigger goals together', isDark, badge: 'NEW', badgeColor: AppColors.primary, onTap: () { Navigator.pop(context); context.push('/collaboration'); }),
-                  _DItem(Iconsax.message, 'Messages', 'DMs & group chats', isDark, onTap: () { Navigator.pop(context); context.go('/messages'); }),
-                  _DItem(Icons.radio_button_checked_rounded, 'Go Live', 'Stream to your community', isDark, onTap: () { Navigator.pop(context); context.go('/live'); }),
-                  _DItem(Iconsax.people, 'Groups', 'Wealth-building groups', isDark, onTap: () { Navigator.pop(context); context.go('/groups'); }),
+                  _DItem(Iconsax.people, 'Collaboration', 'Build bigger goals together', isDark, badge: 'NEW', badgeColor: AppColors.primary, onTap: () { SoundService.tap(); Navigator.pop(context); context.push('/collaboration'); }),
+                  _DItem(Iconsax.message, 'Messages', 'DMs & group chats', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/messages'); }),
+                  _DItem(Icons.radio_button_checked_rounded, 'Go Live', 'Stream to your community', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/live'); }),
+                  _DItem(Iconsax.people, 'Groups', 'Wealth-building groups', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/groups'); }),
                   const SizedBox(height: 4),
                   Divider(color: border, height: 1),
                   _DSection('FINANCE', sub),
-                  _DItem(Iconsax.money_recive, 'Earnings', 'Income tracker', isDark, onTap: () { Navigator.pop(context); context.go('/earnings'); }),
-                  _DItem(Iconsax.chart_2, 'Analytics', 'Growth stats', isDark, onTap: () { Navigator.pop(context); context.go('/analytics'); }),
-                  _DItem(Iconsax.wallet_minus, 'Expenses', 'Budget tracking', isDark, onTap: () { Navigator.pop(context); context.go('/expenses'); }),
-                  _DItem(Iconsax.flag, 'Goals', 'Set & track targets', isDark, onTap: () { Navigator.pop(context); context.go('/goals'); }),
+                  _DItem(Iconsax.money_recive, 'Earnings', 'Income tracker', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/earnings'); }),
+                  _DItem(Iconsax.chart_2, 'Analytics', 'Growth stats', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/analytics'); }),
+                  _DItem(Iconsax.wallet_minus, 'Expenses', 'Budget tracking', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/expenses'); }),
+                  _DItem(Iconsax.flag, 'Goals', 'Set & track targets', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/goals'); }),
                   const SizedBox(height: 4),
                   Divider(color: border, height: 1),
                   _DSection('ACCOUNT', sub),
-                  _DItem(Iconsax.award, 'Achievements', 'Badges & milestones', isDark, onTap: () { Navigator.pop(context); context.go('/achievements'); }),
-                  _DItem(Iconsax.user_tag, 'Referrals', 'Invite & earn', isDark, onTap: () { Navigator.pop(context); context.go('/referrals'); }),
-                  _DItem(Iconsax.setting_2, 'Settings', 'Account preferences', isDark, onTap: () { Navigator.pop(context); context.go('/settings'); }),
+                  _DItem(Iconsax.award, 'Achievements', 'Badges & milestones', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/achievements'); }),
+                  _DItem(Iconsax.user_tag, 'Referrals', 'Invite & earn', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/referrals'); }),
+                  _DItem(Iconsax.setting_2, 'Settings', 'Account preferences', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/settings'); }),
                 ],
               ),
             ),
@@ -672,7 +881,11 @@ class _AppDrawer extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.all(14),
                 child: GestureDetector(
-                  onTap: () { Navigator.pop(context); context.push('/premium'); },
+                  onTap: () { 
+                    SoundService.tap();
+                    Navigator.pop(context); 
+                    context.push('/premium'); 
+                  },
                   child: Container(
                     padding: const EdgeInsets.all(13),
                     decoration: BoxDecoration(
@@ -963,8 +1176,13 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
                   style: const TextStyle(color: Colors.white60, fontSize: 11)),
             ]),
             const Spacer(),
-            IconButton(icon: const Icon(Icons.close_rounded, color: Colors.white),
-                onPressed: () => Navigator.pop(context)),
+            IconButton(
+              icon: const Icon(Icons.close_rounded, color: Colors.white),
+              onPressed: () {
+                SoundService.tap();
+                Navigator.pop(context);
+              }
+            ),
           ]),
         ),
 
@@ -984,33 +1202,41 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
         // Link
         if (link != null)
           Positioned(bottom: 80, left: 16, right: 16,
-            child: Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.6),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white30),
+            child: GestureDetector(
+              onTap: () {
+                SoundService.tap();
+                // Open link
+              },
+              child: Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.6),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.white30),
+                ),
+                child: Row(children: [
+                  const Icon(Icons.link_rounded, color: Colors.white, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(
+                      item['link_title']?.toString() ?? link,
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                      maxLines: 2, overflow: TextOverflow.ellipsis)),
+                ]),
               ),
-              child: Row(children: [
-                const Icon(Icons.link_rounded, color: Colors.white, size: 18),
-                const SizedBox(width: 8),
-                Expanded(child: Text(
-                    item['link_title']?.toString() ?? link,
-                    style: const TextStyle(color: Colors.white, fontSize: 13),
-                    maxLines: 2, overflow: TextOverflow.ellipsis)),
-              ]),
             ),
           ),
 
         // Tap navigation
         Row(children: [
           Expanded(child: GestureDetector(onTap: () {
+            SoundService.tap();
             if (_currentIndex > 0) setState(() {
               _currentIndex--;
               _markViewed();
             });
           })),
           Expanded(child: GestureDetector(onTap: () {
+            SoundService.tap();
             if (_currentIndex < items.length - 1) setState(() {
               _currentIndex++;
               _markViewed();
