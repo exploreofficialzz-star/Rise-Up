@@ -1,5 +1,5 @@
 """
-RiseUp AI Workflow Engine — GLOBAL EDITION
+RiseUp AI Workflow Engine — GLOBAL EDITION (Production Ready - Pydantic v2)
 ──────────────────────────────────────────
 Core Vision: Don't just give tips — research deeply, break down the work,
 automate what's possible, find free tools, create a managed workflow,
@@ -23,7 +23,7 @@ from typing import Optional, List, Dict, Any
 from enum import Enum
 
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks, Header
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from babel import numbers, dates
 from babel.core import Locale
 
@@ -43,8 +43,8 @@ logger = logging.getLogger(__name__)
 class IncomeType(str, Enum):
     """Global income types supported across all regions."""
     YOUTUBE = "youtube"
-    TIKTOK = "tiktok"  # Added for global short-form video
-    INSTAGRAM = "instagram"  # Global social commerce
+    TIKTOK = "tiktok"
+    INSTAGRAM = "instagram"
     FREELANCE = "freelance"
     ECOMMERCE = "ecommerce"
     DROPSHIPPING = "dropshipping"
@@ -69,28 +69,25 @@ class IncomeType(str, Enum):
 
 class CurrencyCode(str, Enum):
     """Major global currencies with local alternatives for emerging markets."""
-    # Major global
     USD = "USD"
     EUR = "EUR"
     GBP = "GBP"
     JPY = "JPY"
     CNY = "CNY"
-    # Emerging markets
-    NGN = "NGN"  # Nigeria
-    INR = "INR"  # India
-    BRL = "BRL"  # Brazil
-    MXN = "MXN"  # Mexico
-    ZAR = "ZAR"  # South Africa
-    KES = "KES"  # Kenya
-    GHS = "GHS"  # Ghana
-    PHP = "PHP"  # Philippines
-    IDR = "IDR"  # Indonesia
-    PKR = "PKR"  # Pakistan
-    BDT = "BDT"  # Bangladesh
-    EGP = "EGP"  # Egypt
-    TRY = "TRY"  # Turkey
-    RUB = "RUB"  # Russia
-    # Crypto
+    NGN = "NGN"
+    INR = "INR"
+    BRL = "BRL"
+    MXN = "MXN"
+    ZAR = "ZAR"
+    KES = "KES"
+    GHS = "GHS"
+    PHP = "PHP"
+    IDR = "IDR"
+    PKR = "PKR"
+    BDT = "BDT"
+    EGP = "EGP"
+    TRY = "TRY"
+    RUB = "RUB"
     BTC = "BTC"
     ETH = "ETH"
     USDT = "USDT"
@@ -108,11 +105,11 @@ class LanguageCode(str, Enum):
     ZH = "zh"
     JA = "ja"
     RU = "ru"
-    BN = "bn"  # Bengali
-    SW = "sw"  # Swahili
-    YO = "yo"  # Yoruba
-    IG = "ig"  # Igbo
-    HA = "ha"  # Hausa
+    BN = "bn"
+    SW = "sw"
+    YO = "yo"
+    IG = "ig"
+    HA = "ha"
 
 
 class Region(str, Enum):
@@ -184,7 +181,6 @@ def format_datetime(dt: datetime, locale_str: str = "en", tz_name: Optional[str]
     try:
         locale = Locale.parse(locale_str)
         if tz_name:
-            # Convert to local timezone if provided
             from zoneinfo import ZoneInfo
             dt = dt.astimezone(ZoneInfo(tz_name))
         return dates.format_datetime(dt, locale=locale)
@@ -248,26 +244,33 @@ async def supabase_with_timeout(coro, timeout: float = 8.0, operation: str = "db
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# REQUEST / RESPONSE MODELS (Global Enhanced)
+# REQUEST / RESPONSE MODELS (Pydantic v2 Compatible)
 # ═════════════════════════════════════════════════════════════════════════════
 
 class ResearchRequest(BaseModel):
-    goal: str = Field(..., example="I want to earn on YouTube in 2 months")
+    goal: str = Field(..., examples=["I want to earn on YouTube in 2 months"])
     currency: CurrencyCode = Field(default=CurrencyCode.USD)
     available_hours_per_day: float = Field(default=2.0, ge=0.5, le=16)
     budget: float = Field(default=0.0, ge=0, description="USD equivalent budget")
     language: LanguageCode = Field(default=LanguageCode.EN)
     region: Optional[Region] = Field(default=None, description="Auto-detected if not provided")
-    timezone: Optional[str] = Field(default=None, example="Africa/Lagos")
-    skills: Optional[List[str]] = Field(default=[], example=["writing", "design", "coding"])
+    timezone: Optional[str] = Field(default=None, examples=["Africa/Lagos"])
+    skills: Optional[List[str]] = Field(default=[], examples=[["writing", "design", "coding"]])
     
-    @validator('region', pre=True, always=True)
-    def set_region(cls, v, values):
-        if v is None and 'currency' in values:
-            currency = values['currency'].value if hasattr(values['currency'], 'value') else values['currency']
-            region_str = get_region_from_currency(currency)
-            return Region(region_str) if region_str in [r.value for r in Region] else Region.GLOBAL
-        return v
+    @model_validator(mode="before")
+    @classmethod
+    def set_region(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if data.get("region") is None and data.get("currency"):
+                currency = data["currency"]
+                if hasattr(currency, "value"):
+                    currency = currency.value
+                region_str = get_region_from_currency(currency)
+                try:
+                    data["region"] = Region(region_str)
+                except ValueError:
+                    data["region"] = Region.GLOBAL
+        return data
 
 
 class CreateWorkflowRequest(BaseModel):
@@ -283,13 +286,14 @@ class CreateWorkflowRequest(BaseModel):
 class LogRevenueRequest(BaseModel):
     amount: float = Field(..., gt=0)
     currency: CurrencyCode = Field(default=CurrencyCode.USD)
-    source: Optional[str] = Field(default="", example="YouTube AdSense")
+    source: Optional[str] = Field(default="", examples=["YouTube AdSense"])
     note: Optional[str] = Field(default="")
-    payment_method: Optional[str] = Field(default=None, example="PayPal")
+    payment_method: Optional[str] = Field(default=None, examples=["PayPal"])
 
 
 class UpdateStepRequest(BaseModel):
-    status: str = Field(..., regex="^(pending|in_progress|done|skipped|blocked)$")
+    # FIXED: Changed regex to pattern for Pydantic v2
+    status: str = Field(..., pattern="^(pending|in_progress|done|skipped|blocked)$")
 
 
 class WorkflowAnalyticsResponse(BaseModel):
@@ -299,7 +303,7 @@ class WorkflowAnalyticsResponse(BaseModel):
     revenue_logs: List[Dict]
     daily_revenue: List[Dict]
     steps_summary: Dict[str, Any]
-    localized_revenue: str  # Formatted for user's locale
+    localized_revenue: str
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -322,10 +326,8 @@ def _build_research_prompt(
     region_display = region.replace("_", " ").title()
     skills_str = ", ".join(skills) if skills else "general digital skills"
     
-    # Get localized modifiers
     modifiers = get_localized_prompt(language, region, currency)
     
-    # Region-specific platform recommendations
     regional_platforms = {
         "africa_west": "YouTube, TikTok, Instagram, WhatsApp Business, Flutterwave Store",
         "africa_east": "YouTube, TikTok, M-Pesa integration, Instagram, local e-commerce",
@@ -446,14 +448,11 @@ async def _save_workflow_details(
     errors = []
     
     try:
-        # ── Insert steps with localization ──
         if steps:
             step_rows = []
             for i, s in enumerate(steps):
-                # Localize step descriptions if needed
                 desc = s.get("description", "")
                 if language != "en" and "{" in desc:
-                    # Simple template replacement for region
                     desc = desc.format(region=region.replace("_", " ").title())
                 
                 step_rows.append({
@@ -481,13 +480,11 @@ async def _save_workflow_details(
                 logger.error(f"❌ {error_msg}")
                 errors.append(error_msg)
 
-        # ── Insert free tools with regional availability ──
         if free_tools:
             tool_rows = []
             for t in free_tools:
-                # Check if tool works in region
                 region_key = f"works_in_{region}"
-                works_in_region = t.get(region_key, True)  # Default to true if not specified
+                works_in_region = t.get(region_key, True)
                 
                 tool_rows.append({
                     "workflow_id": workflow_id,
@@ -512,7 +509,6 @@ async def _save_workflow_details(
                 logger.error(f"❌ {error_msg}")
                 errors.append(error_msg)
 
-        # ── Insert paid tools ──
         if paid_tools:
             paid_rows = [{
                 "workflow_id": workflow_id,
@@ -524,7 +520,7 @@ async def _save_workflow_details(
                 "cost_monthly": t.get("cost_monthly", 0),
                 "cost_currency": t.get("currency", "USD"),
                 "unlock_at_revenue": t.get("unlock_at_revenue", 0),
-                "region_available": True,  # Assume global for paid tools
+                "region_available": True,
             } for t in paid_tools]
             
             try:
@@ -562,10 +558,7 @@ async def research_income_goal(
 ):
     """
     Deep AI research on an income goal with global localization.
-    
-    Supports 150+ currencies, multiple languages, and region-specific opportunities.
     """
-    # Use header language if request language not specified
     language = req.language.value if req.language else accept_language.split(",")[0].split("-")[0]
     region = req.region.value if req.region else get_region_from_currency(req.currency.value)
     
@@ -580,13 +573,12 @@ async def research_income_goal(
         timezone=req.timezone
     )
 
-    # AI call with timeout
     try:
         result = await asyncio.wait_for(
             ai_service.chat(
                 messages=[{"role": "user", "content": prompt}],
                 system=f"You are RiseUp's global income research engine. Return ONLY valid JSON. No markdown. Provide region-specific advice for {region}.",
-                max_tokens=3000,  # Increased for global complexity
+                max_tokens=3000,
             ),
             timeout=35.0
         )
@@ -595,8 +587,6 @@ async def research_income_goal(
         raise HTTPException(status_code=504, detail="AI research timed out. Please try again.")
 
     content = result.get("content", "").strip()
-    
-    # Robust JSON extraction (same as before, enhanced logging)
     research_data = None
     
     try:
@@ -622,7 +612,6 @@ async def research_income_goal(
         logger.error(f"JSON parse failed for {region}. Content: {content[:500]}")
         raise HTTPException(status_code=500, detail="AI returned invalid format. Please retry.")
 
-    # Add metadata to response
     return {
         "goal": req.goal,
         "research": research_data,
@@ -647,19 +636,15 @@ async def create_workflow(
 ):
     """
     Create a workflow from AI research results with global support.
-    
-    Saves with timezone awareness and regional localization.
     """
     user_id = user["id"]
     sb = supabase_service.client
     workflow_id = None
     
-    # Detect region from currency if not provided
     region = get_region_from_currency(req.currency.value)
     language = req.language.value
 
     try:
-        # ── Create main workflow record ──
         workflow_data = {
             "user_id": user_id,
             "title": req.title,
@@ -694,7 +679,6 @@ async def create_workflow(
         workflow_id = workflow["id"]
         logger.info(f"✅ Created workflow {workflow_id} for user {user_id} [{region}]")
 
-        # ── Queue background tasks ──
         steps = req.research_data.get("step_by_step_workflow", [])
         free_tools = req.research_data.get("free_tools", [])
         paid_tools = req.research_data.get("paid_tools_when_ready", [])
@@ -712,7 +696,6 @@ async def create_workflow(
                 region
             )
 
-        # Return with global context
         return {
             "workflow_id": workflow_id,
             "title": req.title,
@@ -774,7 +757,6 @@ async def list_my_workflows(
         
         workflows = resp.data or []
         
-        # Format currencies and dates for display
         for wf in workflows:
             try:
                 wf["total_revenue_formatted"] = format_currency_amount(
@@ -782,7 +764,6 @@ async def list_my_workflows(
                     wf.get("currency", "USD"),
                     locale
                 )
-                # Convert UTC created_at to user's timezone if available
                 created_str = wf.get("created_at", "")
                 if created_str:
                     created_dt = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
@@ -814,7 +795,6 @@ async def get_workflow_detail(
     locale = accept_language.split(",")[0]
 
     try:
-        # Parallel fetch
         coroutines = {
             "workflow": supabase_with_timeout(
                 sb.table("workflows").select("*").eq("id", workflow_id).eq("user_id", user_id).single().execute(),
@@ -854,7 +834,6 @@ async def get_workflow_detail(
         tools = results_dict["tools"].data or []
         revenue_logs = results_dict["revenue"].data or []
 
-        # Parse and localize
         currency = workflow.get("currency", "USD")
         timezone_str = workflow.get("timezone")
         
@@ -865,7 +844,6 @@ async def get_workflow_detail(
                 except:
                     s["tools"] = []
         
-        # Format revenue logs
         for log in revenue_logs:
             try:
                 log["amount_formatted"] = format_currency_amount(
@@ -911,7 +889,6 @@ async def update_step_status(
     sb = supabase_service.client
 
     try:
-        # Get workflow timezone for accurate timestamp
         wf_resp = await supabase_with_timeout(
             sb.table("workflows").select("timezone").eq("id", workflow_id).single().execute(),
             timeout=3.0,
@@ -919,7 +896,6 @@ async def update_step_status(
         )
         timezone_str = wf_resp.data.get("timezone") if wf_resp.data else None
         
-        # Use UTC for storage, will convert for display
         now_utc = datetime.now(timezone.utc).isoformat()
 
         await supabase_with_timeout(
@@ -937,7 +913,6 @@ async def update_step_status(
             operation="update_step"
         )
 
-        # Calculate progress
         steps_resp = await supabase_with_timeout(
             sb.table("workflow_steps").select("status").eq("workflow_id", workflow_id).execute(),
             timeout=5.0,
@@ -975,13 +950,12 @@ async def log_revenue(
     user: dict = Depends(get_current_user),
     accept_language: Optional[str] = Header(default="en")
 ):
-    """Log revenue with multi-currency support and global payment methods."""
+    """Log revenue with multi-currency support."""
     user_id = user["id"]
     sb = supabase_service.client
     locale = accept_language.split(",")[0]
 
     try:
-        # Get workflow details for currency conversion if needed
         wf_resp = await supabase_with_timeout(
             sb.table("workflows").select("currency, total_revenue, timezone, region").eq("id", workflow_id).single().execute(),
             timeout=5.0,
@@ -994,13 +968,10 @@ async def log_revenue(
         wf_currency = wf_resp.data.get("currency", "USD")
         region = wf_resp.data.get("region", "global")
         
-        # If logging in different currency than workflow, we could convert here
-        # For now, store as-is with original currency noted
-        amount_in_wf_currency = req.amount  # Simplified - add conversion logic if needed
+        amount_in_wf_currency = req.amount
         
         now_utc = datetime.now(timezone.utc).isoformat()
 
-        # Insert revenue log
         await supabase_with_timeout(
             sb.table("workflow_revenue").insert({
                 "workflow_id": workflow_id,
@@ -1019,7 +990,6 @@ async def log_revenue(
             operation="log_revenue"
         )
 
-        # Update workflow total
         current = float(wf_resp.data.get("total_revenue", 0))
         new_total = current + amount_in_wf_currency
 
@@ -1032,7 +1002,6 @@ async def log_revenue(
             operation="update_total_revenue"
         )
 
-        # Format for response
         formatted_total = format_currency_amount(new_total, wf_currency, locale)
 
         return {
@@ -1060,13 +1029,12 @@ async def workflow_analytics(
     user: dict = Depends(get_current_user),
     accept_language: Optional[str] = Header(default="en")
 ):
-    """Get analytics with global localization and currency formatting."""
+    """Get analytics with global localization."""
     user_id = user["id"]
     sb = supabase_service.client
     locale = accept_language.split(",")[0]
 
     try:
-        # Parallel fetch
         revenue_coro = supabase_with_timeout(
             sb.table("workflow_revenue")
             .select("amount, currency, created_at, source, payment_method")
@@ -1106,13 +1074,11 @@ async def workflow_analytics(
         timezone_str = wf_data.get("timezone")
         region = wf_data.get("region", "global")
 
-        # Calculate stats
         total = len(steps)
         done = sum(1 for s in steps if s["status"] == "done")
         automated = sum(1 for s in steps if s["step_type"] == "automated")
         manual = sum(1 for s in steps if s["step_type"] == "manual")
 
-        # Daily revenue aggregation
         daily = {}
         payment_methods_used = set()
         
@@ -1124,11 +1090,8 @@ async def workflow_analytics(
                 payment_methods_used.add(log["payment_method"])
 
         total_revenue = sum(float(l["amount"]) for l in logs)
-        
-        # Format for locale
         total_formatted = format_currency_amount(total_revenue, currency, locale)
         
-        # Convert daily to localized format
         daily_formatted = []
         for d, a in sorted(daily.items()):
             daily_formatted.append({
@@ -1173,16 +1136,12 @@ async def ai_assist_on_step(
     user: dict = Depends(get_current_user),
     accept_language: Optional[str] = Header(default="en")
 ):
-    """
-    AI assistance with global language support.
-    Responds in the user's preferred language when possible.
-    """
+    """AI assistance with global language support."""
     user_id = user["id"]
     sb = supabase_service.client
     locale = accept_language.split(",")[0]
 
     try:
-        # Get workflow with language preference
         wf_resp = await supabase_with_timeout(
             sb.table("workflows").select("title, goal, income_type, language, region, currency").eq("id", workflow_id).single().execute(),
             timeout=5.0,
@@ -1196,7 +1155,6 @@ async def ai_assist_on_step(
 
         question = user_question or f"Help me complete this step: {step_title}"
 
-        # Language-specific system prompt
         system_prompts = {
             "es": "Eres RiseUp AI, un asistente de ingresos. Da respuestas específicas y accionables.",
             "fr": "Vous êtes RiseUp AI, un assistant de revenus. Donnez des réponses spécifiques et actionnables.",
