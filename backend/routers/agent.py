@@ -8,6 +8,8 @@ Features:
 - Conversation history with automatic summarization
 - Multi-language support
 - Global currency and timezone handling
+- Rewarded Ads system: free users unlock API calls by watching ads
+- Gamification: XP + coins earned on every API call
 """
 
 import json
@@ -47,6 +49,15 @@ MAX_REACT_ITERATIONS = 8
 MAX_RETRIES          = 2
 DEFAULT_DAILY_RUNS   = 5
 PREMIUM_DAILY_RUNS   = 50
+
+# Rewarded ads config
+AD_CREDIT_PER_WATCH      = 1          # 1 API call credit per ad watched
+MAX_AD_CREDITS_PER_DAY   = 20         # Cap to prevent abuse
+AD_REWARD_XP             = 10         # XP reward for watching an ad
+CALL_XP_FREE             = 5          # XP per API call (free user)
+CALL_XP_PREMIUM          = 8          # XP per API call (premium user)
+CALL_COINS_FREE          = 2          # Coins per API call (free user)
+CALL_COINS_PREMIUM       = 5          # Coins per API call (premium user)
 
 FREE_MODELS = {
     "primary": "gemini-1.5-flash-latest",
@@ -90,10 +101,11 @@ class AgentChatRequest(BaseModel):
     message:           str
     session_id:        Optional[str]        = None
     workflow_id:       Optional[str]        = None
-    title:             Optional[str]          = None
-    context_override:  Optional[str]          = None
+    title:             Optional[str]        = None
+    context_override:  Optional[str]        = None
     history_limit:     int                  = 20
     stream:            bool                 = False
+    # NOTE: history is NOT a field — it is always loaded from DB via session_id
 
 class ChatSessionCreate(BaseModel):
     title:             Optional[str] = None
@@ -119,7 +131,35 @@ class AnalyzeRequest(BaseModel):
 
 class ScanRequest(BaseModel):
     force_refresh:     bool = False
-    location:        Optional[str] = None
+    location:          Optional[str] = None
+
+# ─── AD MODELS ───────────────────────────────────────────────────────
+
+class AdWatchCompleteRequest(BaseModel):
+    ad_id:      str                    # ID returned by your ad network SDK
+    ad_type:    str = "rewarded_video" # rewarded_video | interstitial
+    session_id: Optional[str] = None
+    # Verification token from your ad network (AdMob, Unity Ads, etc.)
+    verify_token: Optional[str] = None
+
+class AdStatusResponse(BaseModel):
+    credits_available:    int
+    credits_used_today:   int
+    credits_earned_today: int
+    max_credits_per_day:  int
+    can_watch_more:       bool
+    xp_earned_from_ads:   int
+    show_ad_prompt:       bool  # frontend should show the "Watch an ad" CTA
+
+# ─── GAMIFICATION MODELS ─────────────────────────────────────────────
+
+class GamificationState(BaseModel):
+    xp:              int = 0
+    coins:           int = 0
+    level:           int = 1
+    streak_days:     int = 0
+    total_api_calls: int = 0
+    badges:          List[str] = []
 
 # ═══════════════════════════════════════════════════════════════════
 # TOOL REGISTRY
@@ -324,14 +364,14 @@ TOOLS: Dict[str, Dict] = {
 
 class ChatMemoryManager:
     @staticmethod
-    async def create_session(user_id: str, title: Optional[str] = None, 
-                            context: Optional[str] = None,
-                            workflow_id: Optional[str] = None,
-                            tags: List[str] = []) -> Dict[str, Any]:
+    async def create_session(user_id: str, title: Optional[str] = None,
+                             context: Optional[str] = None,
+                             workflow_id: Optional[str] = None,
+                             tags: List[str] = []) -> Dict[str, Any]:
         try:
             session_title = title or f"Chat {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
             session_id = f"session_{user_id}_{int(datetime.now(timezone.utc).timestamp())}"
-            
+
             sb = supabase_service.client
             result = sb.table("chat_sessions").insert({
                 "id": session_id,
@@ -346,7 +386,7 @@ class ChatMemoryManager:
                 "is_active": True,
                 "summary": None,
             }).execute()
-            
+
             return result.data[0] if result.data else {"id": session_id, "title": session_title}
         except Exception as e:
             logger.error(f"Failed to create session: {e}")
@@ -377,7 +417,7 @@ class ChatMemoryManager:
 
     @staticmethod
     async def save_message(session_id: str, user_id: str, role: str, content: str,
-                          metadata: Optional[Dict] = None, model_used: Optional[str] = None) -> bool:
+                           metadata: Optional[Dict] = None, model_used: Optional[str] = None) -> bool:
         try:
             sb = supabase_service.client
             sb.table("chat_messages").insert({
@@ -389,24 +429,24 @@ class ChatMemoryManager:
                 "model_used": model_used,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }).execute()
-            
+
             sb.table("chat_sessions").update({
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", session_id).execute()
-            
+
             return True
         except Exception as e:
             logger.error(f"Failed to save message: {e}")
             return False
 
     @staticmethod
-    async def get_messages(session_id: str, user_id: str, limit: int = 50, 
-                          offset: int = 0, include_summary: bool = True) -> List[Dict]:
+    async def get_messages(session_id: str, user_id: str, limit: int = 50,
+                           offset: int = 0, include_summary: bool = True) -> List[Dict]:
         try:
             sb = supabase_service.client
             result = sb.table("chat_messages").select("*").eq("session_id", session_id).eq("user_id", user_id).order("created_at", desc=True).limit(limit).offset(offset).execute()
             messages = list(reversed(result.data or []))
-            
+
             if include_summary and offset == 0:
                 session = await ChatMemoryManager.get_session(session_id, user_id)
                 if session and session.get("summary"):
@@ -416,7 +456,7 @@ class ChatMemoryManager:
                         "is_summary": True,
                         "created_at": session.get("created_at")
                     })
-            
+
             return messages
         except Exception as e:
             logger.error(f"Failed to get messages: {e}")
@@ -465,20 +505,20 @@ class ChatMemoryManager:
             sb = supabase_service.client
             count_result = sb.table("chat_messages").select("count", count="exact").eq("session_id", session_id).execute()
             count = count_result.count or 0
-            
+
             if count > SUMMARIZE_THRESHOLD:
                 old_messages = await ChatMemoryManager.get_messages(session_id, user_id, limit=SUMMARIZE_THRESHOLD, offset=0)
-                
+
                 summary_prompt = "Summarize this conversation concisely, preserving key decisions, context, and action items:\n\n"
                 for msg in old_messages[:20]:
                     summary_prompt += f"{msg['role']}: {msg['content'][:200]}...\n"
-                
-                result = await ai_service_ref.chat(
+
+                result = await ai_service_ref.mentor_chat(
                     messages=[{"role": "user", "content": summary_prompt}],
-                    system="Create a concise summary of this conversation. Focus on key points, decisions made, and current context.",
+                    system_prompt="Create a concise summary of this conversation. Focus on key points, decisions made, and current context.",
                     max_tokens=500,
                 )
-                
+
                 summary = result["content"]
                 await ChatMemoryManager.update_session_summary(session_id, user_id, summary)
                 return True
@@ -486,6 +526,312 @@ class ChatMemoryManager:
         except Exception as e:
             logger.error(f"Auto-summarize failed: {e}")
             return False
+
+
+# ═══════════════════════════════════════════════════════════════════
+# REWARDED ADS MANAGER
+# ═══════════════════════════════════════════════════════════════════
+
+class AdManager:
+    """
+    Manages rewarded-ad credits for free-tier users.
+
+    Flow:
+      1. Free user hits daily quota  →  backend returns 402 with show_ad=True
+      2. Flutter SDK shows a rewarded video ad (AdMob / Unity Ads)
+      3. On ad completion the SDK calls POST /agent/ads/reward-complete
+      4. AdManager grants 1 credit and awards XP/coins
+      5. Next API call deducts the credit and proceeds normally
+
+    Supabase tables needed:
+      ad_credits (user_id PK, credits_available, credits_used_today,
+                  credits_earned_today, quota_date, total_earned, updated_at)
+    """
+
+    @staticmethod
+    def _today() -> str:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    @staticmethod
+    async def get_credits(user_id: str) -> Dict[str, Any]:
+        """Return current ad-credit state for the user."""
+        today = AdManager._today()
+        try:
+            sb  = supabase_service.client
+            row = sb.table("ad_credits").select("*").eq("user_id", user_id).maybe_single().execute()
+            data = row.data or {}
+
+            # Reset daily counters if stale date
+            if data.get("quota_date") != today:
+                data["credits_used_today"]   = 0
+                data["credits_earned_today"] = 0
+                data["quota_date"]           = today
+
+            credits_available    = data.get("credits_available", 0)
+            credits_earned_today = data.get("credits_earned_today", 0)
+            credits_used_today   = data.get("credits_used_today", 0)
+
+            return {
+                "credits_available":    credits_available,
+                "credits_used_today":   credits_used_today,
+                "credits_earned_today": credits_earned_today,
+                "max_credits_per_day":  MAX_AD_CREDITS_PER_DAY,
+                "can_watch_more":       credits_earned_today < MAX_AD_CREDITS_PER_DAY,
+                "xp_earned_from_ads":   data.get("xp_earned_from_ads", 0),
+                "show_ad_prompt":       credits_available == 0,
+            }
+        except Exception as e:
+            logger.error(f"AdManager.get_credits error: {e}")
+            return {
+                "credits_available": 0, "credits_used_today": 0,
+                "credits_earned_today": 0, "max_credits_per_day": MAX_AD_CREDITS_PER_DAY,
+                "can_watch_more": True, "xp_earned_from_ads": 0, "show_ad_prompt": True,
+            }
+
+    @staticmethod
+    async def grant_credit(user_id: str, ad_id: str, ad_type: str = "rewarded_video") -> Dict[str, Any]:
+        """
+        Called after the ad network confirms a completed ad view.
+        Grants 1 API-call credit + XP + coins.
+        Returns updated credit state + gamification delta.
+        """
+        today = AdManager._today()
+        try:
+            sb  = supabase_service.client
+            row = sb.table("ad_credits").select("*").eq("user_id", user_id).maybe_single().execute()
+            data = row.data or {}
+
+            # Reset daily counters if date changed
+            if data.get("quota_date") != today:
+                data["credits_earned_today"] = 0
+                data["credits_used_today"]   = 0
+                data["quota_date"]           = today
+
+            earned_today = data.get("credits_earned_today", 0)
+            if earned_today >= MAX_AD_CREDITS_PER_DAY:
+                return {
+                    "granted": False,
+                    "reason": f"Daily ad limit of {MAX_AD_CREDITS_PER_DAY} reached. Come back tomorrow!",
+                    "credits_available": data.get("credits_available", 0),
+                }
+
+            new_credits    = data.get("credits_available", 0) + AD_CREDIT_PER_WATCH
+            new_earned     = earned_today + AD_CREDIT_PER_WATCH
+            new_xp_ads     = data.get("xp_earned_from_ads", 0) + AD_REWARD_XP
+            new_total      = data.get("total_earned", 0) + AD_CREDIT_PER_WATCH
+
+            upsert_payload = {
+                "user_id":             user_id,
+                "credits_available":   new_credits,
+                "credits_earned_today":new_earned,
+                "credits_used_today":  data.get("credits_used_today", 0),
+                "quota_date":          today,
+                "total_earned":        new_total,
+                "xp_earned_from_ads":  new_xp_ads,
+                "last_ad_id":          ad_id,
+                "last_ad_type":        ad_type,
+                "updated_at":          datetime.now(timezone.utc).isoformat(),
+            }
+
+            sb.table("ad_credits").upsert(upsert_payload, on_conflict="user_id").execute()
+
+            # Award gamification rewards
+            gami = await GamificationManager.award(
+                user_id, xp=AD_REWARD_XP, coins=CALL_COINS_FREE,
+                reason="rewarded_ad_watched"
+            )
+
+            return {
+                "granted":           True,
+                "credits_available": new_credits,
+                "credits_earned_today": new_earned,
+                "xp_awarded":        AD_REWARD_XP,
+                "coins_awarded":     CALL_COINS_FREE,
+                "gamification":      gami,
+                "message":           f"🎉 +{AD_CREDIT_PER_WATCH} API credit! Keep going! 🚀",
+            }
+        except Exception as e:
+            logger.error(f"AdManager.grant_credit error: {e}")
+            return {"granted": False, "reason": str(e), "credits_available": 0}
+
+    @staticmethod
+    async def consume_credit(user_id: str) -> bool:
+        """
+        Deduct 1 credit before an API call.
+        Returns True if successful, False if no credits.
+        """
+        today = AdManager._today()
+        try:
+            sb  = supabase_service.client
+            row = sb.table("ad_credits").select("*").eq("user_id", user_id).maybe_single().execute()
+            data = row.data or {}
+
+            if data.get("quota_date") != today:
+                # Credits reset daily — but accumulated credits DON'T reset
+                # (only the earned_today and used_today counters reset)
+                pass
+
+            credits = data.get("credits_available", 0)
+            if credits <= 0:
+                return False
+
+            sb.table("ad_credits").update({
+                "credits_available":  credits - 1,
+                "credits_used_today": data.get("credits_used_today", 0) + 1,
+                "updated_at":         datetime.now(timezone.utc).isoformat(),
+            }).eq("user_id", user_id).execute()
+
+            return True
+        except Exception as e:
+            logger.error(f"AdManager.consume_credit error: {e}")
+            return False
+
+
+# ═══════════════════════════════════════════════════════════════════
+# GAMIFICATION MANAGER
+# ═══════════════════════════════════════════════════════════════════
+
+# XP thresholds per level (level 1 = 0 XP, level 2 = 100 XP, etc.)
+XP_PER_LEVEL = 100
+
+BADGES = {
+    "first_call":      {"xp": 0,    "label": "🌱 First Step",      "desc": "Made your first AI call"},
+    "call_10":         {"xp": 50,   "label": "🔥 On Fire",         "desc": "10 AI calls completed"},
+    "call_50":         {"xp": 200,  "label": "⚡ Power User",      "desc": "50 AI calls completed"},
+    "ad_watcher":      {"xp": 10,   "label": "📺 Ad Supporter",    "desc": "Watched your first rewarded ad"},
+    "ad_10":           {"xp": 50,   "label": "💪 Committed",       "desc": "Watched 10 rewarded ads"},
+    "streak_3":        {"xp": 75,   "label": "📅 3-Day Streak",    "desc": "Used APEX 3 days in a row"},
+    "streak_7":        {"xp": 200,  "label": "🗓️ Weekly Warrior", "desc": "7-day usage streak"},
+    "first_workflow":  {"xp": 100,  "label": "🗺️ Planner",        "desc": "Completed your first workflow"},
+}
+
+
+class GamificationManager:
+    """Awards XP, coins, and badges on every API call and ad watch."""
+
+    @staticmethod
+    async def award(
+        user_id: str,
+        xp: int = 0,
+        coins: int = 0,
+        reason: str = "api_call",
+    ) -> Dict[str, Any]:
+        """
+        Award XP + coins to the user and check for level-ups/badges.
+        Persists to `user_gamification` table.
+        """
+        try:
+            sb  = supabase_service.client
+            row = sb.table("user_gamification").select("*").eq("user_id", user_id).maybe_single().execute()
+            data = row.data or {
+                "user_id": user_id, "xp": 0, "coins": 0, "level": 1,
+                "total_api_calls": 0, "streak_days": 0, "badges": [],
+                "last_active_date": None,
+            }
+
+            today     = AdManager._today()
+            last_date = data.get("last_active_date")
+            yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+            # Streak logic
+            streak = data.get("streak_days", 0)
+            if last_date == yesterday:
+                streak += 1
+            elif last_date != today:
+                streak = 1
+
+            new_xp    = data.get("xp", 0) + xp
+            new_coins = data.get("coins", 0) + coins
+            new_calls = data.get("total_api_calls", 0) + (1 if reason == "api_call" else 0)
+            new_level = max(1, new_xp // XP_PER_LEVEL + 1)
+            leveled_up = new_level > data.get("level", 1)
+
+            # Badge checks
+            current_badges = set(data.get("badges") or [])
+            new_badges: List[str] = []
+
+            if new_calls == 1 and "first_call" not in current_badges:
+                new_badges.append("first_call")
+            if new_calls >= 10 and "call_10" not in current_badges:
+                new_badges.append("call_10")
+            if new_calls >= 50 and "call_50" not in current_badges:
+                new_badges.append("call_50")
+            if streak >= 3 and "streak_3" not in current_badges:
+                new_badges.append("streak_3")
+            if streak >= 7 and "streak_7" not in current_badges:
+                new_badges.append("streak_7")
+            if reason == "rewarded_ad_watched":
+                ad_count = data.get("ad_watches", 0) + 1
+                if "ad_watcher" not in current_badges:
+                    new_badges.append("ad_watcher")
+                if ad_count >= 10 and "ad_10" not in current_badges:
+                    new_badges.append("ad_10")
+            else:
+                ad_count = data.get("ad_watches", 0)
+
+            all_badges = list(current_badges | set(new_badges))
+
+            # Extra XP for new badges
+            badge_xp = sum(BADGES[b]["xp"] for b in new_badges if b in BADGES)
+            new_xp += badge_xp
+
+            upsert = {
+                "user_id":           user_id,
+                "xp":                new_xp,
+                "coins":             new_coins,
+                "level":             new_level,
+                "total_api_calls":   new_calls,
+                "streak_days":       streak,
+                "badges":            all_badges,
+                "ad_watches":        ad_count,
+                "last_active_date":  today,
+                "updated_at":        datetime.now(timezone.utc).isoformat(),
+            }
+            sb.table("user_gamification").upsert(upsert, on_conflict="user_id").execute()
+
+            return {
+                "xp_earned":    xp + badge_xp,
+                "coins_earned": coins,
+                "new_level":    new_level,
+                "leveled_up":   leveled_up,
+                "streak_days":  streak,
+                "new_badges":   [{"id": b, **BADGES[b]} for b in new_badges if b in BADGES],
+                "totals": {
+                    "xp": new_xp, "coins": new_coins,
+                    "level": new_level, "streak": streak,
+                },
+            }
+        except Exception as e:
+            logger.error(f"GamificationManager.award error: {e}")
+            return {"xp_earned": xp, "coins_earned": coins, "new_level": 1,
+                    "leveled_up": False, "streak_days": 0, "new_badges": [], "totals": {}}
+
+    @staticmethod
+    async def get_state(user_id: str) -> Dict[str, Any]:
+        """Return current gamification state for the user."""
+        try:
+            sb  = supabase_service.client
+            row = sb.table("user_gamification").select("*").eq("user_id", user_id).maybe_single().execute()
+            data = row.data or {}
+            xp   = data.get("xp", 0)
+            lvl  = data.get("level", 1)
+            return {
+                "xp":             xp,
+                "coins":          data.get("coins", 0),
+                "level":          lvl,
+                "xp_to_next":     (lvl * XP_PER_LEVEL) - xp,
+                "progress_pct":   int((xp % XP_PER_LEVEL) / XP_PER_LEVEL * 100),
+                "streak_days":    data.get("streak_days", 0),
+                "total_api_calls":data.get("total_api_calls", 0),
+                "badges":         data.get("badges", []),
+                "ad_watches":     data.get("ad_watches", 0),
+            }
+        except Exception as e:
+            logger.error(f"GamificationManager.get_state error: {e}")
+            return {"xp": 0, "coins": 0, "level": 1, "xp_to_next": 100,
+                    "progress_pct": 0, "streak_days": 0, "total_api_calls": 0,
+                    "badges": [], "ad_watches": 0}
+
 
 # ═══════════════════════════════════════════════════════════════════
 # MODEL ROUTER
@@ -496,116 +842,82 @@ class ModelRouter:
     def select_model(user: Dict, task_complexity: str = "standard", prefer_free: Optional[bool] = None) -> Dict:
         is_premium = user.get("is_premium", False)
         use_free = prefer_free if prefer_free is not None else not is_premium
-        
+
         if use_free or not is_premium:
             if task_complexity == "simple":
-                return {
-                    "model": FREE_MODELS["fallback"],
-                    "provider": "groq",
-                    "tier": "free",
-                    "max_tokens": 2000,
-                    "temperature": 0.7,
-                }
+                return {"model": FREE_MODELS["fallback"], "provider": "groq",
+                        "tier": "free", "max_tokens": 2000, "temperature": 0.7}
             elif task_complexity == "vision":
-                return {
-                    "model": FREE_MODELS["vision"],
-                    "provider": "google",
-                    "tier": "free",
-                    "max_tokens": 4000,
-                    "temperature": 0.7,
-                }
+                return {"model": FREE_MODELS["vision"], "provider": "google",
+                        "tier": "free", "max_tokens": 4000, "temperature": 0.7}
             else:
-                return {
-                    "model": FREE_MODELS["primary"],
-                    "provider": "google",
-                    "tier": "free",
-                    "max_tokens": 4000,
-                    "temperature": 0.7,
-                }
+                return {"model": FREE_MODELS["primary"], "provider": "google",
+                        "tier": "free", "max_tokens": 4000, "temperature": 0.7}
         else:
             if task_complexity == "reasoning":
-                return {
-                    "model": PREMIUM_MODELS["reasoning"],
-                    "provider": "openai",
-                    "tier": "premium",
-                    "max_tokens": 4000,
-                    "temperature": 0.7,
-                }
+                return {"model": PREMIUM_MODELS["reasoning"], "provider": "openai",
+                        "tier": "premium", "max_tokens": 4000, "temperature": 0.7}
             elif task_complexity == "vision":
-                return {
-                    "model": PREMIUM_MODELS["vision"],
-                    "provider": "openai",
-                    "tier": "premium",
-                    "max_tokens": 4000,
-                    "temperature": 0.7,
-                }
+                return {"model": PREMIUM_MODELS["vision"], "provider": "openai",
+                        "tier": "premium", "max_tokens": 4000, "temperature": 0.7}
             else:
-                return {
-                    "model": PREMIUM_MODELS["smart"],
-                    "provider": "openai",
-                    "tier": "premium",
-                    "max_tokens": 4000,
-                    "temperature": 0.7,
-                }
+                return {"model": PREMIUM_MODELS["smart"], "provider": "openai",
+                        "tier": "premium", "max_tokens": 4000, "temperature": 0.7}
 
     @staticmethod
     async def chat_with_model(messages: List[Dict], system: str, user: Dict,
-                             task_complexity: str = "standard", 
-                             prefer_free: Optional[bool] = None,
-                             max_tokens: Optional[int] = None,
-                             stream: bool = False) -> Dict:
+                              task_complexity: str = "standard",
+                              prefer_free: Optional[bool] = None,
+                              max_tokens: Optional[int] = None,
+                              stream: bool = False) -> Dict:
         config = ModelRouter.select_model(user, task_complexity, prefer_free)
-        
+
         if max_tokens:
             config["max_tokens"] = max_tokens
-        
+
         try:
-            result = await ai_service.chat(
+            result = await ai_service.mentor_chat(
                 messages=messages,
-                system=system,
-                model=config["model"],
+                system_prompt=system,
                 max_tokens=config["max_tokens"],
-                temperature=config["temperature"],
-                stream=stream,
             )
-            
+
             return {
-                "content": result.get("content", ""),
-                "model": config["model"],
-                "provider": config["provider"],
-                "tier": config["tier"],
-                "usage": result.get("usage", {}),
+                "content":      result.get("content", ""),
+                "model":        config["model"],
+                "provider":     config["provider"],
+                "tier":         config["tier"],
+                "usage":        {},
                 "raw_response": result,
             }
         except Exception as e:
             logger.error(f"Model {config['model']} failed: {e}")
             if config["tier"] == "premium":
                 fallback = ModelRouter.select_model(user, task_complexity, prefer_free=True)
-                result = await ai_service.chat(
+                result = await ai_service.mentor_chat(
                     messages=messages,
-                    system=system,
-                    model=fallback["model"],
+                    system_prompt=system,
                     max_tokens=fallback["max_tokens"],
-                    temperature=fallback["temperature"],
                 )
                 return {
-                    "content": result.get("content", ""),
-                    "model": fallback["model"],
-                    "provider": fallback["provider"],
-                    "tier": "free (fallback)",
-                    "usage": result.get("usage", {}),
+                    "content":      result.get("content", ""),
+                    "model":        fallback["model"],
+                    "provider":     fallback["provider"],
+                    "tier":         "free (fallback)",
+                    "usage":        {},
                     "raw_response": result,
                 }
             raise
+
 
 # ═══════════════════════════════════════════════════════════════════
 # TOOL EXECUTOR
 # ═══════════════════════════════════════════════════════════════════
 
 async def _execute_tool(tool_name: str, tool_input: dict,
-                         profile: dict, permissions: dict,
-                         session_id: Optional[str] = None,
-                         user_id: Optional[str] = None) -> str:
+                        profile: dict, permissions: dict,
+                        session_id: Optional[str] = None,
+                        user_id: Optional[str] = None) -> str:
     meta = TOOLS.get(tool_name)
     if not meta:
         return json.dumps({"error": f"Unknown tool: {tool_name}"})
@@ -634,20 +946,17 @@ async def _execute_tool(tool_name: str, tool_input: dict,
 
     if handler == "find_freelance_jobs":
         jobs = await web_search_service.find_freelance_jobs(
-            tool_input.get("skill", ""), country
-        )
+            tool_input.get("skill", ""), country)
         return json.dumps({"jobs": jobs, "country": country})
 
     if handler == "find_partners":
         partners = await web_search_service.find_partners(
-            tool_input.get("niche", ""), country
-        )
+            tool_input.get("niche", ""), country)
         return json.dumps({"partners": partners, "country": country})
 
     if handler == "find_free_resources":
         res = await web_search_service.find_free_resources(
-            tool_input.get("business_type", tool_input.get("type", ""))
-        )
+            tool_input.get("business_type", tool_input.get("type", "")))
         return json.dumps({"resources": res, "country": country})
 
     if handler == "scan_opportunities":
@@ -734,22 +1043,22 @@ async def _execute_tool(tool_name: str, tool_input: dict,
         opp_types = tool_input.get("types", ["jobs", "hustles", "freelance"])
         query     = tool_input.get("query", " ".join(profile.get("current_skills", [])[:3]))
         opps      = await scraper_engine.find_opportunities(
-            profile=profile,
-            opp_types=opp_types,
-            query=query,
-            max_results=tool_input.get("max_results", 20),
-            score_with_ai=True,
+            profile     = profile,
+            opp_types   = opp_types,
+            query       = query,
+            max_results = tool_input.get("max_results", 20),
+            score_with_ai = True,
         )
         return json.dumps({"opportunities": opps, "total": len(opps), "country": country})
 
-    system  = meta.get("system", "Return ONLY valid JSON.")
+    system   = meta.get("system", "Return ONLY valid JSON.")
     user_msg = (
         f"User: {country}, {currency}, language={language}, "
         f"skills={profile.get('current_skills', [])}, "
         f"stage={profile.get('stage','survival')}\n"
         f"Input: {json.dumps(tool_input)}\nReturn ONLY valid JSON."
     )
-    
+
     for attempt in range(MAX_RETRIES):
         try:
             result = await ModelRouter.chat_with_model(
@@ -772,6 +1081,7 @@ async def _execute_tool(tool_name: str, tool_input: dict,
                 return json.dumps({"error": str(e), "partial_response": raw if 'raw' in locals() else ""})
             await asyncio.sleep(0.5)
     return json.dumps({"error": "Tool failed after retries"})
+
 
 # ═══════════════════════════════════════════════════════════════════
 # SYSTEM PROMPTS
@@ -870,17 +1180,17 @@ Return ONLY valid JSON (no fences):
 """
 
 def _chat_system(profile, session_context: Optional[str] = None, language: str = "en") -> str:
-    name = profile.get("full_name", "User")
-    country = profile.get("country", "US")
+    name     = profile.get("full_name", "User")
+    country  = profile.get("country", "US")
     currency = profile.get("currency", "USD")
-    skills = ", ".join(profile.get("current_skills", []) or [])
-    
+    skills   = ", ".join(profile.get("current_skills", []) or [])
+
     context_section = ""
     if session_context:
         context_section = f"\nPREVIOUS CONTEXT:\n{session_context}\n"
-    
+
     lang_instruction = f"\nRespond in {language} language." if language != "en" else ""
-    
+
     return f"""You are APEX — RiseUp's Autonomous Agent for {name}.
 Location: {country} | Currency: {currency} | Skills: {skills}
 You are in a continuous conversation. Remember previous messages and maintain context.
@@ -888,6 +1198,7 @@ Produce COMPLETE, ready-to-use outputs. No placeholders. Be specific to {country
 
 If the user asks you to remember something, acknowledge it. If they reference previous discussion, use that context.
 """
+
 
 # ═══════════════════════════════════════════════════════════════════
 # REACT LOOP
@@ -913,7 +1224,7 @@ def _parse(text: str) -> Dict:
             out["done"] = line[5:].strip().lower() == "true"
     return out
 
-async def _react_loop(task, profile, budget, hours, currency, permissions, 
+async def _react_loop(task, profile, budget, hours, currency, permissions,
                       language="en", session_id=None, user_id=None) -> Dict:
     system   = _agent_system(profile, task, budget, hours, currency, permissions, language)
     messages = [{"role": "user", "content": f"Begin: {task}"}]
@@ -941,14 +1252,14 @@ async def _react_loop(task, profile, budget, hours, currency, permissions,
             prefer_free=True,
             max_tokens=800,
         )
-        
+
         last_result = result
         turn = _parse(result["content"])
 
         obs = ""
         if turn["tool"] and turn["tool"] in TOOLS:
             obs = await _execute_tool(turn["tool"], turn["tool_input"] or {"query": task},
-                                       profile, permissions, session_id, user_id)
+                                      profile, permissions, session_id, user_id)
         elif turn["tool"]:
             obs = json.dumps({"error": f"Tool '{turn['tool']}' not in registry"})
 
@@ -959,48 +1270,115 @@ async def _react_loop(task, profile, budget, hours, currency, permissions,
             "observation": obs,
             "iteration":   i,
         })
-        
+
         if session_id and user_id:
             await ChatMemoryManager.save_message(
                 session_id, user_id, "assistant",
                 f"Step {i}: {turn['thought'][:200]}...",
                 {"tool": turn["tool"], "iteration": i, "observation_preview": obs[:200]}
             )
-        
+
         if turn["done"] or i == MAX_REACT_ITERATIONS:
             break
 
-    return {"memory": memory, "iterations": len(memory), 
+    return {"memory": memory, "iterations": len(memory),
             "model": last_result.get("model", "unknown"),
             "tier": last_result.get("tier", "free")}
+
 
 # ═══════════════════════════════════════════════════════════════════
 # QUOTA & UTILITIES
 # ═══════════════════════════════════════════════════════════════════
 
-async def _check_quota(user_id, is_premium=False) -> Dict:
+async def _check_quota(user_id: str, is_premium: bool = False) -> Dict:
+    """
+    Check if the user can make an API call.
+
+    Priority order:
+      1. Premium users → always allowed (up to PREMIUM_DAILY_RUNS)
+      2. Free users within DEFAULT_DAILY_RUNS → allowed
+      3. Free users who exhausted quota but have ad credits → allowed (credit consumed)
+      4. Free users with no quota and no credits → blocked, show_ad=True
+    """
     limit = PREMIUM_DAILY_RUNS if is_premium else DEFAULT_DAILY_RUNS
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     key   = f"agent_runs:{user_id}:{today}"
+
     try:
         sb   = supabase_service.client
         row  = sb.table("agent_run_quota").select("*").eq("quota_key", key).maybe_single().execute()
         used = row.data["runs_used"] if row.data else 0
-        if used >= limit:
-            return {"allowed": False, "runs_used": used, "runs_limit": limit,
-                    "resets_at": f"{today}T23:59:59Z", "tier": "premium" if is_premium else "free"}
-        if row.data:
-            sb.table("agent_run_quota").update({"runs_used": used + 1}).eq("quota_key", key).execute()
-        else:
-            sb.table("agent_run_quota").insert({
-                "quota_key": key, "user_id": user_id, "runs_used": 1,
-                "quota_date": today, "quota_limit": limit,
-            }).execute()
-        return {"allowed": True, "runs_used": used + 1, "runs_limit": limit,
-                "tier": "premium" if is_premium else "free"}
+
+        if used < limit:
+            # Within regular quota — increment and allow
+            if row.data:
+                sb.table("agent_run_quota").update({"runs_used": used + 1}).eq("quota_key", key).execute()
+            else:
+                sb.table("agent_run_quota").insert({
+                    "quota_key": key, "user_id": user_id, "runs_used": 1,
+                    "quota_date": today, "quota_limit": limit,
+                }).execute()
+            return {
+                "allowed":       True,
+                "runs_used":     used + 1,
+                "runs_limit":    limit,
+                "tier":          "premium" if is_premium else "free",
+                "via_ad_credit": False,
+                "show_ad":       False,
+            }
+
+        # Quota exhausted — check ad credits (free users only)
+        if not is_premium:
+            consumed = await AdManager.consume_credit(user_id)
+            if consumed:
+                ad_state = await AdManager.get_credits(user_id)
+                return {
+                    "allowed":         True,
+                    "runs_used":       used,
+                    "runs_limit":      limit,
+                    "tier":            "free",
+                    "via_ad_credit":   True,
+                    "show_ad":         False,
+                    "ad_credits_left": ad_state["credits_available"],
+                    "message":         "✅ Ad credit used — keep it up! 🎉",
+                }
+
+            # No quota, no credits
+            ad_state = await AdManager.get_credits(user_id)
+            return {
+                "allowed":          False,
+                "runs_used":        used,
+                "runs_limit":       limit,
+                "tier":             "free",
+                "via_ad_credit":    False,
+                "show_ad":          ad_state["can_watch_more"],
+                "can_watch_more":   ad_state["can_watch_more"],
+                "credits_available":ad_state["credits_available"],
+                "resets_at":        f"{today}T23:59:59Z",
+                "upgrade_prompt":   "Upgrade to Premium for unlimited runs",
+            }
+
+        # Premium quota exhausted
+        return {
+            "allowed":    False,
+            "runs_used":  used,
+            "runs_limit": limit,
+            "resets_at":  f"{today}T23:59:59Z",
+            "tier":       "premium",
+            "show_ad":    False,
+        }
     except Exception as e:
         logger.warning(f"Quota check error: {e}")
-        return {"allowed": True, "runs_used": 1, "runs_limit": limit, "tier": "free"}
+        return {"allowed": True, "runs_used": 1, "runs_limit": limit, "tier": "free",
+                "via_ad_credit": False, "show_ad": False}
+
+
+async def _award_call_gamification(user_id: str, is_premium: bool) -> Dict:
+    """Award XP + coins for completing an API call."""
+    xp    = CALL_XP_PREMIUM if is_premium else CALL_XP_FREE
+    coins = CALL_COINS_PREMIUM if is_premium else CALL_COINS_FREE
+    return await GamificationManager.award(user_id, xp=xp, coins=coins, reason="api_call")
+
 
 def _sse(event, data) -> str:
     return f"event: {event}\ndata: {json.dumps(data) if not isinstance(data, str) else data}\n\n"
@@ -1022,7 +1400,7 @@ async def _finalize(task, memory, currency, language="en", tier="free") -> Dict:
         prefer_free=(tier == "free"),
         max_tokens=4000,
     )
-    
+
     raw = result["content"].strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1]
@@ -1048,17 +1426,17 @@ async def _save_workflow(user_id, task, data, currency, workflow_id=None, sessio
     steps = data.get("steps", [])
     if not (plan and steps):
         return workflow_id
-    
+
     try:
         sb = supabase_service.client
         if not workflow_id:
             wf = sb.table("workflows").insert({
-                "user_id":            user_id, 
+                "user_id":            user_id,
                 "title":              plan.get("title", task[:50]),
-                "goal":               task,    
+                "goal":               task,
                 "income_type":        plan.get("income_type", "other"),
-                "currency":           currency, 
-                "status":             "active", 
+                "currency":           currency,
+                "status":             "active",
                 "total_revenue":      0.0,
                 "viability_score":    plan.get("viability", 75),
                 "realistic_timeline": plan.get("timeline", ""),
@@ -1073,37 +1451,37 @@ async def _save_workflow(user_id, task, data, currency, workflow_id=None, sessio
 
         if workflow_id and steps:
             sb.table("workflow_steps").insert([{
-                "workflow_id":  workflow_id, 
+                "workflow_id":  workflow_id,
                 "user_id":      user_id,
-                "order_index":  s.get("order", i + 1), 
+                "order_index":  s.get("order", i + 1),
                 "title":        s.get("title", ""),
-                "description":  s.get("description", ""), 
+                "description":  s.get("description", ""),
                 "step_type":    s.get("type", "manual"),
                 "time_minutes": s.get("time_minutes", 30),
                 "tools":        json.dumps(s.get("tools", [])),
-                "ai_output":    s.get("ai_output", ""), 
+                "ai_output":    s.get("ai_output", ""),
                 "status":       "pending",
             } for i, s in enumerate(steps)]).execute()
 
         free_tools = data.get("free_tools", [])
         if free_tools and workflow_id:
             sb.table("workflow_tools").insert([{
-                "workflow_id": workflow_id, 
-                "name": t.get("name", ""),
-                "url": t.get("url", ""), 
-                "purpose": t.get("purpose", ""),
-                "is_free": t.get("is_free", True),
+                "workflow_id": workflow_id,
+                "name":        t.get("name", ""),
+                "url":         t.get("url", ""),
+                "purpose":     t.get("purpose", ""),
+                "is_free":     t.get("is_free", True),
             } for t in free_tools]).execute()
 
         for doc in data.get("documents_generated", []):
             if doc.get("content") and workflow_id:
                 try:
                     sb.table("agent_documents").insert({
-                        "workflow_id": workflow_id, 
-                        "user_id": user_id,
-                        "doc_type": doc.get("type", "document"),
-                        "content":  doc.get("content", ""),
-                        "session_id": session_id,
+                        "workflow_id": workflow_id,
+                        "user_id":     user_id,
+                        "doc_type":    doc.get("type", "document"),
+                        "content":     doc.get("content", ""),
+                        "session_id":  session_id,
                     }).execute()
                 except Exception:
                     pass
@@ -1111,8 +1489,115 @@ async def _save_workflow(user_id, task, data, currency, workflow_id=None, sessio
         logger.error(f"Workflow save error: {e}")
     return workflow_id
 
+
 # ═══════════════════════════════════════════════════════════════════
-# ENDPOINTS
+# ── REWARDED ADS ENDPOINTS ──────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+
+@router.post("/ads/reward-complete")
+@limiter.limit(FREE_TIER_LIMIT)
+async def ad_reward_complete(
+    req:     AdWatchCompleteRequest,
+    request: Request,
+    user:    dict = Depends(get_current_user),
+):
+    """
+    Called by the Flutter SDK immediately after the user completes a rewarded ad.
+    Grants 1 API-call credit + XP + coins.
+
+    Flutter integration:
+      RewardedAd.show(onUserEarnedReward: (ad, reward) async {
+        await api.post('/agent/ads/reward-complete', {
+          'ad_id': ad.adUnitId,
+          'ad_type': 'rewarded_video',
+        });
+      });
+    """
+    user_id    = user["id"]
+    is_premium = user.get("is_premium", False)
+
+    # Premium users don't need to watch ads — graceful no-op
+    if is_premium:
+        return {
+            "granted": True,
+            "message": "Premium users don't need ads 🎉",
+            "is_premium": True,
+        }
+
+    result = await AdManager.grant_credit(
+        user_id  = user_id,
+        ad_id    = req.ad_id,
+        ad_type  = req.ad_type,
+    )
+
+    if req.session_id and result.get("granted"):
+        await ChatMemoryManager.save_message(
+            req.session_id, user_id, "system",
+            "User watched a rewarded ad and earned 1 API credit.",
+            {"type": "ad_reward", "ad_id": req.ad_id, "credits_available": result.get("credits_available")}
+        )
+
+    return result
+
+
+@router.get("/ads/credits")
+async def get_ad_credits(user: dict = Depends(get_current_user)):
+    """
+    Return current ad-credit balance + whether to show the 'Watch Ad' CTA.
+
+    Flutter: poll this before each API call to decide whether to gate behind an ad.
+    """
+    user_id    = user["id"]
+    is_premium = user.get("is_premium", False)
+
+    if is_premium:
+        return {
+            "is_premium":           True,
+            "credits_available":    999,
+            "can_watch_more":       False,
+            "show_ad_prompt":       False,
+            "max_credits_per_day":  MAX_AD_CREDITS_PER_DAY,
+            "credits_used_today":   0,
+            "credits_earned_today": 0,
+            "xp_earned_from_ads":   0,
+        }
+
+    state = await AdManager.get_credits(user_id)
+    return state
+
+
+# ═══════════════════════════════════════════════════════════════════
+# ── GAMIFICATION ENDPOINTS ──────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+
+@router.get("/gamification")
+async def get_gamification(user: dict = Depends(get_current_user)):
+    """Return the user's full gamification state: XP, coins, level, badges, streak."""
+    state = await GamificationManager.get_state(user["id"])
+    return state
+
+
+@router.get("/gamification/badges")
+async def list_badges(user: dict = Depends(get_current_user)):
+    """List all possible badges and which ones the user has earned."""
+    state = await GamificationManager.get_state(user["id"])
+    earned = set(state.get("badges", []))
+    return {
+        "earned": [
+            {"id": b, **BADGES[b], "earned": True}
+            for b in earned if b in BADGES
+        ],
+        "locked": [
+            {"id": b, **BADGES[b], "earned": False}
+            for b in BADGES if b not in earned
+        ],
+        "total_badges": len(BADGES),
+        "earned_count": len(earned),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# MAIN AGENT ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════
 
 @router.post("/run")
@@ -1123,40 +1608,42 @@ async def run_agent(req: AgentRequest, request: Request,
     is_premium = user.get("is_premium", False)
     profile    = await supabase_service.get_profile(user_id) or {}
     currency   = req.currency or profile.get("currency", "USD")
-    country    = req.country or profile.get("country", "US")
+    country    = req.country  or profile.get("country",  "US")
     language   = req.language or profile.get("language", "en")
     profile["country"] = country
 
     use_free = req.use_free_models if req.use_free_models is not None else not is_premium
-    
+
     quota = await _check_quota(user_id, is_premium)
     if not quota["allowed"]:
-        raise HTTPException(429, {
-            "error": "Daily run limit reached",
-            "runs_used": quota["runs_used"], 
-            "runs_limit": quota["runs_limit"],
-            "upgrade_prompt": "Upgrade to Premium for unlimited runs",
-            "tier": quota["tier"]
+        raise HTTPException(402, {
+            "error":          "Daily run limit reached",
+            "runs_used":      quota["runs_used"],
+            "runs_limit":     quota["runs_limit"],
+            "show_ad":        quota.get("show_ad", True),
+            "can_watch_more": quota.get("can_watch_more", True),
+            "upgrade_prompt": "Upgrade to Premium for unlimited runs, or watch a short ad to continue.",
+            "tier":           quota["tier"],
         })
 
     permissions = {
-        "allow_email": req.allow_email,
+        "allow_email":       req.allow_email,
         "allow_social_post": req.allow_social_post,
-        "social_tokens": req.social_tokens or {}
+        "social_tokens":     req.social_tokens or {}
     }
 
     session_id = req.session_id
     if not session_id:
-        session = await ChatMemoryManager.create_session(
-            user_id, 
-            title=f"Agent Run: {req.task[:30]}...",
-            context=req.context,
-            workflow_id=req.workflow_id
+        session    = await ChatMemoryManager.create_session(
+            user_id,
+            title      = f"Agent Run: {req.task[:30]}...",
+            context    = req.context,
+            workflow_id= req.workflow_id
         )
         session_id = session["id"]
 
     await ChatMemoryManager.save_message(
-        session_id, user_id, "user", 
+        session_id, user_id, "user",
         f"Task: {req.task}\nBudget: {req.budget}\nHours: {req.hours_per_day}",
         {"type": "agent_request", "budget": req.budget, "hours": req.hours_per_day}
     )
@@ -1166,77 +1653,85 @@ async def run_agent(req: AgentRequest, request: Request,
         req.hours_per_day or 2, currency, permissions,
         language, session_id, user_id
     )
-    
-    tier = "premium" if is_premium and not use_free else "free"
+
+    tier        = "premium" if is_premium and not use_free else "free"
     agent_data  = await _finalize(req.task, react["memory"], currency, language, tier)
     workflow_id = await _save_workflow(user_id, req.task, agent_data, currency, req.workflow_id, session_id)
 
     await ChatMemoryManager.save_message(
         session_id, user_id, "assistant",
         agent_data.get("agent_response", "Task completed"),
-        {"type": "agent_completion", "workflow_id": workflow_id, "tools_used": [m["tool"] for m in react["memory"] if m["tool"]]}
+        {"type": "agent_completion", "workflow_id": workflow_id,
+         "tools_used": [m["tool"] for m in react["memory"] if m["tool"]]}
     )
 
+    # Gamification rewards
+    gami = await _award_call_gamification(user_id, is_premium)
+
     return {
-        **agent_data, 
-        "workflow_id": workflow_id,
-        "session_id": session_id,
-        "model_used": react["model"], 
-        "model_tier": tier,
-        "iterations": react["iterations"],
-        "task": req.task, 
-        "quota": quota
+        **agent_data,
+        "workflow_id":   workflow_id,
+        "session_id":    session_id,
+        "model_used":    react["model"],
+        "model_tier":    tier,
+        "iterations":    react["iterations"],
+        "task":          req.task,
+        "quota":         quota,
+        "gamification":  gami,
+        "via_ad_credit": quota.get("via_ad_credit", False),
     }
+
 
 @router.post("/run-stream")
 @limiter.limit(AI_LIMIT)
 async def run_agent_stream(req: AgentRequest, request: Request,
-                            user: dict = Depends(get_current_user)):
+                           user: dict = Depends(get_current_user)):
     user_id    = user["id"]
     is_premium = user.get("is_premium", False)
     profile    = await supabase_service.get_profile(user_id) or {}
     currency   = req.currency or profile.get("currency", "USD")
     language   = req.language or profile.get("language", "en")
-    use_free = req.use_free_models if req.use_free_models is not None else not is_premium
-    
+    use_free   = req.use_free_models if req.use_free_models is not None else not is_premium
+
     permissions = {
-        "allow_email": req.allow_email,
+        "allow_email":       req.allow_email,
         "allow_social_post": req.allow_social_post,
-        "social_tokens": req.social_tokens or {}
+        "social_tokens":     req.social_tokens or {}
     }
 
     async def stream():
         quota = await _check_quota(user_id, is_premium)
         yield _sse("quota_check", {
-            **quota, 
+            **quota,
             "runs_remaining": quota["runs_limit"] - quota["runs_used"],
-            "tier": "free" if use_free else "premium"
+            "tier":           "free" if use_free else "premium",
         })
 
         if not quota["allowed"]:
             yield _sse("error", {
-                "message": "Daily run limit reached. Upgrade for more runs.",
-                "resets_at": quota.get("resets_at", ""),
-                "tier": quota["tier"]
+                "message":        "Daily run limit reached.",
+                "show_ad":        quota.get("show_ad", True),
+                "can_watch_more": quota.get("can_watch_more", True),
+                "resets_at":      quota.get("resets_at", ""),
+                "tier":           quota["tier"],
             })
             return
 
-        session = await ChatMemoryManager.create_session(
-            user_id, 
-            title=f"Stream: {req.task[:30]}...",
-            context=req.context,
-            workflow_id=req.workflow_id
+        session    = await ChatMemoryManager.create_session(
+            user_id,
+            title      = f"Stream: {req.task[:30]}...",
+            context    = req.context,
+            workflow_id= req.workflow_id
         )
         session_id = session["id"]
-        
         await ChatMemoryManager.save_message(session_id, user_id, "user", req.task)
 
-        system   = _agent_system(profile, req.task, req.budget or 0,
-                                  req.hours_per_day or 2, currency, permissions, language)
-        messages = [{"role": "user", "content": f"Begin: {req.task}"}]
-        memory   = []
+        system     = _agent_system(profile, req.task, req.budget or 0,
+                                   req.hours_per_day or 2, currency, permissions, language)
+        messages   = [{"role": "user", "content": f"Begin: {req.task}"}]
+        memory     = []
         last_model = "unknown"
-        tier_used = "free" if use_free else "premium"
+        tier_used  = "free" if use_free else "premium"
 
         for i in range(1, MAX_REACT_ITERATIONS + 1):
             ctx = ""
@@ -1256,30 +1751,30 @@ async def run_agent_stream(req: AgentRequest, request: Request,
                 prefer_free=use_free,
                 max_tokens=800,
             )
-            
+
             last_model = result.get("model", "unknown")
-            tier_used = result.get("tier", tier_used)
+            tier_used  = result.get("tier", tier_used)
             turn = _parse(result["content"])
             cat  = TOOLS.get(turn["tool"] or "", {}).get("category", "")
 
             yield _sse("thinking", {
-                "iteration": i, 
-                "thought": turn["thought"],
-                "total": MAX_REACT_ITERATIONS,
-                "model": last_model,
-                "tier": tier_used
+                "iteration": i,
+                "thought":   turn["thought"],
+                "total":     MAX_REACT_ITERATIONS,
+                "model":     last_model,
+                "tier":      tier_used,
             })
 
             obs = ""
             if turn["tool"] and turn["tool"] in TOOLS:
                 tool_input = turn["tool_input"] or {"query": req.task}
                 yield _sse("tool_call", {
-                    "iteration": i, 
-                    "tool": turn["tool"],
-                    "category": cat, 
-                    "input": tool_input
+                    "iteration": i,
+                    "tool":      turn["tool"],
+                    "category":  cat,
+                    "input":     tool_input,
                 })
-                
+
                 obs = await _execute_tool(turn["tool"], tool_input, profile, permissions, session_id, user_id)
 
                 try:
@@ -1288,12 +1783,12 @@ async def run_agent_stream(req: AgentRequest, request: Request,
                     preview = {"raw": obs[:300]}
 
                 yield _sse("tool_result", {
-                    "iteration": i, 
-                    "tool": turn["tool"],
-                    "category": cat,
-                    "preview": str(obs)[:350]
+                    "iteration": i,
+                    "tool":      turn["tool"],
+                    "category":  cat,
+                    "preview":   str(obs)[:350],
                 })
-                
+
                 if cat == "action":
                     yield _sse("action_done", {"tool": turn["tool"], "result": preview})
 
@@ -1301,18 +1796,18 @@ async def run_agent_stream(req: AgentRequest, request: Request,
                 obs = json.dumps({"error": f"Unknown tool: {turn['tool']}"})
 
             memory.append({
-                "thought": turn["thought"], 
-                "tool": turn["tool"],
-                "input": turn["tool_input"], 
-                "observation": obs, 
-                "iteration": i
+                "thought":     turn["thought"],
+                "tool":        turn["tool"],
+                "input":       turn["tool_input"],
+                "observation": obs,
+                "iteration":   i,
             })
 
             if turn["done"] or i == MAX_REACT_ITERATIONS:
                 break
 
         yield _sse("finalizing", {"message": "Writing your complete plan...", "model": last_model})
-        
+
         agent_data  = await _finalize(req.task, memory, currency, language, tier_used)
         workflow_id = await _save_workflow(user_id, req.task, agent_data, currency, req.workflow_id, session_id)
 
@@ -1322,37 +1817,55 @@ async def run_agent_stream(req: AgentRequest, request: Request,
             {"type": "stream_complete", "workflow_id": workflow_id}
         )
 
+        # Gamification
+        gami = await _award_call_gamification(user_id, is_premium)
+
         yield _sse("complete", {
-            **agent_data, 
-            "workflow_id": workflow_id,
-            "session_id": session_id,
-            "model_used": last_model, 
-            "model_tier": tier_used,
-            "iterations": len(memory),
-            "task": req.task, 
-            "quota": quota
+            **agent_data,
+            "workflow_id":   workflow_id,
+            "session_id":    session_id,
+            "model_used":    last_model,
+            "model_tier":    tier_used,
+            "iterations":    len(memory),
+            "task":          req.task,
+            "quota":         quota,
+            "gamification":  gami,
+            "via_ad_credit": quota.get("via_ad_credit", False),
         })
 
     return StreamingResponse(
-        stream(), 
+        stream(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Access-Control-Allow-Origin": "*"
+            "Cache-Control":       "no-cache",
+            "X-Accel-Buffering":   "no",
+            "Access-Control-Allow-Origin": "*",
         }
     )
+
 
 @router.post("/chat")
 @limiter.limit(AI_LIMIT)
 async def agent_chat(req: AgentChatRequest, request: Request,
-                      user: dict = Depends(get_current_user)):
-    user_id = user["id"]
+                     user: dict = Depends(get_current_user)):
+    user_id    = user["id"]
     is_premium = user.get("is_premium", False)
-    profile = await supabase_service.get_profile(user_id) or {}
-    language = profile.get("language", "en")
-    use_free = not is_premium
-    
+    profile    = await supabase_service.get_profile(user_id) or {}
+    language   = profile.get("language", "en")
+    use_free   = not is_premium
+
+    # ── Quota gate ──────────────────────────────────────────────────
+    quota = await _check_quota(user_id, is_premium)
+    if not quota["allowed"]:
+        raise HTTPException(402, {
+            "error":          "Daily chat limit reached",
+            "show_ad":        quota.get("show_ad", True),
+            "can_watch_more": quota.get("can_watch_more", True),
+            "upgrade_prompt": "Watch an ad to unlock more chats, or upgrade to Premium.",
+            "tier":           quota["tier"],
+        })
+    # ────────────────────────────────────────────────────────────────
+
     session_id = req.session_id
     if not session_id:
         recent_sessions = await ChatMemoryManager.list_sessions(user_id, limit=5)
@@ -1360,35 +1873,35 @@ async def agent_chat(req: AgentChatRequest, request: Request,
             if sess.get("workflow_id") == req.workflow_id and sess.get("is_active"):
                 session_id = sess["id"]
                 break
-        
+
         if not session_id:
             session = await ChatMemoryManager.create_session(
                 user_id,
-                title=req.title or f"Chat {datetime.now(timezone.utc).strftime('%H:%M')}",
-                context=req.context_override,
-                workflow_id=req.workflow_id,
-                tags=["chat"]
+                title      = req.title or f"Chat {datetime.now(timezone.utc).strftime('%H:%M')}",
+                context    = req.context_override,
+                workflow_id= req.workflow_id,
+                tags       = ["chat"]
             )
             session_id = session["id"]
-    
-    session = await ChatMemoryManager.get_session(session_id, user_id)
+
+    session         = await ChatMemoryManager.get_session(session_id, user_id)
     session_context = session.get("summary") if session else None
-    
+
     await ChatMemoryManager.auto_summarize_if_needed(session_id, user_id, ai_service)
-    
-    history = []
-    if req.history:
-        history = req.history[-req.history_limit:]
-    else:
-        db_messages = await ChatMemoryManager.get_messages(
-            session_id, user_id, limit=req.history_limit
-        )
-        history = [{"role": m["role"], "content": m["content"]} 
-                   for m in db_messages if not m.get("is_summary")]
-    
+
+    # ── Load history from DB (NOT from req.history — field does not exist) ──
+    db_messages = await ChatMemoryManager.get_messages(
+        session_id, user_id, limit=req.history_limit
+    )
+    history = [
+        {"role": m["role"], "content": m["content"]}
+        for m in db_messages if not m.get("is_summary")
+    ]
+    # ────────────────────────────────────────────────────────────────
+
     system = _chat_system(profile, session_context, language)
     history.append({"role": "user", "content": req.message})
-    
+
     result = await ModelRouter.chat_with_model(
         messages=history,
         system=system,
@@ -1398,9 +1911,9 @@ async def agent_chat(req: AgentChatRequest, request: Request,
         max_tokens=2500,
         stream=req.stream
     )
-    
+
     ai_content = result["content"]
-    
+
     await ChatMemoryManager.save_message(
         session_id, user_id, "user", req.message,
         {"workflow_id": req.workflow_id}
@@ -1410,7 +1923,7 @@ async def agent_chat(req: AgentChatRequest, request: Request,
         {"model": result["model"], "tier": result["tier"]},
         model_used=result["model"]
     )
-    
+
     if session and session.get("message_count", 0) == 0:
         title_result = await ModelRouter.chat_with_model(
             messages=[{"role": "user", "content": f"Summarize this in 5 words or less: {req.message}"}],
@@ -1423,44 +1936,61 @@ async def agent_chat(req: AgentChatRequest, request: Request,
         new_title = title_result["content"].strip()[:50]
         await ChatMemoryManager.rename_session(session_id, user_id, new_title)
 
+    # Gamification
+    gami = await _award_call_gamification(user_id, is_premium)
+
     return {
-        "content": ai_content, 
-        "session_id": session_id, 
-        "model_used": result["model"],
-        "model_tier": result["tier"],
-        "message_count": (session.get("message_count", 0) + 2) if session else 2
+        "content":       ai_content,
+        "session_id":    session_id,
+        "model_used":    result["model"],
+        "model_tier":    result["tier"],
+        "message_count": (session.get("message_count", 0) + 2) if session else 2,
+        "gamification":  gami,
+        "via_ad_credit": quota.get("via_ad_credit", False),
     }
+
 
 @router.post("/chat/stream")
 @limiter.limit(AI_LIMIT)
 async def agent_chat_stream(req: AgentChatRequest, request: Request,
-                           user: dict = Depends(get_current_user)):
-    user_id = user["id"]
-    profile = await supabase_service.get_profile(user_id) or {}
-    language = profile.get("language", "en")
-    use_free = not user.get("is_premium", False)
-    
+                            user: dict = Depends(get_current_user)):
+    user_id    = user["id"]
+    is_premium = user.get("is_premium", False)
+    profile    = await supabase_service.get_profile(user_id) or {}
+    language   = profile.get("language", "en")
+    use_free   = not is_premium
+
     session_id = req.session_id
     if not session_id:
-        session = await ChatMemoryManager.create_session(
-            user_id,
-            title=req.title or "Streaming Chat",
-            workflow_id=req.workflow_id
+        session    = await ChatMemoryManager.create_session(
+            user_id, title=req.title or "Streaming Chat", workflow_id=req.workflow_id
         )
         session_id = session["id"]
-    
+
     db_messages = await ChatMemoryManager.get_messages(session_id, user_id, limit=req.history_limit)
-    history = [{"role": m["role"], "content": m["content"]} 
-               for m in db_messages if not m.get("is_summary")]
+    history = [
+        {"role": m["role"], "content": m["content"]}
+        for m in db_messages if not m.get("is_summary")
+    ]
     history.append({"role": "user", "content": req.message})
-    
+
     await ChatMemoryManager.save_message(session_id, user_id, "user", req.message)
-    
+
     system = _chat_system(profile, None, language)
-    
+
     async def stream_chat():
         full_response = ""
         try:
+            # Quota check inside stream
+            quota = await _check_quota(user_id, is_premium)
+            if not quota["allowed"]:
+                yield _sse("error", {
+                    "message":        "Daily chat limit reached.",
+                    "show_ad":        quota.get("show_ad", True),
+                    "can_watch_more": quota.get("can_watch_more", True),
+                })
+                return
+
             result = await ModelRouter.chat_with_model(
                 messages=history,
                 system=system,
@@ -1470,27 +2000,31 @@ async def agent_chat_stream(req: AgentChatRequest, request: Request,
                 max_tokens=2500,
                 stream=False
             )
-            
+
             words = result["content"].split()
             for i, word in enumerate(words):
                 chunk = word + (" " if i < len(words) - 1 else "")
                 full_response += chunk
                 yield _sse("token", {"content": chunk, "session_id": session_id})
                 await asyncio.sleep(0.01)
-            
+
             await ChatMemoryManager.save_message(
                 session_id, user_id, "assistant", full_response,
                 {"model": result["model"], "tier": result["tier"], "streamed": True},
                 model_used=result["model"]
             )
-            
+
+            gami = await _award_call_gamification(user_id, is_premium)
+
             yield _sse("complete", {
-                "content": full_response,
-                "session_id": session_id,
-                "model_used": result["model"],
-                "model_tier": result["tier"]
+                "content":       full_response,
+                "session_id":    session_id,
+                "model_used":    result["model"],
+                "model_tier":    result["tier"],
+                "gamification":  gami,
+                "via_ad_credit": quota.get("via_ad_credit", False),
             })
-            
+
         except Exception as e:
             logger.error(f"Stream error: {e}")
             yield _sse("error", {"message": str(e), "session_id": session_id})
@@ -1498,173 +2032,153 @@ async def agent_chat_stream(req: AgentChatRequest, request: Request,
     return StreamingResponse(
         stream_chat(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no"
-        }
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
     )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# CHAT SESSION MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════
 
 @router.get("/chat/sessions")
 async def list_chat_sessions(
-    limit: int = 50,
+    limit:            int  = 50,
     include_archived: bool = False,
     user: dict = Depends(get_current_user)
 ):
     sessions = await ChatMemoryManager.list_sessions(
-        user["id"], 
-        limit=limit, 
-        include_archived=include_archived
+        user["id"], limit=limit, include_archived=include_archived
     )
     return {
-        "sessions": sessions,
-        "total": len(sessions),
+        "sessions":     sessions,
+        "total":        len(sessions),
         "active_count": sum(1 for s in sessions if s.get("is_active"))
     }
 
 @router.post("/chat/sessions")
-async def create_chat_session(
-    req: ChatSessionCreate,
-    user: dict = Depends(get_current_user)
-):
+async def create_chat_session(req: ChatSessionCreate, user: dict = Depends(get_current_user)):
     session = await ChatMemoryManager.create_session(
-        user["id"],
-        title=req.title,
-        context=req.context,
-        workflow_id=req.workflow_id,
-        tags=req.tags
+        user["id"], title=req.title, context=req.context,
+        workflow_id=req.workflow_id, tags=req.tags
     )
     return session
 
 @router.get("/chat/sessions/{session_id}")
-async def get_chat_session(
-    session_id: str,
-    user: dict = Depends(get_current_user)
-):
+async def get_chat_session(session_id: str, user: dict = Depends(get_current_user)):
     session = await ChatMemoryManager.get_session(session_id, user["id"])
     if not session:
         raise HTTPException(404, "Session not found")
-    
     messages = await ChatMemoryManager.get_messages(session_id, user["id"], limit=20)
     return {
         **session,
-        "recent_messages": messages,
-        "message_preview": [m["content"][:100] for m in messages[-3:]] if messages else []
+        "recent_messages":  messages,
+        "message_preview":  [m["content"][:100] for m in messages[-3:]] if messages else []
     }
 
 @router.get("/chat/sessions/{session_id}/messages")
 async def get_session_messages(
     session_id: str,
-    limit: int = 50,
+    limit:  int = 50,
     offset: int = 0,
     user: dict = Depends(get_current_user)
 ):
     messages = await ChatMemoryManager.get_messages(
         session_id, user["id"], limit=limit, offset=offset
     )
-    return {
-        "messages": messages,
-        "session_id": session_id,
-        "has_more": len(messages) == limit
-    }
+    return {"messages": messages, "session_id": session_id, "has_more": len(messages) == limit}
 
 @router.post("/chat/sessions/{session_id}/rename")
-async def rename_chat_session(
-    session_id: str,
-    new_title: str,
-    user: dict = Depends(get_current_user)
-):
+async def rename_chat_session(session_id: str, new_title: str,
+                               user: dict = Depends(get_current_user)):
     success = await ChatMemoryManager.rename_session(session_id, user["id"], new_title)
     if not success:
         raise HTTPException(400, "Failed to rename session")
     return {"success": True, "session_id": session_id, "new_title": new_title}
 
 @router.delete("/chat/sessions/{session_id}")
-async def delete_chat_session(
-    session_id: str,
-    user: dict = Depends(get_current_user)
-):
+async def delete_chat_session(session_id: str, user: dict = Depends(get_current_user)):
     success = await ChatMemoryManager.delete_session(session_id, user["id"])
     if not success:
         raise HTTPException(400, "Failed to delete session")
     return {"success": True, "session_id": session_id}
 
+
+# ═══════════════════════════════════════════════════════════════════
+# DIRECT TOOL EXECUTION
+# ═══════════════════════════════════════════════════════════════════
+
 @router.post("/execute-tool")
 @limiter.limit(AI_LIMIT)
 async def execute_tool(req: ExecuteToolRequest, request: Request,
-                        user: dict = Depends(get_current_user)):
+                       user: dict = Depends(get_current_user)):
     if req.tool not in TOOLS:
-        raise HTTPException(400, {
-            "error": f"Unknown tool: {req.tool}", 
-            "valid": list(TOOLS.keys())
-        })
-    
-    profile = await supabase_service.get_profile(user["id"]) or {}
-    permissions = {
-        "allow_email": True, 
-        "allow_social_post": True, 
-        "social_tokens": {}
-    }
-    
+        raise HTTPException(400, {"error": f"Unknown tool: {req.tool}", "valid": list(TOOLS.keys())})
+
+    profile     = await supabase_service.get_profile(user["id"]) or {}
+    permissions = {"allow_email": True, "allow_social_post": True, "social_tokens": {}}
+
     raw = await _execute_tool(
-        req.tool, req.input, profile, permissions, 
-        req.session_id, user["id"]
+        req.tool, req.input, profile, permissions, req.session_id, user["id"]
     )
-    
+
     try:
         output = json.loads(raw)
     except Exception:
         output = {"result": raw}
-    
+
     if req.session_id:
         await ChatMemoryManager.save_message(
             req.session_id, user["id"], "tool",
             f"Executed {req.tool}",
             {"tool": req.tool, "output_preview": str(output)[:200]}
         )
-    
-    return {"tool": req.tool, "output": output, "session_id": req.session_id}
+
+    gami = await _award_call_gamification(user["id"], user.get("is_premium", False))
+
+    return {"tool": req.tool, "output": output, "session_id": req.session_id, "gamification": gami}
+
 
 @router.post("/quick")
 @limiter.limit(FREE_TIER_LIMIT)
 async def quick_execute(req: QuickRequest, request: Request,
-                         user: dict = Depends(get_current_user_optional)):
-    profile = {}
+                        user: dict = Depends(get_current_user_optional)):
+    profile  = {}
     if user:
         profile = await supabase_service.get_profile(user["id"]) or {}
-    
+
     currency = profile.get("currency", "USD")
-    country = profile.get("country", "US")
+    country  = profile.get("country", "US")
     language = req.language or profile.get("language", "en")
-    
+
     result = await ModelRouter.chat_with_model(
         messages=[{"role": "user", "content": req.task}],
         system=(
             f"You are APEX for users in {country}. "
             f"TASK: {req.task}. Produce COMPLETE ready-to-use output. "
-            f"Be specific to {country}. Use {currency}. "
-            f"Respond in {language}."
+            f"Be specific to {country}. Use {currency}. Respond in {language}."
         ),
         user=user or {"is_premium": False},
         task_complexity="simple",
         prefer_free=True,
         max_tokens=1800,
     )
-    
+
     return {
-        "output": result["content"], 
-        "task": req.task, 
+        "output":     result["content"],
+        "task":       req.task,
         "model_used": result["model"],
         "model_tier": result["tier"],
-        "language": language
+        "language":   language,
     }
+
 
 @router.post("/analyze")
 @limiter.limit(AI_LIMIT)
 async def analyze(req: AnalyzeRequest, request: Request,
-                   user: dict = Depends(get_current_user)):
-    profile = await supabase_service.get_profile(user["id"]) or {}
+                  user: dict = Depends(get_current_user)):
+    profile    = await supabase_service.get_profile(user["id"]) or {}
     is_premium = user.get("is_premium", False)
-    
+
     result = await ModelRouter.chat_with_model(
         messages=[{"role": "user", "content": f"Analyze and improve:\n\n{req.content}"}],
         system=(
@@ -1679,54 +2193,55 @@ async def analyze(req: AnalyzeRequest, request: Request,
         prefer_free=not is_premium,
         max_tokens=2000,
     )
-        raw = result["content"].strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+
+    # ── FIX: raw is at the same indent level as result, NOT inside the call ──
+    raw = result["content"].strip().lstrip("```json").lstrip("```").rstrip("```").strip()
     try:
         output = json.loads(raw)
     except Exception:
-        output = {
-            "improved_version": result["content"], 
-            "issues": [], 
-            "key_changes": []
-        }
-    
+        output = {"improved_version": result["content"], "issues": [], "key_changes": []}
+
+    gami = await _award_call_gamification(user["id"], is_premium)
+
     return {
-        "analysis": output, 
+        "analysis":   output,
         "model_used": result["model"],
-        "model_tier": result["tier"]
+        "model_tier": result["tier"],
+        "gamification": gami,
     }
+
 
 @router.post("/scan")
 @limiter.limit(AI_LIMIT)
 async def scan(req: ScanRequest, request: Request,
-                user: dict = Depends(get_current_user)):
+               user: dict = Depends(get_current_user)):
     profile = await supabase_service.get_profile(user["id"]) or {}
-    
+
     if req.location:
         profile["country"] = req.location
-    
+
     opps = await scraper_engine.find_opportunities(
-        profile=profile,
-        max_results=20,
-        score_with_ai=True,
+        profile=profile, max_results=20, score_with_ai=True,
     )
-    
+
     return {
-        "opportunities": opps, 
-        "total": len(opps),
-        "location": profile.get("country", "global"),
-        "scanned_at": datetime.now(timezone.utc).isoformat()
+        "opportunities": opps,
+        "total":         len(opps),
+        "location":      profile.get("country", "global"),
+        "scanned_at":    datetime.now(timezone.utc).isoformat(),
     }
+
 
 # ═══════════════════════════════════════════════════════════════════
 # GROWTH AI ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════
 
 class OpportunitySearchRequest(BaseModel):
-    query:           Optional[str]       = None
-    types:           Optional[List[str]] = None
-    max_results:     int                 = 20
-    score_with_ai:   bool                = True
-    session_id:      Optional[str]       = None
+    query:         Optional[str]       = None
+    types:         Optional[List[str]] = None
+    max_results:   int                 = 20
+    score_with_ai: bool                = True
+    session_id:    Optional[str]       = None
 
 class MarketAnalysisRequest(BaseModel):
     industry: str
@@ -1734,9 +2249,9 @@ class MarketAnalysisRequest(BaseModel):
     location: Optional[str] = None
 
 class DailyPlanRequest(BaseModel):
-    goal:           Optional[str] = None
-    timeframe:      Optional[str] = "today"
-    session_id:     Optional[str] = None
+    goal:       Optional[str] = None
+    timeframe:  Optional[str] = "today"
+    session_id: Optional[str] = None
 
 class ScoreOpportunityRequest(BaseModel):
     opportunity: Dict[str, Any]
@@ -1747,59 +2262,53 @@ class FollowUpRequest(BaseModel):
     session_id: Optional[str] = None
 
 class EarningInsightRequest(BaseModel):
-    earnings: List[Dict[str, Any]]
+    earnings:   List[Dict[str, Any]]
     session_id: Optional[str] = None
 
 class MilestoneRequest(BaseModel):
     monthly_income: Optional[float] = None
     session_id:     Optional[str]   = None
 
+
 @router.post("/opportunities/search")
 @limiter.limit(AI_LIMIT)
-async def search_opportunities(
-    req: OpportunitySearchRequest,
-    request: Request,
-    user: dict = Depends(get_current_user),
-):
+async def search_opportunities(req: OpportunitySearchRequest, request: Request,
+                                user: dict = Depends(get_current_user)):
     profile = await supabase_service.get_profile(user["id"]) or {}
     query   = req.query or " ".join((profile.get("current_skills") or [])[:3])
-    
+
     opps = await scraper_engine.find_opportunities(
-        profile       = profile,
-        opp_types     = req.types or ["jobs", "hustles", "freelance"],
-        query         = query,
-        max_results   = req.max_results,
-        score_with_ai = req.score_with_ai,
+        profile=profile, opp_types=req.types or ["jobs", "hustles", "freelance"],
+        query=query, max_results=req.max_results, score_with_ai=req.score_with_ai,
     )
-    
+
     if req.session_id:
         await ChatMemoryManager.save_message(
             req.session_id, user["id"], "assistant",
             f"Found {len(opps)} opportunities for: {query}",
             {"type": "opportunity_search", "count": len(opps), "query": query}
         )
-    
+
     return {"total": len(opps), "opportunities": opps, "query": query}
+
 
 @router.get("/opportunities/trending")
 async def get_trending_opportunities(
     category: Optional[str] = None,
-    limit:    int          = 20,
+    limit:    int           = 20,
     user: dict = Depends(get_current_user_optional),
 ):
     opps = await scraper_engine.get_trending(category=category, limit=limit)
     return {"total": len(opps), "opportunities": opps, "category": category}
 
+
 @router.post("/market-analysis")
 @limiter.limit(AI_LIMIT)
-async def market_analysis(
-    req: MarketAnalysisRequest,
-    request: Request,
-    user: dict = Depends(get_current_user),
-):
-    profile  = await supabase_service.get_profile(user["id"]) or {}
-    currency = profile.get("currency", "USD")
-    country  = req.location or profile.get("country", "US")
+async def market_analysis(req: MarketAnalysisRequest, request: Request,
+                           user: dict = Depends(get_current_user)):
+    profile    = await supabase_service.get_profile(user["id"]) or {}
+    currency   = profile.get("currency", "USD")
+    country    = req.location or profile.get("country", "US")
     is_premium = user.get("is_premium", False)
 
     system = (
@@ -1813,46 +2322,40 @@ async def market_analysis(
         '"best_platforms":["..."],"in_demand_skills":["..."],'
         '"future_outlook":"...","recommendations":["..."]}'
     )
-    
+
     result = await ModelRouter.chat_with_model(
         messages=[{"role": "user", "content":
-                   f"Analyse market for: {req.industry}"
-                   + (f", skill: {req.skill}" if req.skill else "")}],
+                   f"Analyse market for: {req.industry}" + (f", skill: {req.skill}" if req.skill else "")}],
         system=system,
         user=user,
         task_complexity="standard",
         prefer_free=not is_premium,
         max_tokens=800,
     )
-    
+
     raw = result["content"].strip().lstrip("```json").lstrip("```").rstrip("```").strip()
     try:
         data = json.loads(raw)
     except Exception:
         data = {"summary": result["content"]}
-    
-    return {
-        **data, 
-        "industry": req.industry, 
-        "skill": req.skill,
-        "model_used": result["model"],
-        "model_tier": result["tier"]
-    }
+
+    gami = await _award_call_gamification(user["id"], is_premium)
+
+    return {**data, "industry": req.industry, "skill": req.skill,
+            "model_used": result["model"], "model_tier": result["tier"], "gamification": gami}
+
 
 @router.post("/daily-plan")
 @limiter.limit(AI_LIMIT)
-async def create_daily_plan(
-    req: DailyPlanRequest,
-    request: Request,
-    user: dict = Depends(get_current_user),
-):
-    profile  = await supabase_service.get_profile(user["id"]) or {}
-    currency = profile.get("currency", "USD")
-    country  = profile.get("country",  "US")
-    stage    = profile.get("stage",    "survival")
-    skills   = ", ".join(profile.get("current_skills", []) or ["not set"])
-    income   = profile.get("monthly_income", 0)
-    goal     = req.goal or f"Grow my income from {currency} {income:,.0f}/mo"
+async def create_daily_plan(req: DailyPlanRequest, request: Request,
+                             user: dict = Depends(get_current_user)):
+    profile    = await supabase_service.get_profile(user["id"]) or {}
+    currency   = profile.get("currency", "USD")
+    country    = profile.get("country",  "US")
+    stage      = profile.get("stage",    "survival")
+    skills     = ", ".join(profile.get("current_skills", []) or ["not set"])
+    income     = profile.get("monthly_income", 0)
+    goal       = req.goal or f"Grow my income from {currency} {income:,.0f}/mo"
     is_premium = user.get("is_premium", False)
 
     system = (
@@ -1865,7 +2368,7 @@ async def create_daily_plan(
         '"potential_obstacles":["..."],"mitigation_strategies":["..."],'
         '"income_target":"...","confidence_score":0-100}'
     )
-    
+
     result = await ModelRouter.chat_with_model(
         messages=[{"role": "user", "content": f"Create my daily plan. Goal: {goal}. Timeframe: {req.timeframe}"}],
         system=system,
@@ -1874,7 +2377,7 @@ async def create_daily_plan(
         prefer_free=not is_premium,
         max_tokens=1500,
     )
-    
+
     raw = result["content"].strip().lstrip("```json").lstrip("```").rstrip("```").strip()
     try:
         plan = json.loads(raw)
@@ -1901,26 +2404,22 @@ async def create_daily_plan(
             {"type": "daily_plan", "goal": goal}
         )
 
-    return {
-        **plan, 
-        "goal": goal, 
-        "model_used": result["model"],
-        "model_tier": result["tier"]
-    }
+    gami = await _award_call_gamification(user["id"], is_premium)
+
+    return {**plan, "goal": goal, "model_used": result["model"],
+            "model_tier": result["tier"], "gamification": gami}
+
 
 @router.post("/score-opportunity")
 @limiter.limit(AI_LIMIT)
-async def score_opportunity(
-    req: ScoreOpportunityRequest,
-    request: Request,
-    user: dict = Depends(get_current_user),
-):
-    profile  = await supabase_service.get_profile(user["id"]) or {}
-    opp      = req.opportunity
-    currency = profile.get("currency", "USD")
-    country  = profile.get("country",  "US")
-    skills   = profile.get("current_skills", [])
-    stage    = profile.get("stage", "survival")
+async def score_opportunity(req: ScoreOpportunityRequest, request: Request,
+                             user: dict = Depends(get_current_user)):
+    profile    = await supabase_service.get_profile(user["id"]) or {}
+    opp        = req.opportunity
+    currency   = profile.get("currency", "USD")
+    country    = profile.get("country",  "US")
+    skills     = profile.get("current_skills", [])
+    stage      = profile.get("stage", "survival")
     is_premium = user.get("is_premium", False)
 
     system = (
@@ -1932,49 +2431,44 @@ async def score_opportunity(
         '"time_to_first_earning":"e.g. 1-2 weeks",'
         '"potential_monthly":0,"why_good_fit":"...","why_might_not_fit":"..."}'
     )
-    
+
     result = await ModelRouter.chat_with_model(
-        messages=[{"role": "user", "content":
-                   f"Score this opportunity:\n{json.dumps(opp, indent=2)}"}],
+        messages=[{"role": "user", "content": f"Score this opportunity:\n{json.dumps(opp, indent=2)}"}],
         system=system,
         user=user,
         task_complexity="standard",
         prefer_free=not is_premium,
         max_tokens=600,
     )
-    
+
     raw = result["content"].strip().lstrip("```json").lstrip("```").rstrip("```").strip()
     try:
         data = json.loads(raw)
     except Exception:
         data = {"match_score": 50, "summary": result["content"]}
-    
+
     if req.session_id:
         await ChatMemoryManager.save_message(
             req.session_id, user["id"], "assistant",
             f"Scored opportunity: {opp.get('title', 'Unknown')} - Match: {data.get('match_score', 'N/A')}%",
             {"type": "opportunity_score", "match_score": data.get("match_score")}
         )
-    
-    return {
-        **data, 
-        "opportunity_title": opp.get("title", ""),
-        "model_used": result["model"],
-        "model_tier": result["tier"]
-    }
+
+    gami = await _award_call_gamification(user["id"], is_premium)
+
+    return {**data, "opportunity_title": opp.get("title", ""),
+            "model_used": result["model"], "model_tier": result["tier"], "gamification": gami}
+
 
 @router.post("/follow-up-plan")
 @limiter.limit(AI_LIMIT)
-async def create_follow_up_plan(
-    req: FollowUpRequest,
-    request: Request,
-    user: dict = Depends(get_current_user),
-):
-    profile = await supabase_service.get_profile(user["id"]) or {}
-    name    = profile.get("full_name", "User")
+async def create_follow_up_plan(req: FollowUpRequest, request: Request,
+                                 user: dict = Depends(get_current_user)):
+    profile    = await supabase_service.get_profile(user["id"]) or {}
+    name       = profile.get("full_name", "User")
     is_premium = user.get("is_premium", False)
-    
-    system  = (
+
+    system = (
         f"You are an outreach expert for {name}. "
         "Create a complete follow-up sequence with FULL message text. "
         "Return ONLY valid JSON: "
@@ -1984,7 +2478,7 @@ async def create_follow_up_plan(
         '"if_rejected":"how to respond gracefully to a rejection and pivot",'
         '"if_interested":"next steps if they respond positively"}'
     )
-    
+
     result = await ModelRouter.chat_with_model(
         messages=[{"role": "user", "content": f"Create follow-up plan for: {req.context}"}],
         system=system,
@@ -1993,37 +2487,33 @@ async def create_follow_up_plan(
         prefer_free=not is_premium,
         max_tokens=1200,
     )
-    
+
     raw = result["content"].strip().lstrip("```json").lstrip("```").rstrip("```").strip()
     try:
         plan = json.loads(raw)
     except Exception:
         plan = {"follow_up_1": {"message": result["content"]}}
-    
+
     if req.session_id:
         await ChatMemoryManager.save_message(
             req.session_id, user["id"], "assistant",
             f"Created follow-up plan for: {req.context[:50]}...",
             {"type": "follow_up_plan", "context": req.context}
         )
-    
-    return {
-        **plan, 
-        "context": req.context, 
-        "model_used": result["model"],
-        "model_tier": result["tier"]
-    }
+
+    gami = await _award_call_gamification(user["id"], is_premium)
+
+    return {**plan, "context": req.context, "model_used": result["model"],
+            "model_tier": result["tier"], "gamification": gami}
+
 
 @router.post("/earnings-insight")
 @limiter.limit(AI_LIMIT)
-async def earnings_insight(
-    req: EarningInsightRequest,
-    request: Request,
-    user: dict = Depends(get_current_user),
-):
-    profile  = await supabase_service.get_profile(user["id"]) or {}
-    currency = profile.get("currency", "USD")
-    goal     = profile.get("target_monthly_income", 0)
+async def earnings_insight(req: EarningInsightRequest, request: Request,
+                            user: dict = Depends(get_current_user)):
+    profile    = await supabase_service.get_profile(user["id"]) or {}
+    currency   = profile.get("currency", "USD")
+    goal       = profile.get("target_monthly_income", 0)
     is_premium = user.get("is_premium", False)
 
     system = (
@@ -2034,50 +2524,45 @@ async def earnings_insight(
         '"next_milestone":"...","recommended_action":"single most impactful next step",'
         '"months_to_goal":0}'
     )
-    
+
     result = await ModelRouter.chat_with_model(
-        messages=[{"role": "user", "content":
-                   f"Analyse these earnings:\n{json.dumps(req.earnings, indent=2)}"}],
+        messages=[{"role": "user", "content": f"Analyse these earnings:\n{json.dumps(req.earnings, indent=2)}"}],
         system=system,
         user=user,
         task_complexity="standard",
         prefer_free=not is_premium,
         max_tokens=700,
     )
-    
+
     raw = result["content"].strip().lstrip("```json").lstrip("```").rstrip("```").strip()
     try:
         data = json.loads(raw)
     except Exception:
         data = {"insight": result["content"]}
-    
+
     if req.session_id:
         await ChatMemoryManager.save_message(
             req.session_id, user["id"], "assistant",
             f"Earnings insight: {data.get('insight', 'Analysis complete')[:100]}...",
             {"type": "earnings_insight", "growth_rate": data.get("growth_rate")}
         )
-    
-    return {
-        **data, 
-        "model_used": result["model"],
-        "model_tier": result["tier"]
-    }
+
+    gami = await _award_call_gamification(user["id"], is_premium)
+
+    return {**data, "model_used": result["model"], "model_tier": result["tier"], "gamification": gami}
+
 
 @router.post("/milestone-check")
 @limiter.limit(AI_LIMIT)
-async def milestone_check(
-    req: MilestoneRequest,
-    request: Request,
-    user: dict = Depends(get_current_user),
-):
-    profile        = await supabase_service.get_profile(user["id"]) or {}
-    currency       = profile.get("currency", "USD")
-    stage          = profile.get("stage",    "survival")
-    income         = req.monthly_income or profile.get("monthly_income", 0)
-    target         = profile.get("target_monthly_income", 0)
-    skills         = profile.get("current_skills", [])
-    country        = profile.get("country", "US")
+async def milestone_check(req: MilestoneRequest, request: Request,
+                           user: dict = Depends(get_current_user)):
+    profile    = await supabase_service.get_profile(user["id"]) or {}
+    currency   = profile.get("currency", "USD")
+    stage      = profile.get("stage",    "survival")
+    income     = req.monthly_income or profile.get("monthly_income", 0)
+    target     = profile.get("target_monthly_income", 0)
+    skills     = profile.get("current_skills", [])
+    country    = profile.get("country", "US")
     is_premium = user.get("is_premium", False)
 
     system = (
@@ -2092,7 +2577,7 @@ async def milestone_check(
         '"action_to_advance":"The ONE thing that would most accelerate their progress",'
         '"timeline_to_next_stage":"realistic estimate e.g. 2-3 months"}'
     )
-    
+
     result = await ModelRouter.chat_with_model(
         messages=[{"role": "user", "content": "Analyse my wealth stage progress."}],
         system=system,
@@ -2101,73 +2586,82 @@ async def milestone_check(
         prefer_free=not is_premium,
         max_tokens=700,
     )
-    
+
     raw = result["content"].strip().lstrip("```json").lstrip("```").rstrip("```").strip()
     try:
         data = json.loads(raw)
     except Exception:
         data = {"current_stage": stage, "action_to_advance": result["content"]}
-    
+
     if req.session_id:
         await ChatMemoryManager.save_message(
             req.session_id, user["id"], "assistant",
             f"Milestone check: {data.get('current_stage', stage)} stage, {data.get('progress_to_next', 'N/A')}% to next",
             {"type": "milestone_check", "current_stage": data.get("current_stage", stage)}
         )
-    
-    return {
-        **data, 
-        "model_used": result["model"],
-        "model_tier": result["tier"]
-    }
+
+    gami = await _award_call_gamification(user["id"], is_premium)
+
+    return {**data, "model_used": result["model"], "model_tier": result["tier"], "gamification": gami}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# UTILITY ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════
 
 @router.get("/quota")
 async def get_quota(user: dict = Depends(get_current_user)):
-    limit = PREMIUM_DAILY_RUNS if user.get("is_premium") else DEFAULT_DAILY_RUNS
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    key   = f"agent_runs:{user['id']}:{today}"
+    user_id    = user["id"]
+    is_premium = user.get("is_premium", False)
+    limit      = PREMIUM_DAILY_RUNS if is_premium else DEFAULT_DAILY_RUNS
+    today      = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    key        = f"agent_runs:{user_id}:{today}"
+
     try:
         sb   = supabase_service.client
         row  = sb.table("agent_run_quota").select("runs_used").eq("quota_key", key).maybe_single().execute()
         used = row.data["runs_used"] if row.data else 0
+
+        ad_state = await AdManager.get_credits(user_id) if not is_premium else {}
+
         return {
-            "runs_used": used, 
-            "runs_limit": limit, 
-            "runs_remaining": limit - used,
-            "tier": "premium" if user.get("is_premium") else "free"
+            "runs_used":        used,
+            "runs_limit":       limit,
+            "runs_remaining":   limit - used,
+            "tier":             "premium" if is_premium else "free",
+            "ad_credits":       ad_state.get("credits_available", 0) if not is_premium else None,
+            "show_ad_prompt":   (used >= limit and not is_premium and ad_state.get("can_watch_more", True)),
         }
     except Exception:
-        return {
-            "runs_used": 0, 
-            "runs_limit": limit, 
-            "runs_remaining": limit,
-            "tier": "premium" if user.get("is_premium") else "free"
-        }
+        return {"runs_used": 0, "runs_limit": limit, "runs_remaining": limit,
+                "tier": "premium" if is_premium else "free", "ad_credits": 0}
+
 
 @router.get("/tools")
 async def list_tools():
     return {
         "total": len(TOOLS),
         "categories": {
-            cat: [{"name": n, "description": m["description"], "free_compatible": m.get("free_compatible", True)}
+            cat: [{"name": n, "description": m["description"],
+                   "free_compatible": m.get("free_compatible", True)}
                   for n, m in TOOLS.items() if m["category"] == cat]
             for cat in ["thinking", "research", "action", "document", "intelligence"]
         },
     }
 
+
 @router.get("/models")
 async def list_models(user: dict = Depends(get_current_user)):
-    """List available models based on user tier."""
     is_premium = user.get("is_premium", False)
-    
     return {
-        "tier": "premium" if is_premium else "free",
+        "tier":    "premium" if is_premium else "free",
         "models": {
-            "free": FREE_MODELS if not is_premium else {**FREE_MODELS, "note": "Also available to premium users as fallback"},
-            "premium": PREMIUM_MODELS if is_premium else {"message": "Upgrade to access premium models"}
+            "free":    FREE_MODELS if not is_premium else {**FREE_MODELS, "note": "Also available as fallback"},
+            "premium": PREMIUM_MODELS if is_premium else {"message": "Upgrade to access premium models"},
         },
         "current_limits": {
-            "daily_runs": PREMIUM_DAILY_RUNS if is_premium else DEFAULT_DAILY_RUNS,
-            "max_chat_history": MAX_CHAT_HISTORY
-        }
+            "daily_runs":       PREMIUM_DAILY_RUNS if is_premium else DEFAULT_DAILY_RUNS,
+            "max_chat_history": MAX_CHAT_HISTORY,
+            "ad_credits_per_day": MAX_AD_CREDITS_PER_DAY if not is_premium else 0,
+        },
     }
