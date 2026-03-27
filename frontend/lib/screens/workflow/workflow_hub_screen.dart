@@ -115,7 +115,6 @@ class WorkflowHubNotifier extends StateNotifier<WorkflowHubState> {
 
   Future<void> deleteWorkflow(String id) async {
     try {
-      // Assuming there's a delete endpoint
       await api.delete('/workflow/$id');
       await loadWorkflows();
     } catch (e) {
@@ -125,7 +124,6 @@ class WorkflowHubNotifier extends StateNotifier<WorkflowHubState> {
 
   String getPrimaryCurrency() {
     if (state.workflows.isEmpty) return 'USD';
-    // Get most common currency or first one
     final currencyCounts = <String, int>{};
     for (final w in state.workflows) {
       currencyCounts[w.currency] = (currencyCounts[w.currency] ?? 0) + 1;
@@ -344,7 +342,7 @@ final incomeTypeConfigs = {
     emoji: '₿',
     color: const Color(0xFFF39C12),
     label: 'Crypto Trading',
-    icon: Iconsax.bitcoin,
+    icon: Iconsax.coin_1, // ✅ FIXED: was Iconsax.bitcoin (invalid)
   ),
   'remote_job': IncomeTypeConfig(
     emoji: '🏠',
@@ -626,11 +624,11 @@ class _SliverHeader extends StatelessWidget {
 
   static String _formatRevenue(double amount, String currency) {
     if (amount >= 1000000) {
-      return '${currency} ${(amount / 1000000).toStringAsFixed(1)}M';
+      return '$currency ${(amount / 1000000).toStringAsFixed(1)}M';
     } else if (amount >= 1000) {
-      return '${currency} ${(amount / 1000).toStringAsFixed(1)}K';
+      return '$currency ${(amount / 1000).toStringAsFixed(1)}K';
     }
-    return '${currency} ${amount.toStringAsFixed(0)}';
+    return '$currency ${amount.toStringAsFixed(0)}';
   }
 }
 
@@ -1014,7 +1012,7 @@ class _WorkflowCard extends StatelessWidget {
                     children: [
                       Text(
                         '${workflow.progressPercent}% complete',
-                        style: TextStyle(
+                        style: const TextStyle(
                           color: AppColors.textSecondary,
                           fontSize: 11,
                           fontWeight: FontWeight.w600,
@@ -1172,7 +1170,7 @@ class _SuggestionChip extends StatelessWidget {
     return Chip(
       label: Text(label),
       backgroundColor: AppColors.primary.withOpacity(0.1),
-      labelStyle: TextStyle(
+      labelStyle: const TextStyle(
         color: AppColors.primary,
         fontSize: 12,
       ),
