@@ -69,7 +69,7 @@ dependencies:
 
   # ── Audio & Sound ───────────────────────────────────
   audioplayers: ^6.0.0
-  flutter_soloud: ^0.0.1
+  flutter_sound: ^9.3.0
   just_audio: ^0.9.40
   soundpool: ^2.4.0
 
@@ -104,7 +104,7 @@ dependencies:
   printing: ^5.13.2
   syncfusion_flutter_pdfviewer: ^26.2.14
 
-  # ── Icons ── CHANGED: iconsax → iconsax_flutter ─────
+  # ── Icons ───────────────────────────────────────────
   iconsax_flutter: ^1.0.1
   font_awesome_flutter: ^10.7.0
   flutter_feather_icons: ^2.0.0+1
@@ -201,8 +201,6 @@ flutter:
 
   assets:
     - assets/images/
-    - assets/images/riseup_logo.png
-    - assets/images/riseup_logo.jpg
     - assets/animations/
     - assets/icons/
     - assets/sounds/
@@ -210,14 +208,6 @@ flutter:
     - assets/sounds/effects/
     - assets/sounds/notifications/
     - assets/fonts/
-
-  plugin:
-    platforms:
-      android:
-        package: com.chastechgroup.riseup
-        pluginClass: RiseUpPlugin
-      ios:
-        pluginClass: RiseUpPlugin
 
 # ── MSIX (Windows) Configuration ─────────────────────
 msix_config:
