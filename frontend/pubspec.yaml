@@ -10,29 +10,31 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # ── ADD THIS ──
+  # ── Localization ────────────────────────────────────
   flutter_localizations:
     sdk: flutter
 
-  # State Management
+  # ── State Management ────────────────────────────────
   flutter_riverpod: ^2.5.1
   riverpod_annotation: ^2.3.3
 
-  # Navigation
+  # ── Navigation ──────────────────────────────────────
   go_router: ^14.1.4
 
-  # Supabase
+  # ── Backend & Database ──────────────────────────────
   supabase_flutter: ^2.5.2
 
-  # HTTP
+  # ── HTTP & Networking ───────────────────────────────
   dio: ^5.4.3+1
   http: ^1.2.1
 
-  # Local Storage (cross-platform: Android, iOS, Web)
+  # ── Local Storage ─────────────────────────────────
   shared_preferences: ^2.2.3
   flutter_secure_storage: ^9.0.0
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
 
-  # UI & Design
+  # ── UI & Design ─────────────────────────────────────
   google_fonts: ^6.2.1
   flutter_animate: ^4.5.0
   shimmer: ^3.0.0
@@ -42,24 +44,39 @@ dependencies:
   fl_chart: ^0.68.0
   percent_indicator: ^4.2.3
   badges: ^3.1.2
+  flutter_staggered_grid_view: ^0.7.0
+  flutter_slidable: ^3.1.1
+  pull_to_refresh: ^2.0.0
+  skeletonizer: ^1.4.2
+  gap: ^3.0.1
 
-  # Chat UI
+  # ── Chat & Content ──────────────────────────────────
   dash_chat_2: ^0.0.21
   flutter_markdown: ^0.7.1
-
-  # Payments
+  flutter_linkify: ^6.0.0
   url_launcher: ^6.3.0
+
+  # ── WebView ─────────────────────────────────────────
   webview_flutter: ^4.8.0
 
-  # Ads — Android & iOS only (conditionally imported, web uses stubs)
+  # ── Ads ─────────────────────────────────────────────
   google_mobile_ads: ^5.1.0
 
-  # Notifications (Firebase — optional but cross-platform)
+  # ── Notifications ───────────────────────────────────
   flutter_local_notifications: ^17.2.1+2
   firebase_messaging: ^15.1.3
   firebase_core: ^3.4.1
 
-  # Utils
+  # ── Audio & Sound ───────────────────────────────────
+  audioplayers: ^6.0.0
+  flutter_soloud: ^0.0.1  # Alternative: better for games, low latency
+  just_audio: ^0.9.40     # Alternative: better for streaming
+  soundpool: ^2.4.0       # Alternative: best for short UI sounds
+
+  # ── Haptics & Feedback ──────────────────────────────
+  vibration: ^1.9.0
+
+  # ── Utils & Helpers ─────────────────────────────────
   intl: ^0.19.0
   timeago: ^3.6.1
   uuid: ^4.4.0
@@ -67,17 +84,81 @@ dependencies:
   package_info_plus: ^8.0.2
   image_picker: ^1.1.2
   share_plus: ^10.0.0
+  path_provider: ^2.1.4
+  path: ^1.9.0
+  file_picker: ^8.0.6
+  permission_handler: ^11.3.1
+  device_info_plus: ^10.1.2
+  app_settings: ^5.1.1
+  rate_my_app: ^2.2.0
+  in_app_review: ^2.0.9
+  store_redirect: ^2.0.2
 
-  # Crash reporting
+  # ── Crash Reporting & Analytics ─────────────────────
   sentry_flutter: ^8.8.0
+  firebase_analytics: ^11.3.3
+  firebase_crashlytics: ^4.1.3
 
-  # PDF generation (skill certificates)
+  # ── PDF & Documents ─────────────────────────────────
   pdf: ^3.11.1
   printing: ^5.13.2
+  syncfusion_flutter_pdfviewer: ^26.2.14
 
-  # Icons ── CHANGED VERSION ──
+  # ── Icons ───────────────────────────────────────────
   iconsax: ^1.0.0
   font_awesome_flutter: ^10.7.0
+  flutter_feather_icons: ^2.0.0+1
+  lucide_icons: ^0.257.0
+
+  # ── Payments & Monetization ─────────────────────────
+  purchases_flutter: ^8.1.0  # RevenueCat for subscriptions
+  flutter_stripe: ^11.0.0
+  pay: ^2.0.0
+
+  # ── Maps & Location ─────────────────────────────────
+  google_maps_flutter: ^2.9.0
+  geolocator: ^13.0.1
+  geocoding: ^3.0.0
+
+  # ── QR & Barcode ────────────────────────────────────
+  mobile_scanner: ^5.1.1
+  qr_flutter: ^4.1.0
+
+  # ── Social Sharing ──────────────────────────────────
+  flutter_share: ^2.0.0
+  social_share: ^2.3.1
+
+  # ── Video & Media ───────────────────────────────────
+  video_player: ^2.9.1
+  chewie: ^1.8.1
+  photo_view: ^0.15.0
+  image_cropper: ^8.0.2
+
+  # ── Calendar & Date ─────────────────────────────────
+  table_calendar: ^3.1.2
+  syncfusion_flutter_calendar: ^26.2.14
+
+  # ── Form & Input ────────────────────────────────────
+  flutter_form_builder: ^9.4.1
+  form_builder_validators: ^11.0.0
+  pin_code_fields: ^8.0.1
+  flutter_otp_text_field: ^1.2.0
+  pinput: ^5.0.0
+
+  # ── Security & Crypto ───────────────────────────────
+  encrypt: ^5.0.3
+  crypto: ^3.0.5
+  local_auth: ^2.3.0
+  flutter_screen_lock: ^9.1.0
+
+  # ── Animation & Effects ─────────────────────────────
+  rive: ^0.13.9
+  particle_field: ^1.0.0
+  confetti: ^0.7.0
+
+  # ── Testing ─────────────────────────────────────────
+  mocktail: ^1.0.4
+  faker: ^2.2.0
 
 dev_dependencies:
   flutter_test:
@@ -88,8 +169,11 @@ dev_dependencies:
   json_serializable: ^6.8.0
   json_annotation: ^4.9.0
   flutter_launcher_icons: ^0.14.1
+  flutter_native_splash: ^2.4.1
+  change_app_package_name: ^1.3.0
+  msix: ^3.16.7  # Windows packaging
 
-# ── App Icon (auto-generated in CI via flutter_launcher_icons) ──
+# ── App Icons ───────────────────────────────────────
 flutter_launcher_icons:
   android: true
   ios: true
@@ -99,15 +183,66 @@ flutter_launcher_icons:
   adaptive_icon_foreground: "assets/images/riseup_logo.jpg"
   remove_alpha_ios: true
   web:
-    generate: false   # handled manually via web/icons/
+    generate: false
+
+# ── Native Splash Screen ──────────────────────────────
+flutter_native_splash:
+  color: "#0F0E17"
+  image: assets/images/riseup_logo.png
+  android: true
+  ios: true
+  web: false
+  android_12:
+    image: assets/images/riseup_logo.png
+    color: "#0F0E17"
 
 flutter:
   uses-material-design: true
 
+  # ── Assets ──────────────────────────────────────────
   assets:
+    # Images
     - assets/images/
     - assets/images/riseup_logo.png
+    - assets/images/riseup_logo.jpg
+    
+    # Animations
     - assets/animations/
+    
+    # Icons
     - assets/icons/
+    
+    # Sounds (add these folders to your project)
+    - assets/sounds/
+    - assets/sounds/ui/
+    - assets/sounds/effects/
+    - assets/sounds/notifications/
+    
+    # Fonts (if using local fonts)
+    - assets/fonts/
 
-  # Fonts: using Google Fonts package (no local font files needed)
+  # ── Fonts (Google Fonts via package, no local files needed) ──
+  # fonts:
+  #   - family: CustomFont
+  #     fonts:
+  #       - asset: assets/fonts/CustomFont-Regular.ttf
+  #       - asset: assets/fonts/CustomFont-Bold.ttf
+  #         weight: 700
+
+  # ── Plugin Configuration ────────────────────────────
+  plugin:
+    platforms:
+      android:
+        package: com.chastechgroup.riseup
+        pluginClass: RiseUpPlugin
+      ios:
+        pluginClass: RiseUpPlugin
+
+# ── MSIX (Windows) Configuration ─────────────────────
+msix_config:
+  display_name: RiseUp
+  publisher_display_name: ChAs Tech Group
+  identity_name: ChAsTechGroup.RiseUp
+  msix_version: 1.0.0.0
+  logo_path: assets/images/riseup_logo.png
+  capabilities: internetClient, location, microphone, webcam
