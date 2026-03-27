@@ -1,8 +1,15 @@
+"""
+RiseUp Backend Configuration — Production Ready (Pydantic v2)
+"""
+
 from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
 from typing import Optional, List
 
 
 class Settings(BaseSettings):
+    """Application settings with Pydantic v2 compatibility."""
+    
     APP_NAME: str = "RiseUp"
     APP_ENV: str = "development"
     APP_SECRET_KEY: str = "change-me-in-production"
@@ -25,31 +32,25 @@ class Settings(BaseSettings):
     OPENROUTER_MODEL: str = "mistralai/mistral-7b-instruct:free"
 
     # ── Web Search (for agent real-world research) ─────────────
-    # Get Serper key at: serper.dev (free 2,500 searches/month)
     SERPER_API_KEY: Optional[str] = None
-    # Get Tavily key at: tavily.com (free 1,000 searches/month)
     TAVILY_API_KEY: Optional[str] = None
 
     # ── Email Sending ──────────────────────────────────────────
-    # SendGrid (preferred): sendgrid.com — free 100 emails/day
     SENDGRID_API_KEY: Optional[str] = None
     EMAIL_FROM: str = "agent@riseup.app"
     EMAIL_FROM_NAME: str = "RiseUp Agent"
-    # SMTP fallback (Gmail, Zoho, etc.)
     SMTP_HOST: Optional[str] = None
     SMTP_PORT: int = 465
     SMTP_USER: Optional[str] = None
     SMTP_PASSWORD: Optional[str] = None
 
     # ── Social Media ───────────────────────────────────────────
-    # Twitter/X — developer.twitter.com (free basic tier)
     TWITTER_CLIENT_ID: Optional[str] = None
     TWITTER_CLIENT_SECRET: Optional[str] = None
-    TWITTER_ACCESS_TOKEN: Optional[str] = None         # App-level fallback
-    # LinkedIn — linkedin.com/developers (free)
+    TWITTER_ACCESS_TOKEN: Optional[str] = None
     LINKEDIN_CLIENT_ID: Optional[str] = None
     LINKEDIN_CLIENT_SECRET: Optional[str] = None
-    LINKEDIN_ACCESS_TOKEN: Optional[str] = None        # App-level fallback
+    LINKEDIN_ACCESS_TOKEN: Optional[str] = None
     LINKEDIN_PERSON_URN: Optional[str] = None
 
     # ── Payments ───────────────────────────────────────────────
@@ -82,9 +83,13 @@ class Settings(BaseSettings):
     def allowed_origins_list(self) -> List[str]:
         return [o.strip() for o in self.ALLOWED_ORIGINS.split(",")]
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    # PYDANTIC V2 FIX: Changed from class Config to model_config
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+        extra="ignore",  # Ignore extra env vars instead of erroring
+        env_file_encoding="utf-8",
+    )
 
 
 settings = Settings()
