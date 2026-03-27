@@ -10,7 +10,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:iconsax/iconsax.dart';
+// ── FIXED: Changed from iconsax to iconsax_flutter ──
+import 'package:iconsax_flutter/iconsax_flutter.dart';
+import 'package:intl/intl.dart';
 import '../../config/app_constants.dart';
 import '../../providers/app_providers.dart';
 import '../../services/api_service.dart';
@@ -437,8 +439,8 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     if (plan['title'] != null) {
       buf.writeln('**${plan['title']}**');
       final r   = plan['income_range'] as Map? ?? {};
-      final sym = CurrencyService.symbolFor(
-          r['currency']?.toString() ?? currency.code);
+      // ── FIXED: Use NumberFormat instead of CurrencyService.symbolFor ──
+      final sym = _getCurrencySymbol(r['currency']?.toString() ?? currency.code);
       if ((r['max'] ?? 0) > 0) {
         buf.writeln('$sym${_fmt(r['min'] ?? 0)} – $sym${_fmt(r['max'] ?? 0)}/mo  ·  '
             '${plan['timeline'] ?? ''}  ·  ${plan['viability'] ?? 75}% viable');
@@ -512,6 +514,19 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     }
 
     return buf.toString().trim();
+  }
+
+  // ── FIXED: Helper method to get currency symbol ──
+  String _getCurrencySymbol(String currencyCode) {
+    try {
+      final format = NumberFormat.currency(name: currencyCode, symbol: null);
+      // Extract symbol from a formatted zero
+      final formatted = format.format(0);
+      // Remove the zero to get just the symbol
+      return formatted.replaceAll('0', '').replaceAll('.', '').replaceAll(',', '').trim();
+    } catch (e) {
+      return currencyCode;
+    }
   }
 
   String _fmt(dynamic v) {
@@ -846,7 +861,8 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
                   hintText: 'What do you want us to work on?',
                   hintStyle: TextStyle(
                       fontSize: 15,
-                      color: isDark ? Colors.white30 : Colors.black30),
+                      // ── FIXED: Colors.black30 doesn't exist, use withOpacity ──
+                      color: isDark ? Colors.white.withOpacity(0.3) : Colors.black.withOpacity(0.3)),
                   border:          InputBorder.none,
                   contentPadding:  const EdgeInsets.fromLTRB(20, 14, 20, 14),
                 ),
@@ -865,13 +881,14 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
                   begin: Alignment.topLeft, end: Alignment.bottomRight,
                 ),
                 color: _isStreaming
-                    ? (isDark ? Colors.white10 : Colors.black12) : null,
+                    ? (isDark ? Colors.white.withOpacity(0.1) : Colors.black.withOpacity(0.1)) : null,
                 borderRadius: BorderRadius.circular(22),
               ),
               child: Icon(
                 Icons.arrow_upward_rounded,
                 color: _isStreaming
-                    ? (isDark ? Colors.white24 : Colors.black12)
+                    // ── FIXED: Colors.black24 doesn't exist, use withOpacity ──
+                    ? (isDark ? Colors.white.withOpacity(0.24) : Colors.black.withOpacity(0.24))
                     : Colors.white,
                 size: 20,
               ),
@@ -933,7 +950,8 @@ class _AgentBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final textColor = isDark ? Colors.white : Colors.black87;
-    final subColor  = isDark ? Colors.white38 : Colors.black38;
+    // ── FIXED: Colors.black38 doesn't exist, use withOpacity ──
+    final subColor  = isDark ? Colors.white.withOpacity(0.38) : Colors.black.withOpacity(0.38);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 80, 8),
@@ -1078,7 +1096,8 @@ class _ThinkingBubbleState extends State<_ThinkingBubble>
 
   @override
   Widget build(BuildContext context) {
-    final sub = widget.isDark ? Colors.white38 : Colors.black38;
+    // ── FIXED: Colors.black38 doesn't exist, use withOpacity ──
+    final sub = widget.isDark ? Colors.white.withOpacity(0.38) : Colors.black.withOpacity(0.38);
     final empty = widget.msg.text.isEmpty || widget.msg.isCollapsed;
 
     return Padding(
@@ -1257,7 +1276,8 @@ class _SystemMsg extends StatelessWidget {
           color: isDark ? const Color(0xFF1A1A1A) : const Color(0xFFF5F5F5),
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: isDark ? Colors.white10 : Colors.black.withOpacity(0.06),
+            // ── FIXED: Colors.black.withOpacity(0.06) instead of black12 ──
+            color: isDark ? Colors.white.withOpacity(0.1) : Colors.black.withOpacity(0.06),
           ),
         ),
         child: Column(
@@ -1329,7 +1349,8 @@ class _MdText extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final base = isDark ? Colors.white : Colors.black87;
-    final muted = isDark ? Colors.white60 : Colors.black54;
+    // ── FIXED: Colors.black60 doesn't exist, use withOpacity ──
+    final muted = isDark ? Colors.white.withOpacity(0.6) : Colors.black.withOpacity(0.6);
     final spans = <TextSpan>[];
     final lines = text.split('\n');
 
@@ -1495,7 +1516,8 @@ class _LimitSheet extends StatelessWidget {
             width: 36, 
             height: 4,
             decoration: BoxDecoration(
-              color: isDark ? Colors.white24 : Colors.black12,
+              // ── FIXED: Colors.white24 doesn't exist, use withOpacity ──
+              color: isDark ? Colors.white.withOpacity(0.24) : Colors.black.withOpacity(0.12),
               borderRadius: BorderRadius.circular(2),
             ),
           ),
@@ -1516,7 +1538,8 @@ class _LimitSheet extends StatelessWidget {
             style: TextStyle(
               fontSize: 14, 
               height: 1.5,
-              color: isDark ? Colors.white60 : Colors.black60,
+              // ── FIXED: Colors.black60 doesn't exist, use withOpacity ──
+              color: isDark ? Colors.white.withOpacity(0.6) : Colors.black.withOpacity(0.6),
             ),
           ),
           const SizedBox(height: 24),
@@ -1573,3 +1596,4 @@ class _LimitSheet extends StatelessWidget {
     );
   }
 }
+5
