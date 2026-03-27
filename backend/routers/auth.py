@@ -1,10 +1,11 @@
 """
 RiseUp Auth Router — Global Production Ready
-Supabase-backed authentication with async support, rate limiting, and global user context
+Supabase-backed authentication with rate limiting and global context
 """
 
 import logging
 from typing import Optional
+from datetime import datetime
 from fastapi import APIRouter, HTTPException, Request, Depends, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -16,7 +17,7 @@ from models.schemas import (
     TokenRefreshResponse, MessageResponse
 )
 from services.supabase_service import supabase_service
-from utils.auth import get_current_user, create_access_token, verify_token
+from utils.auth import get_current_user
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ security = HTTPBearer(auto_error=False)
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _get_auth_client():
-    """Get Supabase auth client (sync - used carefully)."""
+    """Get Supabase auth client."""
     from supabase import create_client
     return create_client(settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY)
 
@@ -46,11 +47,13 @@ def _handle_auth_error(e: Exception, context: str) -> HTTPException:
         "rate limit": "Too many attempts. Please try again later.",
         "jwt expired": "Your session has expired. Please sign in again.",
         "invalid jwt": "Invalid session. Please sign in again.",
+        "user banned": "This account has been suspended. Contact support.",
     }
     
     for key, message in error_messages.items():
         if key in err_str:
-            return HTTPException(status_code=400 if "already" in key else 401, detail=message)
+            status_code = 400 if "already" in key else 401
+            return HTTPException(status_code=status_code, detail=message)
     
     logger.error(f"{context} error: {e}")
     return HTTPException(status_code=500, detail="An unexpected error occurred. Please try again.")
@@ -65,13 +68,10 @@ def _handle_auth_error(e: Exception, context: str) -> HTTPException:
 async def signup(req: SignUpRequest, request: Request, background_tasks: BackgroundTasks):
     """
     Register a new user with global context support.
-    
-    Captures: country, timezone, currency, language for personalized experience
     """
     try:
         client = _get_auth_client()
         
-        # Build user metadata with global context
         user_metadata = {
             "full_name": req.full_name or "",
             "country_code": req.country_code,
@@ -80,9 +80,10 @@ async def signup(req: SignUpRequest, request: Request, background_tasks: Backgro
             "language": req.language.value if req.language else "en",
             "signup_source": "mobile_app",
             "referral_code": req.referral_code,
+            "signup_ip": request.client.host if request.client else None,
+            "signup_at": datetime.utcnow().isoformat(),
         }
         
-        # Remove None values
         user_metadata = {k: v for k, v in user_metadata.items() if v is not None}
         
         res = client.auth.sign_up({
@@ -97,7 +98,6 @@ async def signup(req: SignUpRequest, request: Request, background_tasks: Backgro
         if not res.user:
             raise HTTPException(status_code=400, detail="Signup failed. Please try again.")
         
-        # Log successful signup
         logger.info(f"New user signup: {res.user.id} from {req.country_code or 'unknown'}")
         
         return {
@@ -136,10 +136,7 @@ async def signin(req: SignInRequest, request: Request):
         if not res.user or not res.session:
             raise HTTPException(status_code=401, detail="Invalid email or password.")
         
-        # Check if email is verified
         email_confirmed = res.user.email_confirmed_at is not None
-        
-        # Get user metadata
         user_metadata = res.user.user_metadata or {}
         
         logger.info(f"User signin: {res.user.id}")
@@ -148,7 +145,7 @@ async def signin(req: SignInRequest, request: Request):
             "access_token": res.session.access_token,
             "refresh_token": res.session.refresh_token,
             "token_type": "bearer",
-            "expires_in": 3600,  # 1 hour
+            "expires_in": 3600,
             "user_id": res.user.id,
             "email": res.user.email,
             "email_confirmed": email_confirmed,
@@ -169,15 +166,16 @@ async def refresh_token(request: Request, credentials: Optional[HTTPAuthorizatio
     """
     Refresh access token using refresh token.
     """
-    # Get refresh token from header or body
     refresh_token = None
     
     if credentials and credentials.credentials:
         refresh_token = credentials.credentials
     else:
-        # Try to get from body for backward compatibility
-        body = await request.json()
-        refresh_token = body.get("refresh_token")
+        try:
+            body = await request.json()
+            refresh_token = body.get("refresh_token")
+        except:
+            pass
     
     if not refresh_token:
         raise HTTPException(status_code=400, detail="Refresh token is required")
@@ -210,10 +208,8 @@ async def signout(request: Request, credentials: HTTPAuthorizationCredentials = 
     try:
         client = _get_auth_client()
         
-        # Sign out on Supabase
         if credentials and credentials.credentials:
             try:
-                # Set the session to invalidate it properly
                 client.auth.set_session(credentials.credentials, "")
                 client.auth.sign_out()
             except Exception as e:
@@ -226,7 +222,6 @@ async def signout(request: Request, credentials: HTTPAuthorizationCredentials = 
         
     except Exception as e:
         logger.warning(f"Signout error: {e}")
-        # Still return success - client-side tokens are cleared
         return {
             "message": "Signed out successfully",
             "success": True
@@ -250,10 +245,8 @@ async def forgot_password(req: PasswordResetRequest, request: Request):
         logger.info(f"Password reset requested for: {req.email}")
         
     except Exception as e:
-        # Don't reveal if email exists for security
         logger.warning(f"Password reset request for {req.email}: {e}")
     
-    # Always return success to prevent email enumeration
     return {
         "message": "If an account exists with that email, you'll receive a reset link shortly.",
         "success": True
@@ -269,11 +262,6 @@ async def reset_password(req: PasswordUpdateRequest, request: Request):
     try:
         client = _get_auth_client()
         
-        # Verify the access token and update password
-        # Note: In Supabase, the token is in the URL hash, frontend should handle it
-        # This endpoint is for when backend handles the reset
-        
-        # Update password using the recovery token
         res = client.auth.update_user({
             "password": req.new_password
         })
@@ -330,10 +318,9 @@ async def verify_email(token: str, type: str = "signup"):
     try:
         client = _get_auth_client()
         
-        # Verify the token
         res = client.auth.verify_otp({
             "token_hash": token,
-            "type": type  # "signup" or "recovery"
+            "type": type
         })
         
         if res.user:
@@ -362,7 +349,7 @@ async def verify_email(token: str, type: str = "signup"):
 @limiter.limit("100/minute")
 async def version_check(app_version: str = "1.0.0", platform: str = "android"):
     """
-    Check if the app version is supported and get update info.
+    Check if the app version is supported.
     """
     MIN_VERSIONS = {
         "android": "1.0.0",
@@ -420,15 +407,8 @@ async def auth_health():
     """
     Health check for auth service.
     """
-    try:
-        # Quick check if Supabase is reachable
-        client = _get_auth_client()
-        # Try to get settings (lightweight operation)
-        return {
-            "status": "healthy",
-            "service": "auth",
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Auth health check failed: {e}")
-        raise HTTPException(status_code=503, detail="Auth service unavailable")
+    return {
+        "status": "healthy",
+        "service": "auth",
+        "timestamp": datetime.utcnow().isoformat()
+    }
