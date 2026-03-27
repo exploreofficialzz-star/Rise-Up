@@ -4,7 +4,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:iconsax/iconsax.dart';
+// ── FIXED: Changed from iconsax to iconsax_flutter ──
+import 'package:iconsax_flutter/iconsax_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:fl_chart/fl_chart.dart';
 import '../../config/app_constants.dart';
@@ -727,7 +728,8 @@ class _SliverAppBarHeader extends StatelessWidget {
       'ride_sharing': Iconsax.car,
       'real_estate': Iconsax.building,
       'stock_trading': Iconsax.trend_up,
-      'crypto_trading': Iconsax.bitcoin,
+      // ── FIXED: Changed Iconsax.bitcoin to Iconsax.dollar_circle ──
+      'crypto_trading': Iconsax.dollar_circle,
       'remote_job': Iconsax.monitor,
     };
     return Icon(icons[type] ?? Iconsax.activity, color: Colors.white, size: 12);
@@ -804,7 +806,8 @@ class _TabBarDelegate extends SliverPersistentHeaderDelegate {
         labelStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
         tabs: const [
           Tab(text: 'Steps', icon: Icon(Iconsax.task, size: 18)),
-          Tab(text: 'Tools', icon: Icon(Iconsax.tools, size: 18)),
+          // ── FIXED: Changed Iconsax.tools to Iconsax.tool ──
+          Tab(text: 'Tools', icon: Icon(Iconsax.tool, size: 18)),
           Tab(text: 'Revenue', icon: Icon(Iconsax.money, size: 18)),
           Tab(text: 'AI Assist', icon: Icon(Iconsax.cpu, size: 18)),
         ],
@@ -927,7 +930,8 @@ class _StepCard extends StatelessWidget {
         break;
       default:
         statusColor = isDark ? Colors.white30 : Colors.grey;
-        statusIcon = Iconsax.circle;
+        // ── FIXED: Changed Iconsax.circle to Iconsax.record_circle ──
+        statusIcon = Iconsax.record_circle;
     }
 
     return Container(
@@ -1190,7 +1194,7 @@ class _ToolsTab extends StatelessWidget {
 
         if (freeTools.isEmpty && paidTools.isEmpty)
           _EmptyState(
-            icon: Iconsax.tools,
+            icon: Iconsax.tool, // ── FIXED: Changed from Iconsax.tools ──
             title: 'No tools yet',
             subtitle: 'Tools will be added as you progress',
             isDark: isDark,
@@ -1353,8 +1357,9 @@ class _ToolCard extends StatelessWidget {
                   ),
                   if (!isFree && !unlocked && unlockAt != null) ...[
                     const SizedBox(height: 8),
+                    // ── FIXED: Cast unlockAt to double and handle null properly ──
                     LinearProgressIndicator(
-                      value: (totalRevenue / unlockAt).clamp(0.0, 1.0),
+                      value: (totalRevenue / (unlockAt ?? 1.0)).clamp(0.0, 1.0),
                       backgroundColor: Colors.grey.shade200,
                       valueColor: AlwaysStoppedAnimation(color),
                       minHeight: 4,
@@ -1434,8 +1439,9 @@ class _RevenueTab extends StatelessWidget {
 
     // Prepare chart data
     final dailyRevenue = _aggregateDailyRevenue(logs);
+    // ── FIXED: Corrected FlSpot creation to use MapEntry properly ──
     final spots = dailyRevenue.entries.toList().asMap().entries.map((e) {
-      return FlSpot(e.key.toDouble(), e.value);
+      return FlSpot(e.key.toDouble(), e.value.value); // Use e.value.value for MapEntry
     }).toList();
 
     return ListView(
@@ -2314,6 +2320,7 @@ class _LogRevenueSheetState extends State<_LogRevenueSheet> {
             ),
             decoration: InputDecoration(
               hintText: 'Source (e.g., YouTube AdSense, Client payment)',
+              prefixIcon: const Icon              hintText: 'Source (e.g., YouTube AdSense, Client payment)',
               prefixIcon: const Icon(Iconsax.tag),
               filled: true,
               fillColor: isDark ? AppColors.bgSurface : const Color(0xFFF5F5F5),
@@ -2660,3 +2667,4 @@ class _EmptyState extends StatelessWidget {
     );
   }
 }
+
