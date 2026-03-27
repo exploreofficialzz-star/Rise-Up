@@ -88,7 +88,7 @@ dependencies:
   device_info_plus: ^10.1.2
   app_settings: ^5.1.1
   rate_my_app: ^2.2.0
-  in_app_review: ^2.0.9
+  in_app_review: 2.0.9
   store_redirect: ^2.0.2
 
   # ── Crash Reporting & Analytics ─────────────────────
