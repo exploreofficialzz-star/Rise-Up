@@ -2,7 +2,7 @@ plugins {
     id "com.android.application"
     id "kotlin-android"
     id "dev.flutter.flutter-gradle-plugin"
-    id "com.google.gms.google-services"  // Firebase for FCM
+    id "com.google.gms.google-services"
 }
 
 def localProperties = new Properties()
@@ -29,7 +29,9 @@ if (keystorePropertiesFile.exists()) {
 android {
     namespace "com.chastech.riseup"
     compileSdk 35
-    ndkVersion flutter.ndkVersion
+
+    // FIX 1: Hardcoded NDK version — flutter.ndkVersion was too old for plugins
+    ndkVersion "25.1.8937393"
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -52,10 +54,8 @@ android {
         versionName = flutterVersionName
         multiDexEnabled true
 
-        // AdMob App ID (injected via CI/CD)
         manifestPlaceholders["ADMOB_APP_ID"] = System.getenv("ADMOB_APP_ID") ?: "ca-app-pub-3940256099942544~3347511713"
 
-        // Build config fields (injected via CI/CD)
         buildConfigField "String", "API_BASE_URL", "\"${System.getenv('API_BASE_URL') ?: 'https://rise-up-zkcj.onrender.com/api/v1'}\""
         buildConfigField "String", "SUPABASE_URL", "\"${System.getenv('SUPABASE_URL') ?: ''}\""
         buildConfigField "String", "SUPABASE_ANON_KEY", "\"${System.getenv('SUPABASE_ANON_KEY') ?: ''}\""
@@ -90,11 +90,23 @@ android {
     }
 }
 
+// FIX 2: Force Kotlin stdlib 2.1.0 across ALL transitive deps
+// Prevents "compiled with incompatible version of Kotlin" errors
+// from play-services-measurement and other Google libs
+configurations.all {
+    resolutionStrategy {
+        force "org.jetbrains.kotlin:kotlin-stdlib:2.1.0"
+        force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.1.0"
+        force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.1.0"
+    }
+}
+
 flutter {
     source '../..'
 }
 
 dependencies {
-    implementation 'com.google.firebase:firebase-messaging:23.4.1'
+    // FIX 3: Updated firebase-messaging to version compatible with Kotlin 2.1.0
+    implementation 'com.google.firebase:firebase-messaging:24.0.3'
     implementation 'androidx.multidex:multidex:2.0.1'
 }
