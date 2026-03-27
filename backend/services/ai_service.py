@@ -1047,7 +1047,17 @@ Provide JSON response:
         return asdict(country)
 
 
+# ============================================================
+# SINGLETON INSTANCES
+# ============================================================
+
 riseup_engine = RiseUpIntelligenceEngine()
+
+# ─── ALIAS ───────────────────────────────────────────────────────────
+# All routers import `ai_service` from this module.
+# This alias ensures backward-compatibility without changing any router.
+ai_service = riseup_engine
+# ─────────────────────────────────────────────────────────────────────
 
 
 # ============================================================
