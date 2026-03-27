@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:iconsax/iconsax.dart'; // FIX 1: was iconsax_flutter — wrong package
+import 'package:iconsax/iconsax.dart';
 import 'package:intl/intl.dart';
 import 'package:fl_chart/fl_chart.dart';
 import '../../config/app_constants.dart';
@@ -811,10 +811,10 @@ class _TabBarDelegate extends SliverPersistentHeaderDelegate {
         labelStyle: const TextStyle(
             fontWeight: FontWeight.w700, fontSize: 12),
         tabs: const [
-          Tab(text: 'Steps',     icon: Icon(Iconsax.task,  size: 18)),
-          Tab(text: 'Tools',     icon: Icon(Iconsax.tool,  size: 18)),
-          Tab(text: 'Revenue',   icon: Icon(Iconsax.money, size: 18)),
-          Tab(text: 'AI Assist', icon: Icon(Iconsax.cpu,   size: 18)),
+          Tab(text: 'Steps',     icon: Icon(Iconsax.task,        size: 18)),
+          Tab(text: 'Tools',     icon: Icon(Iconsax.setting_2,   size: 18)), // ✅ FIXED: was Iconsax.tool
+          Tab(text: 'Revenue',   icon: Icon(Iconsax.money,       size: 18)),
+          Tab(text: 'AI Assist', icon: Icon(Iconsax.cpu,         size: 18)),
         ],
       ),
     );
@@ -1208,14 +1208,14 @@ class _ToolsTab extends StatelessWidget {
               unlocked:     unlocked,
               unlockAt:     unlockAt,
               currency:     currency,
-              totalRevenue: totalRevenue, // FIX 2: was hardcoded 0 via getter
+              totalRevenue: totalRevenue,
               index:        e.key,
             );
           }),
         ],
         if (freeTools.isEmpty && paidTools.isEmpty)
           _EmptyState(
-            icon:     Iconsax.tool,
+            icon:     Iconsax.setting_2, // ✅ FIXED: was Iconsax.tool
             title:    'No tools yet',
             subtitle: 'Tools will be added as you progress',
             isDark:   isDark,
@@ -1283,7 +1283,7 @@ class _ToolCard extends StatelessWidget {
   final bool    unlocked;
   final double? unlockAt;
   final String? currency;
-  final double  totalRevenue; // FIX 3: was a broken getter returning 0
+  final double  totalRevenue;
   final int     index;
 
   const _ToolCard({
@@ -1332,7 +1332,6 @@ class _ToolCard extends StatelessWidget {
                 child: Icon(
                   isFree
                       ? Iconsax.tick_circle
-                      // FIX 4: Iconsax.lock/unlock → lock_1/lock_slash
                       : (unlocked
                           ? Iconsax.lock_slash
                           : Iconsax.lock_1),
@@ -1470,7 +1469,6 @@ class _RevenueTab extends StatelessWidget {
     }
 
     final dailyRevenue = _aggregateDailyRevenue(logs);
-    // FIX 5: correct FlSpot construction from MapEntry
     final spots = dailyRevenue.entries.toList().asMap().entries
         .map((e) => FlSpot(
               e.key.toDouble(),
@@ -1528,9 +1526,9 @@ class _RevenueTab extends StatelessWidget {
                   ),
                   Container(
                     padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color:       Colors.white.withOpacity(0.2),
-                      shape:       BoxShape.circle,
+                    decoration: const BoxDecoration(
+                      color: Colors.white24,
+                      shape: BoxShape.circle,
                     ),
                     child: const Icon(
                       Iconsax.wallet_3,
@@ -2387,7 +2385,6 @@ class _LogRevenueSheetState extends State<_LogRevenueSheet> {
           ),
           const SizedBox(height: 20),
 
-          // Amount
           TextField(
             controller:  _amtCtrl,
             keyboardType: const TextInputType.numberWithOptions(
@@ -2418,7 +2415,6 @@ class _LogRevenueSheetState extends State<_LogRevenueSheet> {
 
           const SizedBox(height: 16),
 
-          // FIX 6: Corrupted duplicate prefixIcon/hintText lines removed
           TextField(
             controller: _srcCtrl,
             style: AppTextStyles.body.copyWith(
@@ -2767,8 +2763,7 @@ class _EmptyState extends StatelessWidget {
         children: [
           Icon(
             icon,
-            size: 64,
-            // FIX 7: Colors.white24 doesn't exist — use withOpacity
+            size:  64,
             color: isDark
                 ? Colors.white.withOpacity(0.24)
                 : Colors.grey.shade300,
