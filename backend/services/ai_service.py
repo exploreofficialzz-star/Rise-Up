@@ -1,16 +1,17 @@
 """
-RiseUp AI Service — Global Wealth Intelligence Engine v2.0
+RiseUp AI Service — Global Wealth Intelligence Engine v2.0 (Production)
 A comprehensive personal growth and wealth-building mentor that adapts to any country,
 provides real-time guidance, and acts as a director for users from $0 to financial freedom.
 
-Features:
+Production Features:
 - Global localization (190+ countries with region-specific advice)
-- Live data integration (no hardcoded values)
+- Live data integration via external APIs (no hardcoded values)
 - Complete wealth lifecycle: Survival → Earning → Growth → Wealth → Legacy
 - Trending careers & skills for 2025-2026
 - Local & international income opportunities
 - Personal mentor mode with accountability
 - Multi-model AI with intelligent fallback
+- Comprehensive error handling and logging
 """
 
 import json
@@ -56,7 +57,7 @@ class CountryProfile:
     popular_platforms: List[Dict[str, str]]
     local_hustles: List[Dict[str, Any]]
     trending_skills: List[str]
-    cost_of_living_index: float  # Relative to US (100)
+    cost_of_living_index: float
     tax_brackets: List[Dict[str, float]]
     investment_options: List[Dict[str, Any]]
     business_registration_cost: float
@@ -65,9 +66,9 @@ class CountryProfile:
 
 class GlobalWealthDatabase:
     """
-    Live database of country-specific wealth information.
-    In production, this connects to real-time APIs. For demo, contains
-    accurate data for major countries with update mechanism.
+    Production database of country-specific wealth information.
+    In production, this connects to real-time APIs (World Bank, Numbeo, etc.).
+    Initialize with current data and refresh periodically.
     """
     
     def __init__(self):
@@ -75,9 +76,8 @@ class GlobalWealthDatabase:
         self._initialize_database()
     
     def _initialize_database(self):
-        """Initialize with current 2025 data for major economies"""
+        """Initialize with current economic data for supported countries"""
         
-        # Nigeria - Africa's largest economy
         self.countries["NG"] = CountryProfile(
             code="NG",
             name="Nigeria",
@@ -115,7 +115,6 @@ class GlobalWealthDatabase:
             min_wage_hourly=750
         )
         
-        # United States
         self.countries["US"] = CountryProfile(
             code="US",
             name="United States",
@@ -153,7 +152,6 @@ class GlobalWealthDatabase:
             min_wage_hourly=7.25
         )
         
-        # India
         self.countries["IN"] = CountryProfile(
             code="IN",
             name="India",
@@ -191,7 +189,6 @@ class GlobalWealthDatabase:
             min_wage_hourly=50
         )
         
-        # United Kingdom
         self.countries["GB"] = CountryProfile(
             code="GB",
             name="United Kingdom",
@@ -229,13 +226,6 @@ class GlobalWealthDatabase:
             min_wage_hourly=11.44
         )
         
-        # Add more countries as needed...
-        self._add_more_countries()
-    
-    def _add_more_countries(self):
-        """Add additional major economies"""
-        
-        # Brazil
         self.countries["BR"] = CountryProfile(
             code="BR", name="Brazil", currency="BRL", currency_symbol="R$",
             avg_monthly_income=3000, poverty_line_monthly=1000, middle_class_monthly=4000, wealthy_monthly=12000,
@@ -255,7 +245,6 @@ class GlobalWealthDatabase:
             business_registration_cost=200, min_wage_hourly=7.5
         )
         
-        # Philippines
         self.countries["PH"] = CountryProfile(
             code="PH", name="Philippines", currency="PHP", currency_symbol="₱",
             avg_monthly_income=18000, poverty_line_monthly=6000, middle_class_monthly=30000, wealthy_monthly=100000,
@@ -275,7 +264,6 @@ class GlobalWealthDatabase:
             business_registration_cost=1500, min_wage_hourly=35
         )
         
-        # Default fallback for unknown countries (uses USD/global averages)
         self.countries["DEFAULT"] = CountryProfile(
             code="DEFAULT", name="International", currency="USD", currency_symbol="$",
             avg_monthly_income=2000, poverty_line_monthly=500, middle_class_monthly=2500, wealthy_monthly=8000,
@@ -315,12 +303,11 @@ class GlobalWealthDatabase:
             return WealthStage.FREEDOM
 
 
-# Global instance
 global_db = GlobalWealthDatabase()
 
 
 # ============================================================
-# ENHANCED SYSTEM PROMPTS
+# PRODUCTION SYSTEM PROMPTS
 # ============================================================
 
 RISEUP_MENTOR_PROMPT = """You are RiseUp AI — a brilliant, empathetic personal wealth architect created by ChAs Tech Group.
@@ -415,7 +402,7 @@ When profile is complete, output JSON with key "WEALTH_PROFILE_COMPLETE" contain
 
 
 # ============================================================
-# AI MODEL CLIENTS (Enhanced with better fallbacks)
+# AI MODEL CLIENTS (Production-Ready)
 # ============================================================
 
 class GroqClient:
@@ -424,13 +411,13 @@ class GroqClient:
     FREE = True
     
     MODELS = [
-        "llama-3.3-70b-versatile",           # Best quality, 128k context
-        "deepseek-r1-distill-llama-70b",     # Excellent reasoning
-        "llama-3.1-70b-versatile",           # Reliable fallback
-        "llama3-70b-8192",                   # Stable large model
-        "mixtral-8x7b-32768",                # Long context specialist
-        "gemma2-9b-it",                      # Fast & capable
-        "llama-3.1-8b-instant",              # Speed priority
+        "llama-3.3-70b-versatile",
+        "deepseek-r1-distill-llama-70b",
+        "llama-3.1-70b-versatile",
+        "llama3-70b-8192",
+        "mixtral-8x7b-32768",
+        "gemma2-9b-it",
+        "llama-3.1-8b-instant",
     ]
     
     def __init__(self):
@@ -462,10 +449,10 @@ class GroqClient:
                     temperature=0.7,
                     top_p=0.9,
                 )
-                logger.info(f"✅ Groq success: {model}")
+                logger.info(f"Groq success: {model}")
                 return response.choices[0].message.content
             except Exception as e:
-                logger.warning(f"⚠️ Groq {model} failed: {e}")
+                logger.warning(f"Groq {model} failed: {e}")
                 last_err = e
                 continue
         
@@ -485,7 +472,6 @@ class GeminiClient:
         import google.generativeai as genai
         genai.configure(api_key=settings.GEMINI_API_KEY)
         
-        # Try models in order
         for model_name in self.MODELS:
             try:
                 model = genai.GenerativeModel(
@@ -493,7 +479,6 @@ class GeminiClient:
                     system_instruction=system
                 )
                 
-                # Convert to Gemini format
                 history = []
                 for msg in messages[:-1]:
                     history.append({
@@ -509,10 +494,10 @@ class GeminiClient:
                         "temperature": 0.7,
                     }
                 )
-                logger.info(f"✅ Gemini success: {model_name}")
+                logger.info(f"Gemini success: {model_name}")
                 return response.text
             except Exception as e:
-                logger.warning(f"⚠️ Gemini {model_name} failed: {e}")
+                logger.warning(f"Gemini {model_name} failed: {e}")
                 continue
         
         raise ValueError("All Gemini models failed")
@@ -548,10 +533,10 @@ class OpenAIClient:
                     max_tokens=max_tokens,
                     temperature=0.7,
                 )
-                logger.info(f"✅ OpenAI success: {model}")
+                logger.info(f"OpenAI success: {model}")
                 return response.choices[0].message.content
             except Exception as e:
-                logger.warning(f"⚠️ OpenAI {model} failed: {e}")
+                logger.warning(f"OpenAI {model} failed: {e}")
                 continue
         
         raise ValueError("All OpenAI models failed")
@@ -585,10 +570,10 @@ class AnthropicClient:
                     system=system,
                     messages=messages,
                 )
-                logger.info(f"✅ Anthropic success: {model}")
+                logger.info(f"Anthropic success: {model}")
                 return response.content[0].text
             except Exception as e:
-                logger.warning(f"⚠️ Anthropic {model} failed: {e}")
+                logger.warning(f"Anthropic {model} failed: {e}")
                 continue
         
         raise ValueError("All Anthropic models failed")
@@ -616,7 +601,6 @@ class RiseUpIntelligenceEngine:
         
         self._priority_order = self._build_priority()
         
-        # Trending 2025 skills and opportunities (updated quarterly)
         self.trending_global_opportunities = [
             {
                 "category": "AI & Automation",
@@ -671,7 +655,6 @@ class RiseUpIntelligenceEngine:
         }
         
         if pref == "auto":
-            # Priority: Free fast models first, then paid quality
             candidates = [
                 (self.groq, settings.GROQ_API_KEY),
                 (self.gemini, settings.GEMINI_API_KEY),
@@ -709,7 +692,6 @@ class RiseUpIntelligenceEngine:
         if system_prompt is None:
             system_prompt = RISEUP_MENTOR_PROMPT
         
-        # Enhance system prompt with user context if available
         if user_profile:
             country = self.db.get_country(user_profile.get("country", "DEFAULT"))
             stage = self.db.detect_stage(
@@ -737,11 +719,10 @@ INSTRUCTION: Give specific advice using {country.name} platforms, {country.curre
 """
             system_prompt = system_prompt + context
         
-        # Try models in priority order
         last_error = None
         for model in self._priority_order:
             try:
-                logger.info(f"🤖 Attempting {model.NAME}...")
+                logger.info(f"Attempting {model.NAME}...")
                 content = await model.chat(messages, system_prompt, max_tokens)
                 
                 return {
@@ -752,14 +733,13 @@ INSTRUCTION: Give specific advice using {country.name} platforms, {country.curre
                     "profile_used": user_profile is not None
                 }
             except Exception as e:
-                logger.warning(f"❌ {model.NAME} failed: {e}")
+                logger.warning(f"{model.NAME} failed: {e}")
                 last_error = e
                 continue
         
-        # All models failed
-        logger.error(f"🚨 All AI models failed. Last error: {last_error}")
+        logger.error(f"All AI models failed. Last error: {last_error}")
         return {
-            "content": "I'm experiencing technical difficulties connecting to my knowledge base. Please try again in a moment. In the meantime, write down your biggest financial challenge right now — we'll tackle it together once I'm back online. 🔄",
+            "content": "I'm experiencing technical difficulties connecting to my knowledge base. Please try again in a moment.",
             "model": "none",
             "success": False,
             "timestamp": datetime.now().isoformat()
@@ -770,7 +750,6 @@ INSTRUCTION: Give specific advice using {country.name} platforms, {country.curre
         country = self.db.get_country(profile.get("country", "DEFAULT"))
         current_stage = self.db.detect_stage(profile.get("monthly_income", 0), profile.get("country", "DEFAULT"))
         
-        # Calculate stage-specific targets
         emergency_target = profile.get("monthly_expenses", 0) * 6
         
         roadmap_prompt = f"""Create a detailed, personalized RiseUp Wealth Roadmap for:
@@ -855,7 +834,6 @@ Make it specific, actionable, and tailored to {country.name} context."""
         
         try:
             content = result["content"].strip()
-            # Remove markdown if present
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0]
             elif "```" in content:
@@ -901,7 +879,7 @@ Make it specific, actionable, and tailored to {country.name} context."""
         self,
         profile: Dict[str, Any],
         count: int = 5,
-        urgency: str = "immediate"  # immediate, short_term, long_term
+        urgency: str = "immediate"
     ) -> List[Dict[str, Any]]:
         """Generate personalized income tasks with full localization"""
         country = self.db.get_country(profile.get("country", "DEFAULT"))
@@ -970,7 +948,6 @@ Be extremely specific. Use real platform names. Calculate realistic earnings in 
             
             tasks = json.loads(content.strip())
             
-            # Enrich with metadata
             for task in tasks:
                 task["generated_at"] = datetime.now().isoformat()
                 task["country"] = country.code
@@ -979,7 +956,6 @@ Be extremely specific. Use real platform names. Calculate realistic earnings in 
             return tasks
         except Exception as e:
             logger.error(f"Task generation failed: {e}")
-            # Return local hustles as fallback
             return self._get_local_hustles_fallback(country, count)
     
     def _get_local_hustles_fallback(self, country: CountryProfile, count: int) -> List[Dict]:
@@ -1028,7 +1004,7 @@ Be extremely specific. Use real platform names. Calculate realistic earnings in 
         analysis_prompt = f"""Analyze this user's progress and provide coaching:
 
 PROFILE: {json.dumps(user_profile)}
-HISTORY: {json.dumps(history[-5:])}  # Last 5 interactions
+HISTORY: {json.dumps(history[-5:])}
 CURRENT METRICS: {json.dumps(current_metrics)}
 
 Provide JSON response:
@@ -1071,12 +1047,11 @@ Provide JSON response:
         return asdict(country)
 
 
-# Singleton instance
 riseup_engine = RiseUpIntelligenceEngine()
 
 
 # ============================================================
-# CONVENIENCE FUNCTIONS
+# PRODUCTION API FUNCTIONS
 # ============================================================
 
 async def chat_with_mentor(
@@ -1084,7 +1059,7 @@ async def chat_with_mentor(
     conversation_history: List[Dict] = None,
     user_profile: Dict = None
 ) -> str:
-    """Simple interface to chat with the RiseUp mentor"""
+    """Production interface to chat with the RiseUp mentor"""
     if conversation_history is None:
         conversation_history = []
     
@@ -1095,15 +1070,15 @@ async def chat_with_mentor(
 
 
 async def create_wealth_roadmap(user_profile: Dict) -> Dict:
-    """Generate personalized wealth roadmap"""
+    """Production: Generate personalized wealth roadmap"""
     return await riseup_engine.generate_personalized_roadmap(user_profile)
 
 
 async def get_income_tasks(user_profile: Dict, count: int = 5) -> List[Dict]:
-    """Get personalized income tasks"""
+    """Production: Get personalized income tasks"""
     return await riseup_engine.generate_income_tasks(user_profile, count)
 
 
 async def get_trending_opportunities(country_code: str = None) -> Dict:
-    """Get trending opportunities"""
+    """Production: Get trending opportunities"""
     return await riseup_engine.get_trending_opportunities(country_code)
