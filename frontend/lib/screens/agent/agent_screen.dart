@@ -735,7 +735,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
                       : Colors.white,
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(
-                    color: isDark ? Colors.white12 : Colors.black12,
+                    color: isDark ? Colors.white.withOpacity(0.12) : Colors.black.withOpacity(0.12),
                   ),
                 ),
                 child: Row(
@@ -744,7 +744,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
                       Icons.add,
                       size: 18,
                       color: isDark
-                          ? Colors.white70
+                          ? Colors.white.withOpacity(0.7)
                           : Colors.black54,
                     ),
                     const SizedBox(width: 8),
@@ -753,7 +753,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
                       style: TextStyle(
                         fontSize: 13,
                         color: isDark
-                            ? Colors.white70
+                            ? Colors.white.withOpacity(0.7)
                             : Colors.black87,
                       ),
                     ),
@@ -793,7 +793,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
                         color: isActive
                             ? AppColors.primary
                             : (isDark
-                                ? Colors.white54
+                                ? Colors.white.withOpacity(0.54)
                                 : Colors.black54),
                       ),
                       title: Text(
@@ -815,7 +815,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
                         style: TextStyle(
                           fontSize: 11,
                           color: isDark
-                              ? Colors.white38
+                              ? Colors.white.withOpacity(0.38)
                               : Colors.black38,
                         ),
                       ),
@@ -908,7 +908,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
           color: isDark ? const Color(0xFF0A0A0A) : Colors.white,
           border: Border(
             top: BorderSide(
-              color: isDark ? Colors.white10 : Colors.black12,
+              color: isDark ? Colors.white.withOpacity(0.1) : Colors.black.withOpacity(0.12),
               width: 0.5,
             ),
           ),
@@ -926,8 +926,8 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
                   borderRadius: BorderRadius.circular(24),
                   border: Border.all(
                     color: isDark
-                        ? Colors.white10
-                        : Colors.black12,
+                        ? Colors.white.withOpacity(0.1)
+                        : Colors.black.withOpacity(0.12),
                   ),
                 ),
                 child: TextField(
