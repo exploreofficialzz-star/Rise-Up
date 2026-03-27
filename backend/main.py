@@ -1,182 +1,16 @@
 """
-RiseUp Backend — Main Application
+RiseUp Backend — Main Application (DEBUG VERSION)
 """
+import sys
+import traceback
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from config import settings
-from middleware.rate_limit import limiter, rate_limit_exceeded_handler
-from middleware.security import SecurityMiddleware
 
-# Import routers one by one with error handling
-routers_to_load = []
-
-try:
-    from routers import auth
-    routers_to_load.append(("auth", auth.router))
-except Exception as e:
-    print(f"Failed to load auth router: {e}")
-
-try:
-    from routers import ai_agent
-    routers_to_load.append(("ai_agent", ai_agent.router))
-except Exception as e:
-    print(f"Failed to load ai_agent router: {e}")
-
-try:
-    from routers import tasks
-    routers_to_load.append(("tasks", tasks.router))
-except Exception as e:
-    print(f"Failed to load tasks router: {e}")
-
-try:
-    from routers import skills
-    routers_to_load.append(("skills", skills.router))
-except Exception as e:
-    print(f"Failed to load skills router: {e}")
-
-try:
-    from routers import payments
-    routers_to_load.append(("payments", payments.router))
-except Exception as e:
-    print(f"Failed to load payments router: {e}")
-
-try:
-    from routers import progress
-    routers_to_load.append(("progress", progress.router))
-except Exception as e:
-    print(f"Failed to load progress router: {e}")
-
-try:
-    from routers import community
-    routers_to_load.append(("community", community.router))
-except Exception as e:
-    print(f"Failed to load community router: {e}")
-
-try:
-    from routers import streaks
-    routers_to_load.append(("streaks", streaks.router))
-except Exception as e:
-    print(f"Failed to load streaks router: {e}")
-
-try:
-    from routers import goals
-    routers_to_load.append(("goals", goals.router))
-except Exception as e:
-    print(f"Failed to load goals router: {e}")
-
-try:
-    from routers import expenses
-    routers_to_load.append(("expenses", expenses.router))
-except Exception as e:
-    print(f"Failed to load expenses router: {e}")
-
-try:
-    from routers import achievements
-    routers_to_load.append(("achievements", achievements.router))
-except Exception as e:
-    print(f"Failed to load achievements router: {e}")
-
-try:
-    from routers import referrals
-    routers_to_load.append(("referrals", referrals.router))
-except Exception as e:
-    print(f"Failed to load referrals router: {e}")
-
-try:
-    from routers import notifications
-    routers_to_load.append(("notifications", notifications.router))
-except Exception as e:
-    print(f"Failed to load notifications router: {e}")
-
-try:
-    from routers import admin
-    routers_to_load.append(("admin", admin.router))
-except Exception as e:
-    print(f"Failed to load admin router: {e}")
-
-try:
-    from routers import posts
-    routers_to_load.append(("posts", posts.router))
-except Exception as e:
-    print(f"Failed to load posts router: {e}")
-
-try:
-    from routers import messages
-    routers_to_load.append(("messages", messages.router))
-except Exception as e:
-    print(f"Failed to load messages router: {e}")
-
-try:
-    from routers import live
-    routers_to_load.append(("live", live.router))
-except Exception as e:
-    print(f"Failed to load live router: {e}")
-
-try:
-    from routers import workflow
-    routers_to_load.append(("workflow", workflow.router))
-except Exception as e:
-    print(f"Failed to load workflow router: {e}")
-
-try:
-    from routers import agent
-    routers_to_load.append(("agent", agent.router))
-except Exception as e:
-    print(f"Failed to load agent router: {e}")
-
-try:
-    from routers import collaboration
-    routers_to_load.append(("collaboration", collaboration.router))
-except Exception as e:
-    print(f"Failed to load collaboration router: {e}")
-
-try:
-    from routers import ads
-    routers_to_load.append(("ads", ads.router))
-except Exception as e:
-    print(f"Failed to load ads router: {e}")
-
-try:
-    from routers import income_memory
-    routers_to_load.append(("income_memory", income_memory.router))
-except Exception as e:
-    print(f"Failed to load income_memory router: {e}")
-
-try:
-    from routers import market_pulse
-    routers_to_load.append(("market_pulse", market_pulse.router))
-except Exception as e:
-    print(f"Failed to load market_pulse router: {e}")
-
-try:
-    from routers import contracts
-    routers_to_load.append(("contracts", contracts.router))
-except Exception as e:
-    print(f"Failed to load contracts router: {e}")
-
-try:
-    from routers import crm
-    routers_to_load.append(("crm", crm.router))
-except Exception as e:
-    print(f"Failed to load crm router: {e}")
-
-try:
-    from routers import challenges
-    routers_to_load.append(("challenges", challenges.router))
-except Exception as e:
-    print(f"Failed to load challenges router: {e}")
-
-try:
-    from routers import portfolio
-    routers_to_load.append(("portfolio", portfolio.router))
-except Exception as e:
-    print(f"Failed to load portfolio router: {e}")
-
-
-# Create FastAPI app
+# Initialize app first
 app = FastAPI(
     title="RiseUp API",
     description="AI-powered wealth platform with social features",
@@ -185,29 +19,102 @@ app = FastAPI(
     redoc_url=None,
 )
 
-# ── Rate limiting ──────────────────────────────────────
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+# ── Rate limiting (basic setup) ─────────────────────────
+try:
+    from middleware.rate_limit import limiter, rate_limit_exceeded_handler
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+    print("✅ Rate limiting loaded")
+except Exception as e:
+    print(f"❌ Rate limiting failed: {e}")
+    traceback.print_exc()
 
 # ── CORS ───────────────────────────────────────────────
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.allowed_origins_list,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+try:
+    from middleware.security import SecurityMiddleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.allowed_origins_list,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    app.add_middleware(SecurityMiddleware)
+    print("✅ CORS and Security middleware loaded")
+except Exception as e:
+    print(f"❌ Middleware failed: {e}")
+    traceback.print_exc()
 
-app.add_middleware(SecurityMiddleware)
+# ── Router Loading with Detailed Error Output ─────────
+print("\n" + "="*60)
+print("LOADING ROUTERS")
+print("="*60)
 
-# ── Register routers ───────────────────────────────────
-for name, router in routers_to_load:
+loaded_routers = []
+failed_routers = []
+
+def load_router(name, module_name, router_attr="router"):
+    """Load a router with detailed error reporting."""
     try:
+        print(f"\n📦 Loading {name}...")
+        module = __import__(f"routers.{module_name}", fromlist=[router_attr])
+        router = getattr(module, router_attr)
         app.include_router(router, prefix="/api/v1")
-        print(f"✅ Loaded router: {name}")
+        loaded_routers.append(name)
+        print(f"   ✅ {name} loaded successfully")
+        return True
     except Exception as e:
-        print(f"❌ Failed to register router {name}: {e}")
+        print(f"   ❌ {name} FAILED: {str(e)}")
+        traceback.print_exc()
+        failed_routers.append((name, str(e)))
+        return False
 
+# Load critical routers first
+load_router("auth", "auth")
+load_router("workflow", "workflow")
+
+# Load other routers
+load_router("ai_agent", "ai_agent")
+load_router("tasks", "tasks")
+load_router("skills", "skills")
+load_router("payments", "payments")
+load_router("progress", "progress")
+load_router("community", "community")
+load_router("streaks", "streaks")
+load_router("goals", "goals")
+load_router("expenses", "expenses")
+load_router("achievements", "achievements")
+load_router("referrals", "referrals")
+load_router("notifications", "notifications")
+load_router("admin", "admin")
+load_router("posts", "posts")
+load_router("messages", "messages")
+load_router("live", "live")
+load_router("agent", "agent")
+load_router("collaboration", "collaboration")
+load_router("ads", "ads")
+load_router("income_memory", "income_memory")
+load_router("market_pulse", "market_pulse")
+load_router("contracts", "contracts")
+load_router("crm", "crm")
+load_router("challenges", "challenges")
+load_router("portfolio", "portfolio")
+
+print("\n" + "="*60)
+print("ROUTER LOADING SUMMARY")
+print("="*60)
+print(f"✅ Loaded: {len(loaded_routers)} routers")
+for r in loaded_routers:
+    print(f"   - {r}")
+    
+if failed_routers:
+    print(f"\n❌ Failed: {len(failed_routers)} routers")
+    for name, error in failed_routers:
+        print(f"   - {name}: {error}")
+
+print("="*60 + "\n")
+
+# ── Basic Endpoints ────────────────────────────────────
 
 @app.get("/")
 async def root():
@@ -216,14 +123,37 @@ async def root():
         "version": "2.0.0",
         "status": "running",
         "platform": "Social Wealth Platform",
-        "loaded_modules": len(routers_to_load),
+        "loaded_routers": loaded_routers,
+        "failed_routers": [name for name, _ in failed_routers],
     }
-
 
 @app.get("/health")
 async def health():
+    from datetime import datetime
     return {
-        "status": "healthy",
-        "timestamp": __import__("datetime").datetime.utcnow().isoformat(),
+        "status": "healthy" if "auth" in loaded_routers else "degraded",
+        "timestamp": datetime.utcnow().isoformat(),
         "environment": settings.APP_ENV,
+        "routers_loaded": len(loaded_routers),
+        "routers_failed": len(failed_routers),
     }
+
+@app.get("/debug/routers")
+async def debug_routers():
+    """Show all registered routes."""
+    routes = []
+    for route in app.routes:
+        if hasattr(route, "methods") and hasattr(route, "path"):
+            routes.append({
+                "path": route.path,
+                "methods": list(route.methods),
+                "name": route.name,
+            })
+    return {
+        "total_routes": len(routes),
+        "routes": sorted(routes, key=lambda x: x["path"]),
+        "loaded_routers": loaded_routers,
+        "failed_routers": [{"name": name, "error": error} for name, error in failed_routers],
+    }
+
+print("🚀 Application startup complete!")
