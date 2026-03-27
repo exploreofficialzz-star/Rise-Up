@@ -1,46 +1,40 @@
-# Flutter
+# ── Flutter default rules ──────────────────────────────────────────────────────
 -keep class io.flutter.app.** { *; }
 -keep class io.flutter.plugin.** { *; }
 -keep class io.flutter.util.** { *; }
 -keep class io.flutter.view.** { *; }
 -keep class io.flutter.** { *; }
 -keep class io.flutter.plugins.** { *; }
--dontwarn io.flutter.embedding.**
 
-# Play Core (deferred components — suppress missing class errors)
--dontwarn com.google.android.play.core.**
--keep class com.google.android.play.core.** { *; }
+# ── Stripe Push Provisioning (not bundled in standard SDK — suppress R8 errors) ──
+-dontwarn com.stripe.android.pushProvisioning.**
+-keep class com.stripe.android.pushProvisioning.** { *; }
+-dontwarn com.reactnativestripesdk.pushprovisioning.**
+-keep class com.reactnativestripesdk.pushprovisioning.** { *; }
 
-# Firebase
+# ── Stripe core ───────────────────────────────────────────────────────────────
+-keep class com.stripe.android.** { *; }
+-dontwarn com.stripe.android.**
+
+# ── Kotlin coroutines ─────────────────────────────────────────────────────────
+-keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}
+-keepnames class kotlinx.coroutines.CoroutineExceptionHandler {}
+-dontwarn kotlinx.coroutines.**
+
+# ── Firebase ──────────────────────────────────────────────────────────────────
 -keep class com.google.firebase.** { *; }
 -dontwarn com.google.firebase.**
 
-# AdMob
+# ── Google Mobile Ads ─────────────────────────────────────────────────────────
 -keep class com.google.android.gms.ads.** { *; }
 -dontwarn com.google.android.gms.ads.**
 
-# Supabase / OkHttp / Retrofit
--dontwarn okhttp3.**
--dontwarn okio.**
--keep class okhttp3.** { *; }
--keep class okio.** { *; }
-
-# Keep model classes
--keepattributes Signature
--keepattributes *Annotation*
--keepattributes EnclosingMethod
--keepattributes InnerClasses
-
-# Kotlin
--keep class kotlin.** { *; }
--dontwarn kotlin.**
-
-# Gson
+# ── Gson / serialization ──────────────────────────────────────────────────────
 -keepattributes Signature
 -keepattributes *Annotation*
 -dontwarn sun.misc.**
 -keep class com.google.gson.** { *; }
 
-# General
+# ── General Android ───────────────────────────────────────────────────────────
 -keepattributes SourceFile,LineNumberTable
 -keep public class * extends java.lang.Exception
