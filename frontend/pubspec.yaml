@@ -9,80 +9,82 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter
 
-  # â”€â”€ QR & Barcode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  # ── State Management ────────────────────────────────
+  flutter_riverpod: ^2.5.1
+
+  # ── Navigation ──────────────────────────────────────
+  go_router: ^13.2.0
+
+  # ── Networking ──────────────────────────────────────
+  dio: ^5.4.0
+  http: ^1.2.0
+
+  # ── Auth & Backend ──────────────────────────────────
+  supabase_flutter: ^2.5.0
+
+  # ── Storage ─────────────────────────────────────────
+  flutter_secure_storage: ^9.0.0
+  shared_preferences: ^2.2.3
+
+  # ── UI & Icons ──────────────────────────────────────
+  google_fonts: ^6.2.1
+  iconsax: ^0.0.8
+  flutter_animate: ^4.5.0
+  fl_chart: ^0.68.0
+  percent_indicator: ^4.2.3
+  flutter_markdown: ^0.7.3
+
+  # ── Ads ─────────────────────────────────────────────
+  google_mobile_ads: ^5.1.0
+
+  # ── Notifications ───────────────────────────────────
+  flutter_local_notifications: ^17.2.2
+
+  # ── Connectivity ────────────────────────────────────
+  connectivity_plus: ^6.0.3
+
+  # ── Media & Files ───────────────────────────────────
+  image_picker: ^1.1.2
+
+  # ── Utilities ───────────────────────────────────────
+  intl: ^0.19.0
+  package_info_plus: ^8.0.0
+  share_plus: ^10.0.0
+  timeago: ^3.7.0
+  url_launcher: ^6.3.0
+
+  # ── QR & Barcode ────────────────────────────────────
   mobile_scanner: ^5.1.1
   qr_flutter: ^4.1.0
 
-  # â”€â”€ Video & Media â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  # ── Video & Media ───────────────────────────────────
   video_player: ^2.9.1
   chewie: ^1.8.1
   photo_view: ^0.15.0
   image_cropper: ^8.0.2
 
-  # â”€â”€ Calendar & Date â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  # ── Calendar & Date ─────────────────────────────────
   table_calendar: ^3.1.2
   syncfusion_flutter_calendar: ^26.2.14
 
-  # â”€â”€ Form & Input â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  # ── Form & Input ────────────────────────────────────
   flutter_form_builder: ^9.3.0
   form_builder_validators: ^11.0.0
   pinput: ^5.0.0
 
-  # â”€â”€ Security & Crypto â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  # ── Security & Crypto ───────────────────────────────
   encrypt: ^5.0.3
   crypto: ^3.0.5
   local_auth: ^2.3.0
   flutter_screen_lock: ^9.1.0
 
-  # â”€â”€ Navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  go_router: ^14.6.2
-
-  # â”€â”€ State Management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  flutter_riverpod: ^2.5.1
-
-  # â”€â”€ Icons â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  iconsax: ^0.0.8
-
-  # â”€â”€ Animation & Effects â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  flutter_animate: ^4.5.0
+  # ── Animation & Effects ─────────────────────────────
   rive: ^0.13.9
   particle_field: ^1.0.0
   confetti: ^0.7.0
-
-  # â”€â”€ Networking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  dio: ^5.7.0
-  http: ^1.2.2
-  connectivity_plus: ^6.1.1
-
-  # â”€â”€ Storage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  shared_preferences: ^2.3.3
-  flutter_secure_storage: ^9.2.2
-
-  # â”€â”€ UI Utilities â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  flutter_markdown: ^0.7.4
-  fl_chart: ^0.69.0
-  percent_indicator: ^4.2.3
-  google_fonts: ^6.2.1
-
-  # â”€â”€ Media & Sharing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  image_picker: ^1.1.2
-  share_plus: ^10.1.4
-  url_launcher: ^6.3.1
-
-  # â”€â”€ Notifications â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  flutter_local_notifications: ^18.0.1
-
-  # â”€â”€ Utilities â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  intl: ^0.19.0
-  timeago: ^3.7.0
-  package_info_plus: ^8.1.2
-
-  # â”€â”€ Backend / Auth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  supabase_flutter: ^2.8.4
-
-  # â”€â”€ Ads â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  google_mobile_ads: ^5.3.0
 
 dev_dependencies:
   flutter_test:
@@ -99,7 +101,7 @@ dev_dependencies:
   mocktail: ^1.0.4
   faker: ^2.2.0
 
-# â”€â”€ App Icons â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── App Icons ───────────────────────────────────────
 flutter_launcher_icons:
   android: true
   ios: true
@@ -111,7 +113,7 @@ flutter_launcher_icons:
   web:
     generate: false
 
-# â”€â”€ Native Splash Screen â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Native Splash Screen ─────────────────────────────
 flutter_native_splash:
   color: "#0F0E17"
   image: assets/images/riseup_logo.png
@@ -130,14 +132,14 @@ flutter:
     - assets/animations/
     - assets/icons/
     - assets/fonts/
-    # â”€â”€ Sound directories below are commented out until the folders
+    # ── Sound directories below are commented out until the folders
     #    and files actually exist in the repo. Uncomment when ready:
     # - assets/sounds/
     # - assets/sounds/ui/
     # - assets/sounds/effects/
     # - assets/sounds/notifications/
 
-# â”€â”€ MSIX (Windows) Configuration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── MSIX (Windows) Configuration ─────────────────────
 msix_config:
   display_name: RiseUp
   publisher_display_name: ChAs Tech Group
