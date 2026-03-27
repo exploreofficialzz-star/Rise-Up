@@ -20,10 +20,10 @@ final profileProvider = FutureProvider.autoDispose<Map>((ref) async {
   return profile;
 });
 
-// ── Currency (reactive) ───────────────────────────────
-// Reads the user's currency from their profile.
-// Falls back to USD for users who haven't set one yet.
-final currencyProvider = Provider<CurrencyService>((ref) {
+// ── Currency Service (renamed to avoid collision) ─────
+// RENAMED: currencyProvider → currencyServiceProvider
+// This provides the CurrencyService instance
+final currencyServiceProvider = Provider<CurrencyService>((ref) {
   // Trigger a reload when profile changes
   ref.watch(profileProvider);
   return currency;
