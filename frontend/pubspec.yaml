@@ -69,9 +69,9 @@ dependencies:
 
   # ── Audio & Sound ───────────────────────────────────
   audioplayers: ^6.0.0
-  flutter_soloud: ^0.0.1  # Alternative: better for games, low latency
-  just_audio: ^0.9.40     # Alternative: better for streaming
-  soundpool: ^2.4.0       # Alternative: best for short UI sounds
+  flutter_soloud: ^0.0.1
+  just_audio: ^0.9.40
+  soundpool: ^2.4.0
 
   # ── Haptics & Feedback ──────────────────────────────
   vibration: ^1.9.0
@@ -104,14 +104,14 @@ dependencies:
   printing: ^5.13.2
   syncfusion_flutter_pdfviewer: ^26.2.14
 
-  # ── Icons ───────────────────────────────────────────
-  iconsax: ^1.0.0
+  # ── Icons ── CHANGED: iconsax → iconsax_flutter ─────
+  iconsax_flutter: ^1.0.1
   font_awesome_flutter: ^10.7.0
   flutter_feather_icons: ^2.0.0+1
   lucide_icons: ^0.257.0
 
   # ── Payments & Monetization ─────────────────────────
-  purchases_flutter: ^8.1.0  # RevenueCat for subscriptions
+  purchases_flutter: ^8.1.0
   flutter_stripe: ^11.0.0
   pay: ^2.0.0
 
@@ -171,7 +171,7 @@ dev_dependencies:
   flutter_launcher_icons: ^0.14.1
   flutter_native_splash: ^2.4.1
   change_app_package_name: ^1.3.0
-  msix: ^3.16.7  # Windows packaging
+  msix: ^3.16.7
 
 # ── App Icons ───────────────────────────────────────
 flutter_launcher_icons:
@@ -199,37 +199,18 @@ flutter_native_splash:
 flutter:
   uses-material-design: true
 
-  # ── Assets ──────────────────────────────────────────
   assets:
-    # Images
     - assets/images/
     - assets/images/riseup_logo.png
     - assets/images/riseup_logo.jpg
-    
-    # Animations
     - assets/animations/
-    
-    # Icons
     - assets/icons/
-    
-    # Sounds (add these folders to your project)
     - assets/sounds/
     - assets/sounds/ui/
     - assets/sounds/effects/
     - assets/sounds/notifications/
-    
-    # Fonts (if using local fonts)
     - assets/fonts/
 
-  # ── Fonts (Google Fonts via package, no local files needed) ──
-  # fonts:
-  #   - family: CustomFont
-  #     fonts:
-  #       - asset: assets/fonts/CustomFont-Regular.ttf
-  #       - asset: assets/fonts/CustomFont-Bold.ttf
-  #         weight: 700
-
-  # ── Plugin Configuration ────────────────────────────
   plugin:
     platforms:
       android:
