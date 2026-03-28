@@ -600,9 +600,8 @@ async def create_status(req: StatusCreate, user: dict = Depends(get_current_user
 @router.get("/status/feed")
 async def get_status_feed(user: dict = Depends(get_current_user)):
     """
-    v2.1 fix: use explicit FK hint for profiles join and removed 'is_online'
-    from user_status select — that column belongs to profiles, not user_status,
-    and caused a 42703 crash when PostgREST tried to resolve the join.
+    v2.2 fix: removed profiles JOIN entirely — FK name was unknown causing 500.
+    Profiles are now fetched in a single separate bulk query (no N+1).
     """
     user_id = user["id"]
     try:
@@ -618,15 +617,10 @@ async def get_status_feed(user: dict = Depends(get_current_user)):
         )
         followed_ids = [f["following_id"] for f in follows] + [user_id]
 
-        # ── Explicit FK hint + safe profile columns ──────────────────
-        # 'is_online' is NOT a column on user_status; removed from join select
-        # profiles!user_status_user_id_fkey resolves the FK unambiguously
+        # ── Step 1: fetch statuses WITHOUT profiles join ──────────────
         res = (
             db.table("user_status")
-            .select(
-                "*, "
-                "profiles!user_status_user_id_fkey(id, full_name, avatar_url)"
-            )
+            .select("*")
             .in_("user_id", followed_ids)
             .eq("is_active", True)
             .gte("expires_at", now)
@@ -639,7 +633,19 @@ async def get_status_feed(user: dict = Depends(get_current_user)):
         if not statuses:
             return {"users": [], "total": 0}
 
-        # Bulk fetch views — eliminates N+1 DB query
+        # ── Step 2: bulk fetch profiles in one query (no N+1) ─────────
+        unique_user_ids = list({s["user_id"] for s in statuses})
+        profiles_res = (
+            db.table("profiles")
+            .select("id, full_name, avatar_url, is_online")
+            .in_("id", unique_user_ids)
+            .execute()
+        )
+        profiles_map = {
+            p["id"]: p for p in (profiles_res.data or [])
+        }
+
+        # ── Step 3: bulk fetch views ──────────────────────────────────
         all_status_ids = [s["id"] for s in statuses]
         views_res = (
             db.table("status_views")
@@ -650,13 +656,14 @@ async def get_status_feed(user: dict = Depends(get_current_user)):
         )
         viewed_ids = {v["status_id"] for v in (views_res.data or [])}
 
+        # ── Step 4: group by user ─────────────────────────────────────
         grouped: dict = {}
         for s in statuses:
             uid = s["user_id"]
             if uid not in grouped:
                 grouped[uid] = {
                     "user_id":    uid,
-                    "profile":    s.get("profiles") or {},
+                    "profile":    profiles_map.get(uid, {}),
                     "is_own":     uid == user_id,
                     "items":      [],
                     "has_unseen": False,
