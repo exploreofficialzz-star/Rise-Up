@@ -1,53 +1,74 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-// ── API ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+// RISEUP APP CONSTANTS — PRODUCTION READY
+// All IDs loaded from environment variables only — NO DEBUG/TEST IDs
+// ═══════════════════════════════════════════════════════════════════
+
+// ── API ─────────────────────────────────────────────────────────────
 const String kApiBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
   defaultValue: 'https://riseup-api.onrender.com/api/v1',
 );
 const String kSupabaseUrl = String.fromEnvironment(
-    'SUPABASE_URL', defaultValue: '');
+  'SUPABASE_URL', 
+  defaultValue: '',
+);
 const String kSupabaseAnonKey = String.fromEnvironment(
-    'SUPABASE_ANON_KEY', defaultValue: '');
-
-// ── AdMob ─────────────────────────────────────────────
-const String kAdMobAppId = String.fromEnvironment(
-  'ADMOB_APP_ID',
-  defaultValue: 'ca-app-pub-3940256099942544~3347511713',
-);
-const String kRewardedAdUnit = String.fromEnvironment(
-  'ADMOB_REWARDED_UNIT',
-  defaultValue: 'ca-app-pub-3940256099942544/5224354917',
-);
-const String kBannerAdUnit = String.fromEnvironment(
-  'ADMOB_BANNER_UNIT',
-  defaultValue: 'ca-app-pub-3940256099942544/6300978111',
-);
-const String kInterstitialAdUnit = String.fromEnvironment(
-  'ADMOB_INTERSTITIAL_UNIT',
-  defaultValue: 'ca-app-pub-3940256099942544/1033173712',
-);
-const String kAppOpenAdUnit = String.fromEnvironment(
-  'ADMOB_APP_OPEN_UNIT',
-  defaultValue: 'ca-app-pub-3940256099942544/9257395921',
+  'SUPABASE_ANON_KEY', 
+  defaultValue: '',
 );
 
-// ── AdSense (Web) ─────────────────────────────────────
-const String kAdSensePublisherId = String.fromEnvironment(
-  'ADSENSE_PUBLISHER_ID',
-  defaultValue: 'ca-pub-XXXXXXXXXXXXXXXX',
-);
-const String kAdSenseTopSlotId = String.fromEnvironment(
-  'ADSENSE_TOP_SLOT',
-  defaultValue: 'XXXXXXXXXX',
-);
-const String kAdSenseBottomSlotId = String.fromEnvironment(
-  'ADSENSE_BOTTOM_SLOT',
-  defaultValue: 'XXXXXXXXXX',
-);
+// ── AdMob — PRODUCTION ONLY ─────────────────────────────────────────
+// All IDs MUST be set via environment variables — NO FALLBACK TEST IDs
+const String kAdMobAppId = String.fromEnvironment('ADMOB_APP_ID');
+const String kRewardedAdUnit = String.fromEnvironment('ADMOB_REWARDED_UNIT');
+const String kBannerAdUnit = String.fromEnvironment('ADMOB_BANNER_UNIT');
+const String kInterstitialAdUnit = String.fromEnvironment('ADMOB_INTERSTITIAL_UNIT');
+const String kAppOpenAdUnit = String.fromEnvironment('ADMOB_APP_OPEN_UNIT');
 
-// ── Colors ────────────────────────────────────────────
+// ── NATIVE ADS — NEW PRODUCTION IDs ───────────────────────────────────
+const String kNativeAdUnitAndroid = String.fromEnvironment('ADMOB_NATIVE_UNIT_ANDROID');
+const String kNativeAdUnitIOS = String.fromEnvironment('ADMOB_NATIVE_UNIT_IOS');
+
+// ── PLATFORM-SPECIFIC AD UNITS ───────────────────────────────────────
+class AppConstants {
+  // Banner Ads
+  static String get androidBannerAdUnitId => 
+      String.fromEnvironment('ADMOB_BANNER_UNIT_ANDROID', defaultValue: kBannerAdUnit);
+  static String get iosBannerAdUnitId => 
+      String.fromEnvironment('ADMOB_BANNER_UNIT_IOS', defaultValue: kBannerAdUnit);
+  
+  // Interstitial Ads
+  static String get androidInterstitialAdUnitId => 
+      String.fromEnvironment('ADMOB_INTERSTITIAL_UNIT_ANDROID', defaultValue: kInterstitialAdUnit);
+  static String get iosInterstitialAdUnitId => 
+      String.fromEnvironment('ADMOB_INTERSTITIAL_UNIT_IOS', defaultValue: kInterstitialAdUnit);
+  
+  // Rewarded Ads
+  static String get androidRewardedAdUnitId => 
+      String.fromEnvironment('ADMOB_REWARDED_UNIT_ANDROID', defaultValue: kRewardedAdUnit);
+  static String get iosRewardedAdUnitId => 
+      String.fromEnvironment('ADMOB_REWARDED_UNIT_IOS', defaultValue: kRewardedAdUnit);
+  
+  // App Open Ads
+  static String get androidAppOpenAdUnitId => 
+      String.fromEnvironment('ADMOB_APP_OPEN_UNIT_ANDROID', defaultValue: kAppOpenAdUnit);
+  static String get iosAppOpenAdUnitId => 
+      String.fromEnvironment('ADMOB_APP_OPEN_UNIT_IOS', defaultValue: kAppOpenAdUnit);
+  
+  // Native Ads — NEW
+  static String get androidNativeAdUnitId => kNativeAdUnitAndroid;
+  static String get iosNativeAdUnitId => kNativeAdUnitIOS;
+}
+
+// ── AdSense (Web) — PRODUCTION ONLY ──────────────────────────────────
+const String kAdSensePublisherId = String.fromEnvironment('ADSENSE_PUBLISHER_ID');
+const String kAdSenseTopSlotId = String.fromEnvironment('ADSENSE_TOP_SLOT');
+const String kAdSenseBottomSlotId = String.fromEnvironment('ADSENSE_BOTTOM_SLOT');
+
+// ── Colors ────────────────────────────────────────────────────────────
 class AppColors {
   // Primary brand
   static const Color primary      = Color(0xFF6C5CE7);
@@ -72,11 +93,11 @@ class AppColors {
   static const Color growing  = Color(0xFF00B894);
   static const Color wealth   = Color(0xFF6C5CE7);
 
-  // ── Backgrounds — pure black theme ───────────────────
-  static const Color bgDark      = Color(0xFF000000); // pure black
-  static const Color bgCard      = Color(0xFF0D0D0D); // near black
-  static const Color bgCardLight = Color(0xFF111111); // slightly lighter
-  static const Color bgSurface   = Color(0xFF1A1A1A); // surface black
+  // Backgrounds — pure black theme
+  static const Color bgDark      = Color(0xFF000000);
+  static const Color bgCard      = Color(0xFF0D0D0D);
+  static const Color bgCardLight = Color(0xFF111111);
+  static const Color bgSurface   = Color(0xFF1A1A1A);
 
   // Text
   static const Color textPrimary   = Color(0xFFF8F8FF);
@@ -98,7 +119,7 @@ class AppColors {
   }
 }
 
-// ── Typography ────────────────────────────────────────
+// ── Typography ────────────────────────────────────────────────────────
 class AppTextStyles {
   static TextStyle get h1 => GoogleFonts.poppins(
     fontSize: 32, fontWeight: FontWeight.w800,
@@ -143,7 +164,7 @@ class AppTextStyles {
   );
 }
 
-// ── Theme ─────────────────────────────────────────────
+// ── Theme ─────────────────────────────────────────────────────────────
 class AppTheme {
   static ThemeData get dark => ThemeData(
     useMaterial3: true,
@@ -283,7 +304,7 @@ class AppTheme {
   );
 }
 
-// ── Spacing ───────────────────────────────────────────
+// ── Spacing ─────────────────────────────────────────────────────────
 class AppSpacing {
   static const double xs  = 4;
   static const double sm  = 8;
@@ -293,7 +314,7 @@ class AppSpacing {
   static const double xxl = 48;
 }
 
-// ── Radius ────────────────────────────────────────────
+// ── Radius ──────────────────────────────────────────────────────────
 class AppRadius {
   static BorderRadius get sm   => BorderRadius.circular(8);
   static BorderRadius get md   => BorderRadius.circular(12);
@@ -302,7 +323,7 @@ class AppRadius {
   static BorderRadius get pill => BorderRadius.circular(50);
 }
 
-// ── Shadows ───────────────────────────────────────────
+// ── Shadows ─────────────────────────────────────────────────────────
 class AppShadows {
   static List<BoxShadow> get card => [
     BoxShadow(
@@ -320,7 +341,7 @@ class AppShadows {
   ];
 }
 
-// ── Feature Keys ──────────────────────────────────────
+// ── Feature Keys ────────────────────────────────────────────────────
 class FeatureKeys {
   static const String aiRoadmap         = 'ai_roadmap';
   static const String taskBooster       = 'task_booster';
@@ -331,7 +352,7 @@ class FeatureKeys {
   static const String advancedAnalytics = 'advanced_analytics';
 }
 
-// ── Stage Info ────────────────────────────────────────
+// ── Stage Info ──────────────────────────────────────────────────────
 class StageInfo {
   static Map<String, dynamic> get(String stage) {
     switch (stage.toLowerCase()) {
