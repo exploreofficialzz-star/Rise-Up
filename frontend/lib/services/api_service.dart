@@ -1038,6 +1038,30 @@ class ApiService {
   // ── Messages ─────────────────────────────────────────────────
   // ─────────────────────────────────────────────────────────────
 
+  /// Legacy: returns the raw {"conversations": [...]} map.
+  /// Used by app_providers.dart. Prefer getDMConversations() in new code.
+  Future<Map<String, dynamic>> getConversations() async {
+    try {
+      final r = await _dio.get('/messages/conversations');
+      return r.data as Map<String, dynamic>;
+    } catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  /// Legacy: gets or creates a conversation and returns the full response map.
+  /// Used by user_profile_screen.dart. Prefer getOrCreateDM() in new code.
+  Future<Map<String, dynamic>> getOrCreateConversation(
+      String otherUserId) async {
+    try {
+      final r = await _dio
+          .post('/messages/conversations/with/$otherUserId');
+      return r.data as Map<String, dynamic>;
+    } catch (e) {
+      throw _handleError(e);
+    }
+  }
+
   /// Returns the enriched list of DM conversations for the current user.
   /// Backend: GET /messages/conversations → {"conversations": [...]}
   Future<List<dynamic>> getDMConversations() async {
