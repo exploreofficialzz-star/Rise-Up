@@ -4,7 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
-// Import your existing ad service - adjust path as needed
+// Fixed import path to match your actual file structure
 import '../../services/ads/ad_service_mobile.dart';
 
 class MarketPulseScreen extends StatefulWidget {
@@ -16,6 +16,7 @@ class MarketPulseScreen extends StatefulWidget {
 
 class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTickerProviderStateMixin {
   late TabController _tabs;
+  // Use the singleton instance from ad_service_mobile.dart
   final AdService _adService = AdService();
   
   // Data states
@@ -316,7 +317,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
             margin: const EdgeInsets.only(bottom: 20),
             decoration: BoxDecoration(
               gradient: const LinearGradient(colors: [Color(0xFFFF6B35), Color(0xFFFF3CAC)]),
-              borderRadius: AppRadius.lg,
+              borderRadius: BorderRadius.circular(16),
               boxShadow: [BoxShadow(color: const Color(0xFFFF6B35).withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 4))]
             ),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -511,7 +512,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
   // ============================================================================
   Widget _buildCareerTab(bool isDark, Color text, Color sub, Color card) {
     if (_careerForecast.isEmpty && !_loadingCareer) {
-      _loadCareerForecast();
+      _loadCareCareererForecast();
       return _buildLoadingState('Generating career forecast...');
     }
     if (_loadingCareer) {
@@ -775,7 +776,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       margin: const EdgeInsets.only(bottom: 20),
       decoration: BoxDecoration(
         gradient: LinearGradient(colors: gradient),
-        borderRadius: AppRadius.lg,
+        borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
             color: gradient[0].withOpacity(0.3),
@@ -832,7 +833,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
           children: ['all', 'immediate', 'short', 'long'].map((tf) => Padding(
             padding: const EdgeInsets.only(right: 8),
             child: ChoiceChip(
-              label: Text(tf.toUpperCase(), style: TextStyle(fontSize: 11)),
+              label: Text(tf.toUpperCase(), style: const TextStyle(fontSize: 11)),
               selected: _selectedTimeframe == tf,
               onSelected: (val) {
                 setState(() => _selectedTimeframe = tf);
@@ -856,7 +857,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
           children: ['bootstrap', 'moderate', 'well-funded'].map((tier) => Padding(
             padding: const EdgeInsets.only(right: 8),
             child: ChoiceChip(
-              label: Text(tier.toUpperCase(), style: TextStyle(fontSize: 11)),
+              label: Text(tier.toUpperCase(), style: const TextStyle(fontSize: 11)),
               selected: _selectedCapitalTier == tier,
               onSelected: (val) {
                 setState(() => _selectedCapitalTier = tier);
@@ -880,7 +881,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
           children: ['conservative', 'moderate', 'aggressive'].map((risk) => Padding(
             padding: const EdgeInsets.only(right: 8),
             child: ChoiceChip(
-              label: Text(risk.toUpperCase(), style: TextStyle(fontSize: 11)),
+              label: Text(risk.toUpperCase(), style: const TextStyle(fontSize: 11)),
               selected: _selectedRiskTolerance == risk,
               onSelected: (val) {
                 setState(() => _selectedRiskTolerance = risk);
@@ -916,7 +917,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
           backgroundColor: AppColors.gold,
           foregroundColor: Colors.black,
           padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
-          shape: RoundedRectangleBorder(borderRadius: AppRadius.lg),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         ),
       ),
     );
@@ -928,7 +929,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: isDark ? AppColors.bgCard : Colors.white,
-        borderRadius: AppRadius.lg,
+        borderRadius: BorderRadius.circular(16),
         boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.03), blurRadius: 10)],
       ),
       child: Row(children: [
@@ -947,7 +948,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(color: AppColors.error.withOpacity(0.05), borderRadius: AppRadius.md),
+      decoration: BoxDecoration(color: AppColors.error.withOpacity(0.05), borderRadius: BorderRadius.circular(12)),
       child: Row(children: [
         const Icon(Icons.block, color: AppColors.error, size: 16),
         const SizedBox(width: 12),
@@ -964,7 +965,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: color.withOpacity(0.1),
-        borderRadius: AppRadius.md,
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: color.withOpacity(0.3)),
       ),
       child: Row(
@@ -992,7 +993,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
         Container(
           width: double.infinity,
           padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(color: isDark ? AppColors.bgCard : const Color(0xFFF8F9FA), borderRadius: AppRadius.lg),
+          decoration: BoxDecoration(color: isDark ? AppColors.bgCard : const Color(0xFFF8F9FA), borderRadius: BorderRadius.circular(16)),
           child: Text(content.toString(), style: TextStyle(fontSize: 13, color: text, height: 1.6)),
         ),
         const SizedBox(height: 20),
@@ -1006,7 +1007,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: isDark ? AppColors.bgCard : Colors.white,
-        borderRadius: AppRadius.lg,
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: color.withOpacity(0.2)),
       ),
       child: Column(
@@ -1026,7 +1027,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: isDark ? AppColors.bgCard : Colors.white,
-        borderRadius: AppRadius.lg,
+        borderRadius: BorderRadius.circular(16),
         boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.03), blurRadius: 10)],
       ),
       child: Column(
@@ -1075,7 +1076,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: isDark ? AppColors.bgCard : Colors.white,
-        borderRadius: AppRadius.lg,
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: color.withOpacity(0.3)),
       ),
       child: Column(
@@ -1127,7 +1128,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: isDark ? AppColors.bgCard : Colors.white,
-        borderRadius: AppRadius.lg,
+        borderRadius: BorderRadius.circular(16),
         gradient: LinearGradient(
           colors: [
             AppColors.primary.withOpacity(0.05),
@@ -1175,7 +1176,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: isDark ? AppColors.bgCard : Colors.white,
-        borderRadius: AppRadius.md,
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: color.withOpacity(0.3)),
       ),
       child: Row(
@@ -1218,7 +1219,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: isDark ? AppColors.bgCard : Colors.white,
-        borderRadius: AppRadius.lg,
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1244,7 +1245,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: isDark ? AppColors.bgCard : Colors.white,
-        borderRadius: AppRadius.lg,
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Column(
         children: [
@@ -1281,7 +1282,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: isDark ? AppColors.bgCard : Colors.white,
-        borderRadius: AppRadius.lg,
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: AppColors.success.withOpacity(0.2)),
       ),
       child: Row(
@@ -1324,7 +1325,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: isDark ? AppColors.bgCard : Colors.white,
-        borderRadius: AppRadius.lg,
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1372,7 +1373,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: isDark ? AppColors.bgCard : Colors.white,
-        borderRadius: AppRadius.lg,
+        borderRadius: BorderRadius.circular(16),
         border: isRecommended ? Border.all(color: AppColors.gold, width: 2) : null,
         boxShadow: isRecommended ? [BoxShadow(color: AppColors.gold.withOpacity(0.2), blurRadius: 10)] : null,
       ),
@@ -1428,7 +1429,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: isDark ? AppColors.bgCard : Colors.white,
-        borderRadius: AppRadius.lg,
+        borderRadius: BorderRadius.circular(16),
         border: isFeatured ? Border.all(color: AppColors.gold, width: 2) : Border.all(color: AppColors.accent.withOpacity(0.2)),
       ),
       child: Column(
@@ -1476,7 +1477,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: isDark ? AppColors.bgCard : Colors.white,
-        borderRadius: AppRadius.lg,
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: color.withOpacity(0.2)),
       ),
       child: Column(
@@ -1529,7 +1530,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: isDark ? AppColors.bgSurface : Colors.grey.shade100,
-        borderRadius: AppRadius.lg,
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
         children: [
@@ -1564,7 +1565,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: isDark ? AppColors.bgCard : Colors.white,
-        borderRadius: AppRadius.lg,
+        borderRadius: BorderRadius.circular(16),
         border: isPriority ? Border.all(color: color, width: 2) : null,
       ),
       child: Column(
@@ -1594,7 +1595,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
           const SizedBox(height: 8),
           Container(
             padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(color: color.withOpacity(0.05), borderRadius: AppRadius.md),
+            decoration: BoxDecoration(color: color.withOpacity(0.05), borderRadius: BorderRadius.circular(12)),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1647,7 +1648,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(color: Colors.black.withOpacity(0.03), borderRadius: AppRadius.md),
+      decoration: BoxDecoration(color: Colors.black.withOpacity(0.03), borderRadius: BorderRadius.circular(12)),
       child: Row(children: [
         Icon(icon, size: 18, color: AppColors.primary),
         const SizedBox(width: 12),
@@ -1662,7 +1663,7 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with SingleTicker
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(color: color.withOpacity(0.08), borderRadius: AppRadius.lg, border: Border.all(color: color.withOpacity(0.3))),
+      decoration: BoxDecoration(color: color.withOpacity(0.08), borderRadius: BorderRadius.circular(16), border: Border.all(color: color.withOpacity(0.3))),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(title, style: TextStyle(color: color, fontWeight: FontWeight.w900, fontSize: 10, letterSpacing: 1)),
         const SizedBox(height: 8),
