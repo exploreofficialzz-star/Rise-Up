@@ -1,7 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-//  Web Ad Service — Google AdSense (injected via web/index.html)
-//  Rewarded / Interstitial / AppOpen → no-op on web (AdSense
-//  handles placements automatically via Auto Ads in index.html)
+//  Web Ad Service — Stubs (AdMob not supported on web)
 // ─────────────────────────────────────────────────────────────
 import 'package:flutter/material.dart';
 import 'ad_service_base.dart';
@@ -13,43 +11,35 @@ class AdService implements AdServiceBase {
 
   @override
   Future<void> initialize() async {
-    // AdSense is injected in web/index.html — nothing to do here
+    // No ads on web
   }
 
   @override
-  bool get isRewardedReady => true; // web: always grant immediately
+  bool get isRewardedReady => false;
 
   @override
   Future<bool> showRewardedAd({
     required String featureKey,
-    required Function onRewarded,
-    required Function onDismissed,
+    required VoidCallback onRewarded,
+    required VoidCallback onDismissed,
   }) async {
-    // Web doesn't support rewarded ads — grant the reward immediately
-    // so the UX is not blocked. Real monetisation comes from AdSense banners.
-    onRewarded();
-    return true;
+    onDismissed();
+    return false;
   }
 
   @override
   Future<void> showInterstitialIfReady() async {
-    // AdSense Auto Ads manages interstitials on web
+    // No-op on web
   }
 
   @override
   Future<void> showAppOpenAdIfAvailable() async {
-    // AdSense Auto Ads manages overlays on web
+    // No-op on web
   }
+
+  Widget getBannerWidget() => const SizedBox.shrink();
+  Widget? getNativeWidget() => null;
+  void dispose() {}
 }
 
 final adService = AdService();
-
-// ── Web BannerAdWidget ────────────────────────────────────────
-// Real AdSense banners are in web/index.html (top + bottom).
-// Return empty here to avoid double-showing ads inside the canvas.
-class BannerAdWidget extends StatelessWidget {
-  const BannerAdWidget({super.key});
-
-  @override
-  Widget build(BuildContext context) => const SizedBox.shrink();
-}
