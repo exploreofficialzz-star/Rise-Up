@@ -92,7 +92,6 @@ class SupabaseService:
             "ai_model": ai_model,
             "metadata": metadata or {},
         }).execute()
-        # Best-effort: update conversation message count
         try:
             self.db.rpc("increment_message_count", {"conv_id": conversation_id}).execute()
         except Exception:
@@ -209,7 +208,6 @@ class SupabaseService:
             "description": description,
             "currency": currency,
         }).execute()
-        # Best-effort: update profile total_earned
         try:
             self.db.rpc(
                 "increment_total_earned", {"uid": user_id, "amount": amount}
@@ -250,7 +248,6 @@ class SupabaseService:
     async def check_feature_access(self, user_id: str, feature_key: str) -> bool:
         profile = await self.get_profile(user_id)
         if profile and profile.get("subscription_tier") == "premium":
-            # Verify premium hasn't expired
             expires = profile.get("subscription_expires_at")
             if expires:
                 from datetime import datetime, timezone
@@ -258,7 +255,7 @@ class SupabaseService:
                 if parse_dt(expires) > datetime.now(timezone.utc):
                     return True
             else:
-                return True  # lifetime premium (no expiry set)
+                return True
 
         from datetime import datetime, timezone
         from dateutil.parser import parse as parse_dt
@@ -327,31 +324,252 @@ class SupabaseService:
 
     # ── Progress Stats ────────────────────────────────────────
     async def get_user_stats(self, user_id: str) -> dict:
-        profile = await self.get_profile(user_id)
-        tasks = await self.get_tasks(user_id)
+        profile     = await self.get_profile(user_id)
+        tasks       = await self.get_tasks(user_id)
         enrollments = await self.get_enrollments(user_id)
-        earnings = await self.get_earnings_summary(user_id)
+        earnings    = await self.get_earnings_summary(user_id)
 
         completed_tasks = [t for t in tasks if t.get("status") == "completed"]
-        active_tasks = [t for t in tasks if t.get("status") == "in_progress"]
+        active_tasks    = [t for t in tasks if t.get("status") == "in_progress"]
 
         return {
-            "profile": profile,
+            "profile":      profile,
             "total_earned": earnings["total"],
             "tasks": {
-                "total": len(tasks),
+                "total":     len(tasks),
                 "completed": len(completed_tasks),
-                "active": len(active_tasks),
+                "active":    len(active_tasks),
                 "suggested": len([t for t in tasks if t.get("status") == "suggested"]),
             },
             "skills": {
-                "enrolled": len(enrollments),
-                "completed": len([e for e in enrollments if e.get("status") == "completed"]),
-                "in_progress": len([e for e in enrollments if e.get("status") == "in_progress"]),
+                "enrolled":   len(enrollments),
+                "completed":  len([e for e in enrollments if e.get("status") == "completed"]),
+                "in_progress":len([e for e in enrollments if e.get("status") == "in_progress"]),
             },
-            "stage": profile.get("stage", "survival") if profile else "survival",
+            "stage":        profile.get("stage", "survival") if profile else "survival",
             "subscription": profile.get("subscription_tier", "free") if profile else "free",
         }
+
+    # ── Market Pulse / Economic Context ───────────────────────
+    async def get_economic_indicators(self, country_code: str) -> dict:
+        """
+        Fetch cached economic indicators for a given country from the DB.
+
+        Tries the `economic_indicators` table first (populated by a background
+        scheduler or migration).  Falls back to a safe empty dict so callers
+        never crash — market_pulse.py logs a warning and continues without it.
+
+        Expected table schema (create via migration if needed):
+          economic_indicators (
+            country_code  TEXT PRIMARY KEY,
+            gdp_growth    NUMERIC,
+            inflation     NUMERIC,
+            unemployment  NUMERIC,
+            currency_trend TEXT,
+            interest_rate  NUMERIC,
+            updated_at    TIMESTAMPTZ DEFAULT now()
+          )
+        """
+        try:
+            res = (
+                self.db.table("economic_indicators")
+                .select("*")
+                .eq("country_code", country_code.upper())
+                .single()
+                .execute()
+            )
+            return res.data or {}
+        except Exception as e:
+            logger.debug(f"get_economic_indicators({country_code}): {e}")
+            return {}
+
+    async def upsert_economic_indicators(
+        self, country_code: str, data: dict
+    ) -> dict:
+        """
+        Upsert economic indicator data for a country (called by scheduler / admin).
+        """
+        data["country_code"] = country_code.upper()
+        try:
+            res = (
+                self.db.table("economic_indicators")
+                .upsert(data, on_conflict="country_code")
+                .execute()
+            )
+            return res.data[0] if res.data else {}
+        except Exception as e:
+            logger.warning(f"upsert_economic_indicators({country_code}): {e}")
+            return {}
+
+    # ── Market Pulse Cache ────────────────────────────────────
+    async def get_pulse_cache(self, cache_key: str) -> dict:
+        """
+        Retrieve a cached market-pulse payload by key.
+
+        Expected table schema:
+          pulse_cache (
+            cache_key   TEXT PRIMARY KEY,
+            payload     JSONB,
+            expires_at  TIMESTAMPTZ,
+            created_at  TIMESTAMPTZ DEFAULT now()
+          )
+        """
+        try:
+            from datetime import datetime, timezone
+            res = (
+                self.db.table("pulse_cache")
+                .select("payload, expires_at")
+                .eq("cache_key", cache_key)
+                .single()
+                .execute()
+            )
+            if not res.data:
+                return {}
+            # Honour TTL
+            expires_at = res.data.get("expires_at")
+            if expires_at:
+                from dateutil.parser import parse as parse_dt
+                if parse_dt(expires_at) < datetime.now(timezone.utc):
+                    return {}  # expired
+            return res.data.get("payload") or {}
+        except Exception as e:
+            logger.debug(f"get_pulse_cache({cache_key}): {e}")
+            return {}
+
+    async def set_pulse_cache(
+        self, cache_key: str, payload: dict, ttl_seconds: int = 3600
+    ) -> bool:
+        """Store a market-pulse payload with a TTL."""
+        try:
+            from datetime import datetime, timezone, timedelta
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+            ).isoformat()
+            self.db.table("pulse_cache").upsert({
+                "cache_key":  cache_key,
+                "payload":    payload,
+                "expires_at": expires_at,
+            }, on_conflict="cache_key").execute()
+            return True
+        except Exception as e:
+            logger.warning(f"set_pulse_cache({cache_key}): {e}")
+            return False
+
+    # ── Notifications ─────────────────────────────────────────
+    async def create_notification(
+        self,
+        user_id: str,
+        title: str,
+        body: str,
+        notif_type: str = "info",
+        metadata: dict = None,
+    ) -> dict:
+        try:
+            res = self.db.table("notifications").insert({
+                "user_id":  user_id,
+                "title":    title,
+                "body":     body,
+                "type":     notif_type,
+                "metadata": metadata or {},
+                "is_read":  False,
+            }).execute()
+            return res.data[0] if res.data else {}
+        except Exception as e:
+            logger.warning(f"create_notification: {e}")
+            return {}
+
+    async def get_notifications(
+        self, user_id: str, limit: int = 50, unread_only: bool = False
+    ) -> list:
+        try:
+            q = (
+                self.db.table("notifications")
+                .select("*")
+                .eq("user_id", user_id)
+            )
+            if unread_only:
+                q = q.eq("is_read", False)
+            res = q.order("created_at", desc=True).limit(limit).execute()
+            return res.data or []
+        except Exception as e:
+            logger.warning(f"get_notifications: {e}")
+            return []
+
+    async def mark_notification_read(
+        self, notification_id: str, user_id: str
+    ) -> bool:
+        try:
+            self.db.table("notifications").update({"is_read": True}).eq(
+                "id", notification_id
+            ).eq("user_id", user_id).execute()
+            return True
+        except Exception as e:
+            logger.warning(f"mark_notification_read: {e}")
+            return False
+
+    # ── Goals ─────────────────────────────────────────────────
+    async def create_goal(self, user_id: str, goal_data: dict) -> dict:
+        goal_data["user_id"] = user_id
+        try:
+            res = self.db.table("goals").insert(goal_data).execute()
+            return res.data[0] if res.data else {}
+        except Exception as e:
+            logger.warning(f"create_goal: {e}")
+            return {}
+
+    async def get_goals(self, user_id: str, status: str = None) -> list:
+        try:
+            q = self.db.table("goals").select("*").eq("user_id", user_id)
+            if status:
+                q = q.eq("status", status)
+            res = q.order("created_at", desc=True).execute()
+            return res.data or []
+        except Exception as e:
+            logger.warning(f"get_goals: {e}")
+            return []
+
+    async def update_goal(self, goal_id: str, user_id: str, data: dict) -> dict:
+        try:
+            res = (
+                self.db.table("goals")
+                .update(data)
+                .eq("id", goal_id)
+                .eq("user_id", user_id)
+                .execute()
+            )
+            return res.data[0] if res.data else {}
+        except Exception as e:
+            logger.warning(f"update_goal: {e}")
+            return {}
+
+    # ── Agent Quota ───────────────────────────────────────────
+    async def get_agent_quota(self, user_id: str) -> dict:
+        """
+        Return the current agent usage quota for a user.
+        Falls back to a sensible default if the table doesn't exist yet.
+        """
+        try:
+            res = (
+                self.db.table("agent_quotas")
+                .select("*")
+                .eq("user_id", user_id)
+                .single()
+                .execute()
+            )
+            return res.data or {"user_id": user_id, "used": 0, "limit": 10}
+        except Exception as e:
+            logger.debug(f"get_agent_quota({user_id}): {e}")
+            return {"user_id": user_id, "used": 0, "limit": 10}
+
+    async def increment_agent_quota(self, user_id: str, amount: int = 1) -> bool:
+        try:
+            self.db.rpc(
+                "increment_agent_quota", {"uid": user_id, "amount": amount}
+            ).execute()
+            return True
+        except Exception as e:
+            logger.warning(f"increment_agent_quota({user_id}): {e}")
+            return False
 
 
 supabase_service = SupabaseService()
