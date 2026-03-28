@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
@@ -50,11 +52,9 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
     try {
       final bannerAd = BannerAd(
-        adUnitId: kDebugMode
-            ? 'ca-app-pub-3940256099942544/6300978111'
-            : (Platform.isAndroid
-                ? AppConstants.androidBannerAdUnitId
-                : AppConstants.iosBannerAdUnitId),
+        adUnitId: Platform.isAndroid
+            ? AppConstants.androidBannerAdUnitId
+            : AppConstants.iosBannerAdUnitId,
         size: AdSize.banner,
         request: const AdRequest(),
         listener: BannerAdListener(
@@ -93,8 +93,8 @@ class _UserProfileScreenState extends State<UserProfileScreen>
       if (mounted) {
         setState(() {
           final d = results[0] as Map? ?? {};
-          _profile = d['profile'] as Map? ?? {};
-          _stats = d['stats'] as Map? ?? {};
+          _profile = (d['profile'] as Map?)?.cast<String, dynamic>() ?? {};
+          _stats = (d['stats'] as Map?)?.cast<String, dynamic>() ?? {};
           _isFollowing = d['is_following'] == true;
           _posts = (results[1] as Map?)?['posts'] as List? ?? [];
           _isPremium = _profile['subscription_tier'] == 'premium';
