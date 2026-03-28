@@ -1,27 +1,20 @@
 """
-RiseUp AI Service — Global Wealth Intelligence Engine v2.1 (Production)
-A comprehensive personal growth and wealth-building mentor that adapts to any country,
-provides real-time guidance, and acts as a director for users from $0 to financial freedom.
+RiseUp AI Service — Global Wealth Intelligence Engine v2.2 (Production)
 
-Production Features:
-- Global localization (190+ countries with region-specific advice)
-- Live data integration via external APIs (no hardcoded values)
-- Complete wealth lifecycle: Survival → Earning → Growth → Wealth → Legacy
-- Trending careers & skills for 2025-2026
-- Local & international income opportunities
-- Personal mentor mode with accountability
-- Multi-model AI with intelligent fallback
-- Comprehensive error handling and logging
+v2.2 Bug Fixes:
+- chat() now accepts 'temperature' kwarg  ← market_pulse.py was crashing with unexpected kwarg
+- temperature flows through mentor_chat() → each model client
+- All model clients (Groq, Gemini, OpenAI, Anthropic) now accept temperature param
 
 v2.1 Bug Fixes:
-- Added RISEUP_SYSTEM_PROMPT alias  ← was crashing ai_agent.py import
-- Added ONBOARDING_PROMPT alias     ← was crashing ai_agent.py import
-- Added chat() wrapper method       ← ai_agent.py called .chat(), engine had .mentor_chat()
-- Added analyze_onboarding() method ← method was missing entirely
-- Added generate_roadmap() alias    ← ai_agent.py called wrong method name
+- Added RISEUP_SYSTEM_PROMPT alias
+- Added ONBOARDING_PROMPT alias
+- Added chat() wrapper method
+- Added analyze_onboarding() method
+- Added generate_roadmap() alias
 
 v2.1 Global Enhancements:
-- Extended country database (Africa, Asia, LatAm, Europe, MENA)
+- Extended country database (Africa, Asia, LatAm, Europe, MENA, Oceania)
 - Language-aware system prompts
 - Timezone-aware context injection
 - Multi-currency income estimates
@@ -45,7 +38,6 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 class WealthStage(Enum):
-    """7 stages of the wealth-building journey"""
     DEPENDENCE   = "dependence"
     SURVIVAL     = "survival"
     STABILITY    = "stability"
@@ -57,7 +49,6 @@ class WealthStage(Enum):
 
 @dataclass
 class CountryProfile:
-    """Comprehensive country-specific financial data"""
     code: str
     name: str
     currency: str
@@ -80,18 +71,10 @@ class CountryProfile:
 
 
 class GlobalWealthDatabase:
-    """
-    Production database of country-specific wealth information.
-    In production, refresh periodically from World Bank / Numbeo APIs.
-    """
-
     def __init__(self):
         self.countries: Dict[str, CountryProfile] = {}
         self._initialize_database()
 
-    # ------------------------------------------------------------------
-    # COUNTRY DATA
-    # ------------------------------------------------------------------
     def _initialize_database(self):
 
         # ── WEST AFRICA ──────────────────────────────────────────────
@@ -147,6 +130,42 @@ class GlobalWealthDatabase:
             business_registration_cost=500, min_wage_hourly=6,
         )
 
+        self.countries["SN"] = CountryProfile(
+            code="SN", name="Senegal", currency="XOF", currency_symbol="CFA",
+            language="French/Wolof", region="West Africa", timezone="Africa/Dakar",
+            avg_monthly_income=150_000, poverty_line_monthly=45_000,
+            middle_class_monthly=280_000, wealthy_monthly=900_000,
+            popular_platforms=[
+                {"name": "Wave",   "type": "fintech"},
+                {"name": "Upwork", "type": "freelance"},
+            ],
+            local_hustles=[
+                {"name": "Wave Agent",       "earnings": "CFA25k-100k/month","startup": "CFA5k","difficulty": "easy"},
+                {"name": "Remote Freelance", "earnings": "$200-1500/month",  "startup": "CFA0", "difficulty": "hard"},
+            ],
+            trending_skills=["Freelancing","Digital Marketing","Web Dev","Content Creation"],
+            cost_of_living_index=21.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=30_000, min_wage_hourly=170,
+        )
+
+        self.countries["CM"] = CountryProfile(
+            code="CM", name="Cameroon", currency="XAF", currency_symbol="CFA",
+            language="French/English", region="Central Africa", timezone="Africa/Douala",
+            avg_monthly_income=150_000, poverty_line_monthly=50_000,
+            middle_class_monthly=300_000, wealthy_monthly=1_000_000,
+            popular_platforms=[
+                {"name": "Fiverr",      "type": "freelance"},
+                {"name": "Orange Money","type": "fintech"},
+            ],
+            local_hustles=[
+                {"name": "Mobile Money Agent","earnings": "CFA30k-120k/month","startup": "CFA10k","difficulty": "easy"},
+                {"name": "Remote Freelancing","earnings": "$200-2000/month",  "startup": "CFA0",  "difficulty": "hard"},
+            ],
+            trending_skills=["Freelancing","Digital Marketing","Mobile Money","Content Creation"],
+            cost_of_living_index=22.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=50_000, min_wage_hourly=200,
+        )
+
         # ── EAST AFRICA ───────────────────────────────────────────────
         self.countries["KE"] = CountryProfile(
             code="KE", name="Kenya", currency="KES", currency_symbol="KSh",
@@ -186,6 +205,45 @@ class GlobalWealthDatabase:
             business_registration_cost=80_000, min_wage_hourly=400,
         )
 
+        self.countries["ET"] = CountryProfile(
+            code="ET", name="Ethiopia", currency="ETB", currency_symbol="Br",
+            language="Amharic/English", region="East Africa", timezone="Africa/Addis_Ababa",
+            avg_monthly_income=3_500, poverty_line_monthly=1_000,
+            middle_class_monthly=6_000, wealthy_monthly=20_000,
+            popular_platforms=[
+                {"name": "Telebirr", "type": "fintech"},
+                {"name": "Fiverr",   "type": "freelance"},
+                {"name": "Upwork",   "type": "freelance"},
+            ],
+            local_hustles=[
+                {"name": "Coffee Trading",   "earnings": "Br2k-10k/month","startup": "Br500","difficulty": "easy"},
+                {"name": "Remote Freelance", "earnings": "$200-1500/month","startup": "Br0",  "difficulty": "hard"},
+                {"name": "Online Tutoring",  "earnings": "Br1k-5k/month", "startup": "Br0",  "difficulty": "easy"},
+            ],
+            trending_skills=["Freelancing","Digital Marketing","Web Dev","Agricultural Tech"],
+            cost_of_living_index=18.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=1_000, min_wage_hourly=20,
+        )
+
+        self.countries["RW"] = CountryProfile(
+            code="RW", name="Rwanda", currency="RWF", currency_symbol="FRw",
+            language="Kinyarwanda/English/French", region="East Africa", timezone="Africa/Kigali",
+            avg_monthly_income=80_000, poverty_line_monthly=25_000,
+            middle_class_monthly=150_000, wealthy_monthly=500_000,
+            popular_platforms=[
+                {"name": "Upwork",   "type": "freelance"},
+                {"name": "MTN MoMo", "type": "fintech"},
+            ],
+            local_hustles=[
+                {"name": "Mobile Money Agent",  "earnings": "FRw30k-120k/month","startup": "FRw10k","difficulty": "easy"},
+                {"name": "Tourism Services",    "earnings": "$200-800/month",   "startup": "FRw0",  "difficulty": "medium"},
+                {"name": "Digital Freelancing", "earnings": "$300-2000/month",  "startup": "FRw0",  "difficulty": "hard"},
+            ],
+            trending_skills=["Tech","Tourism","Digital Marketing","AgriTech"],
+            cost_of_living_index=20.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=5_000, min_wage_hourly=200,
+        )
+
         # ── SOUTHERN AFRICA ───────────────────────────────────────────
         self.countries["ZA"] = CountryProfile(
             code="ZA", name="South Africa", currency="ZAR", currency_symbol="R",
@@ -198,13 +256,33 @@ class GlobalWealthDatabase:
                 {"name": "EasyEquities","url": "https://easyequities.io", "type": "investment"},
             ],
             local_hustles=[
-                {"name": "Spaza Shop",     "earnings": "R8k-25k/month",  "startup": "R5k", "difficulty": "easy"},
-                {"name": "Uber/Bolt",      "earnings": "R10k-30k/month", "startup": "R0",  "difficulty": "easy"},
-                {"name": "Remote Freelance","earnings": "$500-3000/month","startup": "R0",  "difficulty": "hard"},
+                {"name": "Spaza Shop",      "earnings": "R8k-25k/month",  "startup": "R5k","difficulty": "easy"},
+                {"name": "Uber/Bolt",       "earnings": "R10k-30k/month", "startup": "R0", "difficulty": "easy"},
+                {"name": "Remote Freelance","earnings": "$500-3000/month","startup": "R0", "difficulty": "hard"},
             ],
             trending_skills=["Solar/Renewable","Coding","Digital Marketing","E-commerce"],
             cost_of_living_index=45.0, tax_brackets=[], investment_options=[],
             business_registration_cost=175, min_wage_hourly=27,
+        )
+
+        self.countries["ZW"] = CountryProfile(
+            code="ZW", name="Zimbabwe", currency="ZWL", currency_symbol="Z$",
+            language="English/Shona/Ndebele", region="Southern Africa", timezone="Africa/Harare",
+            avg_monthly_income=300, poverty_line_monthly=80,
+            middle_class_monthly=600, wealthy_monthly=2_000,
+            popular_platforms=[
+                {"name": "EcoCash", "type": "fintech"},
+                {"name": "Fiverr",  "type": "freelance"},
+                {"name": "Upwork",  "type": "freelance"},
+            ],
+            local_hustles=[
+                {"name": "EcoCash Agent",     "earnings": "$100-400/month", "startup": "$50", "difficulty": "easy"},
+                {"name": "Remote Freelancing","earnings": "$200-1500/month","startup": "$0",  "difficulty": "hard"},
+                {"name": "Informal Trading",  "earnings": "$150-600/month", "startup": "$100","difficulty": "easy"},
+            ],
+            trending_skills=["Freelancing","Digital Marketing","Programming","Content Creation"],
+            cost_of_living_index=30.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=50, min_wage_hourly=1,
         )
 
         # ── NORTH AMERICA ─────────────────────────────────────────────
@@ -222,20 +300,20 @@ class GlobalWealthDatabase:
                 {"name": "Fundrise",  "url": "https://fundrise.com",  "type": "realestate"},
             ],
             local_hustles=[
-                {"name": "Amazon FBA",      "earnings": "$500-5000/month",   "startup": "$500", "difficulty": "medium"},
-                {"name": "YouTube Content", "earnings": "$1000-10000/month", "startup": "$200", "difficulty": "hard"},
-                {"name": "Notary Public",   "earnings": "$2000-8000/month",  "startup": "$300", "difficulty": "easy"},
-                {"name": "Pressure Washing","earnings": "$2000-6000/month",  "startup": "$1k",  "difficulty": "easy"},
-                {"name": "AI Prompt Eng",   "earnings": "$3000-15000/month", "startup": "$0",   "difficulty": "hard"},
+                {"name": "Amazon FBA",      "earnings": "$500-5000/month",   "startup": "$500","difficulty": "medium"},
+                {"name": "YouTube Content", "earnings": "$1000-10000/month", "startup": "$200","difficulty": "hard"},
+                {"name": "Notary Public",   "earnings": "$2000-8000/month",  "startup": "$300","difficulty": "easy"},
+                {"name": "Pressure Washing","earnings": "$2000-6000/month",  "startup": "$1k", "difficulty": "easy"},
+                {"name": "AI Prompt Eng",   "earnings": "$3000-15000/month", "startup": "$0",  "difficulty": "hard"},
             ],
             trending_skills=["AI/ML Engineering","Cybersecurity","Data Science","Cloud Architecture","Prompt Engineering"],
             cost_of_living_index=100.0,
             tax_brackets=[{"min": 0,"max": 11_600,"rate": 10},{"min": 11_601,"max": 47_150,"rate": 12}],
             investment_options=[
-                {"name": "S&P 500 Index",     "return": "10% avg", "risk": "medium", "min": 1},
-                {"name": "Real Estate (REITs)","return": "8-12%",  "risk": "medium", "min": 100},
-                {"name": "High-Yield Savings", "return": "4-5%",   "risk": "low",    "min": 0},
-                {"name": "Crypto (BTC/ETH)",   "return": "Variable","risk": "high",   "min": 10},
+                {"name": "S&P 500 Index",     "return": "10% avg","risk": "medium","min": 1},
+                {"name": "Real Estate (REITs)","return": "8-12%", "risk": "medium","min": 100},
+                {"name": "High-Yield Savings", "return": "4-5%",  "risk": "low",   "min": 0},
+                {"name": "Crypto (BTC/ETH)",   "return": "Variable","risk": "high","min": 10},
             ],
             business_registration_cost=150, min_wage_hourly=7.25,
         )
@@ -246,12 +324,12 @@ class GlobalWealthDatabase:
             avg_monthly_income=4_500, poverty_line_monthly=1_500,
             middle_class_monthly=4_000, wealthy_monthly=10_000,
             popular_platforms=[
-                {"name": "Kijiji", "url": "https://kijiji.ca", "type": "marketplace"},
-                {"name": "Upwork", "url": "https://upwork.com","type": "freelance"},
+                {"name": "Kijiji",      "url": "https://kijiji.ca",       "type": "marketplace"},
+                {"name": "Upwork",      "url": "https://upwork.com",      "type": "freelance"},
                 {"name": "Wealthsimple","url": "https://wealthsimple.com","type": "investment"},
             ],
             local_hustles=[
-                {"name": "Freelance Tech",    "earnings": "CA$3000-10000/month","startup": "CA$0","difficulty": "hard"},
+                {"name": "Freelance Tech",    "earnings": "CA$3000-10000/month","startup": "CA$0",  "difficulty": "hard"},
                 {"name": "Airbnb Hosting",    "earnings": "CA$1000-4000/month", "startup": "CA$500","difficulty": "medium"},
                 {"name": "Real Estate Rental","earnings": "CA$500-2000/month",  "startup": "CA$10k","difficulty": "medium"},
             ],
@@ -267,10 +345,10 @@ class GlobalWealthDatabase:
             avg_monthly_income=3_000, poverty_line_monthly=1_000,
             middle_class_monthly=4_000, wealthy_monthly=12_000,
             popular_platforms=[
-                {"name": "Workana",     "url": "https://workana.com",     "type": "freelance"},
-                {"name": "99Freelas",   "url": "https://99freelas.com.br","type": "freelance"},
+                {"name": "Workana",      "url": "https://workana.com",        "type": "freelance"},
+                {"name": "99Freelas",    "url": "https://99freelas.com.br",   "type": "freelance"},
                 {"name": "Mercado Livre","url": "https://mercadolivre.com.br","type": "marketplace"},
-                {"name": "PicPay",      "url": "https://picpay.com",      "type": "fintech"},
+                {"name": "PicPay",       "url": "https://picpay.com",         "type": "fintech"},
             ],
             local_hustles=[
                 {"name": "Dropshipping",           "earnings": "R$2000-8000/month","startup": "R$500","difficulty": "medium"},
@@ -288,14 +366,14 @@ class GlobalWealthDatabase:
             avg_monthly_income=8_000, poverty_line_monthly=3_000,
             middle_class_monthly=12_000, wealthy_monthly=40_000,
             popular_platforms=[
-                {"name": "Freelancer MX", "type": "freelance"},
-                {"name": "Mercado Libre", "type": "marketplace"},
-                {"name": "OLX",           "type": "marketplace"},
+                {"name": "Freelancer MX","type": "freelance"},
+                {"name": "Mercado Libre","type": "marketplace"},
+                {"name": "OLX",          "type": "marketplace"},
             ],
             local_hustles=[
-                {"name": "Taco/Food Stand",    "earnings": "MXN5k-20k/month","startup": "MXN2k","difficulty": "easy"},
-                {"name": "Remote Freelancing", "earnings": "$500-3000/month", "startup": "MXN0", "difficulty": "hard"},
-                {"name": "Amazon FBA (USA)",   "earnings": "$300-2000/month", "startup": "MXN5k","difficulty": "medium"},
+                {"name": "Taco/Food Stand",   "earnings": "MXN5k-20k/month","startup": "MXN2k","difficulty": "easy"},
+                {"name": "Remote Freelancing","earnings": "$500-3000/month", "startup": "MXN0", "difficulty": "hard"},
+                {"name": "Amazon FBA (USA)",  "earnings": "$300-2000/month", "startup": "MXN5k","difficulty": "medium"},
             ],
             trending_skills=["Spanish Content Creation","E-commerce","Software Dev","Digital Marketing"],
             cost_of_living_index=38.0, tax_brackets=[], investment_options=[],
@@ -308,9 +386,9 @@ class GlobalWealthDatabase:
             avg_monthly_income=1_500_000, poverty_line_monthly=500_000,
             middle_class_monthly=2_500_000, wealthy_monthly=8_000_000,
             popular_platforms=[
-                {"name": "Freelancer", "type": "freelance"},
-                {"name": "OLX",        "type": "marketplace"},
-                {"name": "Rappi",      "type": "gig"},
+                {"name": "Freelancer","type": "freelance"},
+                {"name": "OLX",       "type": "marketplace"},
+                {"name": "Rappi",     "type": "gig"},
             ],
             local_hustles=[
                 {"name": "Rappi Delivery",  "earnings": "COP800k-2M/month","startup": "COP0","difficulty": "easy"},
@@ -320,6 +398,46 @@ class GlobalWealthDatabase:
             trending_skills=["Software Dev","Digital Marketing","English Teaching","Content Creation"],
             cost_of_living_index=32.0, tax_brackets=[], investment_options=[],
             business_registration_cost=200_000, min_wage_hourly=5_000,
+        )
+
+        self.countries["AR"] = CountryProfile(
+            code="AR", name="Argentina", currency="ARS", currency_symbol="$",
+            language="Spanish", region="Latin America", timezone="America/Argentina/Buenos_Aires",
+            avg_monthly_income=200_000, poverty_line_monthly=60_000,
+            middle_class_monthly=350_000, wealthy_monthly=1_000_000,
+            popular_platforms=[
+                {"name": "Workana",      "type": "freelance"},
+                {"name": "MercadoLibre", "type": "marketplace"},
+                {"name": "Mercado Pago", "type": "fintech"},
+            ],
+            local_hustles=[
+                {"name": "Freelance (USD billing)","earnings": "$500-3000/month",  "startup": "$0",    "difficulty": "hard"},
+                {"name": "MercadoLibre Reselling", "earnings": "ARS200k-800k/month","startup": "ARS50k","difficulty": "medium"},
+                {"name": "Content Creation",       "earnings": "$300-2000/month",  "startup": "$0",    "difficulty": "medium"},
+            ],
+            trending_skills=["Software Dev","Freelancing","Content Creation","E-commerce"],
+            cost_of_living_index=28.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=10_000, min_wage_hourly=800,
+        )
+
+        self.countries["PE"] = CountryProfile(
+            code="PE", name="Peru", currency="PEN", currency_symbol="S/",
+            language="Spanish", region="Latin America", timezone="America/Lima",
+            avg_monthly_income=1_800, poverty_line_monthly=600,
+            middle_class_monthly=3_000, wealthy_monthly=10_000,
+            popular_platforms=[
+                {"name": "Freelancer","type": "freelance"},
+                {"name": "OLX Peru",  "type": "marketplace"},
+                {"name": "Yape",      "type": "fintech"},
+            ],
+            local_hustles=[
+                {"name": "Yape Business",   "earnings": "S/500-2000/month","startup": "S/100","difficulty": "easy"},
+                {"name": "Remote Freelance","earnings": "$300-2000/month", "startup": "S/0",  "difficulty": "hard"},
+                {"name": "Food Business",   "earnings": "S/800-3000/month","startup": "S/500","difficulty": "medium"},
+            ],
+            trending_skills=["Software Dev","Digital Marketing","Content Creation","E-commerce"],
+            cost_of_living_index=30.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=400, min_wage_hourly=6,
         )
 
         # ── EUROPE ───────────────────────────────────────────────────
@@ -336,18 +454,18 @@ class GlobalWealthDatabase:
                 {"name": "Vanguard UK","url": "https://vanguard.co.uk", "type": "investment"},
             ],
             local_hustles=[
-                {"name": "Matched Betting",  "earnings": "£300-1000/month","startup": "£100","difficulty": "medium"},
-                {"name": "Amazon KDP",       "earnings": "£500-3000/month","startup": "£0",  "difficulty": "medium"},
-                {"name": "Private Tutoring", "earnings": "£1000-4000/month","startup": "£0", "difficulty": "easy"},
-                {"name": "Consulting",       "earnings": "£3000-10000/month","startup": "£0","difficulty": "hard"},
+                {"name": "Matched Betting",  "earnings": "£300-1000/month", "startup": "£100","difficulty": "medium"},
+                {"name": "Amazon KDP",       "earnings": "£500-3000/month", "startup": "£0",  "difficulty": "medium"},
+                {"name": "Private Tutoring", "earnings": "£1000-4000/month","startup": "£0",  "difficulty": "easy"},
+                {"name": "Consulting",       "earnings": "£3000-10000/month","startup": "£0", "difficulty": "hard"},
             ],
             trending_skills=["Green Energy Tech","AI Development","Cybersecurity","Fintech","UX Research"],
             cost_of_living_index=85.0,
             tax_brackets=[{"min": 0,"max": 12_570,"rate": 0},{"min": 12_571,"max": 50_270,"rate": 20}],
             investment_options=[
-                {"name": "Stocks & Shares ISA","return": "8-12%", "risk": "medium", "min": 100},
-                {"name": "Index Funds",         "return": "8-10%", "risk": "medium", "min": 100},
-                {"name": "Pension (SIPP)",       "return": "7-10%", "risk": "low",    "min": 25},
+                {"name": "Stocks & Shares ISA","return": "8-12%","risk": "medium","min": 100},
+                {"name": "Index Funds",         "return": "8-10%","risk": "medium","min": 100},
+                {"name": "Pension (SIPP)",       "return": "7-10%","risk": "low",  "min": 25},
             ],
             business_registration_cost=12, min_wage_hourly=11.44,
         )
@@ -358,18 +476,98 @@ class GlobalWealthDatabase:
             avg_monthly_income=3_500, poverty_line_monthly=1_200,
             middle_class_monthly=3_500, wealthy_monthly=8_000,
             popular_platforms=[
-                {"name": "Freelancer.de","type": "freelance"},
+                {"name": "Freelancer.de",    "type": "freelance"},
                 {"name": "eBay Kleinanzeigen","type": "marketplace"},
-                {"name": "Trade Republic","type": "investment"},
+                {"name": "Trade Republic",   "type": "investment"},
             ],
             local_hustles=[
-                {"name": "Freelance Engineering","earnings": "€3000-8000/month","startup": "€0","difficulty": "hard"},
+                {"name": "Freelance Engineering","earnings": "€3000-8000/month","startup": "€0",  "difficulty": "hard"},
                 {"name": "Airbnb Hosting",       "earnings": "€500-2000/month", "startup": "€500","difficulty": "easy"},
                 {"name": "Online Courses",       "earnings": "€500-5000/month", "startup": "€200","difficulty": "medium"},
             ],
             trending_skills=["Software Engineering","AI/ML","Renewable Energy","E-commerce"],
             cost_of_living_index=72.0, tax_brackets=[], investment_options=[],
             business_registration_cost=400, min_wage_hourly=12,
+        )
+
+        self.countries["FR"] = CountryProfile(
+            code="FR", name="France", currency="EUR", currency_symbol="€",
+            language="French", region="Europe", timezone="Europe/Paris",
+            avg_monthly_income=2_800, poverty_line_monthly=1_000,
+            middle_class_monthly=3_000, wealthy_monthly=7_500,
+            popular_platforms=[
+                {"name": "Malt",      "type": "freelance"},
+                {"name": "Fiverr",    "type": "freelance"},
+                {"name": "Leboncoin", "type": "marketplace"},
+                {"name": "Boursorama","type": "investment"},
+            ],
+            local_hustles=[
+                {"name": "Auto-entrepreneur","earnings": "€1500-5000/month","startup": "€0",  "difficulty": "medium"},
+                {"name": "Airbnb Hosting",   "earnings": "€500-2000/month", "startup": "€300","difficulty": "easy"},
+                {"name": "Online Tutoring",  "earnings": "€800-3000/month", "startup": "€0",  "difficulty": "easy"},
+            ],
+            trending_skills=["AI/ML","Web Dev","Digital Marketing","Sustainable Business"],
+            cost_of_living_index=78.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=25, min_wage_hourly=11.65,
+        )
+
+        self.countries["PL"] = CountryProfile(
+            code="PL", name="Poland", currency="PLN", currency_symbol="zł",
+            language="Polish", region="Europe", timezone="Europe/Warsaw",
+            avg_monthly_income=5_500, poverty_line_monthly=2_000,
+            middle_class_monthly=6_000, wealthy_monthly=15_000,
+            popular_platforms=[
+                {"name": "Allegro","type": "marketplace"},
+                {"name": "OLX",    "type": "marketplace"},
+                {"name": "Upwork", "type": "freelance"},
+            ],
+            local_hustles=[
+                {"name": "Allegro Reselling","earnings": "zł2000-8000/month","startup": "zł500","difficulty": "easy"},
+                {"name": "Remote Tech",      "earnings": "$1000-5000/month", "startup": "zł0",  "difficulty": "hard"},
+            ],
+            trending_skills=["Software Dev","IT Support","E-commerce","Digital Marketing"],
+            cost_of_living_index=45.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=250, min_wage_hourly=23,
+        )
+
+        self.countries["UA"] = CountryProfile(
+            code="UA", name="Ukraine", currency="UAH", currency_symbol="₴",
+            language="Ukrainian", region="Europe", timezone="Europe/Kiev",
+            avg_monthly_income=15_000, poverty_line_monthly=5_000,
+            middle_class_monthly=25_000, wealthy_monthly=80_000,
+            popular_platforms=[
+                {"name": "Upwork",   "type": "freelance"},
+                {"name": "Fiverr",   "type": "freelance"},
+                {"name": "Monobank", "type": "fintech"},
+            ],
+            local_hustles=[
+                {"name": "Remote IT (USD)",  "earnings": "$500-3000/month","startup": "₴0","difficulty": "hard"},
+                {"name": "Freelance Design", "earnings": "$200-1500/month","startup": "₴0","difficulty": "medium"},
+                {"name": "Online Tutoring",  "earnings": "₴5k-20k/month", "startup": "₴0","difficulty": "easy"},
+            ],
+            trending_skills=["Software Dev","UI/UX Design","IT Support","Digital Marketing"],
+            cost_of_living_index=25.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=500, min_wage_hourly=70,
+        )
+
+        self.countries["ES"] = CountryProfile(
+            code="ES", name="Spain", currency="EUR", currency_symbol="€",
+            language="Spanish", region="Europe", timezone="Europe/Madrid",
+            avg_monthly_income=1_800, poverty_line_monthly=700,
+            middle_class_monthly=2_200, wealthy_monthly=6_000,
+            popular_platforms=[
+                {"name": "Freelancer.es","type": "freelance"},
+                {"name": "Wallapop",     "type": "marketplace"},
+                {"name": "Glovo",        "type": "gig"},
+            ],
+            local_hustles=[
+                {"name": "Glovo Delivery",     "earnings": "€600-1500/month","startup": "€0","difficulty": "easy"},
+                {"name": "Remote Freelancing", "earnings": "€1500-5000/month","startup": "€0","difficulty": "hard"},
+                {"name": "Tourism Services",   "earnings": "€800-3000/month","startup": "€100","difficulty": "medium"},
+            ],
+            trending_skills=["Digital Marketing","Software Dev","Content Creation","Tourism Tech"],
+            cost_of_living_index=55.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=3_000, min_wage_hourly=8.45,
         )
 
         # ── SOUTH / SOUTHEAST ASIA ────────────────────────────────────
@@ -379,25 +577,25 @@ class GlobalWealthDatabase:
             avg_monthly_income=35_000, poverty_line_monthly=8_000,
             middle_class_monthly=50_000, wealthy_monthly=200_000,
             popular_platforms=[
-                {"name": "Upwork",   "url": "https://upwork.com",   "type": "freelance"},
-                {"name": "Fiverr",   "url": "https://fiverr.com",   "type": "freelance"},
-                {"name": "Zerodha",  "url": "https://zerodha.com",  "type": "investment"},
-                {"name": "Groww",    "url": "https://groww.in",     "type": "investment"},
-                {"name": "Meesho",   "url": "https://meesho.com",   "type": "reselling"},
+                {"name": "Upwork", "url": "https://upwork.com", "type": "freelance"},
+                {"name": "Fiverr", "url": "https://fiverr.com", "type": "freelance"},
+                {"name": "Zerodha","url": "https://zerodha.com","type": "investment"},
+                {"name": "Groww",  "url": "https://groww.in",  "type": "investment"},
+                {"name": "Meesho", "url": "https://meesho.com","type": "reselling"},
             ],
             local_hustles=[
-                {"name": "Tuition/Coaching",  "earnings": "₹20k-80k/month","startup": "₹0",    "difficulty": "easy"},
-                {"name": "Meesho Reselling",  "earnings": "₹15k-50k/month","startup": "₹5k",   "difficulty": "easy"},
-                {"name": "YouTube Regional",  "earnings": "₹25k-500k/month","startup": "₹10k", "difficulty": "medium"},
-                {"name": "Freelance Coding",  "earnings": "$500-5000/month","startup": "₹0",    "difficulty": "hard"},
+                {"name": "Tuition/Coaching", "earnings": "₹20k-80k/month", "startup": "₹0",   "difficulty": "easy"},
+                {"name": "Meesho Reselling", "earnings": "₹15k-50k/month", "startup": "₹5k",  "difficulty": "easy"},
+                {"name": "YouTube Regional", "earnings": "₹25k-500k/month","startup": "₹10k", "difficulty": "medium"},
+                {"name": "Freelance Coding", "earnings": "$500-5000/month", "startup": "₹0",   "difficulty": "hard"},
             ],
             trending_skills=["Full Stack Development","Data Science","Digital Marketing","Video Editing","AI/ML"],
             cost_of_living_index=25.0,
             tax_brackets=[{"min": 0,"max": 300_000,"rate": 0},{"min": 300_001,"max": 600_000,"rate": 5}],
             investment_options=[
-                {"name": "PPF",            "return": "7-8%",  "risk": "low",    "min": 500},
-                {"name": "Mutual Funds",   "return": "12-15%","risk": "medium", "min": 500},
-                {"name": "Direct Stocks",  "return": "15-20%","risk": "high",   "min": 0},
+                {"name": "PPF",          "return": "7-8%",  "risk": "low",   "min": 500},
+                {"name": "Mutual Funds", "return": "12-15%","risk": "medium","min": 500},
+                {"name": "Direct Stocks","return": "15-20%","risk": "high",  "min": 0},
             ],
             business_registration_cost=5_000, min_wage_hourly=50,
         )
@@ -409,14 +607,14 @@ class GlobalWealthDatabase:
             middle_class_monthly=30_000, wealthy_monthly=100_000,
             popular_platforms=[
                 {"name": "OnlineJobs.ph","url": "https://onlinejobs.ph","type": "freelance"},
-                {"name": "Upwork",       "url": "https://upwork.com",   "type": "freelance"},
-                {"name": "GCash",        "url": "https://gcash.com",    "type": "fintech"},
-                {"name": "Shopee",       "url": "https://shopee.ph",    "type": "marketplace"},
+                {"name": "Upwork",       "url": "https://upwork.com",  "type": "freelance"},
+                {"name": "GCash",        "url": "https://gcash.com",   "type": "fintech"},
+                {"name": "Shopee",       "url": "https://shopee.ph",   "type": "marketplace"},
             ],
             local_hustles=[
-                {"name": "VA (Virtual Assistant)","earnings": "$300-1500/month","startup": "₱0",   "difficulty": "easy"},
-                {"name": "Shopee Reselling",      "earnings": "₱10k-50k/month","startup": "₱5k",  "difficulty": "easy"},
-                {"name": "Content Writing",       "earnings": "$200-1000/month","startup": "₱0",   "difficulty": "medium"},
+                {"name": "VA (Virtual Assistant)","earnings": "$300-1500/month","startup": "₱0", "difficulty": "easy"},
+                {"name": "Shopee Reselling",      "earnings": "₱10k-50k/month","startup": "₱5k","difficulty": "easy"},
+                {"name": "Content Writing",       "earnings": "$200-1000/month","startup": "₱0", "difficulty": "medium"},
             ],
             trending_skills=["Virtual Assistance","Content Writing","Graphic Design","Customer Service"],
             cost_of_living_index=35.0, tax_brackets=[], investment_options=[],
@@ -429,14 +627,14 @@ class GlobalWealthDatabase:
             avg_monthly_income=50_000, poverty_line_monthly=15_000,
             middle_class_monthly=80_000, wealthy_monthly=300_000,
             popular_platforms=[
-                {"name": "Rozee.pk", "type": "jobs"},
-                {"name": "Fiverr",   "type": "freelance"},
-                {"name": "Upwork",   "type": "freelance"},
+                {"name": "Rozee.pk","type": "jobs"},
+                {"name": "Fiverr",  "type": "freelance"},
+                {"name": "Upwork",  "type": "freelance"},
             ],
             local_hustles=[
-                {"name": "Freelancing (Tech/Design)","earnings": "$200-2000/month","startup": "₨0","difficulty": "medium"},
-                {"name": "Dropshipping",             "earnings": "$300-1500/month","startup": "₨5k","difficulty": "medium"},
-                {"name": "Online Tutoring",          "earnings": "$100-500/month", "startup": "₨0","difficulty": "easy"},
+                {"name": "Freelancing (Tech/Design)","earnings": "$200-2000/month","startup": "₨0",  "difficulty": "medium"},
+                {"name": "Dropshipping",             "earnings": "$300-1500/month","startup": "₨5k", "difficulty": "medium"},
+                {"name": "Online Tutoring",          "earnings": "$100-500/month", "startup": "₨0",  "difficulty": "easy"},
             ],
             trending_skills=["Web Dev","Graphic Design","Content Writing","Data Entry","E-commerce"],
             cost_of_living_index=18.0, tax_brackets=[], investment_options=[],
@@ -449,17 +647,122 @@ class GlobalWealthDatabase:
             avg_monthly_income=20_000, poverty_line_monthly=6_000,
             middle_class_monthly=35_000, wealthy_monthly=120_000,
             popular_platforms=[
-                {"name": "Fiverr",   "type": "freelance"},
-                {"name": "Upwork",   "type": "freelance"},
-                {"name": "Shajgoj",  "type": "marketplace"},
+                {"name": "Fiverr", "type": "freelance"},
+                {"name": "Upwork", "type": "freelance"},
+                {"name": "Shajgoj","type": "marketplace"},
             ],
             local_hustles=[
-                {"name": "Freelancing",     "earnings": "$100-1000/month","startup": "৳0","difficulty": "medium"},
-                {"name": "Online Tutoring", "earnings": "৳5k-20k/month", "startup": "৳0","difficulty": "easy"},
+                {"name": "Freelancing",    "earnings": "$100-1000/month","startup": "৳0","difficulty": "medium"},
+                {"name": "Online Tutoring","earnings": "৳5k-20k/month", "startup": "৳0","difficulty": "easy"},
             ],
             trending_skills=["Graphic Design","Data Entry","Web Dev","Digital Marketing"],
             cost_of_living_index=20.0, tax_brackets=[], investment_options=[],
             business_registration_cost=3_000, min_wage_hourly=35,
+        )
+
+        self.countries["ID"] = CountryProfile(
+            code="ID", name="Indonesia", currency="IDR", currency_symbol="Rp",
+            language="Indonesian", region="Southeast Asia", timezone="Asia/Jakarta",
+            avg_monthly_income=4_000_000, poverty_line_monthly=1_200_000,
+            middle_class_monthly=7_000_000, wealthy_monthly=25_000_000,
+            popular_platforms=[
+                {"name": "Tokopedia","type": "marketplace"},
+                {"name": "Shopee ID","type": "marketplace"},
+                {"name": "Upwork",   "type": "freelance"},
+                {"name": "GoPay",    "type": "fintech"},
+            ],
+            local_hustles=[
+                {"name": "Tokopedia Reselling","earnings": "Rp2M-8M/month", "startup": "Rp500k","difficulty": "easy"},
+                {"name": "Ojek Online (Gojek)","earnings": "Rp2M-5M/month", "startup": "Rp0",   "difficulty": "easy"},
+                {"name": "Remote Freelance",   "earnings": "$200-2000/month","startup": "Rp0",   "difficulty": "hard"},
+            ],
+            trending_skills=["E-commerce","Digital Marketing","Content Creation","Software Dev"],
+            cost_of_living_index=28.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=500_000, min_wage_hourly=15_000,
+        )
+
+        self.countries["VN"] = CountryProfile(
+            code="VN", name="Vietnam", currency="VND", currency_symbol="₫",
+            language="Vietnamese", region="Southeast Asia", timezone="Asia/Ho_Chi_Minh",
+            avg_monthly_income=8_000_000, poverty_line_monthly=2_500_000,
+            middle_class_monthly=15_000_000, wealthy_monthly=50_000_000,
+            popular_platforms=[
+                {"name": "Shopee VN","type": "marketplace"},
+                {"name": "Lazada",   "type": "marketplace"},
+                {"name": "Upwork",   "type": "freelance"},
+                {"name": "MoMo",     "type": "fintech"},
+            ],
+            local_hustles=[
+                {"name": "Shopee Reselling",   "earnings": "₫3M-12M/month", "startup": "₫500k","difficulty": "easy"},
+                {"name": "English Teaching",   "earnings": "$400-1500/month","startup": "₫0",   "difficulty": "medium"},
+                {"name": "Remote Freelancing", "earnings": "$300-2000/month","startup": "₫0",   "difficulty": "hard"},
+            ],
+            trending_skills=["Software Dev","Digital Marketing","English Teaching","E-commerce"],
+            cost_of_living_index=27.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=1_000_000, min_wage_hourly=22_000,
+        )
+
+        self.countries["TH"] = CountryProfile(
+            code="TH", name="Thailand", currency="THB", currency_symbol="฿",
+            language="Thai", region="Southeast Asia", timezone="Asia/Bangkok",
+            avg_monthly_income=16_000, poverty_line_monthly=5_000,
+            middle_class_monthly=30_000, wealthy_monthly=100_000,
+            popular_platforms=[
+                {"name": "Lazada TH","type": "marketplace"},
+                {"name": "Shopee TH","type": "marketplace"},
+                {"name": "Upwork",   "type": "freelance"},
+                {"name": "PromptPay","type": "fintech"},
+            ],
+            local_hustles=[
+                {"name": "Street Food Business","earnings": "฿15k-50k/month","startup": "฿5k","difficulty": "medium"},
+                {"name": "Remote Freelancing",  "earnings": "$300-2000/month","startup": "฿0", "difficulty": "hard"},
+                {"name": "Shopee Reselling",    "earnings": "฿5k-20k/month", "startup": "฿1k","difficulty": "easy"},
+            ],
+            trending_skills=["Digital Marketing","Software Dev","Content Creation","E-commerce"],
+            cost_of_living_index=38.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=5_000, min_wage_hourly=330,
+        )
+
+        # ── EAST ASIA ─────────────────────────────────────────────────
+        self.countries["JP"] = CountryProfile(
+            code="JP", name="Japan", currency="JPY", currency_symbol="¥",
+            language="Japanese", region="East Asia", timezone="Asia/Tokyo",
+            avg_monthly_income=300_000, poverty_line_monthly=100_000,
+            middle_class_monthly=300_000, wealthy_monthly=800_000,
+            popular_platforms=[
+                {"name": "Lancers",   "type": "freelance"},
+                {"name": "Crowdworks","type": "freelance"},
+                {"name": "Mercari",   "type": "marketplace"},
+                {"name": "SBI",       "type": "investment"},
+            ],
+            local_hustles=[
+                {"name": "Mercari Reselling","earnings": "¥50k-200k/month","startup": "¥5k","difficulty": "easy"},
+                {"name": "English Teaching","earnings": "¥100k-300k/month","startup": "¥0", "difficulty": "medium"},
+                {"name": "Freelance IT",    "earnings": "¥200k-600k/month","startup": "¥0", "difficulty": "hard"},
+            ],
+            trending_skills=["AI/ML","Cybersecurity","UI/UX","English Communication"],
+            cost_of_living_index=85.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=150_000, min_wage_hourly=900,
+        )
+
+        self.countries["KR"] = CountryProfile(
+            code="KR", name="South Korea", currency="KRW", currency_symbol="₩",
+            language="Korean", region="East Asia", timezone="Asia/Seoul",
+            avg_monthly_income=3_000_000, poverty_line_monthly=1_000_000,
+            middle_class_monthly=3_500_000, wealthy_monthly=10_000_000,
+            popular_platforms=[
+                {"name": "Coupang",  "type": "marketplace"},
+                {"name": "Upwork",   "type": "freelance"},
+                {"name": "Kakao Pay","type": "fintech"},
+            ],
+            local_hustles=[
+                {"name": "Coupang Reselling","earnings": "₩500k-2M/month","startup": "₩100k","difficulty": "easy"},
+                {"name": "Online Tutoring",  "earnings": "₩500k-2M/month","startup": "₩0",   "difficulty": "medium"},
+                {"name": "Remote Freelance", "earnings": "$500-3000/month","startup": "₩0",   "difficulty": "hard"},
+            ],
+            trending_skills=["AI/ML","K-content Creation","Software Dev","E-commerce"],
+            cost_of_living_index=78.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=100_000, min_wage_hourly=9_620,
         )
 
         # ── MIDDLE EAST & NORTH AFRICA ────────────────────────────────
@@ -469,14 +772,14 @@ class GlobalWealthDatabase:
             avg_monthly_income=6_000, poverty_line_monthly=2_000,
             middle_class_monthly=10_000, wealthy_monthly=35_000,
             popular_platforms=[
-                {"name": "Wuzzuf",    "type": "jobs"},
-                {"name": "Fiverr",    "type": "freelance"},
-                {"name": "OLX Egypt", "type": "marketplace"},
+                {"name": "Wuzzuf",   "type": "jobs"},
+                {"name": "Fiverr",   "type": "freelance"},
+                {"name": "OLX Egypt","type": "marketplace"},
             ],
             local_hustles=[
-                {"name": "Freelancing",         "earnings": "$100-1000/month","startup": "E£0","difficulty": "medium"},
-                {"name": "Online Store",        "earnings": "E£3k-15k/month","startup": "E£500","difficulty": "medium"},
-                {"name": "English/Arabic Tutoring","earnings": "E£2k-8k/month","startup": "E£0","difficulty": "easy"},
+                {"name": "Freelancing",            "earnings": "$100-1000/month","startup": "E£0",  "difficulty": "medium"},
+                {"name": "Online Store",           "earnings": "E£3k-15k/month","startup": "E£500","difficulty": "medium"},
+                {"name": "English/Arabic Tutoring","earnings": "E£2k-8k/month", "startup": "E£0",  "difficulty": "easy"},
             ],
             trending_skills=["Arabic Content Creation","Web Dev","Digital Marketing","E-commerce"],
             cost_of_living_index=22.0, tax_brackets=[], investment_options=[],
@@ -489,18 +792,100 @@ class GlobalWealthDatabase:
             avg_monthly_income=8_000, poverty_line_monthly=2_500,
             middle_class_monthly=10_000, wealthy_monthly=30_000,
             popular_platforms=[
-                {"name": "Freelancer.com", "type": "freelance"},
-                {"name": "Noon",           "type": "marketplace"},
-                {"name": "Tadawul",        "type": "investment"},
+                {"name": "Freelancer.com","type": "freelance"},
+                {"name": "Noon",          "type": "marketplace"},
+                {"name": "Tadawul",       "type": "investment"},
             ],
             local_hustles=[
-                {"name": "Freelancing (Tech)","earnings": "$500-3000/month","startup": "﷼0","difficulty": "hard"},
-                {"name": "E-commerce",       "earnings": "﷼3k-20k/month","startup": "﷼1k","difficulty": "medium"},
-                {"name": "Real Estate Rental","earnings": "﷼2k-10k/month","startup": "﷼50k","difficulty": "medium"},
+                {"name": "Freelancing (Tech)","earnings": "$500-3000/month","startup": "﷼0",   "difficulty": "hard"},
+                {"name": "E-commerce",       "earnings": "﷼3k-20k/month","startup": "﷼1k",  "difficulty": "medium"},
+                {"name": "Real Estate Rental","earnings": "﷼2k-10k/month","startup": "﷼50k", "difficulty": "medium"},
             ],
             trending_skills=["Software Dev","AI/ML","Digital Marketing","Arabic Content"],
             cost_of_living_index=60.0, tax_brackets=[], investment_options=[],
             business_registration_cost=1_000, min_wage_hourly=20,
+        )
+
+        self.countries["AE"] = CountryProfile(
+            code="AE", name="United Arab Emirates", currency="AED", currency_symbol="د.إ",
+            language="Arabic/English", region="MENA", timezone="Asia/Dubai",
+            avg_monthly_income=12_000, poverty_line_monthly=4_000,
+            middle_class_monthly=15_000, wealthy_monthly=40_000,
+            popular_platforms=[
+                {"name": "Dubizzle","type": "marketplace"},
+                {"name": "Upwork",  "type": "freelance"},
+                {"name": "Noon",    "type": "marketplace"},
+            ],
+            local_hustles=[
+                {"name": "Freelance Consultant","earnings": "$2000-8000/month","startup": "AED0",   "difficulty": "hard"},
+                {"name": "E-commerce",          "earnings": "AED3k-15k/month","startup": "AED500", "difficulty": "medium"},
+                {"name": "Property Rental",     "earnings": "AED5k-20k/month","startup": "AED50k", "difficulty": "medium"},
+            ],
+            trending_skills=["Software Dev","Finance","Digital Marketing","Luxury Consulting"],
+            cost_of_living_index=75.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=15_000, min_wage_hourly=0,
+        )
+
+        self.countries["MA"] = CountryProfile(
+            code="MA", name="Morocco", currency="MAD", currency_symbol="دH",
+            language="Arabic/French", region="MENA", timezone="Africa/Casablanca",
+            avg_monthly_income=4_000, poverty_line_monthly=1_500,
+            middle_class_monthly=7_000, wealthy_monthly=20_000,
+            popular_platforms=[
+                {"name": "Upwork",   "type": "freelance"},
+                {"name": "Fiverr",   "type": "freelance"},
+                {"name": "Avito MA", "type": "marketplace"},
+            ],
+            local_hustles=[
+                {"name": "Freelance (French clients)","earnings": "€500-3000/month","startup": "MAD0",  "difficulty": "hard"},
+                {"name": "Online Boutique",           "earnings": "MAD2k-8k/month", "startup": "MAD500","difficulty": "medium"},
+                {"name": "Tourism Services",          "earnings": "MAD3k-12k/month","startup": "MAD0",  "difficulty": "medium"},
+            ],
+            trending_skills=["French Digital Services","E-commerce","Web Dev","Content Creation"],
+            cost_of_living_index=30.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=1_000, min_wage_hourly=14,
+        )
+
+        # ── OCEANIA ───────────────────────────────────────────────────
+        self.countries["AU"] = CountryProfile(
+            code="AU", name="Australia", currency="AUD", currency_symbol="A$",
+            language="English", region="Oceania", timezone="Australia/Sydney",
+            avg_monthly_income=7_000, poverty_line_monthly=2_200,
+            middle_class_monthly=6_500, wealthy_monthly=15_000,
+            popular_platforms=[
+                {"name": "Airtasker","url": "https://airtasker.com", "type": "gig"},
+                {"name": "Seek",     "url": "https://seek.com.au",  "type": "jobs"},
+                {"name": "Upwork",   "url": "https://upwork.com",   "type": "freelance"},
+                {"name": "CommSec",  "url": "https://commsec.com.au","type": "investment"},
+            ],
+            local_hustles=[
+                {"name": "Airtasker Tasks",   "earnings": "A$1500-5000/month", "startup": "A$0",  "difficulty": "easy"},
+                {"name": "Tradie Side Work",  "earnings": "A$2000-8000/month", "startup": "A$500","difficulty": "medium"},
+                {"name": "Remote Consulting", "earnings": "A$3000-12000/month","startup": "A$0",  "difficulty": "hard"},
+            ],
+            trending_skills=["Tech","Mining/Resources","Renewable Energy","Healthcare"],
+            cost_of_living_index=90.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=538, min_wage_hourly=23.23,
+        )
+
+        self.countries["NZ"] = CountryProfile(
+            code="NZ", name="New Zealand", currency="NZD", currency_symbol="NZ$",
+            language="English/Maori", region="Oceania", timezone="Pacific/Auckland",
+            avg_monthly_income=5_500, poverty_line_monthly=1_800,
+            middle_class_monthly=5_000, wealthy_monthly=12_000,
+            popular_platforms=[
+                {"name": "Trade Me", "type": "marketplace"},
+                {"name": "Upwork",   "type": "freelance"},
+                {"name": "Sharesies","type": "investment"},
+            ],
+            local_hustles=[
+                {"name": "Trade Me Reselling","earnings": "NZ$500-2000/month","startup": "NZ$100","difficulty": "easy"},
+                {"name": "Remote Freelance",  "earnings": "NZ$2000-8000/month","startup": "NZ$0", "difficulty": "hard"},
+                {"name": "Tourism Services",  "earnings": "NZ$1500-5000/month","startup": "NZ$500","difficulty": "medium"},
+            ],
+            trending_skills=["Tech","Agriculture","Tourism","Renewable Energy"],
+            cost_of_living_index=85.0, tax_brackets=[], investment_options=[],
+            business_registration_cost=160, min_wage_hourly=22.70,
         )
 
         # ── DEFAULT FALLBACK ──────────────────────────────────────────
@@ -510,15 +895,15 @@ class GlobalWealthDatabase:
             avg_monthly_income=2_000, poverty_line_monthly=500,
             middle_class_monthly=2_500, wealthy_monthly=8_000,
             popular_platforms=[
-                {"name": "Upwork",   "type": "freelance"},
-                {"name": "Fiverr",   "type": "freelance"},
-                {"name": "Binance",  "type": "crypto"},
-                {"name": "YouTube",  "type": "content"},
+                {"name": "Upwork", "type": "freelance"},
+                {"name": "Fiverr", "type": "freelance"},
+                {"name": "Binance","type": "crypto"},
+                {"name": "YouTube","type": "content"},
             ],
             local_hustles=[
-                {"name": "Freelance Writing",  "earnings": "$500-3000/month"},
-                {"name": "Digital Marketing",  "earnings": "$500-5000/month"},
-                {"name": "Online Tutoring",    "earnings": "$300-2000/month"},
+                {"name": "Freelance Writing", "earnings": "$500-3000/month"},
+                {"name": "Digital Marketing", "earnings": "$500-5000/month"},
+                {"name": "Online Tutoring",   "earnings": "$300-2000/month"},
             ],
             trending_skills=["Digital Marketing","Programming","Content Creation","Data Analysis"],
             cost_of_living_index=50.0, tax_brackets=[], investment_options=[],
@@ -526,11 +911,9 @@ class GlobalWealthDatabase:
         )
 
     def get_country(self, country_code: str) -> CountryProfile:
-        """Get country profile by ISO 3166-1 alpha-2 code."""
         return self.countries.get(country_code.upper(), self.countries["DEFAULT"])
 
     def detect_stage(self, monthly_income: float, country_code: str) -> WealthStage:
-        """Determine wealth stage based on income relative to country benchmarks."""
         country = self.get_country(country_code)
         if monthly_income < country.poverty_line_monthly:
             return WealthStage.SURVIVAL
@@ -630,11 +1013,9 @@ CONVERSATION STYLE:
 When profile is complete, output JSON with key "PROFILE_COMPLETE" containing all data."""
 
 
-# ── PROMPT ALIASES (used by routers) ─────────────────────────────
-# ai_agent.py imports these names — keep them in sync
-RISEUP_SYSTEM_PROMPT = RISEUP_MENTOR_PROMPT        # ← alias fix
-ONBOARDING_PROMPT    = ONBOARDING_ARCHITECT_PROMPT  # ← alias fix
-# ─────────────────────────────────────────────────────────────────
+# ── PROMPT ALIASES ────────────────────────────────────────────────
+RISEUP_SYSTEM_PROMPT = RISEUP_MENTOR_PROMPT
+ONBOARDING_PROMPT    = ONBOARDING_ARCHITECT_PROMPT
 
 
 # ============================================================
@@ -663,7 +1044,13 @@ class GroqClient:
             self._client = AsyncGroq(api_key=settings.GROQ_API_KEY)
         return self._client
 
-    async def chat(self, messages: list, system: str, max_tokens: int = 2048) -> str:
+    async def chat(
+        self,
+        messages: list,
+        system: str,
+        max_tokens: int = 2048,
+        temperature: float = 0.7,      # ← v2.2
+    ) -> str:
         client = self.get_client()
         if not client:
             raise ValueError("Groq API key not configured")
@@ -677,7 +1064,7 @@ class GroqClient:
             try:
                 response = await client.chat.completions.create(
                     model=model, messages=formatted,
-                    max_tokens=max_tokens, temperature=0.7, top_p=0.9,
+                    max_tokens=max_tokens, temperature=temperature, top_p=0.9,
                 )
                 logger.info(f"Groq success: {model}")
                 return response.choices[0].message.content
@@ -693,7 +1080,13 @@ class GeminiClient:
     MODELS = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro"]
     FREE = True
 
-    async def chat(self, messages: list, system: str, max_tokens: int = 2048) -> str:
+    async def chat(
+        self,
+        messages: list,
+        system: str,
+        max_tokens: int = 2048,
+        temperature: float = 0.7,      # ← v2.2
+    ) -> str:
         if not settings.GEMINI_API_KEY:
             raise ValueError("Gemini API key not configured")
 
@@ -710,7 +1103,7 @@ class GeminiClient:
                 chat = model.start_chat(history=history)
                 response = await chat.send_message_async(
                     messages[-1]["content"],
-                    generation_config={"max_output_tokens": max_tokens, "temperature": 0.7},
+                    generation_config={"max_output_tokens": max_tokens, "temperature": temperature},
                 )
                 logger.info(f"Gemini success: {model_name}")
                 return response.text
@@ -734,7 +1127,13 @@ class OpenAIClient:
             self._client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
         return self._client
 
-    async def chat(self, messages: list, system: str, max_tokens: int = 2048) -> str:
+    async def chat(
+        self,
+        messages: list,
+        system: str,
+        max_tokens: int = 2048,
+        temperature: float = 0.7,      # ← v2.2
+    ) -> str:
         client = self.get_client()
         if not client:
             raise ValueError("OpenAI API key not configured")
@@ -743,7 +1142,7 @@ class OpenAIClient:
         for model in self.MODELS:
             try:
                 response = await client.chat.completions.create(
-                    model=model, messages=formatted, max_tokens=max_tokens, temperature=0.7,
+                    model=model, messages=formatted, max_tokens=max_tokens, temperature=temperature,
                 )
                 logger.info(f"OpenAI success: {model}")
                 return response.choices[0].message.content
@@ -767,7 +1166,13 @@ class AnthropicClient:
             self._client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         return self._client
 
-    async def chat(self, messages: list, system: str, max_tokens: int = 2048) -> str:
+    async def chat(
+        self,
+        messages: list,
+        system: str,
+        max_tokens: int = 2048,
+        temperature: float = 0.7,      # ← v2.2 (Anthropic ignores this param but accepts it cleanly)
+    ) -> str:
         client = self.get_client()
         if not client:
             raise ValueError("Anthropic API key not configured")
@@ -790,13 +1195,6 @@ class AnthropicClient:
 # ============================================================
 
 class RiseUpIntelligenceEngine:
-    """
-    Global Wealth Intelligence Engine
-    - Auto-localizes to user's country and language
-    - Multi-model AI with intelligent fallback
-    - Provides trending 2025/2026 global opportunities
-    """
-
     def __init__(self):
         self.groq      = GroqClient()
         self.gemini    = GeminiClient()
@@ -880,7 +1278,7 @@ class RiseUpIntelligenceEngine:
         return priority
 
     # ------------------------------------------------------------------
-    # CORE CHAT  (used internally + by ModelRouter in agent.py)
+    # CORE CHAT
     # ------------------------------------------------------------------
     async def mentor_chat(
         self,
@@ -888,18 +1286,18 @@ class RiseUpIntelligenceEngine:
         user_profile: Dict[str, Any] = None,
         system_prompt: str = None,
         max_tokens: int = 2048,
+        temperature: float = 0.7,      # ← v2.2
     ) -> Dict[str, Any]:
-        """Main mentor chat with full localization context."""
         if system_prompt is None:
             system_prompt = RISEUP_MENTOR_PROMPT
 
         if user_profile:
-            country = self.db.get_country(user_profile.get("country", "DEFAULT"))
-            stage   = self.db.detect_stage(
+            country  = self.db.get_country(user_profile.get("country", "DEFAULT"))
+            stage    = self.db.detect_stage(
                 user_profile.get("monthly_income", 0),
                 user_profile.get("country", "DEFAULT"),
             )
-            language = user_profile.get("language", "en")
+            language  = user_profile.get("language", "en")
             lang_note = f"\nRespond in the user's language (ISO: {language})." if language != "en" else ""
 
             context = f"""
@@ -924,7 +1322,9 @@ INSTRUCTION: Give SPECIFIC advice using {country.name} platforms, {country.curre
         for model in self._priority_order:
             try:
                 logger.info(f"Attempting {model.NAME}...")
-                content = await model.chat(messages, system_prompt, max_tokens)
+                content = await model.chat(
+                    messages, system_prompt, max_tokens, temperature=temperature
+                )
                 return {
                     "content":      content,
                     "model":        model.NAME,
@@ -945,36 +1345,31 @@ INSTRUCTION: Give SPECIFIC advice using {country.name} platforms, {country.curre
         }
 
     # ------------------------------------------------------------------
-    # ROUTER-COMPATIBLE WRAPPER METHODS
-    # These fix the import/call mismatches between ai_agent.py and the engine.
+    # ROUTER-COMPATIBLE WRAPPER — v2.2: temperature accepted
     # ------------------------------------------------------------------
-
     async def chat(
         self,
         messages: list,
         system: str = None,
         max_tokens: int = 2048,
         preferred_model: str = None,
+        temperature: float = 0.7,      # ← THE FIX: was missing, causing 500s on all /pulse/* endpoints
     ) -> Dict[str, Any]:
         """
-        Router-compatible wrapper around mentor_chat().
+        Router-compatible wrapper.
 
-        ai_agent.py calls: ai_service.chat(messages, system=..., max_tokens=..., preferred_model=...)
-        This method maps those args to mentor_chat() and returns the same dict shape.
+        Callers (ai_agent.py, market_pulse.py, etc.) may pass:
+            ai_service.chat(messages, system=..., max_tokens=..., temperature=..., preferred_model=...)
+        All kwargs are now accepted and forwarded correctly.
         """
         return await self.mentor_chat(
             messages=messages,
             system_prompt=system,
             max_tokens=max_tokens,
+            temperature=temperature,
         )
 
     async def analyze_onboarding(self, messages: list) -> Optional[Dict[str, Any]]:
-        """
-        Extract a structured user profile from a completed onboarding conversation.
-
-        ai_agent.py calls: ai_service.analyze_onboarding(all_messages)
-        Returns a dict with profile fields, or None if extraction fails.
-        """
         extraction_prompt = """You are extracting a user profile from a completed onboarding conversation.
 
 Return ONLY valid JSON with these exact keys (use null for any missing field):
@@ -1009,7 +1404,6 @@ If the conversation does not contain enough data to build a profile, return: nul
 
         try:
             content = result["content"].strip()
-            # Strip code fences if present
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0]
             elif "```" in content:
@@ -1023,11 +1417,6 @@ If the conversation does not contain enough data to build a profile, return: nul
             return None
 
     async def generate_roadmap(self, profile: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """
-        Router-compatible alias for generate_personalized_roadmap().
-
-        ai_agent.py calls: ai_service.generate_roadmap(profile)
-        """
         return await self.generate_personalized_roadmap(profile)
 
     # ------------------------------------------------------------------
@@ -1035,12 +1424,11 @@ If the conversation does not contain enough data to build a profile, return: nul
     # ------------------------------------------------------------------
 
     async def generate_personalized_roadmap(self, profile: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate comprehensive wealth roadmap based on profile."""
-        country       = self.db.get_country(profile.get("country", "DEFAULT"))
-        current_stage = self.db.detect_stage(profile.get("monthly_income", 0), profile.get("country", "DEFAULT"))
+        country          = self.db.get_country(profile.get("country", "DEFAULT"))
+        current_stage    = self.db.detect_stage(profile.get("monthly_income", 0), profile.get("country", "DEFAULT"))
         emergency_target = profile.get("monthly_expenses", 0) * 6
-        language      = profile.get("language", "en")
-        lang_note     = f"Respond in language ISO: {language}." if language != "en" else ""
+        language         = profile.get("language", "en")
+        lang_note        = f"Respond in language ISO: {language}." if language != "en" else ""
 
         roadmap_prompt = f"""Create a detailed, personalized RiseUp Wealth Roadmap.
 {lang_note}
@@ -1139,9 +1527,8 @@ Return ONLY valid JSON:
         count: int = 5,
         urgency: str = "immediate",
     ) -> List[Dict[str, Any]]:
-        """Generate personalized income tasks with full localization."""
-        country  = self.db.get_country(profile.get("country", "DEFAULT"))
-        language = profile.get("language", "en")
+        country   = self.db.get_country(profile.get("country", "DEFAULT"))
+        language  = profile.get("language", "en")
         lang_note = f"Respond in language ISO: {language}." if language != "en" else ""
 
         task_prompt = f"""Generate {count} specific income tasks for a user based in {country.name}.
@@ -1214,10 +1601,10 @@ Return ONLY a JSON array:
                     "period": "month",
                     "raw": h.get("earnings", "Variable"),
                 },
-                "startup_cost":      h.get("startup", "Low"),
-                "difficulty":        h.get("difficulty", "medium"),
-                "first_24h_action":  f"Research {h['name']} requirements in {country.name}",
-                "source":            "local_database",
+                "startup_cost":     h.get("startup", "Low"),
+                "difficulty":       h.get("difficulty", "medium"),
+                "first_24h_action": f"Research {h['name']} requirements in {country.name}",
+                "source":           "local_database",
             })
         return tasks
 
@@ -1226,12 +1613,12 @@ Return ONLY a JSON array:
         return {
             "global_trends_2025": self.trending_global_opportunities,
             "local_trends": {
-                "country":         country.name,
-                "region":          country.region,
-                "trending_skills": country.trending_skills,
+                "country":           country.name,
+                "region":            country.region,
+                "trending_skills":   country.trending_skills,
                 "popular_platforms": country.popular_platforms,
-                "local_hustles":   country.local_hustles,
-                "investment_options": country.investment_options,
+                "local_hustles":     country.local_hustles,
+                "investment_options":country.investment_options,
             },
             "updated_at": datetime.now().isoformat(),
             "source":     "RiseUp Intelligence Engine",
@@ -1289,9 +1676,7 @@ Return ONLY valid JSON:
 # ============================================================
 
 riseup_engine = RiseUpIntelligenceEngine()
-
-# All routers import `ai_service` — this alias ensures compatibility
-ai_service = riseup_engine
+ai_service    = riseup_engine          # all routers import this alias
 
 
 # ============================================================
