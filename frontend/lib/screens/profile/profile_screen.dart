@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
@@ -57,11 +59,9 @@ class _ProfileScreenState extends State<ProfileScreen>
 
     try {
       final bannerAd = BannerAd(
-        adUnitId: kDebugMode
-            ? 'ca-app-pub-3940256099942544/6300978111'
-            : (Platform.isAndroid
-                ? AppConstants.androidBannerAdUnitId
-                : AppConstants.iosBannerAdUnitId),
+        adUnitId: Platform.isAndroid
+            ? AppConstants.androidBannerAdUnitId
+            : AppConstants.iosBannerAdUnitId,
         size: AdSize.banner,
         request: const AdRequest(),
         listener: BannerAdListener(
@@ -908,7 +908,7 @@ class _ProfileScreenState extends State<ProfileScreen>
         final p = posts[i];
         return Container(
           color: cardColor,
-          padding: const EdgeInsets.all(isCompact ? 16 : 20),
+          padding: EdgeInsets.all(isCompact ? 16 : 20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
