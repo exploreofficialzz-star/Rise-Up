@@ -146,6 +146,15 @@ class _ProfileScreenState extends State<ProfileScreen>
     return '${(diff.inDays / 30).floor()}mo ago';
   }
 
+  void _goBack() {
+    // Try to pop first, if can't pop (no previous route), go to home
+    if (Navigator.of(context).canPop()) {
+      context.pop();
+    } else {
+      context.go('/home');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -179,6 +188,10 @@ class _ProfileScreenState extends State<ProfileScreen>
         backgroundColor: cardColor,
         elevation: 0,
         surfaceTintColor: Colors.transparent,
+        leading: IconButton(
+          icon: Icon(Iconsax.arrow_left, color: textColor),
+          onPressed: _goBack,
+        ),
         title: Text(
           name,
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: textColor),
@@ -186,7 +199,7 @@ class _ProfileScreenState extends State<ProfileScreen>
         actions: [
           IconButton(
             icon: Icon(Iconsax.setting_2, color: textColor, size: 22),
-            onPressed: () => context.go('/settings'),
+            onPressed: () => context.push('/settings'),
           ),
         ],
         bottom: PreferredSize(
@@ -258,6 +271,7 @@ class _ProfileScreenState extends State<ProfileScreen>
               border: Border(right: BorderSide(color: borderColor)),
             ),
             child: SingleChildScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.all(24),
               child: _buildProfileHeader(
                 isDark: isDark,
@@ -287,6 +301,7 @@ class _ProfileScreenState extends State<ProfileScreen>
     }
 
     return CustomScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
       slivers: [
         SliverToBoxAdapter(
           child: _buildProfileHeader(
@@ -323,6 +338,7 @@ class _ProfileScreenState extends State<ProfileScreen>
         SliverFillRemaining(
           child: TabBarView(
             controller: _tabCtrl,
+            physics: const AlwaysScrollableScrollPhysics(),
             children: [
               _buildPostsList(
                 posts: _posts,
@@ -517,7 +533,7 @@ class _ProfileScreenState extends State<ProfileScreen>
           ],
           const SizedBox(height: 8),
           Row(
-            mainAxisAlignment: isCompact ? MainAxisAlignment.start : MainAxisAlignment.center,
+            mainAxisAlignment: isCompact ? CrossAxisAlignment.start : MainAxisAlignment.center,
             children: [
               Icon(Iconsax.location, size: 12, color: subColor),
               const SizedBox(width: 4),
@@ -593,10 +609,7 @@ class _ProfileScreenState extends State<ProfileScreen>
               _ProfileFeatureTile('💼', 'CRM', () => context.push('/crm')),
             ],
           ),
-          if (!_isPremium) ...[
-            const SizedBox(height: 16),
-            _buildNativeAdPlaceholder(),
-          ],
+          // REMOVED: The "Remove Ads & Unlock Features" banner that was here
         ],
       ),
     );
@@ -751,60 +764,6 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
   }
 
-  Widget _buildNativeAdPlaceholder() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.primary.withOpacity(0.05),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.primary.withOpacity(0.2)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: const Icon(Icons.workspace_premium, color: AppColors.primary),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Remove Ads & Unlock Features',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.primary,
-                  ),
-                ),
-                Text(
-                  'Upgrade to Pro for an ad-free experience',
-                  style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-                ),
-              ],
-            ),
-          ),
-          ElevatedButton(
-            onPressed: () => context.go('/premium'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              minimumSize: Size.zero,
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
-            child: const Text('Upgrade', style: TextStyle(fontSize: 12)),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildPostsSection({
     required bool isDark,
     required Color cardColor,
@@ -832,6 +791,7 @@ class _ProfileScreenState extends State<ProfileScreen>
         Expanded(
           child: TabBarView(
             controller: _tabCtrl,
+            physics: const AlwaysScrollableScrollPhysics(),
             children: [
               _buildPostsList(
                 posts: _posts,
@@ -901,6 +861,7 @@ class _ProfileScreenState extends State<ProfileScreen>
     }
 
     return ListView.separated(
+      physics: const AlwaysScrollableScrollPhysics(),
       padding: EdgeInsets.zero,
       itemCount: posts.length,
       separatorBuilder: (_, __) => Divider(height: 1, color: borderColor),
