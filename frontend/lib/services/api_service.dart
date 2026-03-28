@@ -830,7 +830,6 @@ class ApiService {
     });
   }
 
-  /// FIX: was POST with empty body + query params — now sends proper body
   Future<dynamic> quickAgent(String task,
       {String outputType = 'any'}) async {
     return post('/agent/quick', {
@@ -839,7 +838,6 @@ class ApiService {
     });
   }
 
-  /// FIX: was POST with empty body + query params — now sends proper body
   Future<dynamic> analyzeAndImprove(String content,
       {String goal = 'improve'}) async {
     return post('/agent/analyze', {
@@ -1040,47 +1038,108 @@ class ApiService {
   // ── Messages ─────────────────────────────────────────────────
   // ─────────────────────────────────────────────────────────────
 
-  Future<Map<String, dynamic>> getConversations() async {
+  /// Returns the enriched list of DM conversations for the current user.
+  /// Backend: GET /messages/conversations → {"conversations": [...]}
+  Future<List<dynamic>> getDMConversations() async {
     try {
       final r = await _dio.get('/messages/conversations');
-      return r.data as Map<String, dynamic>;
+      return (r.data['conversations'] as List?) ?? [];
     } catch (e) {
       throw _handleError(e);
     }
   }
 
-  Future<Map<String, dynamic>> getOrCreateConversation(
-      String otherUserId) async {
+  /// Search users by name for starting a new DM.
+  /// Backend: GET /messages/users/search?q=... → {"users": [...]}
+  Future<List<dynamic>> searchUsers(String q) async {
     try {
-      final r = await _dio
-          .post('/messages/conversations/with/$otherUserId');
-      return r.data as Map<String, dynamic>;
+      final r = await _dio.get(
+        '/messages/users/search',
+        queryParameters: {'q': q},
+      );
+      return (r.data['users'] as List?) ?? [];
     } catch (e) {
       throw _handleError(e);
     }
   }
 
-  Future<Map<String, dynamic>> getConversationMessages(
-      String conversationId,
-      {int limit = 50}) async {
+  /// Gets or creates a DM conversation with [otherUserId].
+  /// Returns the conversation UUID string.
+  /// Backend: POST /messages/conversations/with/{other_user_id} → {"conversation_id": "..."}
+  Future<String> getOrCreateDM(String otherUserId) async {
+    try {
+      final r = await _dio.post('/messages/conversations/with/$otherUserId');
+      return (r.data['conversation_id'] as String?) ?? '';
+    } catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  /// Fetches messages for a DM conversation.
+  /// [conversationId] is the conversation UUID.
+  /// [since] is an optional ISO-8601 timestamp for incremental polling.
+  /// Backend: GET /messages/conversations/{id}/messages → {"messages": [...]}
+  Future<List<dynamic>> getDMMessages(
+    String conversationId, {
+    int limit = 50,
+    String? since,
+  }) async {
     try {
       final r = await _dio.get(
         '/messages/conversations/$conversationId/messages',
-        queryParameters: {'limit': limit},
+        queryParameters: {
+          'limit': limit,
+          if (since != null) 'since': since,
+        },
       );
-      return r.data as Map<String, dynamic>;
+      return (r.data['messages'] as List?) ?? [];
     } catch (e) {
       throw _handleError(e);
     }
   }
 
-  Future<Map<String, dynamic>> sendMessage(
+  /// Sends a plain text DM in [conversationId].
+  /// Backend: POST /messages/conversations/{id}/send → {"message": {...}}
+  Future<Map<String, dynamic>> sendDMMessage(
       String conversationId, String content) async {
     try {
       final r = await _dio.post(
         '/messages/conversations/$conversationId/send',
         data: {'content': content},
       );
+      return r.data as Map<String, dynamic>;
+    } catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  /// Invokes RiseUp AI inside an existing DM conversation.
+  /// [adUnlocked] should be true after a rewarded ad has been watched.
+  /// Backend: POST /messages/conversations/{id}/ai-message → {"message":{}, "content":"", "quota":{}}
+  Future<Map<String, dynamic>> sendAIMessageInDM(
+    String conversationId,
+    String content, {
+    bool adUnlocked = false,
+  }) async {
+    try {
+      final r = await _dio.post(
+        '/messages/conversations/$conversationId/ai-message',
+        data: {
+          'content': content,
+          'ad_unlocked': adUnlocked,
+        },
+      );
+      return r.data as Map<String, dynamic>;
+    } catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  /// Returns the AI message quota for the current user.
+  /// Backend: GET /messages/ai-quota → {is_premium, free_used, free_total, ...}
+  Future<Map<String, dynamic>> getAIQuota() async {
+    try {
+      final r = await _dio.get('/messages/ai-quota');
       return r.data as Map<String, dynamic>;
     } catch (e) {
       throw _handleError(e);
