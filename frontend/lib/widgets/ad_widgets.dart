@@ -1,7 +1,5 @@
-// ─────────────────────────────────────────────────────────────────
 // RiseUp Ad System — PRODUCTION READY
 // Enhanced with real AdMob integration + frequency capping
-// ─────────────────────────────────────────────────────────────────
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -10,10 +8,7 @@ import '../config/app_constants.dart';
 import '../services/api_service.dart';
 import '../services/ad_service.dart';
 
-// ═════════════════════════════════════════════════════════════════
 // AD CONFIG — Server-controlled with local fallback
-// ═════════════════════════════════════════════════════════════════
-
 class AdConfig {
   static bool adsEnabled = true;
   static bool isPremium = false;
@@ -37,10 +32,7 @@ class AdConfig {
   static bool get shouldShowAds => adsEnabled && !isPremium;
 }
 
-// ═════════════════════════════════════════════════════════════════
 // FEED AD CARD — Native-style promo (every N posts)
-// ═════════════════════════════════════════════════════════════════
-
 class FeedAdCard extends StatelessWidget {
   final bool isDark;
   final Color cardColor, borderColor, textColor, subColor;
@@ -188,10 +180,7 @@ class FeedAdCard extends StatelessWidget {
   }
 }
 
-// ═════════════════════════════════════════════════════════════════
 // SCREEN BANNER — Sticky bottom banner
-// ═════════════════════════════════════════════════════════════════
-
 class ScreenBannerAd extends StatelessWidget {
   final bool isDark;
   
@@ -289,10 +278,7 @@ class ScreenBannerAd extends StatelessWidget {
   }
 }
 
-// ═════════════════════════════════════════════════════════════════
 // REAL BANNER AD — AdMob Banner (Production)
-// ═════════════════════════════════════════════════════════════════
-
 class RealBannerAd extends StatefulWidget {
   final bool isDark;
   final EdgeInsetsGeometry padding;
@@ -320,10 +306,7 @@ class _RealBannerAdState extends State<RealBannerAd> {
   }
 }
 
-// ═════════════════════════════════════════════════════════════════
 // NATIVE AD WIDGET — AdMob Native (Production)
-// ═════════════════════════════════════════════════════════════════
-
 class NativeInlineAd extends StatefulWidget {
   final bool isDark;
   
@@ -338,21 +321,18 @@ class _NativeInlineAdState extends State<NativeInlineAd> {
   Widget build(BuildContext context) {
     if (!AdConfig.shouldShowAds) return const SizedBox.shrink();
 
-    final widget = adService.getNativeWidget();
-    if (widget == null) return const SizedBox.shrink();
+    final adWidget = adService.getNativeWidget();
+    if (adWidget == null) return const SizedBox.shrink();
 
     return Container(
       color: widget.isDark ? AppColors.bgCard : Colors.white,
       padding: const EdgeInsets.symmetric(vertical: 8),
-      child: widget,
+      child: adWidget,
     );
   }
 }
 
-// ═════════════════════════════════════════════════════════════════
 // INTERSTITIAL TRIGGER — Auto-show on navigation (with capping)
-// ═════════════════════════════════════════════════════════════════
-
 class InterstitialGate extends StatefulWidget {
   final Widget child;
   final String placement;
@@ -391,10 +371,7 @@ class _InterstitialGateState extends State<InterstitialGate> {
   Widget build(BuildContext context) => widget.child;
 }
 
-// ═════════════════════════════════════════════════════════════════
 // REWARDED AD BUTTON — Watch ad to unlock feature
-// ═════════════════════════════════════════════════════════════════
-
 class RewardedAdButton extends StatefulWidget {
   final String featureKey;
   final String featureName;
@@ -486,10 +463,7 @@ class _RewardedAdButtonState extends State<RewardedAdButton> {
   }
 }
 
-// ═════════════════════════════════════════════════════════════════
 // FEATURE GATE SHEET — Bottom sheet for limit reached
-// ═════════════════════════════════════════════════════════════════
-
 class FeatureGateSheet extends StatefulWidget {
   final String feature;
   final String featureName;
@@ -647,10 +621,7 @@ class _FeatureGateSheetState extends State<FeatureGateSheet> {
   }
 }
 
-// ═════════════════════════════════════════════════════════════════
 // USAGE LIMIT BANNER — Warning near limit
-// ═════════════════════════════════════════════════════════════════
-
 class UsageLimitBanner extends StatelessWidget {
   final int remaining;
   final int total;
@@ -718,10 +689,7 @@ class UsageLimitBanner extends StatelessWidget {
   }
 }
 
-// ═════════════════════════════════════════════════════════════════
 // PREMIUM BANNER — Upsell for free users
-// ═════════════════════════════════════════════════════════════════
-
 class PremiumUpsellBanner extends StatelessWidget {
   final bool isDark;
   
