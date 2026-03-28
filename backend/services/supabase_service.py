@@ -39,6 +39,11 @@ class SupabaseService:
     def db(self) -> Client:
         return get_supabase()
 
+    @property
+    def client(self) -> Client:
+        """Alias for self.db — workflow.py and other routers may use .client directly."""
+        return get_supabase()
+
     # ── Profiles ──────────────────────────────────────────────
     async def get_profile(self, user_id: str) -> dict:
         try:
