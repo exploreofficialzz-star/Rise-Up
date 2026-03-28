@@ -12,20 +12,47 @@ import '../../widgets/ad_widgets.dart';
 import '../ai/post_ai_sheet.dart';
 import 'create_status_screen.dart';
 
-// ── Sound Service Placeholder ─────────────────────────
+// ── Sound Service — production silent stubs ───────────
+// Plug in audioplayers or just_audio here when ready.
 class SoundService {
-  static void play(String sound) {
-    debugPrint('🔊 Sound: $sound');
+  static void like()    {}
+  static void comment() {}
+  static void share()   {}
+  static void save()    {}
+  static void follow()  {}
+  static void post()    {}
+  static void success() {}
+  static void tap()     {}
+  static void refresh() {}
+}
+
+// ── Stage Info helper — used by AppDrawer & PostCard ──
+class StageInfo {
+  static Map<String, dynamic> get(String stage) {
+    const stages = <String, Map<String, dynamic>>{
+      'survival': {
+        'emoji': '🆘',
+        'label': 'Survival',
+        'color': Color(0xFFE17055),
+      },
+      'earning': {
+        'emoji': '💪',
+        'label': 'Earning',
+        'color': Color(0xFF0984E3),
+      },
+      'growing': {
+        'emoji': '🚀',
+        'label': 'Growing',
+        'color': Color(0xFF00B894),
+      },
+      'wealth': {
+        'emoji': '💎',
+        'label': 'Wealth',
+        'color': Color(0xFF6C5CE7),
+      },
+    };
+    return stages[stage] ?? stages['survival']!;
   }
-  static void like()    => play('like');
-  static void comment() => play('comment');
-  static void share()   => play('share');
-  static void save()    => play('save');
-  static void follow()  => play('follow');
-  static void post()    => play('post');
-  static void success() => play('success');
-  static void tap()     => play('tap');
-  static void refresh() => play('refresh');
 }
 
 // ── Post Model ────────────────────────────────────────
@@ -37,13 +64,13 @@ class PostModel {
   final String avatar;
   final String tag;
   final String content;
-  int    likes;
-  final int    comments;
-  final int    shares;
-  final bool   verified;
-  final bool   isPremiumPost;
-  bool   isLiked;
-  bool   isSaved;
+  int likes;
+  final int comments;
+  final int shares;
+  final bool verified;
+  final bool isPremiumPost;
+  bool isLiked;
+  bool isSaved;
   final String userId;
 
   PostModel({
@@ -57,48 +84,49 @@ class PostModel {
     required this.likes,
     required this.comments,
     required this.shares,
-    this.verified      = false,
+    this.verified = false,
     this.isPremiumPost = false,
-    this.isLiked       = false,
-    this.isSaved       = false,
-    this.userId        = '',
+    this.isLiked = false,
+    this.isSaved = false,
+    this.userId = '',
   });
 
-  factory PostModel.fromApi(Map data) {
-    final profile   = data['profiles'] ?? {};
+  factory PostModel.fromApi(Map<String, dynamic> data) {
+    final profile =
+        (data['profiles'] as Map?)?.cast<String, dynamic>() ?? {};
     final createdAt =
-        DateTime.tryParse(data['created_at'] ?? '') ?? DateTime.now();
+        DateTime.tryParse(data['created_at']?.toString() ?? '') ??
+            DateTime.now();
     final diff = DateTime.now().difference(createdAt);
     String time;
-    if (diff.inMinutes < 60)     time = '${diff.inMinutes}m ago';
-    else if (diff.inHours < 24)  time = '${diff.inHours}h ago';
-    else                         time = '${diff.inDays}d ago';
+    if (diff.inMinutes < 60) {
+      time = '${diff.inMinutes}m ago';
+    } else if (diff.inHours < 24) {
+      time = '${diff.inHours}h ago';
+    } else {
+      time = '${diff.inDays}d ago';
+    }
 
-    final fullName  = profile['full_name']?.toString() ?? 'User';
-    final stage     = profile['stage']?.toString() ?? 'survival';
-    final stageEmoji = {
-      'survival': '🆘',
-      'earning':  '💪',
-      'growing':  '🚀',
-      'wealth':   '💎',
-    }[stage] ?? '🌱';
+    final fullName = profile['full_name']?.toString() ?? 'User';
+    final stage = profile['stage']?.toString() ?? 'survival';
+    final stageInfo = StageInfo.get(stage);
 
     return PostModel(
-      id:           data['id']?.toString()      ?? '',
-      name:         fullName,
-      username:     '@${fullName.toLowerCase().replaceAll(' ', '')}',
-      time:         time,
-      avatar:       stageEmoji,
-      tag:          data['tag']?.toString()     ?? '💰 Wealth',
-      content:      data['content']?.toString() ?? '',
-      likes:        data['likes_count']    as int? ?? 0,
-      comments:     data['comments_count'] as int? ?? 0,
-      shares:       data['shares_count']   as int? ?? 0,
-      verified:     profile['is_verified'] == true,
+      id: data['id']?.toString() ?? '',
+      name: fullName,
+      username: '@${fullName.toLowerCase().replaceAll(' ', '')}',
+      time: time,
+      avatar: stageInfo['emoji'] as String,
+      tag: data['tag']?.toString() ?? '💰 Wealth',
+      content: data['content']?.toString() ?? '',
+      likes: (data['likes_count'] as num?)?.toInt() ?? 0,
+      comments: (data['comments_count'] as num?)?.toInt() ?? 0,
+      shares: (data['shares_count'] as num?)?.toInt() ?? 0,
+      verified: profile['is_verified'] == true,
       isPremiumPost: profile['subscription_tier'] == 'premium',
-      isLiked:      data['is_liked'] == true,
-      isSaved:      data['is_saved'] == true,
-      userId:       profile['id']?.toString() ?? '',
+      isLiked: data['is_liked'] == true,
+      isSaved: data['is_saved'] == true,
+      userId: profile['id']?.toString() ?? '',
     );
   }
 }
@@ -106,6 +134,7 @@ class PostModel {
 // ── Home Screen ───────────────────────────────────────
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
+
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
@@ -113,32 +142,38 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabCtrl;
-  Map _profile      = {};
-  int _aiUsedToday  = 0;
+  Map<String, dynamic> _profile = {};
+  int _aiUsedToday = 0;
   static const int _dailyFreeLimit = 3;
 
-  List _statusUsers  = [];
+  List<dynamic> _statusUsers = [];
   bool _statusLoaded = false;
 
-  final _feeds   = {
-    'for_you':   <PostModel>[],
-    'following': <PostModel>[],
-    'trending':  <PostModel>[],
+  final _feeds = <String, List<PostModel>>{
+    'for_you': [],
+    'following': [],
+    'trending': [],
   };
-  final _loading = {
-    'for_you': false, 'following': false, 'trending': false,
+  final _loading = <String, bool>{
+    'for_you': false,
+    'following': false,
+    'trending': false,
   };
-  final _offsets = {
-    'for_you': 0, 'following': 0, 'trending': 0,
+  final _offsets = <String, int>{
+    'for_you': 0,
+    'following': 0,
+    'trending': 0,
   };
   final _tabs = ['for_you', 'following', 'trending'];
   final GlobalKey<ScaffoldState> _scaffoldKey =
       GlobalKey<ScaffoldState>();
 
+  // Track followed users for optimistic UI update
+  final Set<String> _followedUserIds = {};
+
   @override
   void initState() {
     super.initState();
-    _loadStatus();
     _tabCtrl = TabController(length: 3, vsync: this);
     _tabCtrl.addListener(() {
       if (!_tabCtrl.indexIsChanging) {
@@ -147,36 +182,37 @@ class _HomeScreenState extends State<HomeScreen>
       }
     });
     _loadProfile();
+    _loadStatus();
     _loadFeed('for_you');
+  }
+
+  @override
+  void dispose() {
+    _tabCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _loadProfile() async {
     try {
       final data = await api.getProfile();
-      if (mounted) setState(() => _profile = data['profile'] ?? {});
+      if (mounted) {
+        setState(() =>
+            _profile = (data['profile'] as Map?)?.cast<String, dynamic>() ??
+                {});
+      }
     } catch (_) {}
-  }
-
-  void _viewStatus(Map user) {
-    SoundService.tap();
-    final items = user['items'] as List? ?? [];
-    if (items.isEmpty) return;
-    showModalBottomSheet(
-      context:           context,
-      isScrollControlled: true,
-      backgroundColor:   Colors.transparent,
-      builder: (_) => _StatusViewSheet(user: user),
-    );
   }
 
   Future<void> _loadStatus() async {
     try {
       final data = await api.get('/posts/status/feed');
-      if (mounted) setState(() {
-        _statusUsers  = (data as Map?)?['users'] as List? ?? [];
-        _statusLoaded = true;
-      });
-      SoundService.refresh();
+      if (mounted) {
+        setState(() {
+          _statusUsers =
+              ((data as Map<String, dynamic>?)?['users'] as List?) ?? [];
+          _statusLoaded = true;
+        });
+      }
     } catch (_) {
       if (mounted) setState(() => _statusLoaded = true);
     }
@@ -184,14 +220,17 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> _loadFeed(String tab, {bool refresh = false}) async {
     if (_loading[tab] == true) return;
-    setState(() => _loading[tab] = true);
+    if (mounted) setState(() => _loading[tab] = true);
     if (refresh) _offsets[tab] = 0;
 
     try {
       final data = await api.getFeed(
-          tab: tab, limit: 20, offset: _offsets[tab]!);
-      final posts = (data['posts'] as List? ?? [])
-          .map((p) => PostModel.fromApi(p as Map))
+        tab: tab,
+        limit: 20,
+        offset: _offsets[tab]!,
+      );
+      final posts = ((data['posts'] as List?) ?? [])
+          .map((p) => PostModel.fromApi(p as Map<String, dynamic>))
           .toList();
 
       if (mounted) {
@@ -205,14 +244,14 @@ class _HomeScreenState extends State<HomeScreen>
           _loading[tab] = false;
         });
       }
-      if (refresh) SoundService.refresh();
-    } catch (e) {
+    } catch (_) {
       if (mounted) setState(() => _loading[tab] = false);
     }
   }
 
   bool get _isPremium =>
       (_profile['subscription_tier'] ?? 'free') == 'premium';
+
   int get _aiRemaining =>
       (_dailyFreeLimit - _aiUsedToday).clamp(0, _dailyFreeLimit);
 
@@ -241,12 +280,12 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Future<bool> _showAdPrompt() async {
-    SoundService.tap();
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return await showDialog<bool>(
           context: context,
           builder: (_) => AlertDialog(
-            backgroundColor: isDark ? AppColors.bgCard : Colors.white,
+            backgroundColor:
+                isDark ? AppColors.bgCard : Colors.white,
             shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(20)),
             title: Text(
@@ -262,7 +301,9 @@ class _HomeScreenState extends State<HomeScreen>
               'Watch a 30-second ad to unlock more, or upgrade to '
               'Premium for unlimited access.',
               style: TextStyle(
-                color:  isDark ? Colors.white.withOpacity(0.6) : Colors.black54,
+                color: isDark
+                    ? Colors.white.withOpacity(0.6)
+                    : Colors.black54,
                 height: 1.5,
               ),
             ),
@@ -270,7 +311,8 @@ class _HomeScreenState extends State<HomeScreen>
               TextButton(
                 onPressed: () => Navigator.pop(context, false),
                 child: const Text('Not now',
-                    style: TextStyle(color: AppColors.textMuted)),
+                    style:
+                        TextStyle(color: AppColors.textMuted)),
               ),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
@@ -289,77 +331,98 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _openAi(PostModel post, {required bool isPrivate}) {
-    SoundService.tap();
     if (isPrivate) {
       context.go(
-          '/chat?mode=general'
-          '&postContext=${Uri.encodeComponent(post.content)}'
-          '&postAuthor=${Uri.encodeComponent(post.name)}');
+        '/chat?mode=general'
+        '&postContext=${Uri.encodeComponent(post.content)}'
+        '&postAuthor=${Uri.encodeComponent(post.name)}',
+      );
     } else {
       showModalBottomSheet(
-        context:           context,
+        context: context,
         isScrollControlled: true,
-        backgroundColor:   Colors.transparent,
+        backgroundColor: Colors.transparent,
         builder: (_) => PostAiSheet(post: post),
       );
     }
   }
 
+  // FIX: was calling wrong endpoint api.post('/users/$userId/follow', {})
+  // Now uses api.toggleFollow which maps to /posts/users/{id}/follow
   Future<void> _handleFollow(String userId) async {
     HapticFeedback.mediumImpact();
     SoundService.follow();
     try {
-      await api.post('/users/$userId/follow', {});
-      _loadFeed('for_you', refresh: true);
-    } catch (e) {
-      debugPrint('Follow error: $e');
-    }
+      final res = await api.toggleFollow(userId);
+      if (mounted) {
+        setState(() {
+          if (res['following'] == true) {
+            _followedUserIds.add(userId);
+          } else {
+            _followedUserIds.remove(userId);
+          }
+        });
+      }
+    } catch (_) {}
   }
 
-  @override
-  void dispose() {
-    _tabCtrl.dispose();
-    super.dispose();
+  void _viewStatus(Map<String, dynamic> user) {
+    final items = user['items'] as List? ?? [];
+    if (items.isEmpty) return;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _StatusViewSheet(user: user),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final isDark       = Theme.of(context).brightness == Brightness.dark;
-    final bgColor      = isDark ? Colors.black : Colors.white;
-    final cardColor    = isDark ? AppColors.bgCard : Colors.white;
-    final borderColor  = isDark ? AppColors.bgSurface : Colors.grey.shade200;
-    final textColor    = isDark ? Colors.white : Colors.black87;
-    final subColor     = isDark ? Colors.white.withOpacity(0.54) : Colors.black45;
-    final iconColor    = isDark ? Colors.white.withOpacity(0.7) : Colors.black54;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bgColor = isDark ? Colors.black : Colors.white;
+    final cardColor = isDark ? AppColors.bgCard : Colors.white;
+    final borderColor =
+        isDark ? AppColors.bgSurface : Colors.grey.shade200;
+    final textColor = isDark ? Colors.white : Colors.black87;
+    final subColor = isDark
+        ? Colors.white.withOpacity(0.54)
+        : Colors.black45;
+    final iconColor = isDark
+        ? Colors.white.withOpacity(0.7)
+        : Colors.black54;
 
     return Scaffold(
       backgroundColor: bgColor,
-      key:             _scaffoldKey,
+      key: _scaffoldKey,
       drawer: _AppDrawer(profile: _profile, isDark: isDark),
       appBar: AppBar(
-        backgroundColor:  cardColor,
-        elevation:        0,
+        backgroundColor: cardColor,
+        elevation: 0,
         surfaceTintColor: Colors.transparent,
-        titleSpacing:     0,
+        titleSpacing: 0,
         leading: IconButton(
           icon: Icon(Icons.menu_rounded, color: iconColor, size: 24),
           onPressed: () {
             HapticFeedback.lightImpact();
-            SoundService.tap();
             _scaffoldKey.currentState?.openDrawer();
           },
         ),
         title: ShaderMask(
           shaderCallback: (bounds) => const LinearGradient(
-            colors: [Color(0xFFFF6B00), Color(0xFFFFD700), Color(0xFF6C5CE7)],
-            stops:  [0.0, 0.4, 1.0],
+            colors: [
+              Color(0xFFFF6B00),
+              Color(0xFFFFD700),
+              Color(0xFF6C5CE7),
+            ],
+            stops: [0.0, 0.4, 1.0],
           ).createShader(bounds),
           child: const Text(
             'RiseUp',
             style: TextStyle(
-              fontSize:   24,
+              fontSize: 24,
               fontWeight: FontWeight.w900,
-              color:      Colors.white,
+              color: Colors.white,
               letterSpacing: -0.5,
             ),
           ),
@@ -368,37 +431,35 @@ class _HomeScreenState extends State<HomeScreen>
         actions: [
           if (!_isPremium)
             Container(
-              margin:  const EdgeInsets.only(top: 12, bottom: 12),
+              margin: const EdgeInsets.only(top: 12, bottom: 12),
               padding: const EdgeInsets.symmetric(
                   horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
-                color:        AppColors.primary.withOpacity(0.12),
+                color: AppColors.primary.withOpacity(0.12),
                 borderRadius: BorderRadius.circular(20),
               ),
               child: Text(
                 '🤖 $_aiRemaining left',
                 style: const TextStyle(
-                  color:      AppColors.primary,
-                  fontSize:   11,
+                  color: AppColors.primary,
+                  fontSize: 11,
                   fontWeight: FontWeight.w600,
                 ),
               ),
             ),
           IconButton(
-            icon:      Icon(Iconsax.search_normal,
+            icon: Icon(Iconsax.search_normal,
                 color: iconColor, size: 20),
             onPressed: () {
               HapticFeedback.lightImpact();
-              SoundService.tap();
               context.go('/explore');
             },
           ),
           IconButton(
-            icon:      Icon(Iconsax.notification,
+            icon: Icon(Iconsax.notification,
                 color: iconColor, size: 20),
             onPressed: () {
               HapticFeedback.lightImpact();
-              SoundService.tap();
               context.go('/notifications');
             },
           ),
@@ -428,7 +489,6 @@ class _HomeScreenState extends State<HomeScreen>
                         return _StoryAddButton(
                           isDark: isDark,
                           onTap: () {
-                            SoundService.tap();
                             Navigator.push(
                               context,
                               MaterialPageRoute(
@@ -438,9 +498,10 @@ class _HomeScreenState extends State<HomeScreen>
                           },
                         );
                       }
-                      final user = _statusUsers[i - 1] as Map;
+                      final user = _statusUsers[i - 1]
+                          as Map<String, dynamic>;
                       return _StoryItem(
-                        user:  user,
+                        user: user,
                         isDark: isDark,
                         onTap: () => _viewStatus(user),
                       );
@@ -458,11 +519,11 @@ class _HomeScreenState extends State<HomeScreen>
             child: Column(
               children: [
                 TabBar(
-                  controller:           _tabCtrl,
-                  labelColor:           AppColors.primary,
+                  controller: _tabCtrl,
+                  labelColor: AppColors.primary,
                   unselectedLabelColor: subColor,
-                  indicatorColor:       AppColors.primary,
-                  indicatorWeight:      2.5,
+                  indicatorColor: AppColors.primary,
+                  indicatorWeight: 2.5,
                   labelStyle: const TextStyle(
                       fontSize: 13, fontWeight: FontWeight.w600),
                   tabs: const [
@@ -481,7 +542,7 @@ class _HomeScreenState extends State<HomeScreen>
             child: TabBarView(
               controller: _tabCtrl,
               children: _tabs.map((tab) {
-                final posts     = _feeds[tab]!;
+                final posts = _feeds[tab]!;
                 final isLoading = _loading[tab] == true;
 
                 if (isLoading && posts.isEmpty) {
@@ -504,14 +565,11 @@ class _HomeScreenState extends State<HomeScreen>
                                 color: subColor, fontSize: 14)),
                         const SizedBox(height: 8),
                         GestureDetector(
-                          onTap: () {
-                            SoundService.refresh();
-                            _loadFeed(tab, refresh: true);
-                          },
+                          onTap: () => _loadFeed(tab, refresh: true),
                           child: Text(
                             'Refresh',
                             style: TextStyle(
-                              color:      AppColors.primary,
+                              color: AppColors.primary,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
@@ -522,10 +580,7 @@ class _HomeScreenState extends State<HomeScreen>
                 }
 
                 return RefreshIndicator(
-                  onRefresh: () {
-                    SoundService.refresh();
-                    return _loadFeed(tab, refresh: true);
-                  },
+                  onRefresh: () => _loadFeed(tab, refresh: true),
                   color: AppColors.primary,
                   child: ListView.separated(
                     padding: EdgeInsets.zero,
@@ -536,85 +591,101 @@ class _HomeScreenState extends State<HomeScreen>
                     itemBuilder: (_, i) {
                       final totalContent =
                           adManager.feedItemCount(posts.length);
+
                       if (i == totalContent) {
                         return Padding(
                           padding: const EdgeInsets.all(16),
-                          child: GestureDetector(
-                            onTap: () {
-                              SoundService.tap();
-                              _loadFeed(tab);
-                            },
-                            child: Center(
-                              child: isLoading
-                                  ? const CircularProgressIndicator(
-                                      color:       AppColors.primary,
-                                      strokeWidth: 2,
-                                    )
-                                  : Text('Load more',
+                          child: Center(
+                            child: isLoading
+                                ? const CircularProgressIndicator(
+                                    color: AppColors.primary,
+                                    strokeWidth: 2,
+                                  )
+                                : GestureDetector(
+                                    onTap: () => _loadFeed(tab),
+                                    child: Text(
+                                      'Load more',
                                       style: TextStyle(
-                                          color:    subColor,
-                                          fontSize: 13)),
-                            ),
+                                          color: subColor,
+                                          fontSize: 13),
+                                    ),
+                                  ),
                           ),
                         );
                       }
+
                       if (adManager.shouldShowFeedAd(i)) {
                         return FeedAdCard(
-                          isDark:      isDark,
-                          cardColor:   cardColor,
+                          isDark: isDark,
+                          cardColor: cardColor,
                           borderColor: borderColor,
-                          textColor:   textColor,
-                          subColor:    subColor,
+                          textColor: textColor,
+                          subColor: subColor,
                         );
                       }
+
                       final postIndex = adManager.realPostIndex(i);
                       if (postIndex >= posts.length) {
                         return const SizedBox.shrink();
                       }
+
+                      final post = posts[postIndex];
                       return PostCard(
-                        post:        posts[postIndex],
-                        isDark:      isDark,
-                        cardColor:   cardColor,
+                        post: post,
+                        isDark: isDark,
+                        cardColor: cardColor,
                         borderColor: borderColor,
-                        textColor:   textColor,
-                        subColor:    subColor,
-                        onAskAI:     (p) =>
+                        textColor: textColor,
+                        subColor: subColor,
+                        onAskAI: (p) =>
                             _handleAiRequest(p, isPrivate: false),
                         onPrivateChat: (p) =>
                             _handleAiRequest(p, isPrivate: true),
-                        isPremium:   _isPremium,
+                        isPremium: _isPremium,
                         aiRemaining: _aiRemaining,
+                        currentUserId:
+                            _profile['id']?.toString() ?? '',
+                        followedUserIds: _followedUserIds,
                         onLike: (p) async {
                           HapticFeedback.mediumImpact();
                           SoundService.like();
-                          final res = await api.toggleLike(p.id);
-                          setState(() {
-                            p.isLiked = res['liked'] == true;
-                            p.likes  += p.isLiked ? 1 : -1;
-                          });
+                          try {
+                            final res = await api.toggleLike(p.id);
+                            if (mounted) {
+                              setState(() {
+                                p.isLiked = res['liked'] == true;
+                                p.likes += p.isLiked ? 1 : -1;
+                              });
+                            }
+                          } catch (_) {}
                         },
                         onSave: (p) async {
                           HapticFeedback.mediumImpact();
                           SoundService.save();
-                          final res = await api.toggleSave(p.id);
-                          setState(
-                              () => p.isSaved = res['saved'] == true);
+                          try {
+                            final res = await api.toggleSave(p.id);
+                            if (mounted) {
+                              setState(() =>
+                                  p.isSaved = res['saved'] == true);
+                            }
+                          } catch (_) {}
                         },
                         onComment: (p) {
                           SoundService.comment();
-                          context.go('/comments/${p.id}'
-                              '?content=${Uri.encodeComponent(p.content)}'
-                              '&author=${Uri.encodeComponent(p.name)}');
+                          context.go(
+                            '/comments/${p.id}'
+                            '?content=${Uri.encodeComponent(p.content)}'
+                            '&author=${Uri.encodeComponent(p.name)}',
+                          );
                         },
                         onShare: (p) async {
                           HapticFeedback.mediumImpact();
                           SoundService.share();
-                          await api.sharePost(p.id);
+                          try {
+                            await api.sharePost(p.id);
+                          } catch (_) {}
                         },
-                        onFollow: (userId) => _handleFollow(userId),
-                        // FIX 1: Pass current user ID from profile
-                        currentUserId:
-                            _profile['id']?.toString() ?? '',
+                        onFollow: _handleFollow,
                       ).animate().fadeIn(
                           delay: Duration(milliseconds: i * 40));
                     },
@@ -631,24 +702,23 @@ class _HomeScreenState extends State<HomeScreen>
 
 // ── Post Card ─────────────────────────────────────────
 class PostCard extends StatefulWidget {
-  final PostModel          post;
-  final bool               isDark;
-  final bool               isPremium;
-  final Color              cardColor;
-  final Color              borderColor;
-  final Color              textColor;
-  final Color              subColor;
+  final PostModel post;
+  final bool isDark;
+  final bool isPremium;
+  final Color cardColor;
+  final Color borderColor;
+  final Color textColor;
+  final Color subColor;
   final Function(PostModel) onAskAI;
   final Function(PostModel) onPrivateChat;
   final Function(PostModel) onLike;
   final Function(PostModel) onSave;
   final Function(PostModel) onComment;
   final Function(PostModel) onShare;
-  final Function(String)   onFollow;
-  final int                aiRemaining;
-  // FIX 2: currentUserId is now a proper field — was a broken private
-  // getter accessed as widget._currentUserId which doesn't compile
-  final String             currentUserId;
+  final Function(String) onFollow;
+  final int aiRemaining;
+  final String currentUserId;
+  final Set<String> followedUserIds;
 
   const PostCard({
     super.key,
@@ -667,6 +737,7 @@ class PostCard extends StatefulWidget {
     required this.onFollow,
     required this.isPremium,
     required this.aiRemaining,
+    required this.followedUserIds,
     this.currentUserId = '',
   });
 
@@ -677,13 +748,21 @@ class PostCard extends StatefulWidget {
 class _PostCardState extends State<PostCard> {
   String _fmt(int n) {
     if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
-    if (n >= 1000)    return '${(n / 1000).toStringAsFixed(1)}K';
+    if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}K';
     return '$n';
   }
+
+  bool get _isOwnPost =>
+      widget.post.userId.isNotEmpty &&
+      widget.post.userId == widget.currentUserId;
+
+  bool get _alreadyFollowing =>
+      widget.followedUserIds.contains(widget.post.userId);
 
   @override
   Widget build(BuildContext context) {
     final p = widget.post;
+
     return Container(
       color: widget.cardColor,
       child: Column(
@@ -694,47 +773,45 @@ class _PostCardState extends State<PostCard> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Header
+                // ── Header ──────────────────────────────
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     GestureDetector(
-                      onTap: () {
-                        SoundService.tap();
-                        context.go('/user-profile/${p.userId}');
-                      },
+                      onTap: () =>
+                          context.go('/user-profile/${p.userId}'),
                       child: Container(
-                        width:  44,
+                        width: 44,
                         height: 44,
                         decoration: BoxDecoration(
-                          color: AppColors.primary.withOpacity(0.12),
+                          color:
+                              AppColors.primary.withOpacity(0.12),
                           shape: BoxShape.circle,
                         ),
                         child: Center(
                           child: Text(p.avatar,
-                              style: const TextStyle(fontSize: 22)),
+                              style:
+                                  const TextStyle(fontSize: 22)),
                         ),
                       ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                        crossAxisAlignment:
+                            CrossAxisAlignment.start,
                         children: [
                           Row(
                             children: [
                               GestureDetector(
-                                onTap: () {
-                                  SoundService.tap();
-                                  context.go(
-                                      '/user-profile/${p.userId}');
-                                },
+                                onTap: () => context
+                                    .go('/user-profile/${p.userId}'),
                                 child: Text(
                                   p.name,
                                   style: TextStyle(
-                                    fontSize:   14,
+                                    fontSize: 14,
                                     fontWeight: FontWeight.w700,
-                                    color:      widget.textColor,
+                                    color: widget.textColor,
                                   ),
                                 ),
                               ),
@@ -747,8 +824,9 @@ class _PostCardState extends State<PostCard> {
                               if (p.isPremiumPost) ...[
                                 const SizedBox(width: 4),
                                 Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 5, vertical: 1),
+                                  padding:
+                                      const EdgeInsets.symmetric(
+                                          horizontal: 5, vertical: 1),
                                   decoration: BoxDecoration(
                                     color: AppColors.gold
                                         .withOpacity(0.2),
@@ -756,7 +834,8 @@ class _PostCardState extends State<PostCard> {
                                         BorderRadius.circular(4),
                                   ),
                                   child: const Text('⭐',
-                                      style: TextStyle(fontSize: 9)),
+                                      style:
+                                          TextStyle(fontSize: 9)),
                                 ),
                               ],
                             ],
@@ -776,18 +855,20 @@ class _PostCardState extends State<PostCard> {
                         ],
                       ),
                     ),
-                    // FIX 3: was widget._currentUserId — private getter
-                    // on State cannot be accessed via widget reference.
-                    // Now uses widget.currentUserId (public field).
+
+                    // Follow button — hidden for own posts or
+                    // already-followed users
                     if (p.userId.isNotEmpty &&
-                        p.userId != widget.currentUserId)
+                        !_isOwnPost &&
+                        !_alreadyFollowing)
                       TextButton(
-                        onPressed: () => widget.onFollow(p.userId),
+                        onPressed: () =>
+                            widget.onFollow(p.userId),
                         style: TextButton.styleFrom(
                           foregroundColor: AppColors.primary,
                           padding: const EdgeInsets.symmetric(
                               horizontal: 12, vertical: 6),
-                          minimumSize:     Size.zero,
+                          minimumSize: Size.zero,
                           tapTargetSize:
                               MaterialTapTargetSize.shrinkWrap,
                         ),
@@ -795,10 +876,11 @@ class _PostCardState extends State<PostCard> {
                           'Follow',
                           style: TextStyle(
                             fontWeight: FontWeight.w600,
-                            fontSize:   12,
+                            fontSize: 12,
                           ),
                         ),
                       ),
+
                     const SizedBox(width: 4),
                     Container(
                       padding: const EdgeInsets.symmetric(
@@ -810,8 +892,8 @@ class _PostCardState extends State<PostCard> {
                       child: Text(
                         p.tag,
                         style: const TextStyle(
-                          fontSize:   10,
-                          color:      AppColors.primary,
+                          fontSize: 10,
+                          color: AppColors.primary,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -827,42 +909,43 @@ class _PostCardState extends State<PostCard> {
 
                 const SizedBox(height: 12),
 
-                // Content
+                // ── Content ─────────────────────────────
                 Text(
                   p.content,
                   style: TextStyle(
-                    fontSize:      14.5,
-                    color:         widget.isDark
+                    fontSize: 14.5,
+                    color: widget.isDark
                         ? const Color(0xFFE8E8F0)
                         : Colors.black87,
-                    height:        1.6,
+                    height: 1.6,
                     letterSpacing: 0.1,
                   ),
                 ),
 
                 const SizedBox(height: 14),
 
-                // Actions
+                // ── Action Row ──────────────────────────
                 Row(
                   children: [
                     _ActionBtn(
-                      icon:  p.isLiked
+                      icon: p.isLiked
                           ? Icons.favorite_rounded
                           : Icons.favorite_border_rounded,
                       label: _fmt(p.likes),
-                      color: p.isLiked ? Colors.red : widget.subColor,
+                      color:
+                          p.isLiked ? Colors.red : widget.subColor,
                       onTap: () => widget.onLike(p),
                     ),
                     const SizedBox(width: 18),
                     _ActionBtn(
-                      icon:  Iconsax.message,
+                      icon: Iconsax.message,
                       label: _fmt(p.comments),
                       color: widget.subColor,
                       onTap: () => widget.onComment(p),
                     ),
                     const SizedBox(width: 18),
                     _ActionBtn(
-                      icon:  Iconsax.send_1,
+                      icon: Iconsax.send_1,
                       label: _fmt(p.shares),
                       color: widget.subColor,
                       onTap: () => widget.onShare(p),
@@ -888,7 +971,7 @@ class _PostCardState extends State<PostCard> {
             ),
           ),
 
-          // AI Buttons
+          // ── AI Action Buttons ────────────────────────
           Container(
             padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
             decoration: BoxDecoration(
@@ -905,8 +988,8 @@ class _PostCardState extends State<PostCard> {
                   child: GestureDetector(
                     onTap: () => widget.onAskAI(p),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          vertical: 9),
+                      padding:
+                          const EdgeInsets.symmetric(vertical: 9),
                       decoration: BoxDecoration(
                         color: AppColors.primary.withOpacity(
                             widget.isDark ? 0.15 : 0.08),
@@ -921,13 +1004,13 @@ class _PostCardState extends State<PostCard> {
                             MainAxisAlignment.center,
                         children: [
                           Container(
-                            width:  18,
+                            width: 18,
                             height: 18,
                             decoration: BoxDecoration(
                               gradient: const LinearGradient(
                                 colors: [
                                   AppColors.primary,
-                                  AppColors.accent
+                                  AppColors.accent,
                                 ],
                               ),
                               borderRadius:
@@ -936,19 +1019,17 @@ class _PostCardState extends State<PostCard> {
                             child: const Icon(
                               Icons.auto_awesome,
                               color: Colors.white,
-                              size:  10,
+                              size: 10,
                             ),
                           ),
                           const SizedBox(width: 6),
                           Text(
-                            widget.isPremium
+                            widget.aiRemaining > 0 || widget.isPremium
                                 ? 'Ask RiseUp AI'
-                                : widget.aiRemaining > 0
-                                    ? 'Ask RiseUp AI'
-                                    : 'Ask RiseUp AI 📺',
+                                : 'Ask RiseUp AI 📺',
                             style: const TextStyle(
-                              fontSize:   12,
-                              color:      AppColors.primary,
+                              fontSize: 12,
+                              color: AppColors.primary,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
@@ -962,30 +1043,29 @@ class _PostCardState extends State<PostCard> {
                   child: GestureDetector(
                     onTap: () => widget.onPrivateChat(p),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          vertical: 9),
+                      padding:
+                          const EdgeInsets.symmetric(vertical: 9),
                       decoration: BoxDecoration(
                         color: AppColors.accent.withOpacity(
                             widget.isDark ? 0.15 : 0.08),
                         borderRadius: BorderRadius.circular(10),
                         border: Border.all(
-                          color: AppColors.accent.withOpacity(0.25),
+                          color:
+                              AppColors.accent.withOpacity(0.25),
                           width: 0.8,
                         ),
                       ),
-                      child: Row(
-                        mainAxisAlignment:
-                            MainAxisAlignment.center,
+                      child: const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          // FIX 4: Iconsax.lock → Iconsax.lock_1
-                          const Icon(Iconsax.lock_1,
+                          Icon(Iconsax.lock_1,
                               color: AppColors.accent, size: 14),
-                          const SizedBox(width: 6),
-                          const Text(
+                          SizedBox(width: 6),
+                          Text(
                             'Chat Privately',
                             style: TextStyle(
-                              fontSize:   12,
-                              color:      AppColors.accent,
+                              fontSize: 12,
+                              color: AppColors.accent,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
@@ -1003,32 +1083,39 @@ class _PostCardState extends State<PostCard> {
   }
 
   void _showPostOptions() {
+    final p = widget.post;
     showModalBottomSheet(
-      context:         context,
-      backgroundColor: widget.isDark ? AppColors.bgCard : Colors.white,
+      context: context,
+      backgroundColor:
+          widget.isDark ? AppColors.bgCard : Colors.white,
       shape: const RoundedRectangleBorder(
           borderRadius:
               BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (context) => SafeArea(
+      builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            Container(
+              width: 36,
+              height: 4,
+              margin: const EdgeInsets.only(top: 12, bottom: 8),
+              decoration: BoxDecoration(
+                color: Colors.grey.withOpacity(0.3),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
             ListTile(
               leading: const Icon(Iconsax.flag),
-              title:   const Text('Report post'),
-              onTap:   () {
-                SoundService.tap();
-                Navigator.pop(context);
-              },
+              title: const Text('Report post'),
+              onTap: () => Navigator.pop(ctx),
             ),
             ListTile(
               leading: const Icon(Iconsax.copy),
-              title:   const Text('Copy text'),
-              onTap:   () {
-                SoundService.tap();
+              title: const Text('Copy text'),
+              onTap: () {
                 Clipboard.setData(
-                    ClipboardData(text: widget.post.content));
-                Navigator.pop(context);
+                    ClipboardData(text: p.content));
+                Navigator.pop(ctx);
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                       content: Text('Copied to clipboard')),
@@ -1037,10 +1124,10 @@ class _PostCardState extends State<PostCard> {
             ),
             ListTile(
               leading: const Icon(Iconsax.share),
-              title:   const Text('Share to...'),
-              onTap:   () {
-                SoundService.share();
-                Navigator.pop(context);
+              title: const Text('Share to...'),
+              onTap: () {
+                widget.onShare(p);
+                Navigator.pop(ctx);
               },
             ),
             const SizedBox(height: 20),
@@ -1051,10 +1138,11 @@ class _PostCardState extends State<PostCard> {
   }
 }
 
+// ── Action Button ─────────────────────────────────────
 class _ActionBtn extends StatelessWidget {
-  final IconData   icon;
-  final String     label;
-  final Color      color;
+  final IconData icon;
+  final String label;
+  final Color color;
   final VoidCallback onTap;
 
   const _ActionBtn({
@@ -1073,8 +1161,8 @@ class _ActionBtn extends StatelessWidget {
             const SizedBox(width: 5),
             Text(label,
                 style: TextStyle(
-                  color:      color,
-                  fontSize:   13,
+                  color: color,
+                  fontSize: 13,
                   fontWeight: FontWeight.w500,
                 )),
           ],
@@ -1084,17 +1172,20 @@ class _ActionBtn extends StatelessWidget {
 
 // ── App Drawer ────────────────────────────────────────
 class _AppDrawer extends StatelessWidget {
-  final Map  profile;
+  final Map<String, dynamic> profile;
   final bool isDark;
   const _AppDrawer({required this.profile, required this.isDark});
 
   @override
   Widget build(BuildContext context) {
-    final bg       = isDark ? Colors.black : Colors.white;
-    final border   = isDark ? AppColors.bgSurface : Colors.grey.shade200;
-    final sub      = isDark ? Colors.white.withOpacity(0.54) : Colors.black45;
-    final name     = profile['full_name']?.toString() ?? 'User';
-    final stage    = profile['stage']?.toString() ?? 'survival';
+    final bg = isDark ? Colors.black : Colors.white;
+    final border =
+        isDark ? AppColors.bgSurface : Colors.grey.shade200;
+    final sub = isDark
+        ? Colors.white.withOpacity(0.54)
+        : Colors.black45;
+    final name = profile['full_name']?.toString() ?? 'User';
+    final stage = profile['stage']?.toString() ?? 'survival';
     final stageInfo = StageInfo.get(stage);
     final isPremium = profile['subscription_tier'] == 'premium';
 
@@ -1105,12 +1196,13 @@ class _AppDrawer extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // ── Profile Header ───────────────────────
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
               child: Row(
                 children: [
                   Container(
-                    width:  48,
+                    width: 48,
                     height: 48,
                     decoration: BoxDecoration(
                       color: AppColors.primary.withOpacity(0.12),
@@ -1118,10 +1210,12 @@ class _AppDrawer extends StatelessWidget {
                     ),
                     child: Center(
                       child: Text(
-                        name.isNotEmpty ? name[0].toUpperCase() : 'U',
+                        name.isNotEmpty
+                            ? name[0].toUpperCase()
+                            : 'U',
                         style: const TextStyle(
-                          color:      AppColors.primary,
-                          fontSize:   20,
+                          color: AppColors.primary,
+                          fontSize: 20,
                           fontWeight: FontWeight.w800,
                         ),
                       ),
@@ -1130,12 +1224,13 @@ class _AppDrawer extends StatelessWidget {
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                      crossAxisAlignment:
+                          CrossAxisAlignment.start,
                       children: [
                         Text(
                           name,
                           style: TextStyle(
-                            fontSize:   14,
+                            fontSize: 14,
                             fontWeight: FontWeight.w700,
                             color: isDark
                                 ? Colors.white
@@ -1148,19 +1243,22 @@ class _AppDrawer extends StatelessWidget {
                         Row(
                           children: [
                             Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 7, vertical: 2),
+                              padding:
+                                  const EdgeInsets.symmetric(
+                                      horizontal: 7, vertical: 2),
                               decoration: BoxDecoration(
-                                color: (stageInfo['color'] as Color)
-                                    .withOpacity(0.15),
+                                color:
+                                    (stageInfo['color'] as Color)
+                                        .withOpacity(0.15),
                                 borderRadius:
                                     BorderRadius.circular(8),
                               ),
                               child: Text(
                                 '${stageInfo['emoji']} ${stageInfo['label']}',
                                 style: TextStyle(
-                                  fontSize:   10,
-                                  color:      stageInfo['color'] as Color,
+                                  fontSize: 10,
+                                  color:
+                                      stageInfo['color'] as Color,
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
@@ -1168,8 +1266,10 @@ class _AppDrawer extends StatelessWidget {
                             if (isPremium) ...[
                               const SizedBox(width: 6),
                               Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 7, vertical: 2),
+                                padding:
+                                    const EdgeInsets.symmetric(
+                                        horizontal: 7,
+                                        vertical: 2),
                                 decoration: BoxDecoration(
                                   color: AppColors.gold
                                       .withOpacity(0.15),
@@ -1179,8 +1279,8 @@ class _AppDrawer extends StatelessWidget {
                                 child: const Text(
                                   '⭐ Pro',
                                   style: TextStyle(
-                                    fontSize:   10,
-                                    color:      AppColors.gold,
+                                    fontSize: 10,
+                                    color: AppColors.gold,
                                     fontWeight: FontWeight.w600,
                                   ),
                                 ),
@@ -1194,63 +1294,113 @@ class _AppDrawer extends StatelessWidget {
                   IconButton(
                     icon: Icon(Icons.close_rounded,
                         color: sub, size: 20),
-                    onPressed: () {
-                      SoundService.tap();
-                      Navigator.of(context).pop();
-                    },
+                    onPressed: () => Navigator.of(context).pop(),
                   ),
                 ],
               ),
             ),
             Divider(color: border, height: 1),
 
+            // ── Nav Items ───────────────────────────
             Expanded(
               child: ListView(
                 padding: const EdgeInsets.symmetric(vertical: 4),
                 children: [
                   _DSection('INCOME TOOLS', sub),
-                  _DItem(Iconsax.chart, 'Dashboard', 'Earnings, stats & tasks', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/dashboard'); }),
-                  _DItem(Icons.auto_awesome_rounded, 'Agentic AI', 'Execute ANY income task', isDark, badge: 'HEAVY', badgeColor: AppColors.accent, onTap: () { SoundService.tap(); Navigator.pop(context); context.push('/agent'); }),
-                  _DItem(Iconsax.flash, 'Workflow Engine', 'AI-powered income execution', isDark, badge: 'NEW', badgeColor: AppColors.success, onTap: () { SoundService.tap(); Navigator.pop(context); context.push('/workflow'); }),
-                  _DItem(Iconsax.chart_3, 'Market Pulse', 'What pays right now', isDark, badge: '🔥 LIVE', badgeColor: const Color(0xFFFF6B35), onTap: () { SoundService.tap(); Navigator.pop(context); context.push('/pulse'); }),
-                  _DItem(Icons.emoji_events_rounded, 'Challenges', '30-day income sprints', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.push('/challenges'); }),
-                  _DItem(Iconsax.briefcase, 'Client CRM', 'Track prospects & clients', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.push('/crm'); }),
-                  _DItem(Iconsax.document_text, 'Contracts & Invoices', 'Pro contract generation', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.push('/contracts'); }),
-                  _DItem(Icons.psychology_rounded, 'Income Memory', 'Your income DNA', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.push('/memory'); }),
-                  _DItem(Iconsax.gallery, 'My Portfolio', 'Shareable project showcase', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.push('/portfolio'); }),
-                  _DItem(Iconsax.task_square, 'My Tasks', 'Daily income tasks', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/tasks'); }),
-                  _DItem(Iconsax.map_1, 'Wealth Roadmap', '3-stage wealth plan', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/roadmap'); }),
-                  _DItem(Iconsax.book, 'Skills', 'Earn-while-learning', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/skills'); }),
+                  _DItem(Iconsax.chart, 'Dashboard',
+                      'Earnings, stats & tasks', isDark,
+                      onTap: () { Navigator.pop(context); context.go('/dashboard'); }),
+                  _DItem(Icons.auto_awesome_rounded, 'Agentic AI',
+                      'Execute ANY income task', isDark,
+                      badge: 'HEAVY', badgeColor: AppColors.accent,
+                      onTap: () { Navigator.pop(context); context.push('/agent'); }),
+                  _DItem(Iconsax.flash, 'Workflow Engine',
+                      'AI-powered income execution', isDark,
+                      badge: 'NEW', badgeColor: AppColors.success,
+                      onTap: () { Navigator.pop(context); context.push('/workflow'); }),
+                  _DItem(Iconsax.chart_3, 'Market Pulse',
+                      'What pays right now', isDark,
+                      badge: '🔥 LIVE',
+                      badgeColor: const Color(0xFFFF6B35),
+                      onTap: () { Navigator.pop(context); context.push('/pulse'); }),
+                  _DItem(Icons.emoji_events_rounded, 'Challenges',
+                      '30-day income sprints', isDark,
+                      onTap: () { Navigator.pop(context); context.push('/challenges'); }),
+                  _DItem(Iconsax.briefcase, 'Client CRM',
+                      'Track prospects & clients', isDark,
+                      onTap: () { Navigator.pop(context); context.push('/crm'); }),
+                  _DItem(Iconsax.document_text,
+                      'Contracts & Invoices',
+                      'Pro contract generation', isDark,
+                      onTap: () { Navigator.pop(context); context.push('/contracts'); }),
+                  _DItem(Icons.psychology_rounded, 'Income Memory',
+                      'Your income DNA', isDark,
+                      onTap: () { Navigator.pop(context); context.push('/memory'); }),
+                  _DItem(Iconsax.gallery, 'My Portfolio',
+                      'Shareable project showcase', isDark,
+                      onTap: () { Navigator.pop(context); context.push('/portfolio'); }),
+                  _DItem(Iconsax.task_square, 'My Tasks',
+                      'Daily income tasks', isDark,
+                      onTap: () { Navigator.pop(context); context.go('/tasks'); }),
+                  _DItem(Iconsax.map_1, 'Wealth Roadmap',
+                      '3-stage wealth plan', isDark,
+                      onTap: () { Navigator.pop(context); context.go('/roadmap'); }),
+                  _DItem(Iconsax.book, 'Skills',
+                      'Earn-while-learning', isDark,
+                      onTap: () { Navigator.pop(context); context.go('/skills'); }),
                   const SizedBox(height: 4),
                   Divider(color: border, height: 1),
                   _DSection('SOCIAL', sub),
-                  _DItem(Iconsax.people, 'Collaboration', 'Build bigger goals together', isDark, badge: 'NEW', badgeColor: AppColors.primary, onTap: () { SoundService.tap(); Navigator.pop(context); context.push('/collaboration'); }),
-                  _DItem(Iconsax.message, 'Messages', 'DMs & group chats', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/messages'); }),
-                  _DItem(Icons.radio_button_checked_rounded, 'Go Live', 'Stream to your community', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/live'); }),
-                  _DItem(Iconsax.people, 'Groups', 'Wealth-building groups', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/groups'); }),
+                  _DItem(Iconsax.people, 'Collaboration',
+                      'Build bigger goals together', isDark,
+                      badge: 'NEW', badgeColor: AppColors.primary,
+                      onTap: () { Navigator.pop(context); context.push('/collaboration'); }),
+                  _DItem(Iconsax.message, 'Messages',
+                      'DMs & group chats', isDark,
+                      onTap: () { Navigator.pop(context); context.go('/messages'); }),
+                  _DItem(Icons.radio_button_checked_rounded,
+                      'Go Live', 'Stream to your community', isDark,
+                      onTap: () { Navigator.pop(context); context.go('/live'); }),
+                  _DItem(Iconsax.people, 'Groups',
+                      'Wealth-building groups', isDark,
+                      onTap: () { Navigator.pop(context); context.go('/groups'); }),
                   const SizedBox(height: 4),
                   Divider(color: border, height: 1),
                   _DSection('FINANCE', sub),
-                  _DItem(Iconsax.money_recive, 'Earnings', 'Income tracker', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/earnings'); }),
-                  _DItem(Iconsax.chart_2, 'Analytics', 'Growth stats', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/analytics'); }),
-                  _DItem(Iconsax.wallet_minus, 'Expenses', 'Budget tracking', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/expenses'); }),
-                  _DItem(Iconsax.flag, 'Goals', 'Set & track targets', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/goals'); }),
+                  _DItem(Iconsax.money_recive, 'Earnings',
+                      'Income tracker', isDark,
+                      onTap: () { Navigator.pop(context); context.go('/earnings'); }),
+                  _DItem(Iconsax.chart_2, 'Analytics',
+                      'Growth stats', isDark,
+                      onTap: () { Navigator.pop(context); context.go('/analytics'); }),
+                  _DItem(Iconsax.wallet_minus, 'Expenses',
+                      'Budget tracking', isDark,
+                      onTap: () { Navigator.pop(context); context.go('/expenses'); }),
+                  _DItem(Iconsax.flag, 'Goals',
+                      'Set & track targets', isDark,
+                      onTap: () { Navigator.pop(context); context.go('/goals'); }),
                   const SizedBox(height: 4),
                   Divider(color: border, height: 1),
                   _DSection('ACCOUNT', sub),
-                  _DItem(Iconsax.award, 'Achievements', 'Badges & milestones', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/achievements'); }),
-                  _DItem(Iconsax.user_tag, 'Referrals', 'Invite & earn', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/referrals'); }),
-                  _DItem(Iconsax.setting_2, 'Settings', 'Account preferences', isDark, onTap: () { SoundService.tap(); Navigator.pop(context); context.go('/settings'); }),
+                  _DItem(Iconsax.award, 'Achievements',
+                      'Badges & milestones', isDark,
+                      onTap: () { Navigator.pop(context); context.go('/achievements'); }),
+                  _DItem(Iconsax.user_tag, 'Referrals',
+                      'Invite & earn', isDark,
+                      onTap: () { Navigator.pop(context); context.go('/referrals'); }),
+                  _DItem(Iconsax.setting_2, 'Settings',
+                      'Account preferences', isDark,
+                      onTap: () { Navigator.pop(context); context.go('/settings'); }),
                 ],
               ),
             ),
 
+            // ── Upgrade Banner ───────────────────────
             if (!isPremium)
               Padding(
                 padding: const EdgeInsets.all(14),
                 child: GestureDetector(
                   onTap: () {
-                    SoundService.tap();
                     Navigator.pop(context);
                     context.push('/premium');
                   },
@@ -1261,7 +1411,8 @@ class _AppDrawer extends StatelessWidget {
                           .withOpacity(isDark ? 0.12 : 0.07),
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
-                          color: AppColors.primary.withOpacity(0.25)),
+                          color:
+                              AppColors.primary.withOpacity(0.25)),
                     ),
                     child: Row(
                       children: [
@@ -1276,21 +1427,23 @@ class _AppDrawer extends StatelessWidget {
                               const Text(
                                 'Upgrade to Premium',
                                 style: TextStyle(
-                                  fontSize:   13,
+                                  fontSize: 13,
                                   fontWeight: FontWeight.w700,
-                                  color:      AppColors.primary,
+                                  color: AppColors.primary,
                                 ),
                               ),
                               Text(
                                 'Unlimited AI + all features',
-                                style:
-                                    TextStyle(fontSize: 11, color: sub),
+                                style: TextStyle(
+                                    fontSize: 11, color: sub),
                               ),
                             ],
                           ),
                         ),
-                        const Icon(Icons.arrow_forward_ios_rounded,
-                            size: 13, color: AppColors.primary),
+                        const Icon(
+                            Icons.arrow_forward_ios_rounded,
+                            size: 13,
+                            color: AppColors.primary),
                       ],
                     ),
                   ),
@@ -1305,7 +1458,7 @@ class _AppDrawer extends StatelessWidget {
 
 class _DSection extends StatelessWidget {
   final String label;
-  final Color  color;
+  final Color color;
   const _DSection(this.label, this.color);
 
   @override
@@ -1314,9 +1467,9 @@ class _DSection extends StatelessWidget {
         child: Text(
           label,
           style: TextStyle(
-            fontSize:      10,
-            fontWeight:    FontWeight.w700,
-            color:         color,
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+            color: color,
             letterSpacing: 1.1,
           ),
         ),
@@ -1324,13 +1477,13 @@ class _DSection extends StatelessWidget {
 }
 
 class _DItem extends StatelessWidget {
-  final IconData     icon;
-  final String       label;
-  final String       sub;
-  final bool         isDark;
+  final IconData icon;
+  final String label;
+  final String sub;
+  final bool isDark;
   final VoidCallback onTap;
-  final String?      badge;
-  final Color?       badgeColor;
+  final String? badge;
+  final Color? badgeColor;
 
   const _DItem(this.icon, this.label, this.sub, this.isDark,
       {required this.onTap, this.badge, this.badgeColor});
@@ -1338,7 +1491,9 @@ class _DItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final textC = isDark ? Colors.white : Colors.black87;
-    final subC  = isDark ? Colors.white.withOpacity(0.54) : Colors.black45;
+    final subC = isDark
+        ? Colors.white.withOpacity(0.54)
+        : Colors.black45;
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -1352,7 +1507,7 @@ class _DItem extends StatelessWidget {
           child: Row(
             children: [
               Container(
-                width:  36,
+                width: 36,
                 height: 36,
                 decoration: BoxDecoration(
                   color: isDark
@@ -1376,9 +1531,9 @@ class _DItem extends StatelessWidget {
                         Text(
                           label,
                           style: TextStyle(
-                            fontSize:   13,
+                            fontSize: 13,
                             fontWeight: FontWeight.w600,
-                            color:      textC,
+                            color: textC,
                           ),
                         ),
                         if (badge != null) ...[
@@ -1387,16 +1542,17 @@ class _DItem extends StatelessWidget {
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 5, vertical: 2),
                             decoration: BoxDecoration(
-                              color: (badgeColor ?? AppColors.primary)
-                                  .withOpacity(0.15),
+                              color:
+                                  (badgeColor ?? AppColors.primary)
+                                      .withOpacity(0.15),
                               borderRadius:
                                   BorderRadius.circular(5),
                             ),
                             child: Text(
                               badge!,
                               style: TextStyle(
-                                fontSize:   9,
-                                color:      badgeColor ??
+                                fontSize: 9,
+                                color: badgeColor ??
                                     AppColors.primary,
                                 fontWeight: FontWeight.w700,
                               ),
@@ -1413,8 +1569,7 @@ class _DItem extends StatelessWidget {
               ),
               Icon(
                 Icons.chevron_right_rounded,
-                size:  15,
-                // FIX 5: Colors.white24/black26 don't exist — withOpacity
+                size: 15,
                 color: isDark
                     ? Colors.white.withOpacity(0.24)
                     : Colors.black.withOpacity(0.26),
@@ -1427,11 +1582,12 @@ class _DItem extends StatelessWidget {
   }
 }
 
-// ── Add status button ─────────────────────────────────
+// ── Story Add Button ──────────────────────────────────
 class _StoryAddButton extends StatelessWidget {
-  final bool         isDark;
+  final bool isDark;
   final VoidCallback onTap;
-  const _StoryAddButton({required this.isDark, required this.onTap});
+  const _StoryAddButton(
+      {required this.isDark, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -1442,7 +1598,7 @@ class _StoryAddButton extends StatelessWidget {
         child: Column(
           children: [
             Container(
-              width:  58,
+              width: 58,
               height: 58,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
@@ -1461,9 +1617,8 @@ class _StoryAddButton extends StatelessWidget {
             Text(
               'You',
               style: TextStyle(
-                fontSize:   11,
-                // FIX 6: Colors.white60/black54 — white60 doesn't exist
-                color:      isDark
+                fontSize: 11,
+                color: isDark
                     ? Colors.white.withOpacity(0.6)
                     : Colors.black54,
                 fontWeight: FontWeight.w600,
@@ -1478,8 +1633,8 @@ class _StoryAddButton extends StatelessWidget {
 
 // ── Story Item ────────────────────────────────────────
 class _StoryItem extends StatelessWidget {
-  final Map          user;
-  final bool         isDark;
+  final Map<String, dynamic> user;
+  final bool isDark;
   final VoidCallback onTap;
   const _StoryItem({
     required this.user,
@@ -1489,10 +1644,11 @@ class _StoryItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final profile   = user['profile'] as Map? ?? {};
-    final name      = profile['full_name']?.toString() ?? 'User';
-    final avatar    = profile['avatar_url']?.toString();
-    final isOnline  = profile['is_online'] == true;
+    final profile =
+        (user['profile'] as Map?)?.cast<String, dynamic>() ?? {};
+    final name = profile['full_name']?.toString() ?? 'User';
+    final avatar = profile['avatar_url']?.toString();
+    final isOnline = profile['is_online'] == true;
     final hasUnseen = user['has_unseen'] == true;
     final shortName = name.split(' ').first;
 
@@ -1505,7 +1661,7 @@ class _StoryItem extends StatelessWidget {
             Stack(
               children: [
                 Container(
-                  width:  58,
+                  width: 58,
                   height: 58,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
@@ -1513,10 +1669,10 @@ class _StoryItem extends StatelessWidget {
                         ? const LinearGradient(
                             colors: [
                               Color(0xFFFF6B00),
-                              Color(0xFF6C5CE7)
+                              Color(0xFF6C5CE7),
                             ],
                             begin: Alignment.topLeft,
-                            end:   Alignment.bottomRight,
+                            end: Alignment.bottomRight,
                           )
                         : null,
                     color: hasUnseen
@@ -1530,7 +1686,8 @@ class _StoryItem extends StatelessWidget {
                     child: Container(
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: isDark ? Colors.black : Colors.white,
+                        color:
+                            isDark ? Colors.black : Colors.white,
                       ),
                       child: ClipOval(
                         child: avatar != null && avatar.isNotEmpty
@@ -1548,15 +1705,16 @@ class _StoryItem extends StatelessWidget {
                 if (isOnline)
                   Positioned(
                     bottom: 1,
-                    right:  1,
+                    right: 1,
                     child: Container(
-                      width:  13,
+                      width: 13,
                       height: 13,
                       decoration: BoxDecoration(
                         color: AppColors.success,
                         shape: BoxShape.circle,
                         border: Border.all(
-                          color: isDark ? Colors.black : Colors.white,
+                          color:
+                              isDark ? Colors.black : Colors.white,
                           width: 2,
                         ),
                       ),
@@ -1570,11 +1728,10 @@ class _StoryItem extends StatelessWidget {
               child: Text(
                 shortName,
                 textAlign: TextAlign.center,
-                maxLines:  1,
-                overflow:  TextOverflow.ellipsis,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontSize: 11,
-                  // FIX 7: Colors.white60 → withOpacity(0.6)
                   color: isDark
                       ? Colors.white.withOpacity(0.6)
                       : Colors.black54,
@@ -1593,9 +1750,9 @@ class _StoryItem extends StatelessWidget {
           child: Text(
             name.isNotEmpty ? name[0].toUpperCase() : '?',
             style: const TextStyle(
-              fontSize:   22,
+              fontSize: 22,
               fontWeight: FontWeight.w800,
-              color:      AppColors.primary,
+              color: AppColors.primary,
             ),
           ),
         ),
@@ -1604,58 +1761,79 @@ class _StoryItem extends StatelessWidget {
 
 // ── Status Viewer Sheet ───────────────────────────────
 class _StatusViewSheet extends StatefulWidget {
-  final Map user;
+  final Map<String, dynamic> user;
   const _StatusViewSheet({required this.user});
 
   @override
-  State<_StatusViewSheet> createState() => _StatusViewSheetState();
+  State<_StatusViewSheet> createState() =>
+      _StatusViewSheetState();
 }
 
 class _StatusViewSheetState extends State<_StatusViewSheet> {
-  int              _currentIndex = 0;
-  late PageController _page;
+  int _currentIndex = 0;
 
   @override
   void initState() {
     super.initState();
-    _page = PageController();
     _markViewed();
   }
 
-  @override
-  void dispose() {
-    _page.dispose();
-    super.dispose();
+  void _markViewed() {
+    final items =
+        (widget.user['items'] as List?)?.cast<Map<String, dynamic>>() ??
+            [];
+    if (items.isEmpty) return;
+    final id = items[_currentIndex]['id']?.toString();
+    if (id == null) return;
+    api
+        .post('/posts/status/$id/view', {})
+        .catchError((_) => <String, dynamic>{});
   }
 
-  void _markViewed() {
+  void _next() {
     final items = widget.user['items'] as List? ?? [];
-    if (items.isEmpty) return;
-    final id =
-        (items[_currentIndex] as Map)['id']?.toString();
-    if (id != null) {
-      api.post('/posts/status/$id/view', {}).catchError((_) => {});
+    if (_currentIndex < items.length - 1) {
+      setState(() {
+        _currentIndex++;
+        _markViewed();
+      });
+    } else {
+      Navigator.pop(context);
+    }
+  }
+
+  void _prev() {
+    if (_currentIndex > 0) {
+      setState(() {
+        _currentIndex--;
+        _markViewed();
+      });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final items   = widget.user['items'] as List? ?? [];
-    final profile = widget.user['profile'] as Map? ?? {};
-    final name    = profile['full_name']?.toString() ?? 'User';
-    final avatar  = profile['avatar_url']?.toString();
-    final isDark  = Theme.of(context).brightness == Brightness.dark;
+    final items =
+        (widget.user['items'] as List?)?.cast<Map<String, dynamic>>() ??
+            [];
+    final profile =
+        (widget.user['profile'] as Map?)?.cast<String, dynamic>() ??
+            {};
     if (items.isEmpty) return const SizedBox.shrink();
 
-    final item  = items[_currentIndex] as Map;
+    final name = profile['full_name']?.toString() ?? 'User';
+    final avatar = profile['avatar_url']?.toString();
+    final item = items[_currentIndex];
     final media = item['media_url']?.toString();
-    final text  = item['content']?.toString() ?? '';
-    final bg    = item['background_color']?.toString() ?? '#6C5CE7';
-    final link  = item['link_url']?.toString();
+    final text = item['content']?.toString() ?? '';
+    final bg =
+        item['background_color']?.toString() ?? '#6C5CE7';
+    final link = item['link_url']?.toString();
 
     Color bgColor = AppColors.primary;
     try {
-      bgColor = Color(int.parse(bg.replaceFirst('#', '0xFF')));
+      bgColor =
+          Color(int.parse(bg.replaceFirst('#', '0xFF')));
     } catch (_) {}
 
     return Container(
@@ -1667,13 +1845,17 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
       ),
       child: Stack(
         children: [
-          // Content
+          // ── Media or Text content ────────────────
           if (media != null && item['media_type'] == 'image')
             Positioned.fill(
               child: ClipRRect(
                 borderRadius: const BorderRadius.vertical(
                     top: Radius.circular(20)),
-                child: Image.network(media, fit: BoxFit.cover),
+                child: Image.network(media, fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) =>
+                        const Center(
+                            child: Icon(Icons.broken_image,
+                                color: Colors.white54, size: 48))),
               ),
             )
           else if (media == null && text.isNotEmpty)
@@ -1685,20 +1867,20 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
                     text,
                     textAlign: TextAlign.center,
                     style: const TextStyle(
-                      color:      Colors.white,
-                      fontSize:   22,
+                      color: Colors.white,
+                      fontSize: 22,
                       fontWeight: FontWeight.w600,
-                      height:     1.5,
+                      height: 1.5,
                     ),
                   ),
                 ),
               ),
             ),
 
-          // Progress bars
+          // ── Progress bars ───────────────────────
           Positioned(
-            top:   12,
-            left:  12,
+            top: 12,
+            left: 12,
             right: 12,
             child: Row(
               children: List.generate(
@@ -1720,31 +1902,43 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
             ),
           ),
 
-          // Header
+          // ── Header ──────────────────────────────
           Positioned(
-            top:   24,
-            left:  16,
+            top: 24,
+            left: 16,
             right: 16,
             child: Row(
               children: [
                 Container(
-                  width:  36,
+                  width: 36,
                   height: 36,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    // FIX 8: Colors.white24 doesn't exist
                     color: Colors.white.withOpacity(0.24),
                   ),
                   child: ClipOval(
                     child: avatar != null && avatar.isNotEmpty
-                        ? Image.network(avatar, fit: BoxFit.cover)
+                        ? Image.network(avatar,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) =>
+                                Center(
+                                  child: Text(
+                                    name.isNotEmpty
+                                        ? name[0].toUpperCase()
+                                        : '?',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ))
                         : Center(
                             child: Text(
                               name.isNotEmpty
                                   ? name[0].toUpperCase()
                                   : '?',
                               style: const TextStyle(
-                                color:      Colors.white,
+                                color: Colors.white,
                                 fontWeight: FontWeight.w800,
                               ),
                             ),
@@ -1758,9 +1952,9 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
                     Text(
                       name,
                       style: const TextStyle(
-                        color:      Colors.white,
+                        color: Colors.white,
                         fontWeight: FontWeight.w700,
-                        fontSize:   13,
+                        fontSize: 13,
                       ),
                     ),
                     Text(
@@ -1768,8 +1962,7 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
                           ? '1 status'
                           : '${items.length} statuses',
                       style: TextStyle(
-                          // FIX 9: Colors.white60 doesn't exist
-                          color: Colors.white.withOpacity(0.6), 
+                          color: Colors.white.withOpacity(0.6),
                           fontSize: 11),
                     ),
                   ],
@@ -1778,25 +1971,22 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
                 IconButton(
                   icon: const Icon(Icons.close_rounded,
                       color: Colors.white),
-                  onPressed: () {
-                    SoundService.tap();
-                    Navigator.pop(context);
-                  },
+                  onPressed: () => Navigator.pop(context),
                 ),
               ],
             ),
           ),
 
-          // Text overlay when has media
+          // ── Text overlay when has media ──────────
           if (media != null && text.isNotEmpty)
             Positioned(
               bottom: 80,
-              left:   16,
-              right:  16,
+              left: 16,
+              right: 16,
               child: Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color:        Colors.black.withOpacity(0.5),
+                  color: Colors.black.withOpacity(0.5),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Text(
@@ -1807,74 +1997,44 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
               ),
             ),
 
-          // Link
+          // ── Link card ──────────────────────────
           if (link != null)
             Positioned(
               bottom: 80,
-              left:   16,
-              right:  16,
-              child: GestureDetector(
-                onTap: () => SoundService.tap(),
-                child: Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color:        Colors.black.withOpacity(0.6),
-                    borderRadius: BorderRadius.circular(12),
-                    border:
-                        // FIX 10: Colors.white30 doesn't exist
-                        Border.all(color: Colors.white.withOpacity(0.3)),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.link_rounded,
-                          color: Colors.white, size: 18),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          item['link_title']?.toString() ?? link,
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 13),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
+              left: 16,
+              right: 16,
+              child: Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.6),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                      color: Colors.white.withOpacity(0.3)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.link_rounded,
+                        color: Colors.white, size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        item['link_title']?.toString() ?? link,
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 13),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
             ),
 
-          // Tap navigation
+          // ── Tap navigation ──────────────────────
           Row(
             children: [
-              Expanded(
-                child: GestureDetector(
-                  onTap: () {
-                    SoundService.tap();
-                    if (_currentIndex > 0) {
-                      setState(() {
-                        _currentIndex--;
-                        _markViewed();
-                      });
-                    }
-                  },
-                ),
-              ),
-              Expanded(
-                child: GestureDetector(
-                  onTap: () {
-                    SoundService.tap();
-                    if (_currentIndex < items.length - 1) {
-                      setState(() {
-                        _currentIndex++;
-                        _markViewed();
-                      });
-                    } else {
-                      Navigator.pop(context);
-                    }
-                  },
-                ),
-              ),
+              Expanded(child: GestureDetector(onTap: _prev)),
+              Expanded(child: GestureDetector(onTap: _next)),
             ],
           ),
         ],
