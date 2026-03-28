@@ -147,7 +147,6 @@ class _ProfileScreenState extends State<ProfileScreen>
   }
 
   void _goBack() {
-    // Try to pop first, if can't pop (no previous route), go to home
     if (Navigator.of(context).canPop()) {
       context.pop();
     } else {
@@ -533,7 +532,7 @@ class _ProfileScreenState extends State<ProfileScreen>
           ],
           const SizedBox(height: 8),
           Row(
-            mainAxisAlignment: isCompact ? CrossAxisAlignment.start : MainAxisAlignment.center,
+            mainAxisAlignment: isCompact ? MainAxisAlignment.start : MainAxisAlignment.center,  // FIXED: Changed from CrossAxisAlignment to MainAxisAlignment
             children: [
               Icon(Iconsax.location, size: 12, color: subColor),
               const SizedBox(width: 4),
@@ -609,7 +608,6 @@ class _ProfileScreenState extends State<ProfileScreen>
               _ProfileFeatureTile('💼', 'CRM', () => context.push('/crm')),
             ],
           ),
-          // REMOVED: The "Remove Ads & Unlock Features" banner that was here
         ],
       ),
     );
