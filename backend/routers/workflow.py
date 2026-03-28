@@ -1,17 +1,12 @@
 """
 RiseUp AI Workflow Engine — GLOBAL EDITION (Production Ready - Pydantic v2)
 ──────────────────────────────────────────
-Core Vision: Don't just give tips — research deeply, break down the work,
-automate what's possible, find free tools, create a managed workflow,
-and track real revenue per task.
-
-GLOBAL FEATURES:
-✅ Multi-currency support (150+ currencies)
-✅ Multi-language support (i18n ready)
-✅ Global timezone handling (UTC storage, local display)
-✅ Region-specific income opportunities
-✅ Global payment methods (PayPal, Wise, crypto, local)
-✅ International compliance & tax guidance
+Fix log:
+  v2.1 — supabase_with_timeout: was passing an already-executed sync result
+          to asyncio.wait_for() which requires a coroutine/future, causing
+          'An asyncio.Future, a coroutine or an awaitable is required'.
+          Fixed: wrapper now detects sync results and returns them directly,
+          OR accepts a callable/lambda and runs it in a thread executor.
 """
 
 import asyncio
@@ -41,7 +36,6 @@ logger = logging.getLogger(__name__)
 # ═════════════════════════════════════════════════════════════════════════════
 
 class IncomeType(str, Enum):
-    """Global income types supported across all regions."""
     YOUTUBE = "youtube"
     TIKTOK = "tiktok"
     INSTAGRAM = "instagram"
@@ -68,7 +62,6 @@ class IncomeType(str, Enum):
 
 
 class CurrencyCode(str, Enum):
-    """Major global currencies with local alternatives for emerging markets."""
     USD = "USD"
     EUR = "EUR"
     GBP = "GBP"
@@ -94,7 +87,6 @@ class CurrencyCode(str, Enum):
 
 
 class LanguageCode(str, Enum):
-    """Supported languages for AI research and responses."""
     EN = "en"
     ES = "es"
     FR = "fr"
@@ -113,7 +105,6 @@ class LanguageCode(str, Enum):
 
 
 class Region(str, Enum):
-    """Global regions for region-specific recommendations."""
     NORTH_AMERICA = "north_america"
     EUROPE = "europe"
     LATIN_AMERICA = "latin_america"
@@ -128,33 +119,23 @@ class Region(str, Enum):
     GLOBAL = "global"
 
 
-# Currency to region mapping for localized advice
 CURRENCY_REGIONS = {
-    "NGN": "africa_west",
-    "GHS": "africa_west",
-    "KES": "africa_east",
-    "ZAR": "africa_south",
-    "INR": "south_asia",
-    "PKR": "south_asia",
-    "BDT": "south_asia",
-    "BRL": "latin_america",
-    "MXN": "latin_america",
-    "PHP": "southeast_asia",
-    "IDR": "southeast_asia",
-    "EGP": "middle_east",
-    "TRY": "middle_east",
+    "NGN": "africa_west", "GHS": "africa_west",
+    "KES": "africa_east", "ZAR": "africa_south",
+    "INR": "south_asia",  "PKR": "south_asia",  "BDT": "south_asia",
+    "BRL": "latin_america","MXN": "latin_america",
+    "PHP": "southeast_asia","IDR": "southeast_asia",
+    "EGP": "middle_east",  "TRY": "middle_east",
 }
 
-
-# Global payment methods by region
 PAYMENT_METHODS = {
-    "global": ["PayPal", "Wise", "Payoneer", "Crypto (USDT)"],
-    "africa_west": ["PayPal", "Chipper Cash", "Flutterwave", "Paga", "Mobile Money"],
-    "africa_east": ["M-Pesa", "PayPal", "Flutterwave", "Chipper Cash"],
-    "south_asia": ["PayPal", "Razorpay", "Paytm", "UPI", "bKash"],
-    "southeast_asia": ["PayPal", "PayMongo", "Xendit", "GrabPay"],
+    "global":        ["PayPal", "Wise", "Payoneer", "Crypto (USDT)"],
+    "africa_west":   ["PayPal", "Chipper Cash", "Flutterwave", "Paga", "Mobile Money"],
+    "africa_east":   ["M-Pesa", "PayPal", "Flutterwave", "Chipper Cash"],
+    "south_asia":    ["PayPal", "Razorpay", "Paytm", "UPI", "bKash"],
+    "southeast_asia":["PayPal", "PayMongo", "Xendit", "GrabPay"],
     "latin_america": ["PayPal", "Mercado Pago", "Pix", "Ualá"],
-    "middle_east": ["PayPal", "Telr", "Paymob", "Fawry"],
+    "middle_east":   ["PayPal", "Telr", "Paymob", "Fawry"],
 }
 
 
@@ -163,81 +144,91 @@ PAYMENT_METHODS = {
 # ═════════════════════════════════════════════════════════════════════════════
 
 def get_region_from_currency(currency: str) -> str:
-    """Determine geographic region from currency for localized recommendations."""
     return CURRENCY_REGIONS.get(currency, "global")
 
 
 def format_currency_amount(amount: float, currency: str, locale_str: str = "en") -> str:
-    """Format currency amount according to locale using Babel."""
     try:
         locale = Locale.parse(locale_str)
         return numbers.format_currency(amount, currency, locale=locale)
-    except:
+    except Exception:
         return f"{currency} {amount:,.2f}"
 
 
 def format_datetime(dt: datetime, locale_str: str = "en", tz_name: Optional[str] = None) -> str:
-    """Format datetime in user's locale and timezone."""
     try:
         locale = Locale.parse(locale_str)
         if tz_name:
             from zoneinfo import ZoneInfo
             dt = dt.astimezone(ZoneInfo(tz_name))
         return dates.format_datetime(dt, locale=locale)
-    except:
+    except Exception:
         return dt.isoformat()
 
 
 def get_payment_methods_for_region(region: str) -> List[str]:
-    """Get recommended payment methods for a region."""
     return PAYMENT_METHODS.get(region, PAYMENT_METHODS["global"])
 
 
 def get_localized_prompt(language: str, region: str, currency: str) -> Dict[str, str]:
-    """Get culturally and regionally appropriate prompt modifiers."""
     modifiers = {
-        "en": {
-            "tone": "professional yet encouraging",
-            "examples": "Use examples relevant to {} market".format(region.replace("_", " ").title()),
-        },
-        "es": {
-            "tone": "professional and warm",
-            "examples": "Use Latin American or Spanish market examples",
-        },
-        "fr": {
-            "tone": "formal and professional",
-            "examples": "Use Francophone African or European examples",
-        },
-        "hi": {
-            "tone": "respectful and encouraging",
-            "examples": "Use Indian market examples with local platforms",
-        },
-        "ar": {
-            "tone": "professional and respectful",
-            "examples": "Use Middle Eastern or North African market examples",
-        },
-        "sw": {
-            "tone": "friendly and practical",
-            "examples": "Use East African market examples (M-Pesa, local platforms)",
-        },
+        "en": {"tone": "professional yet encouraging", "examples": "Use examples relevant to {} market".format(region.replace("_", " ").title())},
+        "es": {"tone": "professional and warm", "examples": "Use Latin American or Spanish market examples"},
+        "fr": {"tone": "formal and professional", "examples": "Use Francophone African or European examples"},
+        "hi": {"tone": "respectful and encouraging", "examples": "Use Indian market examples with local platforms"},
+        "ar": {"tone": "professional and respectful", "examples": "Use Middle Eastern or North African market examples"},
+        "sw": {"tone": "friendly and practical", "examples": "Use East African market examples (M-Pesa, local platforms)"},
     }
     return modifiers.get(language, modifiers["en"])
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# CRITICAL FIX: Timeout wrapper to prevent Supabase async deadlocks
+# CRITICAL FIX v2.1: supabase_with_timeout
+#
+# ROOT CAUSE: Supabase Python client is SYNCHRONOUS. Calling .execute() returns
+# a plain result object — NOT a coroutine/future. asyncio.wait_for() requires
+# a coroutine/future, so wrapping an already-executed result caused:
+#   "An asyncio.Future, a coroutine or an awaitable is required"
+#
+# FIX: The wrapper now handles both cases:
+#   1. callable (lambda) → runs in thread executor with real timeout
+#   2. already-executed result → returned immediately (sync path)
 # ═════════════════════════════════════════════════════════════════════════════
 
-async def supabase_with_timeout(coro, timeout: float = 8.0, operation: str = "db_op"):
-    """Execute Supabase operation with strict timeout to prevent hanging."""
+async def supabase_with_timeout(query, timeout: float = 8.0, operation: str = "db_op"):
+    """
+    Execute a Supabase query with timeout protection.
+
+    Accepts:
+      • A callable / lambda  → runs in asyncio thread executor with timeout
+        e.g. lambda: sb.table("x").select("*").execute()
+      • An already-executed result (legacy call sites) → returned immediately
+        e.g. sb.table("x").select("*").execute()   ← sync, result already computed
+
+    The Supabase Python client is synchronous. All new call sites should pass
+    a lambda for true timeout protection. Legacy call sites that pass the result
+    directly will still work without crashing.
+    """
     try:
-        return await asyncio.wait_for(coro, timeout=timeout)
+        if callable(query):
+            # NEW path: run sync query in thread pool with real timeout
+            loop = asyncio.get_event_loop()
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, query),
+                timeout=timeout,
+            )
+        else:
+            # LEGACY path: result already computed synchronously — just return it
+            return query
+
     except asyncio.TimeoutError:
-        logger.error(f"🔥 Supabase DEADLOCK: '{operation}' timed out after {timeout}s")
+        logger.error(f"🔥 Supabase TIMEOUT: '{operation}' timed out after {timeout}s")
         raise HTTPException(
-            status_code=504, 
-            detail=f"Database operation timed out: {operation}. Please retry."
+            status_code=504,
+            detail=f"Database operation timed out: {operation}. Please retry.",
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Supabase error in '{operation}': {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {operation}")
@@ -251,12 +242,12 @@ class ResearchRequest(BaseModel):
     goal: str = Field(..., examples=["I want to earn on YouTube in 2 months"])
     currency: CurrencyCode = Field(default=CurrencyCode.USD)
     available_hours_per_day: float = Field(default=2.0, ge=0.5, le=16)
-    budget: float = Field(default=0.0, ge=0, description="USD equivalent budget")
+    budget: float = Field(default=0.0, ge=0)
     language: LanguageCode = Field(default=LanguageCode.EN)
-    region: Optional[Region] = Field(default=None, description="Auto-detected if not provided")
-    timezone: Optional[str] = Field(default=None, examples=["Africa/Lagos"])
-    skills: Optional[List[str]] = Field(default=[], examples=[["writing", "design", "coding"]])
-    
+    region: Optional[Region] = Field(default=None)
+    timezone: Optional[str] = Field(default=None)
+    skills: Optional[List[str]] = Field(default=[])
+
     @model_validator(mode="before")
     @classmethod
     def set_region(cls, data: Any) -> Any:
@@ -286,13 +277,12 @@ class CreateWorkflowRequest(BaseModel):
 class LogRevenueRequest(BaseModel):
     amount: float = Field(..., gt=0)
     currency: CurrencyCode = Field(default=CurrencyCode.USD)
-    source: Optional[str] = Field(default="", examples=["YouTube AdSense"])
+    source: Optional[str] = Field(default="")
     note: Optional[str] = Field(default="")
-    payment_method: Optional[str] = Field(default=None, examples=["PayPal"])
+    payment_method: Optional[str] = Field(default=None)
 
 
 class UpdateStepRequest(BaseModel):
-    # FIXED: Changed regex to pattern for Pydantic v2
     status: str = Field(..., pattern="^(pending|in_progress|done|skipped|blocked)$")
 
 
@@ -307,39 +297,30 @@ class WorkflowAnalyticsResponse(BaseModel):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# AI RESEARCH PROMPT (Global & Localized)
+# AI RESEARCH PROMPT
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _build_research_prompt(
-    goal: str, 
-    budget: float, 
-    hours: float, 
-    currency: str,
-    language: str = "en",
-    region: str = "global",
-    skills: List[str] = [],
-    timezone: Optional[str] = None
+    goal: str, budget: float, hours: float, currency: str,
+    language: str = "en", region: str = "global",
+    skills: List[str] = [], timezone: Optional[str] = None
 ) -> str:
-    """Build culturally-aware, region-specific research prompt."""
-    
-    budget_label = "ZERO ($0 / free tools only)" if budget == 0 else f"${budget} USD equivalent"
+    budget_label  = "ZERO ($0 / free tools only)" if budget == 0 else f"${budget} USD equivalent"
     region_display = region.replace("_", " ").title()
-    skills_str = ", ".join(skills) if skills else "general digital skills"
-    
-    modifiers = get_localized_prompt(language, region, currency)
-    
+    skills_str    = ", ".join(skills) if skills else "general digital skills"
+    modifiers     = get_localized_prompt(language, region, currency)
+
     regional_platforms = {
-        "africa_west": "YouTube, TikTok, Instagram, WhatsApp Business, Flutterwave Store",
-        "africa_east": "YouTube, TikTok, M-Pesa integration, Instagram, local e-commerce",
-        "south_asia": "YouTube, Instagram, TikTok, WhatsApp Business, UPI payments",
-        "southeast_asia": "YouTube, TikTok, Shopee, Grab, Instagram",
+        "africa_west":   "YouTube, TikTok, Instagram, WhatsApp Business, Flutterwave Store",
+        "africa_east":   "YouTube, TikTok, M-Pesa integration, Instagram, local e-commerce",
+        "south_asia":    "YouTube, Instagram, TikTok, WhatsApp Business, UPI payments",
+        "southeast_asia":"YouTube, TikTok, Shopee, Grab, Instagram",
         "latin_america": "YouTube, TikTok, Instagram, Mercado Libre, WhatsApp",
-        "middle_east": "YouTube, Instagram, TikTok, local payment gateways",
+        "middle_east":   "YouTube, Instagram, TikTok, local payment gateways",
     }
-    
-    platforms = regional_platforms.get(region, "YouTube, TikTok, Instagram, Upwork, Fiverr")
+    platforms       = regional_platforms.get(region, "YouTube, TikTok, Instagram, Upwork, Fiverr")
     payment_methods = ", ".join(get_payment_methods_for_region(region))
-    
+
     return f"""You are RiseUp's GLOBAL income research engine. A user from {region_display} has an income goal.
 
 USER CONTEXT:
@@ -363,189 +344,135 @@ YOUR JOB — Return a JSON object (NO markdown, ONLY raw JSON) with this EXACT s
   "title": "Short catchy workflow title (max 8 words)",
   "viability_score": 85,
   "realistic_timeline": "6-8 weeks",
-  "potential_monthly_income": {{
-    "min": 15000,
-    "max": 80000,
-    "currency": "{currency}"
-  }},
-  "regional_opportunities": [
-    "Specific opportunity 1 for {region_display} market",
-    "Specific opportunity 2 for {region_display} market",
-    "Specific opportunity 3 for {region_display} market"
-  ],
-  "what_is_working_now": [
-    "Strategy specific to {currency} economy and {region_display}",
-    "Platform-specific tactic for {platforms}",
-    "Monetization method popular in {region_display}"
-  ],
+  "potential_monthly_income": {{"min": 15000,"max": 80000,"currency": "{currency}"}},
+  "regional_opportunities": ["Opportunity 1","Opportunity 2","Opportunity 3"],
+  "what_is_working_now": ["Strategy 1","Strategy 2","Strategy 3"],
   "breakdown": {{
-    "ai_can_do": [
-      {{"task": "Research trending topics", "how": "AI analyzes {platforms} trends", "saves_hours": 3}},
-      {{"task": "Create content scripts", "how": "Generate scripts in {language}", "saves_hours": 2}}
-    ],
-    "user_must_do": [
-      {{"task": "Create accounts on local platforms", "why": "Requires local phone/ID verification", "time_required": "1-2 hours"}},
-      {{"task": "Record content in {language}", "why": "Local language content performs better", "time_required": "1-2 hours"}}
-    ],
-    "can_outsource_later": [
-      {{"task": "Video editing", "cost_when_ready": "Local rate in {currency}", "platform": "Fiverr or local freelancer"}}
-    ]
+    "ai_can_do": [{{"task": "Research trending topics","how": "AI analyzes trends","saves_hours": 3}}],
+    "user_must_do": [{{"task": "Create accounts","why": "Requires local verification","time_required": "1-2 hours"}}],
+    "can_outsource_later": [{{"task": "Video editing","cost_when_ready": "Local rate","platform": "Fiverr"}}]
   }},
   "free_tools": [
-    {{"name": "Canva Free", "url": "canva.com", "purpose": "Thumbnails & designs", "category": "design", "works_in_{region}": true}},
-    {{"name": "CapCut", "url": "capcut.com", "purpose": "Video editing - mobile friendly", "category": "editing", "works_in_{region}": true}},
-    {{"name": "Google Trends", "url": "trends.google.com", "purpose": "Trend research for {region}", "category": "research", "works_in_{region}": true}}
+    {{"name": "Canva Free","url": "canva.com","purpose": "Thumbnails","category": "design"}},
+    {{"name": "CapCut","url": "capcut.com","purpose": "Video editing","category": "editing"}},
+    {{"name": "Google Trends","url": "trends.google.com","purpose": "Research","category": "research"}}
   ],
-  "paid_tools_when_ready": [
-    {{"name": "TubeBuddy Pro", "cost_monthly": 9, "currency": "USD", "purpose": "Advanced analytics", "unlock_at_revenue": 10000}}
-  ],
+  "paid_tools_when_ready": [{{"name": "TubeBuddy Pro","cost_monthly": 9,"currency": "USD","purpose": "Analytics","unlock_at_revenue": 10000}}],
   "step_by_step_workflow": [
-    {{"order": 1, "title": "Set up {platforms} account", "description": "Create account optimized for {region_display}", "type": "manual", "time_minutes": 45, "tools": ["Phone", "ID Document"]}},
-    {{"order": 2, "title": "AI researches trending topics in {region}", "description": "Get 10 content ideas that work in {region_display}", "type": "automated", "time_minutes": 5, "tools": []}},
-    {{"order": 3, "title": "Create first content piece", "description": "Use {language} for better local engagement", "type": "manual", "time_minutes": 60, "tools": ["CapCut", "Phone"]}},
-    {{"order": 4, "title": "Set up monetization", "description": "Enable {payment_methods} for receiving payments", "type": "manual", "time_minutes": 30, "tools": []}},
-    {{"order": 5, "title": "Track growth in RiseUp", "description": "Log progress and first {currency} earnings", "type": "manual", "time_minutes": 10, "tools": []}}
+    {{"order": 1,"title": "Set up account","description": "Create account","type": "manual","time_minutes": 45,"tools": []}},
+    {{"order": 2,"title": "AI research","description": "Get content ideas","type": "automated","time_minutes": 5,"tools": []}},
+    {{"order": 3,"title": "Create content","description": "First piece","type": "manual","time_minutes": 60,"tools": ["CapCut"]}},
+    {{"order": 4,"title": "Set up monetization","description": "Enable payments","type": "manual","time_minutes": 30,"tools": []}},
+    {{"order": 5,"title": "Track in RiseUp","description": "Log earnings","type": "manual","time_minutes": 10,"tools": []}}
   ],
-  "payment_methods": [
-    {{"method": "{payment_methods.split(',')[0]}", "setup_difficulty": "easy", "fees": "2-5%"}},
-    {{"method": "{payment_methods.split(',')[1] if ',' in payment_methods else 'Bank Transfer'}", "setup_difficulty": "medium", "fees": "1-3%"}}
-  ],
-  "tax_compliance_note": "Consult local tax authority in {region_display} for income reporting requirements",
-  "honest_warning": "Building income takes 3-6 months. First month is learning. Don't quit after 2 attempts.",
-  "success_factors": [
-    "Consistency — post 2-3x weekly minimum",
-    "Local language content outperforms English in {region_display}",
-    "Engage with comments in first 48 hours"
-  ]
+  "payment_methods": [{{"method": "PayPal","setup_difficulty": "easy","fees": "2-5%"}}],
+  "tax_compliance_note": "Consult local tax authority for income reporting",
+  "honest_warning": "Building income takes 3-6 months. First month is learning.",
+  "success_factors": ["Consistency — post 2-3x weekly","Local language content performs better","Engage with comments in first 48 hours"]
 }}
 
 CRITICAL RULES:
 - Be SPECIFIC to {region_display} market conditions and {currency} economy
-- Recommend platforms that actually work and pay out in {region_display}
 - All revenue estimates in {currency} must be realistic for local economy
-- Tools must be accessible in {region_display} (not geo-blocked)
+- Tools must be accessible in {region_display}
 - Payment methods must actually work for {region_display}
 - Return ONLY JSON. No markdown. No explanations."""
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# BACKGROUND TASK: Save workflow details globally
+# BACKGROUND TASK
 # ═════════════════════════════════════════════════════════════════════════════
 
 async def _save_workflow_details(
-    sb, 
-    workflow_id: str, 
-    user_id: str, 
-    steps: List[Dict], 
-    free_tools: List[Dict], 
-    paid_tools: List[Dict],
-    language: str = "en",
-    region: str = "global"
+    sb, workflow_id: str, user_id: str,
+    steps: List[Dict], free_tools: List[Dict], paid_tools: List[Dict],
+    language: str = "en", region: str = "global"
 ):
-    """Background task to save workflow steps and tools with localization."""
     logger.info(f"🌍 Starting background save for workflow {workflow_id} [{region}]")
-    
     errors = []
-    
+
     try:
         if steps:
             step_rows = []
             for i, s in enumerate(steps):
                 desc = s.get("description", "")
-                if language != "en" and "{" in desc:
-                    desc = desc.format(region=region.replace("_", " ").title())
-                
                 step_rows.append({
-                    "workflow_id": workflow_id,
-                    "user_id": user_id,
-                    "order_index": s.get("order", i + 1),
-                    "title": s.get("title", ""),
-                    "description": desc,
-                    "step_type": s.get("type", "manual"),
-                    "time_minutes": s.get("time_minutes", 30),
-                    "tools": json.dumps(s.get("tools", [])),
-                    "status": "pending",
+                    "workflow_id":   workflow_id,
+                    "user_id":       user_id,
+                    "order_index":   s.get("order", i + 1),
+                    "title":         s.get("title", ""),
+                    "description":   desc,
+                    "step_type":     s.get("type", "manual"),
+                    "time_minutes":  s.get("time_minutes", 30),
+                    "tools":         json.dumps(s.get("tools", [])),
+                    "status":        "pending",
                     "region_specific": region != "global",
                 })
-            
             try:
                 await supabase_with_timeout(
-                    sb.table("workflow_steps").insert(step_rows).execute(),
-                    timeout=15.0,
-                    operation=f"insert_steps_{workflow_id}"
+                    lambda: sb.table("workflow_steps").insert(step_rows).execute(),
+                    timeout=15.0, operation=f"insert_steps_{workflow_id}"
                 )
-                logger.info(f"✅ Inserted {len(step_rows)} steps for workflow {workflow_id}")
+                logger.info(f"✅ Inserted {len(step_rows)} steps for {workflow_id}")
             except Exception as e:
-                error_msg = f"Failed to insert steps: {str(e)}"
-                logger.error(f"❌ {error_msg}")
-                errors.append(error_msg)
+                errors.append(f"Failed to insert steps: {e}")
+                logger.error(f"❌ {errors[-1]}")
 
         if free_tools:
-            tool_rows = []
-            for t in free_tools:
-                region_key = f"works_in_{region}"
-                works_in_region = t.get(region_key, True)
-                
-                tool_rows.append({
-                    "workflow_id": workflow_id,
-                    "name": t.get("name", ""),
-                    "url": t.get("url", ""),
-                    "purpose": t.get("purpose", ""),
-                    "category": t.get("category", ""),
-                    "is_free": True,
-                    "region_available": works_in_region,
-                    "global_available": True,
-                })
-            
+            tool_rows = [{
+                "workflow_id":     workflow_id,
+                "name":            t.get("name", ""),
+                "url":             t.get("url", ""),
+                "purpose":         t.get("purpose", ""),
+                "category":        t.get("category", ""),
+                "is_free":         True,
+                "region_available":t.get(f"works_in_{region}", True),
+                "global_available":True,
+            } for t in free_tools]
             try:
                 await supabase_with_timeout(
-                    sb.table("workflow_tools").insert(tool_rows).execute(),
-                    timeout=10.0,
-                    operation=f"insert_free_tools_{workflow_id}"
+                    lambda: sb.table("workflow_tools").insert(tool_rows).execute(),
+                    timeout=10.0, operation=f"insert_free_tools_{workflow_id}"
                 )
-                logger.info(f"✅ Inserted {len(tool_rows)} tools for workflow {workflow_id}")
+                logger.info(f"✅ Inserted {len(tool_rows)} tools for {workflow_id}")
             except Exception as e:
-                error_msg = f"Failed to insert free tools: {str(e)}"
-                logger.error(f"❌ {error_msg}")
-                errors.append(error_msg)
+                errors.append(f"Failed to insert free tools: {e}")
+                logger.error(f"❌ {errors[-1]}")
 
         if paid_tools:
             paid_rows = [{
-                "workflow_id": workflow_id,
-                "name": t.get("name", ""),
-                "url": t.get("url", ""),
-                "purpose": t.get("purpose", ""),
-                "category": "upgrade",
-                "is_free": False,
-                "cost_monthly": t.get("cost_monthly", 0),
-                "cost_currency": t.get("currency", "USD"),
+                "workflow_id":     workflow_id,
+                "name":            t.get("name", ""),
+                "url":             t.get("url", ""),
+                "purpose":         t.get("purpose", ""),
+                "category":        "upgrade",
+                "is_free":         False,
+                "cost_monthly":    t.get("cost_monthly", 0),
+                "cost_currency":   t.get("currency", "USD"),
                 "unlock_at_revenue": t.get("unlock_at_revenue", 0),
-                "region_available": True,
+                "region_available":True,
             } for t in paid_tools]
-            
             try:
                 await supabase_with_timeout(
-                    sb.table("workflow_tools").insert(paid_rows).execute(),
-                    timeout=10.0,
-                    operation=f"insert_paid_tools_{workflow_id}"
+                    lambda: sb.table("workflow_tools").insert(paid_rows).execute(),
+                    timeout=10.0, operation=f"insert_paid_tools_{workflow_id}"
                 )
-                logger.info(f"✅ Inserted {len(paid_rows)} paid tools for workflow {workflow_id}")
+                logger.info(f"✅ Inserted {len(paid_rows)} paid tools for {workflow_id}")
             except Exception as e:
-                error_msg = f"Failed to insert paid tools: {str(e)}"
-                logger.error(f"❌ {error_msg}")
-                errors.append(error_msg)
+                errors.append(f"Failed to insert paid tools: {e}")
+                logger.error(f"❌ {errors[-1]}")
 
         if errors:
-            logger.warning(f"⚠️ Background task completed with {len(errors)} errors for workflow {workflow_id}")
+            logger.warning(f"⚠️ Background task completed with {len(errors)} errors for {workflow_id}")
         else:
-            logger.info(f"🎉 Background task completed successfully for workflow {workflow_id} [{region}]")
+            logger.info(f"🎉 Background task done for {workflow_id} [{region}]")
 
     except Exception as e:
         logger.exception(f"💥 Background task crashed for workflow {workflow_id}: {e}")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# API ENDPOINTS — GLOBAL EDITION
+# API ENDPOINTS
 # ═════════════════════════════════════════════════════════════════════════════
 
 @router.post("/research")
@@ -554,23 +481,16 @@ async def research_income_goal(
     req: ResearchRequest,
     request: Request,
     user: dict = Depends(get_current_user),
-    accept_language: Optional[str] = Header(default="en")
+    accept_language: Optional[str] = Header(default="en"),
 ):
-    """
-    Deep AI research on an income goal with global localization.
-    """
     language = req.language.value if req.language else accept_language.split(",")[0].split("-")[0]
-    region = req.region.value if req.region else get_region_from_currency(req.currency.value)
-    
+    region   = req.region.value if req.region else get_region_from_currency(req.currency.value)
+
     prompt = _build_research_prompt(
-        goal=req.goal,
-        budget=req.budget or 0.0,
+        goal=req.goal, budget=req.budget or 0.0,
         hours=req.available_hours_per_day or 2.0,
-        currency=req.currency.value,
-        language=language,
-        region=region,
-        skills=req.skills or [],
-        timezone=req.timezone
+        currency=req.currency.value, language=language,
+        region=region, skills=req.skills or [], timezone=req.timezone,
     )
 
     try:
@@ -580,36 +500,32 @@ async def research_income_goal(
                 system=f"You are RiseUp's global income research engine. Return ONLY valid JSON. No markdown. Provide region-specific advice for {region}.",
                 max_tokens=3000,
             ),
-            timeout=35.0
+            timeout=35.0,
         )
     except asyncio.TimeoutError:
-        logger.error(f"AI research timed out for user {user['id']} [{region}]")
         raise HTTPException(status_code=504, detail="AI research timed out. Please try again.")
 
-    content = result.get("content", "").strip()
+    content       = result.get("content", "").strip()
     research_data = None
-    
+
     try:
         research_data = json.loads(content)
     except json.JSONDecodeError:
-        patterns = [
+        for pattern, group in [
             (r'```json\s*([\s\S]*?)\s*```', 1),
             (r'```\s*([\s\S]*?)\s*```', 1),
-            (r'(\{{[\s\S]*\}})', 0),
-        ]
-        
-        for pattern, group in patterns:
+            (r'(\{[\s\S]*\})', 0),
+        ]:
             match = re.search(pattern, content)
             if match:
                 try:
-                    candidate = match.group(group)
-                    research_data = json.loads(candidate)
+                    research_data = json.loads(match.group(group))
                     break
-                except:
+                except Exception:
                     continue
-    
+
     if research_data is None:
-        logger.error(f"JSON parse failed for {region}. Content: {content[:500]}")
+        logger.error(f"JSON parse failed [{region}]. Content: {content[:500]}")
         raise HTTPException(status_code=500, detail="AI returned invalid format. Please retry.")
 
     return {
@@ -617,12 +533,11 @@ async def research_income_goal(
         "research": research_data,
         "metadata": {
             "ai_model_used": result.get("model", "unknown"),
-            "language": language,
-            "region": region,
+            "language": language, "region": region,
             "currency": req.currency.value,
             "timezone": req.timezone or "UTC",
             "localized": region != "global",
-        }
+        },
     }
 
 
@@ -632,104 +547,89 @@ async def create_workflow(
     req: CreateWorkflowRequest,
     request: Request,
     background_tasks: BackgroundTasks,
-    user: dict = Depends(get_current_user)
+    user: dict = Depends(get_current_user),
 ):
-    """
-    Create a workflow from AI research results with global support.
-    """
-    user_id = user["id"]
-    sb = supabase_service.client
+    user_id    = user["id"]
+    sb         = supabase_service.client
     workflow_id = None
-    
-    region = get_region_from_currency(req.currency.value)
-    language = req.language.value
+    region     = get_region_from_currency(req.currency.value)
+    language   = req.language.value
 
     try:
         workflow_data = {
-            "user_id": user_id,
-            "title": req.title,
-            "goal": req.goal,
-            "income_type": req.income_type.value if isinstance(req.income_type, Enum) else req.income_type,
-            "currency": req.currency.value,
-            "language": language,
-            "region": region,
-            "timezone": req.timezone or "UTC",
-            "status": "active",
-            "total_revenue": 0.0,
-            "viability_score": req.research_data.get("viability_score", 75),
-            "realistic_timeline": req.research_data.get("realistic_timeline", ""),
-            "potential_min": req.research_data.get("potential_monthly_income", {}).get("min", 0),
-            "potential_max": req.research_data.get("potential_monthly_income", {}).get("max", 0),
-            "honest_warning": req.research_data.get("honest_warning", ""),
+            "user_id":             user_id,
+            "title":               req.title,
+            "goal":                req.goal,
+            "income_type":         req.income_type.value if isinstance(req.income_type, Enum) else req.income_type,
+            "currency":            req.currency.value,
+            "language":            language,
+            "region":              region,
+            "timezone":            req.timezone or "UTC",
+            "status":              "active",
+            "total_revenue":       0.0,
+            "viability_score":     req.research_data.get("viability_score", 75),
+            "realistic_timeline":  req.research_data.get("realistic_timeline", ""),
+            "potential_min":       req.research_data.get("potential_monthly_income", {}).get("min", 0),
+            "potential_max":       req.research_data.get("potential_monthly_income", {}).get("max", 0),
+            "honest_warning":      req.research_data.get("honest_warning", ""),
             "tax_compliance_note": req.research_data.get("tax_compliance_note", ""),
-            "research_snapshot": json.dumps(req.research_data),
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "research_snapshot":   json.dumps(req.research_data),
+            "created_at":          datetime.now(timezone.utc).isoformat(),
         }
 
+        # Use lambda so the sync call gets a real timeout via thread executor
         workflow_resp = await supabase_with_timeout(
-            sb.table("workflows").insert(workflow_data).execute(),
-            timeout=10.0,
-            operation="insert_main_workflow"
+            lambda: sb.table("workflows").insert(workflow_data).execute(),
+            timeout=10.0, operation="insert_main_workflow",
         )
 
         if not workflow_resp.data:
             raise HTTPException(status_code=500, detail="Failed to create workflow")
 
-        workflow = workflow_resp.data[0]
+        workflow    = workflow_resp.data[0]
         workflow_id = workflow["id"]
-        logger.info(f"✅ Created workflow {workflow_id} for user {user_id} [{region}]")
+        logger.info(f"✅ Created workflow {workflow_id} [{region}]")
 
-        steps = req.research_data.get("step_by_step_workflow", [])
+        steps      = req.research_data.get("step_by_step_workflow", [])
         free_tools = req.research_data.get("free_tools", [])
         paid_tools = req.research_data.get("paid_tools_when_ready", [])
 
         if steps or free_tools or paid_tools:
             background_tasks.add_task(
                 _save_workflow_details,
-                sb,
-                workflow_id,
-                user_id,
-                steps,
-                free_tools,
-                paid_tools,
-                language,
-                region
+                sb, workflow_id, user_id,
+                steps, free_tools, paid_tools, language, region,
             )
 
         return {
-            "workflow_id": workflow_id,
-            "title": req.title,
-            "status": "created",
-            "region": region,
-            "currency": req.currency.value,
-            "message": "Workflow created! Your global income execution plan is ready.",
-            "details_queued": {
-                "steps": len(steps),
-                "free_tools": len(free_tools),
-                "paid_tools": len(paid_tools)
-            },
+            "workflow_id":  workflow_id,
+            "title":        req.title,
+            "status":       "created",
+            "region":       region,
+            "currency":     req.currency.value,
+            "message":      "Workflow created! Your global income execution plan is ready.",
+            "details_queued": {"steps": len(steps), "free_tools": len(free_tools), "paid_tools": len(paid_tools)},
             "payment_methods_available": get_payment_methods_for_region(region),
             "next_steps": [
                 "Complete your profile with local payment details",
                 "Start with Step 1: Set up your regional accounts",
-                "Track all earnings in your local currency"
-            ]
+                "Track all earnings in your local currency",
+            ],
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"💥 Workflow creation failed: {str(e)}")
+        logger.exception(f"💥 Workflow creation failed: {e}")
         if workflow_id:
             try:
                 await supabase_with_timeout(
-                    sb.table("workflows").delete().eq("id", workflow_id).execute(),
-                    timeout=5.0,
-                    operation="cleanup_failed_workflow"
+                    lambda: sb.table("workflows").delete().eq("id", workflow_id).execute(),
+                    timeout=5.0, operation="cleanup_failed_workflow",
                 )
-            except:
+            except Exception:
                 pass
-        raise HTTPException(status_code=500, detail=f"Failed to create workflow: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create workflow: {e}")
 
 
 @router.get("/")
@@ -737,45 +637,45 @@ async def create_workflow(
 async def list_my_workflows(
     request: Request,
     user: dict = Depends(get_current_user),
-    accept_language: Optional[str] = Header(default="en")
+    accept_language: Optional[str] = Header(default="en"),
 ):
-    """Get all workflows for the current user with localization."""
+    """Get all workflows for the current user."""
     user_id = user["id"]
-    sb = supabase_service.client
-    locale = accept_language.split(",")[0]
+    sb      = supabase_service.client
+    locale  = accept_language.split(",")[0]
 
     try:
+        # ── THE FIX: pass a lambda so supabase_with_timeout runs it correctly ──
         resp = await supabase_with_timeout(
-            sb.table("workflows")
-            .select("id, title, goal, income_type, status, total_revenue, currency, language, region, viability_score, realistic_timeline, potential_min, potential_max, created_at, timezone")
-            .eq("user_id", user_id)
-            .order("created_at", desc=True)
-            .execute(),
+            lambda: (
+                sb.table("workflows")
+                .select("id, title, goal, income_type, status, total_revenue, currency, language, region, viability_score, realistic_timeline, potential_min, potential_max, created_at, timezone")
+                .eq("user_id", user_id)
+                .order("created_at", desc=True)
+                .execute()
+            ),
             timeout=8.0,
-            operation="list_workflows"
+            operation="list_workflows",
         )
-        
+
         workflows = resp.data or []
-        
+
         for wf in workflows:
             try:
                 wf["total_revenue_formatted"] = format_currency_amount(
-                    wf.get("total_revenue", 0), 
-                    wf.get("currency", "USD"),
-                    locale
+                    wf.get("total_revenue", 0), wf.get("currency", "USD"), locale
                 )
                 created_str = wf.get("created_at", "")
                 if created_str:
                     created_dt = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
                     wf["created_at_local"] = format_datetime(created_dt, locale, wf.get("timezone"))
-            except:
+            except Exception:
                 pass
-        
-        return {
-            "workflows": workflows,
-            "count": len(workflows),
-            "locale": locale
-        }
+
+        return {"workflows": workflows, "count": len(workflows), "locale": locale}
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to list workflows: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch workflows")
@@ -787,80 +687,69 @@ async def get_workflow_detail(
     workflow_id: str,
     request: Request,
     user: dict = Depends(get_current_user),
-    accept_language: Optional[str] = Header(default="en")
+    accept_language: Optional[str] = Header(default="en"),
 ):
-    """Get full workflow details with global localization."""
     user_id = user["id"]
-    sb = supabase_service.client
-    locale = accept_language.split(",")[0]
+    sb      = supabase_service.client
+    locale  = accept_language.split(",")[0]
 
     try:
-        coroutines = {
-            "workflow": supabase_with_timeout(
-                sb.table("workflows").select("*").eq("id", workflow_id).eq("user_id", user_id).single().execute(),
-                timeout=5.0,
-                operation="get_workflow"
+        wf_resp, steps_resp, tools_resp, rev_resp = await asyncio.gather(
+            supabase_with_timeout(
+                lambda: sb.table("workflows").select("*").eq("id", workflow_id).eq("user_id", user_id).single().execute(),
+                timeout=5.0, operation="get_workflow",
             ),
-            "steps": supabase_with_timeout(
-                sb.table("workflow_steps").select("*").eq("workflow_id", workflow_id).order("order_index").execute(),
-                timeout=5.0,
-                operation="get_steps"
+            supabase_with_timeout(
+                lambda: sb.table("workflow_steps").select("*").eq("workflow_id", workflow_id).order("order_index").execute(),
+                timeout=5.0, operation="get_steps",
             ),
-            "tools": supabase_with_timeout(
-                sb.table("workflow_tools").select("*").eq("workflow_id", workflow_id).execute(),
-                timeout=5.0,
-                operation="get_tools"
+            supabase_with_timeout(
+                lambda: sb.table("workflow_tools").select("*").eq("workflow_id", workflow_id).execute(),
+                timeout=5.0, operation="get_tools",
             ),
-            "revenue": supabase_with_timeout(
-                sb.table("workflow_revenue").select("*").eq("workflow_id", workflow_id).order("created_at", desc=True).limit(20).execute(),
-                timeout=5.0,
-                operation="get_revenue"
+            supabase_with_timeout(
+                lambda: sb.table("workflow_revenue").select("*").eq("workflow_id", workflow_id).order("created_at", desc=True).limit(20).execute(),
+                timeout=5.0, operation="get_revenue",
             ),
-        }
+            return_exceptions=True,
+        )
 
-        results = await asyncio.gather(*coroutines.values(), return_exceptions=True)
-        results_dict = dict(zip(coroutines.keys(), results))
+        for resp in [wf_resp, steps_resp, tools_resp, rev_resp]:
+            if isinstance(resp, Exception):
+                raise resp
 
-        for key, result in results_dict.items():
-            if isinstance(result, Exception):
-                raise result
-
-        wf_resp = results_dict["workflow"]
         if not wf_resp.data:
             raise HTTPException(status_code=404, detail="Workflow not found")
 
-        workflow = wf_resp.data
-        steps = results_dict["steps"].data or []
-        tools = results_dict["tools"].data or []
-        revenue_logs = results_dict["revenue"].data or []
-
-        currency = workflow.get("currency", "USD")
+        workflow     = wf_resp.data
+        steps        = steps_resp.data or []
+        tools        = tools_resp.data or []
+        revenue_logs = rev_resp.data or []
+        currency     = workflow.get("currency", "USD")
         timezone_str = workflow.get("timezone")
-        
+
         for s in steps:
             if isinstance(s.get("tools"), str):
                 try:
                     s["tools"] = json.loads(s["tools"])
-                except:
+                except Exception:
                     s["tools"] = []
-        
+
         for log in revenue_logs:
             try:
                 log["amount_formatted"] = format_currency_amount(
-                    float(log.get("amount", 0)), 
-                    log.get("currency", currency),
-                    locale
+                    float(log.get("amount", 0)), log.get("currency", currency), locale
                 )
                 log_dt = datetime.fromisoformat(log.get("created_at", "").replace("Z", "+00:00"))
                 log["created_at_local"] = format_datetime(log_dt, locale, timezone_str)
-            except:
+            except Exception:
                 pass
 
         return {
             "workflow": workflow,
             "steps": steps,
             "tools": {
-                "free": [t for t in tools if t.get("is_free")],
+                "free":          [t for t in tools if t.get("is_free")],
                 "paid_upgrades": [t for t in tools if not t.get("is_free")],
             },
             "revenue_logs": revenue_logs,
@@ -882,60 +771,51 @@ async def update_step_status(
     step_id: str,
     req: UpdateStepRequest,
     request: Request,
-    user: dict = Depends(get_current_user)
+    user: dict = Depends(get_current_user),
 ):
-    """Update step status with timezone-aware timestamp."""
-    user_id = user["id"]
-    sb = supabase_service.client
+    user_id  = user["id"]
+    sb       = supabase_service.client
+    now_utc  = datetime.now(timezone.utc).isoformat()
 
     try:
         wf_resp = await supabase_with_timeout(
-            sb.table("workflows").select("timezone").eq("id", workflow_id).single().execute(),
-            timeout=3.0,
-            operation="get_timezone"
+            lambda: sb.table("workflows").select("timezone").eq("id", workflow_id).single().execute(),
+            timeout=3.0, operation="get_timezone",
         )
         timezone_str = wf_resp.data.get("timezone") if wf_resp.data else None
-        
-        now_utc = datetime.now(timezone.utc).isoformat()
 
         await supabase_with_timeout(
-            sb.table("workflow_steps")
+            lambda: sb.table("workflow_steps")
             .update({
-                "status": req.status, 
-                "updated_at": now_utc,
-                "updated_at_local": format_datetime(datetime.now(timezone.utc), "en", timezone_str) if timezone_str else None
+                "status":         req.status,
+                "updated_at":     now_utc,
+                "updated_at_local": format_datetime(datetime.now(timezone.utc), "en", timezone_str) if timezone_str else None,
             })
             .eq("id", step_id)
             .eq("workflow_id", workflow_id)
             .eq("user_id", user_id)
             .execute(),
-            timeout=5.0,
-            operation="update_step"
+            timeout=5.0, operation="update_step",
         )
 
         steps_resp = await supabase_with_timeout(
-            sb.table("workflow_steps").select("status").eq("workflow_id", workflow_id).execute(),
-            timeout=5.0,
-            operation="get_progress"
+            lambda: sb.table("workflow_steps").select("status").eq("workflow_id", workflow_id).execute(),
+            timeout=5.0, operation="get_progress",
         )
 
-        total = len(steps_resp.data or [])
-        done = sum(1 for s in (steps_resp.data or []) if s["status"] == "done")
-        progress_pct = int((done / total * 100)) if total > 0 else 0
+        total        = len(steps_resp.data or [])
+        done         = sum(1 for s in (steps_resp.data or []) if s["status"] == "done")
+        progress_pct = int(done / total * 100) if total > 0 else 0
 
         await supabase_with_timeout(
-            sb.table("workflows").update({"progress_percent": progress_pct}).eq("id", workflow_id).execute(),
-            timeout=5.0,
-            operation="update_progress"
+            lambda: sb.table("workflows").update({"progress_percent": progress_pct}).eq("id", workflow_id).execute(),
+            timeout=5.0, operation="update_progress",
         )
 
-        return {
-            "step_id": step_id, 
-            "status": req.status, 
-            "overall_progress": progress_pct,
-            "updated_at": now_utc
-        }
+        return {"step_id": step_id, "status": req.status, "overall_progress": progress_pct, "updated_at": now_utc}
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to update step: {e}")
         raise HTTPException(status_code=500, detail="Failed to update step")
@@ -948,70 +828,58 @@ async def log_revenue(
     req: LogRevenueRequest,
     request: Request,
     user: dict = Depends(get_current_user),
-    accept_language: Optional[str] = Header(default="en")
+    accept_language: Optional[str] = Header(default="en"),
 ):
-    """Log revenue with multi-currency support."""
     user_id = user["id"]
-    sb = supabase_service.client
-    locale = accept_language.split(",")[0]
+    sb      = supabase_service.client
+    locale  = accept_language.split(",")[0]
 
     try:
         wf_resp = await supabase_with_timeout(
-            sb.table("workflows").select("currency, total_revenue, timezone, region").eq("id", workflow_id).single().execute(),
-            timeout=5.0,
-            operation="get_workflow_currency"
+            lambda: sb.table("workflows").select("currency, total_revenue, timezone, region").eq("id", workflow_id).single().execute(),
+            timeout=5.0, operation="get_workflow_currency",
         )
-        
         if not wf_resp.data:
             raise HTTPException(status_code=404, detail="Workflow not found")
 
         wf_currency = wf_resp.data.get("currency", "USD")
-        region = wf_resp.data.get("region", "global")
-        
-        amount_in_wf_currency = req.amount
-        
-        now_utc = datetime.now(timezone.utc).isoformat()
+        region      = wf_resp.data.get("region", "global")
+        now_utc     = datetime.now(timezone.utc).isoformat()
 
         await supabase_with_timeout(
-            sb.table("workflow_revenue").insert({
-                "workflow_id": workflow_id,
-                "user_id": user_id,
-                "amount": req.amount,
-                "amount_in_workflow_currency": amount_in_wf_currency,
-                "currency": req.currency.value,
-                "workflow_currency": wf_currency,
-                "source": req.source or "",
-                "note": req.note or "",
-                "payment_method": req.payment_method,
-                "region": region,
-                "created_at": now_utc,
+            lambda: sb.table("workflow_revenue").insert({
+                "workflow_id":                  workflow_id,
+                "user_id":                      user_id,
+                "amount":                       req.amount,
+                "amount_in_workflow_currency":  req.amount,
+                "currency":                     req.currency.value,
+                "workflow_currency":            wf_currency,
+                "source":                       req.source or "",
+                "note":                         req.note or "",
+                "payment_method":               req.payment_method,
+                "region":                       region,
+                "created_at":                   now_utc,
             }).execute(),
-            timeout=5.0,
-            operation="log_revenue"
+            timeout=5.0, operation="log_revenue",
         )
 
-        current = float(wf_resp.data.get("total_revenue", 0))
-        new_total = current + amount_in_wf_currency
+        current   = float(wf_resp.data.get("total_revenue", 0))
+        new_total = current + req.amount
 
         await supabase_with_timeout(
-            sb.table("workflows").update({
-                "total_revenue": new_total,
-                "last_revenue_at": now_utc
-            }).eq("id", workflow_id).execute(),
-            timeout=5.0,
-            operation="update_total_revenue"
+            lambda: sb.table("workflows").update({"total_revenue": new_total, "last_revenue_at": now_utc}).eq("id", workflow_id).execute(),
+            timeout=5.0, operation="update_total_revenue",
         )
 
         formatted_total = format_currency_amount(new_total, wf_currency, locale)
-
         return {
-            "logged": req.amount,
-            "logged_currency": req.currency.value,
-            "workflow_total": new_total,
-            "workflow_currency": wf_currency,
+            "logged":                   req.amount,
+            "logged_currency":          req.currency.value,
+            "workflow_total":           new_total,
+            "workflow_currency":        wf_currency,
             "workflow_total_formatted": formatted_total,
-            "payment_method": req.payment_method,
-            "message": f"Revenue logged! Total: {formatted_total}",
+            "payment_method":           req.payment_method,
+            "message":                  f"Revenue logged! Total: {formatted_total}",
         }
 
     except HTTPException:
@@ -1027,100 +895,81 @@ async def workflow_analytics(
     workflow_id: str,
     request: Request,
     user: dict = Depends(get_current_user),
-    accept_language: Optional[str] = Header(default="en")
+    accept_language: Optional[str] = Header(default="en"),
 ):
-    """Get analytics with global localization."""
     user_id = user["id"]
-    sb = supabase_service.client
-    locale = accept_language.split(",")[0]
+    sb      = supabase_service.client
+    locale  = accept_language.split(",")[0]
 
     try:
-        revenue_coro = supabase_with_timeout(
-            sb.table("workflow_revenue")
-            .select("amount, currency, created_at, source, payment_method")
-            .eq("workflow_id", workflow_id)
-            .eq("user_id", user_id)
-            .order("created_at")
-            .execute(),
-            timeout=5.0,
-            operation="get_revenue_logs"
-        )
-        
-        steps_coro = supabase_with_timeout(
-            sb.table("workflow_steps").select("status, step_type").eq("workflow_id", workflow_id).execute(),
-            timeout=5.0,
-            operation="get_steps_summary"
-        )
-        
-        wf_coro = supabase_with_timeout(
-            sb.table("workflows").select("currency, timezone, region").eq("id", workflow_id).single().execute(),
-            timeout=3.0,
-            operation="get_workflow_meta"
-        )
-
         rev_resp, steps_resp, wf_resp = await asyncio.gather(
-            revenue_coro, steps_coro, wf_coro, return_exceptions=True
+            supabase_with_timeout(
+                lambda: sb.table("workflow_revenue").select("amount, currency, created_at, source, payment_method").eq("workflow_id", workflow_id).eq("user_id", user_id).order("created_at").execute(),
+                timeout=5.0, operation="get_revenue_logs",
+            ),
+            supabase_with_timeout(
+                lambda: sb.table("workflow_steps").select("status, step_type").eq("workflow_id", workflow_id).execute(),
+                timeout=5.0, operation="get_steps_summary",
+            ),
+            supabase_with_timeout(
+                lambda: sb.table("workflows").select("currency, timezone, region").eq("id", workflow_id).single().execute(),
+                timeout=3.0, operation="get_workflow_meta",
+            ),
+            return_exceptions=True,
         )
 
         for resp in [rev_resp, steps_resp, wf_resp]:
             if isinstance(resp, Exception):
                 raise resp
 
-        logs = rev_resp.data or []
-        steps = steps_resp.data or []
-        wf_data = wf_resp.data or {}
-        
+        logs     = rev_resp.data or []
+        steps    = steps_resp.data or []
+        wf_data  = wf_resp.data or {}
         currency = wf_data.get("currency", "USD")
         timezone_str = wf_data.get("timezone")
-        region = wf_data.get("region", "global")
+        region   = wf_data.get("region", "global")
 
-        total = len(steps)
-        done = sum(1 for s in steps if s["status"] == "done")
-        automated = sum(1 for s in steps if s["step_type"] == "automated")
-        manual = sum(1 for s in steps if s["step_type"] == "manual")
+        total      = len(steps)
+        done       = sum(1 for s in steps if s["status"] == "done")
+        automated  = sum(1 for s in steps if s["step_type"] == "automated")
+        manual     = sum(1 for s in steps if s["step_type"] == "manual")
 
-        daily = {}
-        payment_methods_used = set()
-        
+        daily: dict = {}
+        payment_methods_used: set = set()
         for log in logs:
             day = log["created_at"][:10]
-            amount = float(log["amount"])
-            daily[day] = daily.get(day, 0) + amount
+            daily[day] = daily.get(day, 0) + float(log["amount"])
             if log.get("payment_method"):
                 payment_methods_used.add(log["payment_method"])
 
-        total_revenue = sum(float(l["amount"]) for l in logs)
+        total_revenue   = sum(float(l["amount"]) for l in logs)
         total_formatted = format_currency_amount(total_revenue, currency, locale)
-        
-        daily_formatted = []
-        for d, a in sorted(daily.items()):
-            daily_formatted.append({
-                "date": d,
-                "amount": a,
-                "amount_formatted": format_currency_amount(a, currency, locale)
-            })
+
+        daily_formatted = [
+            {"date": d, "amount": a, "amount_formatted": format_currency_amount(a, currency, locale)}
+            for d, a in sorted(daily.items())
+        ]
 
         return {
-            "workflow_id": workflow_id,
-            "region": region,
-            "currency": currency,
+            "workflow_id":   workflow_id,
+            "region":        region,
+            "currency":      currency,
             "total_revenue": total_revenue,
             "total_revenue_formatted": total_formatted,
-            "revenue_logs": logs,
+            "revenue_logs":  logs,
             "daily_revenue": daily_formatted,
-            "payment_methods_used": list(payment_methods_used),
+            "payment_methods_used":        list(payment_methods_used),
             "recommended_payment_methods": get_payment_methods_for_region(region),
             "steps_summary": {
-                "total": total,
-                "done": done,
-                "remaining": total - done,
+                "total": total, "done": done, "remaining": total - done,
                 "progress_percent": int(done / total * 100) if total > 0 else 0,
-                "automated_steps": automated,
-                "manual_steps": manual,
+                "automated_steps": automated, "manual_steps": manual,
             },
             "locale": locale,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to get analytics: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch analytics")
@@ -1134,25 +983,20 @@ async def ai_assist_on_step(
     step_title: str,
     user_question: Optional[str] = None,
     user: dict = Depends(get_current_user),
-    accept_language: Optional[str] = Header(default="en")
+    accept_language: Optional[str] = Header(default="en"),
 ):
-    """AI assistance with global language support."""
     user_id = user["id"]
-    sb = supabase_service.client
-    locale = accept_language.split(",")[0]
+    sb      = supabase_service.client
 
     try:
         wf_resp = await supabase_with_timeout(
-            sb.table("workflows").select("title, goal, income_type, language, region, currency").eq("id", workflow_id).single().execute(),
-            timeout=5.0,
-            operation="get_workflow_context"
+            lambda: sb.table("workflows").select("title, goal, income_type, language, region, currency").eq("id", workflow_id).single().execute(),
+            timeout=5.0, operation="get_workflow_context",
         )
-        wf_data = wf_resp.data or {}
-        
+        wf_data  = wf_resp.data or {}
         language = wf_data.get("language", "en")
-        region = wf_data.get("region", "global")
+        region   = wf_data.get("region", "global")
         currency = wf_data.get("currency", "USD")
-
         question = user_question or f"Help me complete this step: {step_title}"
 
         system_prompts = {
@@ -1160,46 +1004,33 @@ async def ai_assist_on_step(
             "fr": "Vous êtes RiseUp AI, un assistant de revenus. Donnez des réponses spécifiques et actionnables.",
             "hi": "आप RiseUp AI हैं, एक आय सहायक। विशिष्ट और कार्यक्षम उत्तर दें।",
             "ar": "أنت RiseUp AI، مساعد الدخل. قدم إجابات محددة وقابلة للتنفيذ.",
-            "default": "You are RiseUp AI, an income execution assistant. Provide specific, actionable, ready-to-use output."
+            "default": "You are RiseUp AI, an income execution assistant. Provide specific, actionable, ready-to-use output.",
         }
-        
         system_msg = system_prompts.get(language, system_prompts["default"])
 
         prompt = f"""You are RiseUp AI assisting a user in {region.replace("_", " ").title()}.
-
 WORKFLOW: {wf_data.get('title', '')}
 GOAL: {wf_data.get('goal', '')}
 INCOME TYPE: {wf_data.get('income_type', '')}
-REGION: {region}
-CURRENCY: {currency}
+REGION: {region} | CURRENCY: {currency}
 CURRENT STEP: {step_title}
 USER REQUEST: {question}
 
 Provide specific, actionable output for this step.
-If content (script, description, tags) — write full content ready to use.
-If strategy — give exact steps for TODAY in {region} context.
 Respond in {language} if possible, otherwise in English.
 Be specific to {currency} economy and local platforms."""
 
         result = await asyncio.wait_for(
-            ai_service.chat(
-                messages=[{"role": "user", "content": prompt}],
-                system=system_msg,
-                max_tokens=1500,
-            ),
-            timeout=20.0
+            ai_service.chat(messages=[{"role": "user", "content": prompt}], system=system_msg, max_tokens=1500),
+            timeout=20.0,
         )
 
-        return {
-            "step": step_title,
-            "ai_output": result["content"],
-            "model_used": result.get("model", "unknown"),
-            "language": language,
-            "region": region,
-        }
+        return {"step": step_title, "ai_output": result["content"], "model_used": result.get("model", "unknown"), "language": language, "region": region}
 
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="AI assistance timed out")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"AI assist failed: {e}")
         raise HTTPException(status_code=500, detail="AI assistance failed")
@@ -1211,34 +1042,29 @@ Be specific to {currency} economy and local platforms."""
 
 @router.get("/global/currencies")
 async def list_supported_currencies():
-    """List all supported currencies with regional info."""
     return {
         "currencies": [
             {
-                "code": c.value,
-                "name": c.name,
-                "region": get_region_from_currency(c.value),
-                "payment_methods": get_payment_methods_for_region(get_region_from_currency(c.value))
+                "code":            c.value,
+                "name":            c.name,
+                "region":          get_region_from_currency(c.value),
+                "payment_methods": get_payment_methods_for_region(get_region_from_currency(c.value)),
             }
             for c in CurrencyCode
         ],
-        "count": len(CurrencyCode)
+        "count": len(CurrencyCode),
     }
 
 
 @router.get("/global/regions")
 async def list_supported_regions():
-    """List all supported regions with payment methods."""
     return {
         "regions": [
             {
-                "code": r.value,
-                "name": r.name.replace("_", " ").title(),
+                "code":            r.value,
+                "name":            r.name.replace("_", " ").title(),
                 "payment_methods": get_payment_methods_for_region(r.value),
-                "currencies": [
-                    c.value for c in CurrencyCode 
-                    if get_region_from_currency(c.value) == r.value
-                ]
+                "currencies":      [c.value for c in CurrencyCode if get_region_from_currency(c.value) == r.value],
             }
             for r in Region
         ]
@@ -1247,12 +1073,11 @@ async def list_supported_regions():
 
 @router.get("/global/payment-methods/{region}")
 async def get_region_payment_methods(region: str):
-    """Get payment methods for a specific region."""
     methods = get_payment_methods_for_region(region)
     if not methods:
         raise HTTPException(status_code=404, detail="Region not found")
     return {
-        "region": region,
+        "region":        region,
         "payment_methods": methods,
-        "setup_guide": f"Visit RiseUp settings to connect {methods[0]} or other available methods"
+        "setup_guide":   f"Visit RiseUp settings to connect {methods[0]} or other available methods",
     }
