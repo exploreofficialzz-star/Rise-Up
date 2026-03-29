@@ -35,6 +35,25 @@ class CurrencyCode(str, Enum):
     RUB = "RUB"
     AUD = "AUD"
     CAD = "CAD"
+    SGD = "SGD"
+    MYR = "MYR"
+    THB = "THB"
+    VND = "VND"
+    ARS = "ARS"
+    CLP = "CLP"
+    COP = "COP"
+    PEN = "PEN"
+    TWD = "TWD"
+    HKD = "HKD"
+    KRW = "KRW"
+    MAD = "MAD"
+    TND = "TND"
+    XOF = "XOF"
+    XAF = "XAF"
+    TZS = "TZS"
+    UGX = "UGX"
+    RWF = "RWF"
+    ETB = "ETB"
     BTC = "BTC"
     ETH = "ETH"
     USDT = "USDT"
@@ -86,7 +105,10 @@ class PaymentMethod(str, Enum):
 
 
 class UserStage(str, Enum):
+    # Legacy values stored in existing user profiles — do NOT remove
     SURVIVAL = "survival"
+    EARNING = "earning"      # frontend dropdown value — kept for backward compat
+    GROWING = "growing"      # frontend dropdown value — kept for backward compat
     STABILITY = "stability"
     GROWTH = "growth"
     WEALTH = "wealth"
@@ -297,37 +319,66 @@ class AuthResponse(BaseSchema):
 # ═════════════════════════════════════════════════════════════════════════════
 
 class ProfileUpdate(BaseSchema):
+    """
+    All fields are fully Optional with default=None so model_dump(exclude_none=True)
+    only sends fields the user actually changed. Do NOT add non-None defaults here.
+
+    IMPORTANT: country accepts full country names ("Nigeria", "United Kingdom")
+    or 2-letter codes ("NG", "GB") — both are valid. Max 100 chars.
+    """
     full_name: Optional[str] = Field(default=None, max_length=100)
     phone: Optional[str] = Field(default=None, max_length=20)
-    country: Optional[str] = Field(default=None, max_length=2)
+
+    # Accepts full name ("Nigeria") or ISO code ("NG") — max 100, NOT 2
+    country: Optional[str] = Field(default=None, max_length=100)
+
     country_region: Optional[RegionCode] = None
-    currency: Optional[CurrencyCode] = Field(default=CurrencyCode.USD)
-    language: Optional[LanguageCode] = Field(default=LanguageCode.EN)
-    timezone: Optional[str] = Field(default="UTC")
+
+    # Truly optional — no default — so exclude_none works correctly
+    currency: Optional[CurrencyCode] = None
+    language: Optional[LanguageCode] = None
+    timezone: Optional[str] = None
+
     bio: Optional[str] = Field(default=None, max_length=500)
     status: Optional[str] = Field(default=None, max_length=200)
     avatar_url: Optional[str] = None
+
     wealth_type: Optional[WealthType] = None
     learning_style: Optional[LearningStyle] = None
     risk_tolerance: Optional[RiskTolerance] = None
-    stage: Optional[UserStage] = Field(default=UserStage.SURVIVAL)
+
+    # No default — only update stage if user explicitly changes it
+    stage: Optional[UserStage] = None
+
     monthly_income: Optional[float] = Field(default=None, ge=0)
-    monthly_income_currency: CurrencyCode = Field(default=CurrencyCode.USD)
+    monthly_income_currency: Optional[CurrencyCode] = None
     income_sources: Optional[List[str]] = None
     monthly_expenses: Optional[float] = Field(default=None, ge=0)
-    monthly_expenses_currency: CurrencyCode = Field(default=CurrencyCode.USD)
+    monthly_expenses_currency: Optional[CurrencyCode] = None
+
     current_skills: Optional[List[str]] = None
     desired_skills: Optional[List[str]] = None
+
     short_term_goal: Optional[str] = Field(default=None, max_length=200)
     long_term_goal: Optional[str] = Field(default=None, max_length=200)
     ambitions: Optional[str] = Field(default=None, max_length=500)
+
     health_energy: Optional[str] = None
     obstacles: Optional[str] = Field(default=None, max_length=500)
     available_hours_per_day: Optional[float] = Field(default=None, ge=0, le=24)
+
     onboarding_completed: Optional[bool] = None
-    survival_mode: Optional[bool] = Field(default=False)
+    survival_mode: Optional[bool] = None
+
     preferred_payment_methods: Optional[List[PaymentMethod]] = None
     social_links: Optional[Dict[str, str]] = None
+
+    # Extra profile fields used by global onboarding
+    income_bracket: Optional[str] = None
+    side_hustle_hours_week: Optional[int] = Field(default=None, ge=0, le=168)
+    current_challenges: Optional[List[str]] = None
+    development_goals: Optional[List[str]] = None
+    interests: Optional[List[str]] = None
 
 
 class ProfileResponse(BaseSchema):
@@ -356,6 +407,14 @@ class ProfileResponse(BaseSchema):
     ambitions: Optional[str] = None
     onboarding_completed: bool = False
     survival_mode: bool = False
+    # Social stats — included so profile screen can display without extra request
+    followers_count: int = 0
+    following_count: int = 0
+    total_earned: Optional[float] = 0.0
+    subscription_tier: Optional[str] = "free"
+    is_premium: bool = False
+    is_online: bool = False
+    xp_points: int = 0
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -424,7 +483,7 @@ class TaskUpdate(BaseSchema):
     priority: Optional[int] = Field(default=None, ge=1, le=5)
     actual_minutes: Optional[int] = Field(default=None, ge=0)
     actual_earnings: Optional[float] = Field(default=None, ge=0)
-    earnings_currency: CurrencyCode = Field(default=CurrencyCode.USD)
+    earnings_currency: Optional[CurrencyCode] = None
     completion_notes: Optional[str] = None
 
 
