@@ -1,3 +1,4 @@
+// frontend/lib/screens/skills/skill_detail_screen.dart
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -8,15 +9,17 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 
-class SkillLessonScreen extends ConsumerStatefulWidget {
-  final Map<String, dynamic> enrollment;
-  const SkillLessonScreen({super.key, required this.enrollment});
+// RENAMED from SkillLessonScreen to SkillDetailScreen
+// CHANGED parameter from enrollment to moduleId
+class SkillDetailScreen extends ConsumerStatefulWidget {
+  final String moduleId;
+  const SkillDetailScreen({super.key, required this.moduleId});
 
   @override
-  ConsumerState<SkillLessonScreen> createState() => _SkillLessonScreenState();
+  ConsumerState<SkillDetailScreen> createState() => _SkillDetailScreenState();
 }
 
-class _SkillLessonScreenState extends ConsumerState<SkillLessonScreen> {
+class _SkillDetailScreenState extends ConsumerState<SkillDetailScreen> {
   Map<String, dynamic>? _detail;
   bool _loading = true;
   bool _submitting = false;
@@ -29,7 +32,8 @@ class _SkillLessonScreenState extends ConsumerState<SkillLessonScreen> {
 
   Future<void> _loadDetail() async {
     try {
-      final data = await api.get('/skills/enrollment/${widget.enrollment['id']}');
+      // Use moduleId from widget instead of enrollment['id']
+      final data = await api.get('/skills/enrollment/${widget.moduleId}');
       if (mounted) {
         setState(() {
           _detail = data;
@@ -47,7 +51,7 @@ class _SkillLessonScreenState extends ConsumerState<SkillLessonScreen> {
 
     try {
       final response = await api.post('/skills/progress', {
-        'enrollment_id': widget.enrollment['id'],
+        'enrollment_id': widget.moduleId, // Use moduleId here
         'lesson_completed': lessonNumber,
         'time_spent_minutes': 30,
         'earnings_logged': earnings,
@@ -143,7 +147,7 @@ class _SkillLessonScreenState extends ConsumerState<SkillLessonScreen> {
             ),
             const SizedBox(height: 12),
             Text(
-              'You\'ve completed ${widget.enrollment['skill_name']}',
+              'You\'ve completed this skill',
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 14,
@@ -222,7 +226,8 @@ class _SkillLessonScreenState extends ConsumerState<SkillLessonScreen> {
       );
     }
 
-    final enrollment = widget.enrollment;
+    // Get enrollment data from _detail
+    final enrollment = _detail?['enrollment'] as Map<String, dynamic>? ?? {};
     final skillPath = _detail?['skill_path'] as Map<String, dynamic>? ?? {};
     final curriculum = skillPath['curriculum'] as List? ?? [];
     final currentModuleIdx = (enrollment['current_module'] ?? 1) - 1;
@@ -266,7 +271,7 @@ class _SkillLessonScreenState extends ConsumerState<SkillLessonScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              enrollment['skill_name'] ?? '',
+              enrollment['skill_name'] ?? 'Skill',
               style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w800,
@@ -576,7 +581,7 @@ class _SkillLessonScreenState extends ConsumerState<SkillLessonScreen> {
                   Text(
                     currentLesson['deliverable'],
                     style: TextStyle(
-                      fontSize: 14,
+                      FontSize: 14,
                       color: isDark ? Colors.white.withOpacity(0.9) : Colors.black.withOpacity(0.9),
                     ),
                   ),
@@ -689,7 +694,7 @@ class _EarningsInputState extends State<_EarningsInput> {
                     style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.w700,
-                      fontSize: 16,
+                      FontSize: 16,
                     ),
                   ),
           ),
