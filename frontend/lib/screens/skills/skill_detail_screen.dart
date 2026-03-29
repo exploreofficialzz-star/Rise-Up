@@ -9,8 +9,6 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 
-// RENAMED from SkillLessonScreen to SkillDetailScreen
-// CHANGED parameter from enrollment to moduleId
 class SkillDetailScreen extends ConsumerStatefulWidget {
   final String moduleId;
   const SkillDetailScreen({super.key, required this.moduleId});
@@ -32,7 +30,6 @@ class _SkillDetailScreenState extends ConsumerState<SkillDetailScreen> {
 
   Future<void> _loadDetail() async {
     try {
-      // Use moduleId from widget instead of enrollment['id']
       final data = await api.get('/skills/enrollment/${widget.moduleId}');
       if (mounted) {
         setState(() {
@@ -51,7 +48,7 @@ class _SkillDetailScreenState extends ConsumerState<SkillDetailScreen> {
 
     try {
       final response = await api.post('/skills/progress', {
-        'enrollment_id': widget.moduleId, // Use moduleId here
+        'enrollment_id': widget.moduleId,
         'lesson_completed': lessonNumber,
         'time_spent_minutes': 30,
         'earnings_logged': earnings,
@@ -150,7 +147,7 @@ class _SkillDetailScreenState extends ConsumerState<SkillDetailScreen> {
               'You\'ve completed this skill',
               textAlign: TextAlign.center,
               style: TextStyle(
-                fontSize: 14,
+                FontSize: 14,
                 color: isDark ? Colors.white.withOpacity(0.7) : Colors.black.withOpacity(0.7),
               ),
             ),
@@ -226,7 +223,6 @@ class _SkillDetailScreenState extends ConsumerState<SkillDetailScreen> {
       );
     }
 
-    // Get enrollment data from _detail
     final enrollment = _detail?['enrollment'] as Map<String, dynamic>? ?? {};
     final skillPath = _detail?['skill_path'] as Map<String, dynamic>? ?? {};
     final curriculum = skillPath['curriculum'] as List? ?? [];
@@ -420,7 +416,7 @@ class _SkillDetailScreenState extends ConsumerState<SkillDetailScreen> {
                   color = AppColors.primary;
                   break;
                 case 'tool':
-                  icon = Iconsax.tool_1; // FIXED: was Iconsax.tool
+                  icon = Iconsax.tools; // FIXED: was Iconsax.tool_1
                   color = AppColors.success;
                   break;
                 default:
@@ -489,7 +485,7 @@ class _SkillDetailScreenState extends ConsumerState<SkillDetailScreen> {
                     ],
                   ),
                 ),
-              ).animate().fadeIn(delay: (entry.key * 100).ms); // FIXED: Duration syntax
+              ).animate().fadeIn(delay: (entry.key * 100).ms);
             }),
             const SizedBox(height: 24),
           ],
@@ -581,7 +577,7 @@ class _SkillDetailScreenState extends ConsumerState<SkillDetailScreen> {
                   Text(
                     currentLesson['deliverable'],
                     style: TextStyle(
-                      FontSize: 14,
+                      fontSize: 14, // FIXED: was FontSize
                       color: isDark ? Colors.white.withOpacity(0.9) : Colors.black.withOpacity(0.9),
                     ),
                   ),
@@ -694,7 +690,7 @@ class _EarningsInputState extends State<_EarningsInput> {
                     style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.w700,
-                      FontSize: 16,
+                      fontSize: 16, // FIXED: was FontSize
                     ),
                   ),
           ),
