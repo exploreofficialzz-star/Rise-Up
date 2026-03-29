@@ -43,36 +43,20 @@ async def get_roadmap(user: dict = Depends(get_current_user)):
 
 @router.get("/profile")
 async def get_profile(user: dict = Depends(get_current_user)):
-    """
-    Returns the current user's full profile plus lightweight stats.
-    Shape: { "profile": {...}, "stats": {...} }
-
-    Both keys are always present so screens can safely destructure either
-    without guarding for missing keys.
-    """
     profile = await supabase_service.get_profile(user["id"])
-
-    # ── Inline social stats (followers / following / post count) ─────────────
-    # Try to fetch from a dedicated method; fall back to zero-values so the
-    # response never breaks even if the stats table is empty.
     stats: dict = {}
     try:
         stats = await supabase_service.get_user_stats(user["id"]) or {}
     except Exception as e:
         logger.warning(f"Could not fetch stats for {user['id']}: {e}")
 
-    # Merge follower/following counts into the profile map so the Flutter
-    # ProfileScreen can read them from _profile directly.
     if profile and isinstance(profile, dict):
         profile.setdefault("followers_count", stats.get("followers", 0))
         profile.setdefault("following_count", stats.get("following", 0))
         profile.setdefault("is_premium",
                            profile.get("subscription_tier") == "premium")
 
-    return {
-        "profile": profile or {},
-        "stats": stats,
-    }
+    return {"profile": profile or {}, "stats": stats}
 
 
 @router.patch("/profile")
@@ -80,14 +64,7 @@ async def update_profile(
     req: ProfileUpdate,
     user: dict = Depends(get_current_user),
 ):
-    """
-    Partial profile update — only fields present in the request body are
-    written to the database. Uses model_dump(exclude_none=True) so fields
-    the client did not send are never overwritten.
-    """
-    # ── Pydantic v2: use model_dump, NOT .dict() ──────────────────────────────
     data = req.model_dump(exclude_none=True)
-
     if not data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
@@ -97,15 +74,36 @@ async def update_profile(
         logger.error(f"Profile update failed for {user['id']}: {e}")
         raise HTTPException(status_code=500, detail="Profile update failed")
 
-    # Ensure the response always includes is_premium so the client can gate UI
     if updated and isinstance(updated, dict):
         updated.setdefault("is_premium",
                            updated.get("subscription_tier") == "premium")
 
-    return {
-        "profile": updated or {},
-        "message": "Profile saved!",
-    }
+    return {"profile": updated or {}, "message": "Profile saved!"}
+
+
+# ── MIME type → file extension map (all common image formats) ─────────────────
+_IMAGE_TYPES: dict[str, str] = {
+    "image/jpeg":      "jpg",
+    "image/jpg":       "jpg",
+    "image/png":       "png",
+    "image/webp":      "webp",
+    "image/gif":       "gif",
+    "image/heic":      "heic",
+    "image/heif":      "heif",
+    "image/avif":      "avif",
+    "image/bmp":       "bmp",
+    "image/tiff":      "tiff",
+    "image/tif":       "tiff",
+    "image/svg+xml":   "svg",
+    "image/x-icon":    "ico",
+    "image/vnd.microsoft.icon": "ico",
+    "image/jfif":      "jpg",
+    "image/pjpeg":     "jpg",
+    "image/x-png":     "png",
+}
+
+_MAX_SIZE_BYTES = 10 * 1024 * 1024   # 10 MB — generous for any device camera
+_BUCKET         = "avatars"
 
 
 @router.post("/avatar")
@@ -114,62 +112,82 @@ async def upload_avatar(
     user: dict = Depends(get_current_user),
 ):
     """
-    Upload profile picture to Supabase Storage bucket 'avatars' and update
-    the user's profile row with the new public URL.
+    Upload profile picture to Supabase Storage bucket 'avatars'.
 
-    Accepts: JPEG, PNG, WebP, GIF — max 5 MB.
-    Returns: { "avatar_url": "https://...", "message": "..." }
+    Accepts any common image format:
+      JPEG · PNG · WebP · GIF · HEIC · HEIF · AVIF · BMP · TIFF · SVG · ICO
+
+    Max size: 10 MB.
+    Returns: { "avatar_url": "...", "message": "..." }
     """
     user_id = user["id"]
 
-    # ── Validate MIME type ────────────────────────────────────────────────────
-    allowed_types = {"image/jpeg", "image/png", "image/webp", "image/gif"}
-    content_type = (file.content_type or "image/jpeg").lower().split(";")[0].strip()
-    if content_type not in allowed_types:
+    # ── Normalise & validate MIME type ────────────────────────────────────────
+    raw_ct       = (file.content_type or "").lower().split(";")[0].strip()
+    # Some mobile clients send no content-type — sniff by filename extension
+    if not raw_ct or raw_ct == "application/octet-stream":
+        fname = (file.filename or "").lower()
+        for mime, _ in _IMAGE_TYPES.items():
+            if fname.endswith(mime.split("/")[-1]) or fname.endswith(
+                _IMAGE_TYPES.get(mime, "")
+            ):
+                raw_ct = mime
+                break
+        else:
+            raw_ct = "image/jpeg"   # safe default for unknown mobile uploads
+
+    if raw_ct not in _IMAGE_TYPES:
         raise HTTPException(
             status_code=400,
-            detail="Only JPEG, PNG, WebP and GIF images are allowed",
+            detail=(
+                f"Unsupported image format '{raw_ct}'. "
+                "Accepted: JPEG, PNG, WebP, GIF, HEIC, HEIF, AVIF, BMP, TIFF, SVG, ICO"
+            ),
         )
+
+    ext = _IMAGE_TYPES[raw_ct]
 
     # ── Read & validate size ──────────────────────────────────────────────────
     contents = await file.read()
     if len(contents) == 0:
         raise HTTPException(status_code=400, detail="File is empty")
-    if len(contents) > 5 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Image must be under 5 MB")
+    if len(contents) > _MAX_SIZE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Image must be under {_MAX_SIZE_BYTES // (1024*1024)} MB"
+        )
 
-    # ── Build unique storage path ─────────────────────────────────────────────
-    ext = content_type.split("/")[-1].replace("jpeg", "jpg")
-    filename = f"avatars/{user_id}/{uuid.uuid4()}.{ext}"
+    # ── Build unique storage path  {user_id}/{uuid}.{ext} ────────────────────
+    storage_path = f"{user_id}/{uuid.uuid4()}.{ext}"
 
     try:
         sb = supabase_service.client
 
-        # ── Upload with upsert ────────────────────────────────────────────────
+        # ── Upload (upsert=true handles re-uploads cleanly) ───────────────────
         try:
-            sb.storage.from_("avatars").upload(
-                path=filename,
+            sb.storage.from_(_BUCKET).upload(
+                path=storage_path,
                 file=contents,
-                file_options={"content-type": content_type, "upsert": "true"},
+                file_options={"content-type": raw_ct, "upsert": "true"},
             )
         except Exception as upload_err:
             err_str = str(upload_err).lower()
             if any(k in err_str for k in ("already exists", "duplicate", "23505")):
-                # Remove stale file then re-upload without upsert flag
+                # Remove stale object then retry without upsert flag
                 try:
-                    sb.storage.from_("avatars").remove([filename])
+                    sb.storage.from_(_BUCKET).remove([storage_path])
                 except Exception:
                     pass
-                sb.storage.from_("avatars").upload(
-                    path=filename,
+                sb.storage.from_(_BUCKET).upload(
+                    path=storage_path,
                     file=contents,
-                    file_options={"content-type": content_type},
+                    file_options={"content-type": raw_ct},
                 )
             else:
-                raise upload_err
+                raise
 
-        # ── Get public URL ────────────────────────────────────────────────────
-        url_result = sb.storage.from_("avatars").get_public_url(filename)
+        # ── Resolve public URL ────────────────────────────────────────────────
+        url_result = sb.storage.from_(_BUCKET).get_public_url(storage_path)
         avatar_url: str = (
             url_result
             if isinstance(url_result, str)
@@ -186,10 +204,12 @@ async def upload_avatar(
         # ── Persist URL to profile ────────────────────────────────────────────
         await supabase_service.update_profile(user_id, {"avatar_url": avatar_url})
 
-        logger.info(f"Avatar uploaded for {user_id}: {filename}")
+        logger.info(f"✅ Avatar uploaded for {user_id} ({ext}, {len(contents)//1024} KB): {storage_path}")
         return {
             "avatar_url": avatar_url,
-            "message": "Profile picture updated!",
+            "message":    "Profile picture updated! 📸",
+            "format":     ext,
+            "size_kb":    round(len(contents) / 1024, 1),
         }
 
     except HTTPException:
@@ -222,14 +242,14 @@ async def get_leaderboard(
         result = []
         for i, p in enumerate(leaders.data or []):
             result.append({
-                "rank": i + 1,
-                "user_id": p.get("id"),
-                "full_name": p.get("full_name", "User"),
-                "stage": p.get("stage", "survival"),
-                "country": p.get("country", ""),
+                "rank":       i + 1,
+                "user_id":    p.get("id"),
+                "full_name":  p.get("full_name", "User"),
+                "stage":      p.get("stage", "survival"),
+                "country":    p.get("country", ""),
                 "total_earned": p.get("total_earned", 0),
-                "currency": p.get("currency", "USD"),
-                "xp_points": p.get("xp_points", 0),
+                "currency":   p.get("currency", "USD"),
+                "xp_points":  p.get("xp_points", 0),
                 "avatar_url": p.get("avatar_url"),
                 "is_premium": p.get("subscription_tier") == "premium",
             })
