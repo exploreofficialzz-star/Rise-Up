@@ -1,4 +1,3 @@
-// frontend/lib/screens/skills/skill_lesson_screen.dart
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -50,7 +49,7 @@ class _SkillLessonScreenState extends ConsumerState<SkillLessonScreen> {
       final response = await api.post('/skills/progress', {
         'enrollment_id': widget.enrollment['id'],
         'lesson_completed': lessonNumber,
-        'time_spent_minutes': 30, // Could track actual time
+        'time_spent_minutes': 30,
         'earnings_logged': earnings,
       });
 
@@ -229,7 +228,6 @@ class _SkillLessonScreenState extends ConsumerState<SkillLessonScreen> {
     final currentModuleIdx = (enrollment['current_module'] ?? 1) - 1;
     final currentLessonIdx = (enrollment['current_lesson'] ?? 1) - 1;
 
-    // Get current lesson
     Map<String, dynamic>? currentLesson;
     if (currentModuleIdx < curriculum.length) {
       final module = curriculum[currentModuleIdx] as Map<String, dynamic>;
@@ -290,7 +288,6 @@ class _SkillLessonScreenState extends ConsumerState<SkillLessonScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // Progress
           LinearProgressIndicator(
             value: (enrollment['progress_percent'] ?? 0) / 100,
             backgroundColor: isDark ? Colors.white.withOpacity(0.1) : Colors.grey.shade200,
@@ -320,7 +317,6 @@ class _SkillLessonScreenState extends ConsumerState<SkillLessonScreen> {
           ),
           const SizedBox(height: 24),
 
-          // Lesson Card
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
@@ -388,7 +384,6 @@ class _SkillLessonScreenState extends ConsumerState<SkillLessonScreen> {
           ).animate().fadeIn().slideY(begin: 0.1),
           const SizedBox(height: 24),
 
-          // Resources
           if (resources.isNotEmpty) ...[
             Text(
               'Learning Resources',
@@ -420,7 +415,7 @@ class _SkillLessonScreenState extends ConsumerState<SkillLessonScreen> {
                   color = AppColors.primary;
                   break;
                 case 'tool':
-                  icon = Iconsax.tool;
+                  icon = Iconsax.tool_1; // FIXED: was Iconsax.tool
                   color = AppColors.success;
                   break;
                 default:
@@ -489,12 +484,11 @@ class _SkillLessonScreenState extends ConsumerState<SkillLessonScreen> {
                     ],
                   ),
                 ),
-              ).animate().fadeIn(delay: Duration(milliseconds: entry.key * 100));
+              ).animate().fadeIn(delay: (entry.key * 100).ms); // FIXED: Duration syntax
             }),
             const SizedBox(height: 24),
           ],
 
-          // Action Items
           if (actionItems.isNotEmpty) ...[
             Text(
               'Your Tasks',
@@ -553,7 +547,6 @@ class _SkillLessonScreenState extends ConsumerState<SkillLessonScreen> {
             const SizedBox(height: 24),
           ],
 
-          // Deliverable
           if (currentLesson['deliverable'] != null) ...[
             Container(
               padding: const EdgeInsets.all(16),
@@ -593,7 +586,6 @@ class _SkillLessonScreenState extends ConsumerState<SkillLessonScreen> {
             const SizedBox(height: 24),
           ],
 
-          // Earnings input
           Text(
             'Log Earnings (optional)',
             style: TextStyle(
