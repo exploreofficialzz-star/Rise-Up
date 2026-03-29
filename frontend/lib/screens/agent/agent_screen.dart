@@ -1258,7 +1258,7 @@ class _AgentBubble extends StatelessWidget {
               ],
             ),
           ),
-          _MdText(text: msg.text, isDark: isDark),
+          _MdText(text: msg.text, isDark: isDark, accentColor: gradientColors[1]),
           const SizedBox(height: 12),
           Row(
             children: [
@@ -1542,7 +1542,7 @@ class _SystemMsg extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _MdText(text: msg.text, isDark: isDark),
+            _MdText(text: msg.text, isDark: isDark, accentColor: gradientColors[1]),
             const SizedBox(height: 16),
             Row(
               children: [
@@ -1603,7 +1603,8 @@ class _SystemMsg extends StatelessWidget {
 class _MdText extends StatelessWidget {
   final String text;
   final bool   isDark;
-  const _MdText({required this.text, required this.isDark});
+  final Color  accentColor;
+  const _MdText({required this.text, required this.isDark, required this.accentColor});
 
   @override
   Widget build(BuildContext context) {
@@ -1668,7 +1669,7 @@ class _MdText extends StatelessWidget {
           spans.add(TextSpan(
             text:  m.group(3),
             style: TextStyle(
-              color:           gradientColors[1],
+              color:           accentColor,
               fontSize:        14,
               height:          1.5,
               fontFamily:      'monospace',
@@ -1700,7 +1701,7 @@ class _Dots extends StatelessWidget {
   const _Dots({required this.controller, required this.color});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildBuildContext context) {
     return AnimatedBuilder(
       animation: controller,
       builder: (_, __) => Row(
