@@ -1701,7 +1701,7 @@ class _Dots extends StatelessWidget {
   const _Dots({required this.controller, required this.color});
 
   @override
-  Widget build(BuildBuildContext context) {
+  Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: controller,
       builder: (_, __) => Row(
