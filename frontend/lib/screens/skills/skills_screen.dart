@@ -861,7 +861,7 @@ class _MyLearningTab extends StatelessWidget {
                   ),
                 ],
               ),
-            ).animate().fade(delay: (i * 60).ms); // FIXED: was .fadeIn(delay: Duration(milliseconds: i * 60))
+            ).animate().fade(delay: (i * 60).ms), // FIXED: proper syntax with closing parenthesis
           );
         },
       ),
