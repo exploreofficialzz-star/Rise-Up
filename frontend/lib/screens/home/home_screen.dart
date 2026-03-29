@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 import '../../services/ad_service.dart';
@@ -45,11 +46,11 @@ class PostModel {
   final String username;
   final String time;
   final String avatar;
-  final String avatarUrl;   // ← real photo URL (may be empty)
+  final String avatarUrl;
   final String tag;
   final String content;
-  final String? mediaUrl;   // ← image / video URL attached to post
-  final String? mediaType;  // ← 'image' | 'video'
+  final String? mediaUrl;
+  final String? mediaType;
   int likes;
   int comments;
   int shares;
@@ -57,7 +58,7 @@ class PostModel {
   final bool isPremiumPost;
   bool isLiked;
   bool isSaved;
-  bool isFollowing;         // ← server-side follow state for this post author
+  bool isFollowing;
   final String userId;
 
   PostModel({
@@ -100,7 +101,6 @@ class PostModel {
     final stage     = profile['stage']?.toString() ?? 'survival';
     final stageInfo = StageInfo.get(stage);
 
-    // FIX: use data['user_id'] as primary source — profile['id'] is a fallback
     final userId = data['user_id']?.toString().isNotEmpty == true
         ? data['user_id'].toString()
         : profile['id']?.toString() ?? '';
@@ -123,7 +123,6 @@ class PostModel {
       isPremiumPost: profile['subscription_tier'] == 'premium',
       isLiked:       data['is_liked'] == true,
       isSaved:       data['is_saved'] == true,
-      // FIX: pre-populate follow state from API response
       isFollowing:   data['is_following'] == true,
       userId:        userId,
     );
@@ -160,8 +159,10 @@ class _HomeScreenState extends State<HomeScreen>
   final _tabs = ['for_you', 'following', 'trending'];
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
-  // FIX: Map userId → isFollowing for O(1) lookup + correct toggle state
+  /// Persisted follow state: userId → isFollowing
   final Map<String, bool> _followState = {};
+
+  static const String _kFollowedKey = 'riseup_followed_users';
 
   @override
   void initState() {
@@ -173,15 +174,45 @@ class _HomeScreenState extends State<HomeScreen>
         if (_feeds[tab]!.isEmpty) _loadFeed(tab);
       }
     });
-    _loadProfile();
-    _loadStatus();
-    _loadFeed('for_you');
+    _loadPersistedFollowState().then((_) {
+      _loadProfile();
+      _loadStatus();
+      _loadFeed('for_you');
+    });
   }
 
   @override
   void dispose() {
     _tabCtrl.dispose();
     super.dispose();
+  }
+
+  // ── Follow state persistence ──────────────────────────
+  /// Load follow state from SharedPreferences so it survives app restarts.
+  Future<void> _loadPersistedFollowState() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final followed = prefs.getStringList(_kFollowedKey) ?? [];
+      if (mounted) {
+        setState(() {
+          for (final uid in followed) {
+            _followState[uid] = true;
+          }
+        });
+      }
+    } catch (_) {}
+  }
+
+  /// Persist current follow state to SharedPreferences.
+  Future<void> _persistFollowState() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final followed = _followState.entries
+          .where((e) => e.value)
+          .map((e) => e.key)
+          .toList();
+      await prefs.setStringList(_kFollowedKey, followed);
+    } catch (_) {}
   }
 
   Future<void> _loadProfile() async {
@@ -223,13 +254,19 @@ class _HomeScreenState extends State<HomeScreen>
 
       if (mounted) {
         setState(() {
-          // FIX: pre-populate follow state from every loaded post
+          // Server state takes priority over cached state for users we haven't
+          // explicitly toggled in this session.
           for (final post in posts) {
-            if (post.userId.isNotEmpty && post.isFollowing) {
-              _followState[post.userId] = true;
-            } else if (post.userId.isNotEmpty &&
-                !_followState.containsKey(post.userId)) {
-              _followState[post.userId] = false;
+            if (post.userId.isNotEmpty) {
+              // Only update from server if we don't have a locally-toggled value,
+              // OR if server says following=true (trust the server for positive state).
+              final localState = _followState[post.userId];
+              if (localState == null) {
+                _followState[post.userId] = post.isFollowing;
+              } else if (post.isFollowing) {
+                // Server confirms following — ensure local is in sync.
+                _followState[post.userId] = true;
+              }
             }
           }
 
@@ -253,37 +290,164 @@ class _HomeScreenState extends State<HomeScreen>
   int get _aiRemaining =>
       (_dailyFreeLimit - _aiUsedToday).clamp(0, _dailyFreeLimit);
 
-  // FIX: correct follow toggle — updates both _followState map and all feeds
+  // ── Follow toggle ─────────────────────────────────────
   Future<void> _handleFollow(String userId) async {
     if (userId.isEmpty) return;
     HapticFeedback.mediumImpact();
     SoundService.follow();
 
-    // Optimistic update immediately
     final wasFollowing = _followState[userId] ?? false;
-    setState(() => _followState[userId] = !wasFollowing);
+
+    // Optimistic update immediately in UI.
+    setState(() {
+      _followState[userId] = !wasFollowing;
+      _syncFollowOnPosts(userId, !wasFollowing);
+    });
 
     try {
       final res = await api.toggleFollow(userId);
+      final serverValue = res['following'] == true;
       if (mounted) {
         setState(() {
-          _followState[userId] = res['following'] == true;
-          // Also update isFollowing on all matching PostModel instances
-          for (final tab in _tabs) {
-            for (final post in _feeds[tab]!) {
-              if (post.userId == userId) {
-                post.isFollowing = _followState[userId]!;
-              }
-            }
-          }
+          _followState[userId] = serverValue;
+          _syncFollowOnPosts(userId, serverValue);
         });
+        // Persist the confirmed state so it survives app restarts.
+        await _persistFollowState();
       }
     } catch (_) {
-      // Revert optimistic update on failure
-      if (mounted) setState(() => _followState[userId] = wasFollowing);
+      // Revert optimistic update on failure.
+      if (mounted) {
+        setState(() {
+          _followState[userId] = wasFollowing;
+          _syncFollowOnPosts(userId, wasFollowing);
+        });
+      }
     }
   }
 
+  /// Sync isFollowing on every PostModel across all feed tabs.
+  void _syncFollowOnPosts(String userId, bool value) {
+    for (final tab in _tabs) {
+      for (final post in _feeds[tab]!) {
+        if (post.userId == userId) post.isFollowing = value;
+      }
+    }
+  }
+
+  // ── Share sheet ───────────────────────────────────────
+  void _handleShare(PostModel post) {
+    HapticFeedback.mediumImpact();
+    SoundService.share();
+
+    // Optimistic share count increment.
+    setState(() => post.shares++);
+
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: isDark ? AppColors.bgCard : Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 36, height: 4,
+              margin: const EdgeInsets.only(top: 12, bottom: 4),
+              decoration: BoxDecoration(
+                color: Colors.grey.withOpacity(0.3),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              child: Text(
+                'Share Post',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: isDark ? Colors.white : Colors.black87,
+                ),
+              ),
+            ),
+            ListTile(
+              leading: Container(
+                width: 40, height: 40,
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.link_rounded,
+                    color: AppColors.primary, size: 20),
+              ),
+              title: Text('Copy post link',
+                  style: TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600,
+                      color: isDark ? Colors.white : Colors.black87)),
+              subtitle: Text('riseup.app/post/${post.id}',
+                  style: TextStyle(fontSize: 11,
+                      color: isDark ? Colors.white38 : Colors.black38),
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+              onTap: () {
+                Navigator.pop(ctx);
+                Clipboard.setData(
+                    ClipboardData(text: 'https://riseup.app/post/${post.id}'));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('✅ Post link copied to clipboard'),
+                    backgroundColor: AppColors.success,
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              leading: Container(
+                width: 40, height: 40,
+                decoration: BoxDecoration(
+                  color: Colors.blue.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.copy_rounded,
+                    color: Colors.blue, size: 20),
+              ),
+              title: Text('Copy post text',
+                  style: TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600,
+                      color: isDark ? Colors.white : Colors.black87)),
+              subtitle: Text(post.content,
+                  style: TextStyle(fontSize: 11,
+                      color: isDark ? Colors.white38 : Colors.black38),
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+              onTap: () {
+                Navigator.pop(ctx);
+                Clipboard.setData(ClipboardData(text: post.content));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('✅ Post text copied to clipboard'),
+                    backgroundColor: AppColors.success,
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 12),
+          ],
+        ),
+      ),
+    );
+
+    // Fire API in background; revert count on failure.
+    api.sharePost(post.id).catchError((_) {
+      if (mounted) setState(() => post.shares = (post.shares - 1).clamp(0, 999999));
+    });
+  }
+
+  // ── AI handling ───────────────────────────────────────
   Future<void> _handleAiRequest(PostModel post,
       {required bool isPrivate}) async {
     SoundService.tap();
@@ -599,7 +763,6 @@ class _HomeScreenState extends State<HomeScreen>
                       if (postIndex >= posts.length) return const SizedBox.shrink();
 
                       final post = posts[postIndex];
-                      // FIX: read follow state from _followState map
                       final following = _followState[post.userId] ?? post.isFollowing;
 
                       return PostCard(
@@ -618,7 +781,7 @@ class _HomeScreenState extends State<HomeScreen>
                         onLike: (p) async {
                           HapticFeedback.mediumImpact();
                           SoundService.like();
-                          // Optimistic update
+                          // Optimistic update.
                           setState(() {
                             p.isLiked = !p.isLiked;
                             p.likes += p.isLiked ? 1 : -1;
@@ -626,17 +789,21 @@ class _HomeScreenState extends State<HomeScreen>
                           try {
                             final res = await api.toggleLike(p.id);
                             if (mounted) {
-                              setState(() {
-                                p.isLiked = res['liked'] == true;
-                              });
+                              setState(() => p.isLiked = res['liked'] == true);
                             }
                           } catch (_) {
-                            // Revert on failure
+                            // Revert on failure.
                             if (mounted) {
                               setState(() {
                                 p.isLiked = !p.isLiked;
                                 p.likes += p.isLiked ? 1 : -1;
                               });
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Could not like post. Try again.'),
+                                  duration: Duration(seconds: 2),
+                                ),
+                              );
                             }
                           }
                         },
@@ -646,24 +813,40 @@ class _HomeScreenState extends State<HomeScreen>
                           setState(() => p.isSaved = !p.isSaved);
                           try {
                             final res = await api.toggleSave(p.id);
-                            if (mounted) setState(() => p.isSaved = res['saved'] == true);
+                            if (mounted) {
+                              setState(() => p.isSaved = res['saved'] == true);
+                              if (res['saved'] == true) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('✅ Post saved'),
+                                    backgroundColor: AppColors.success,
+                                    duration: Duration(seconds: 1),
+                                  ),
+                                );
+                              }
+                            }
                           } catch (_) {
-                            if (mounted) setState(() => p.isSaved = !p.isSaved);
+                            if (mounted) {
+                              setState(() => p.isSaved = !p.isSaved);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Could not save post. Try again.'),
+                                  duration: Duration(seconds: 2),
+                                ),
+                              );
+                            }
                           }
                         },
                         onComment: (p) {
                           SoundService.comment();
-                          context.go(
+                          // FIX: use context.push so context.pop() works in CommentsScreen.
+                          context.push(
                             '/comments/${p.id}'
                             '?content=${Uri.encodeComponent(p.content)}'
                             '&author=${Uri.encodeComponent(p.name)}',
                           );
                         },
-                        onShare: (p) async {
-                          HapticFeedback.mediumImpact();
-                          SoundService.share();
-                          try { await api.sharePost(p.id); } catch (_) {}
-                        },
+                        onShare: _handleShare,
                         onFollow: _handleFollow,
                       ).animate().fadeIn(delay: Duration(milliseconds: i * 40));
                     },
@@ -683,7 +866,7 @@ class PostCard extends StatefulWidget {
   final PostModel post;
   final bool isDark;
   final bool isPremium;
-  final bool isFollowing;   // FIX: passed from parent, not derived from a Set
+  final bool isFollowing;
   final Color cardColor;
   final Color borderColor;
   final Color textColor;
@@ -752,7 +935,6 @@ class _PostCardState extends State<PostCard> {
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Avatar — shows real photo if available, else emoji
                     GestureDetector(
                       onTap: () => context.go('/user-profile/${p.userId}'),
                       child: Container(
@@ -832,7 +1014,7 @@ class _PostCardState extends State<PostCard> {
                       ),
                     ),
 
-                    // FIX: Follow / Following button — always visible for other users
+                    // Follow / Following button
                     if (p.userId.isNotEmpty && !_isOwnPost) ...[
                       GestureDetector(
                         onTap: () => widget.onFollow(p.userId),
@@ -918,7 +1100,7 @@ class _PostCardState extends State<PostCard> {
                   ),
                 ),
 
-                // ── Media attachment (image or video) ────
+                // ── Media attachment ─────────────────────
                 if (p.mediaUrl != null && p.mediaUrl!.isNotEmpty) ...[
                   const SizedBox(height: 10),
                   _PostMedia(
@@ -1108,8 +1290,8 @@ class _PostCardState extends State<PostCard> {
               leading: const Icon(Iconsax.share),
               title: const Text('Share to...'),
               onTap: () {
-                widget.onShare(p);
                 Navigator.pop(ctx);
+                widget.onShare(p);
               },
             ),
             const SizedBox(height: 20),
@@ -1120,7 +1302,7 @@ class _PostCardState extends State<PostCard> {
   }
 }
 
-// ── Post Media Widget — images and videos ─────────────
+// ── Post Media Widget ─────────────────────────────────
 class _PostMedia extends StatelessWidget {
   final String url;
   final String mediaType;
@@ -1139,8 +1321,6 @@ class _PostMedia extends StatelessWidget {
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: isVideo
-          // Video: show thumbnail placeholder with play button
-          // Replace with video_player widget when package is added
           ? Stack(
               children: [
                 Container(
@@ -1258,7 +1438,6 @@ class _AppDrawer extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── Profile Header ───────────────────────
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
               child: Row(
@@ -1281,9 +1460,7 @@ class _AppDrawer extends StatelessWidget {
                                 fit: BoxFit.cover,
                                 errorBuilder: (_, __, ___) => Center(
                                   child: Text(
-                                    name.isNotEmpty
-                                        ? name[0].toUpperCase()
-                                        : 'U',
+                                    name.isNotEmpty ? name[0].toUpperCase() : 'U',
                                     style: const TextStyle(
                                       color: AppColors.primary,
                                       fontSize: 20,
@@ -1369,7 +1546,6 @@ class _AppDrawer extends StatelessWidget {
             ),
             Divider(color: border, height: 1),
 
-            // ── Nav Items ───────────────────────────
             Expanded(
               child: ListView(
                 padding: const EdgeInsets.symmetric(vertical: 4),
@@ -1435,7 +1611,6 @@ class _AppDrawer extends StatelessWidget {
               ),
             ),
 
-            // ── Upgrade Banner ───────────────────────
             if (!isPremium)
               Padding(
                 padding: const EdgeInsets.all(14),
@@ -1464,8 +1639,7 @@ class _AppDrawer extends StatelessWidget {
                                       fontWeight: FontWeight.w700,
                                       color: AppColors.primary)),
                               Text('Unlimited AI + all features',
-                                  style:
-                                      TextStyle(fontSize: 11, color: sub)),
+                                  style: TextStyle(fontSize: 11, color: sub)),
                             ],
                           ),
                         ),
@@ -1922,8 +2096,7 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
                 decoration: BoxDecoration(
                     color: Colors.black.withOpacity(0.6),
                     borderRadius: BorderRadius.circular(12),
-                    border:
-                        Border.all(color: Colors.white.withOpacity(0.3))),
+                    border: Border.all(color: Colors.white.withOpacity(0.3))),
                 child: Row(
                   children: [
                     const Icon(Icons.link_rounded,
