@@ -147,7 +147,7 @@ class _SkillDetailScreenState extends ConsumerState<SkillDetailScreen> {
               'You\'ve completed this skill',
               textAlign: TextAlign.center,
               style: TextStyle(
-                FontSize: 14,
+                fontSize: 14, // FIXED: was FontSize with capital F
                 color: isDark ? Colors.white.withOpacity(0.7) : Colors.black.withOpacity(0.7),
               ),
             ),
@@ -279,7 +279,7 @@ class _SkillDetailScreenState extends ConsumerState<SkillDetailScreen> {
             Text(
               'Module ${currentModuleIdx + 1} • Lesson ${currentLessonIdx + 1}',
               style: TextStyle(
-                fontSize: 12,
+                FontSize: 12, // DEBUG: Check if this needs fixing
                 color: isDark ? Colors.white54 : Colors.black54,
               ),
             ),
@@ -416,7 +416,7 @@ class _SkillDetailScreenState extends ConsumerState<SkillDetailScreen> {
                   color = AppColors.primary;
                   break;
                 case 'tool':
-                  icon = Iconsax.tools; // FIXED: was Iconsax.tool_1
+                  icon = Iconsax.setting; // FIXED: was Iconsax.tools which doesn't exist
                   color = AppColors.success;
                   break;
                 default:
@@ -577,7 +577,7 @@ class _SkillDetailScreenState extends ConsumerState<SkillDetailScreen> {
                   Text(
                     currentLesson['deliverable'],
                     style: TextStyle(
-                      fontSize: 14, // FIXED: was FontSize
+                      fontSize: 14,
                       color: isDark ? Colors.white.withOpacity(0.9) : Colors.black.withOpacity(0.9),
                     ),
                   ),
@@ -690,7 +690,7 @@ class _EarningsInputState extends State<_EarningsInput> {
                     style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.w700,
-                      fontSize: 16, // FIXED: was FontSize
+                      fontSize: 16,
                     ),
                   ),
           ),
