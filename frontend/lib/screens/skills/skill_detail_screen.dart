@@ -279,7 +279,7 @@ class _SkillDetailScreenState extends ConsumerState<SkillDetailScreen> {
             Text(
               'Module ${currentModuleIdx + 1} • Lesson ${currentLessonIdx + 1}',
               style: TextStyle(
-                FontSize: 12, // DEBUG: Check if this needs fixing
+                fontSize: 12, // DEBUG: Check if this needs fixing
                 color: isDark ? Colors.white54 : Colors.black54,
               ),
             ),
