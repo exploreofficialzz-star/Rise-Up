@@ -43,9 +43,7 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen>
   Future<void> _load() async {
     setState(() => _loading = true);
     try {
-      // Get my courses and limits
       final myData = await api.get('/skills/my-courses');
-      // Get discover/recommended skills
       final discoverData = await api.get('/skills/discover');
       
       if (mounted) {
@@ -62,7 +60,6 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen>
   }
 
   Future<void> _generateSkillPath() async {
-    // Check if user can enroll more skills
     final canEnroll = _limits['can_enroll_more'] ?? false;
     final remainingFree = _limits['remaining_free_slots'] ?? 0;
     
@@ -92,7 +89,6 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen>
         'preferred_learning_style': result['style'],
       });
 
-      // Show preview before enrolling
       if (mounted) {
         final preview = await _showSkillPreview(
           response['preview_id'],
@@ -196,7 +192,6 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen>
               ],
             ),
             const SizedBox(height: 20),
-            // Income potential
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
@@ -243,7 +238,6 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen>
               ),
             ),
             const SizedBox(height: 16),
-            // Stats
             Row(
               children: [
                 _statBox(
@@ -269,7 +263,6 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen>
               ],
             ),
             const SizedBox(height: 20),
-            // First lesson preview
             if (firstLesson != null) ...[
               Text(
                 'Your First Lesson',
@@ -336,7 +329,6 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen>
               ),
             ],
             const Spacer(),
-            // Enrollment status
             if (!(status['can_enroll_free'] ?? false)) ...[
               Container(
                 padding: const EdgeInsets.all(12),
@@ -467,7 +459,6 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen>
           );
         }
       } else {
-        // Show limit/options dialog
         _showLimitDialogFromResponse(response);
       }
     } catch (e) {
@@ -572,7 +563,6 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen>
         adUnlocksRemaining: options['ad_unlocks_remaining'] ?? 0,
         onWatchAd: () {
           Navigator.pop(context);
-          // Retry with ad
         },
         onUpgrade: () {
           Navigator.pop(context);
@@ -692,10 +682,6 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen>
     context.push('/skills/lesson', extra: enrollment);
   }
 }
-
-// ─────────────────────────────────────────────────────────────────
-// My Learning Tab
-// ─────────────────────────────────────────────────────────────────
 
 class _MyLearningTab extends StatelessWidget {
   final List<dynamic> enrollments;
@@ -875,17 +861,13 @@ class _MyLearningTab extends StatelessWidget {
                   ),
                 ],
               ),
-            ).animate().fadeIn(delay: Duration(milliseconds: i * 60));
+            ).animate().fade(delay: (i * 60).ms); // FIXED: was .fadeIn(delay: Duration(milliseconds: i * 60))
           );
         },
       ),
     );
   }
 }
-
-// ─────────────────────────────────────────────────────────────────
-// Discover Tab
-// ─────────────────────────────────────────────────────────────────
 
 class _DiscoverTab extends StatelessWidget {
   final List<dynamic> recommendations;
@@ -905,7 +887,6 @@ class _DiscoverTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // AI Generate Card
         GestureDetector(
           onTap: onGenerateSkill,
           child: Container(
@@ -995,7 +976,6 @@ class _DiscoverTab extends StatelessWidget {
         
         const SizedBox(height: 24),
         
-        // Recommendations
         if (recommendations.isNotEmpty) ...[
           Text(
             'Recommended for You',
@@ -1056,17 +1036,13 @@ class _DiscoverTab extends StatelessWidget {
                   Icon(Iconsax.arrow_right_3, color: isDark ? Colors.white38 : Colors.black38),
                 ],
               ),
-            ).animate().fadeIn(delay: Duration(milliseconds: entry.key * 80));
+            ).animate().fadeIn(delay: (entry.key * 80).ms);
           }),
         ],
       ],
     );
   }
 }
-
-// ─────────────────────────────────────────────────────────────────
-// Generate Skill Sheet
-// ─────────────────────────────────────────────────────────────────
 
 class _GenerateSkillSheet extends StatefulWidget {
   const _GenerateSkillSheet();
@@ -1198,7 +1174,7 @@ class _GenerateSkillSheetState extends State<_GenerateSkillSheet> {
                         style: TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
-                          color: isSelected ? Colors.white : (isDark ? Colors.white70 : Colors.black70),
+                          color: isSelected ? Colors.white : (isDark ? Colors.white70 : Colors.black.withOpacity(0.7)), // FIXED: was Colors.black70
                         ),
                       ),
                     ),
@@ -1325,10 +1301,6 @@ class _GenerateSkillSheetState extends State<_GenerateSkillSheet> {
     );
   }
 }
-
-// ─────────────────────────────────────────────────────────────────
-// Limit Options Sheet
-// ─────────────────────────────────────────────────────────────────
 
 class _LimitOptionsSheet extends StatelessWidget {
   final bool canWatchAd;
