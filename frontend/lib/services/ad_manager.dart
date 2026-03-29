@@ -1,9 +1,4 @@
-// Add to your pubspec.yaml:
-// dependencies:
-//   shared_preferences: ^2.2.2
-
-import 'package:shared_preferences.dart';
-
+// frontend/lib/services/ad_manager.dart
 // ─────────────────────────────────────────────────────────────────
 // RiseUp Ad Manager — PRODUCTION READY (with SharedPreferences)
 // ─────────────────────────────────────────────────────────────────
@@ -11,7 +6,6 @@ import 'package:shared_preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'ad_service.dart';
-import 'api_service.dart';
 
 // Global singleton
 final adManager = AdManager._();
@@ -23,19 +17,19 @@ class AdManager {
   int _agentUsesToday = 0;
   int _workflowCount = 0;
   
-  // Skill unlock tracking
+  // Skill unlock tracking (NEW)
   int _adWatchesForSkill = 0;
-  int _requiredAdWatches = 3;
+  static const int _requiredAdWatches = 3;
   
-  // Premium feature tracking
-  int _premiumUsesRemaining = 3; // Default daily limit
+  // Premium feature tracking (NEW)
+  int _premiumUsesRemaining = 3;
 
   // Limits
   static const int kFreeAgentDaily = 3;
   static const int kFreeWorkflowMax = 2;
   static const int kFeedAdFrequency = 4;
 
-  // SharedPreferences keys
+  // SharedPreferences keys (NEW)
   static const String _keyPremiumUses = 'ad_premium_uses';
   static const String _keySkillWatches = 'ad_skill_watches';
   static const String _keyLastResetDate = 'ad_last_reset_date';
@@ -50,15 +44,15 @@ class AdManager {
   int get agentUsesRemaining => _isPremium ? 999 : (kFreeAgentDaily - _agentUsesToday).clamp(0, kFreeAgentDaily);
   int get workflowsRemaining => _isPremium ? 999 : (kFreeWorkflowMax - _workflowCount).clamp(0, kFreeWorkflowMax);
 
-  // Generic premium feature checking
+  // NEW: Generic premium feature checking
   bool get canUsePremiumFeature => isPremium || _premiumUsesRemaining > 0;
   int get premiumUsesRemaining => _premiumUsesRemaining;
 
-  // Challenge-specific (aliases for clarity)
+  // NEW: Challenge-specific (aliases for clarity)
   bool get canUseChallenge => canUsePremiumFeature;
   int get challengeUsesRemaining => _premiumUsesRemaining;
 
-  // Skill-specific
+  // NEW: Skill-specific
   bool get canUseSkill => canUsePremiumFeature;
   int get skillUsesRemaining => _premiumUsesRemaining;
 
@@ -70,8 +64,8 @@ class AdManager {
     _isPremium = isPremium;
     if (!isPremium) {
       await adService.initialize();
-      await _loadFromPrefs();
-      await _checkDailyReset();
+      await _loadFromPrefs(); // NEW
+      await _checkDailyReset(); // NEW
     }
   }
 
@@ -91,6 +85,7 @@ class AdManager {
     _workflowCount = count;
   }
 
+  // NEW: Record premium feature usage
   void recordPremiumFeatureUse() {
     if (!isPremium) {
       _premiumUsesRemaining = (_premiumUsesRemaining - 1).clamp(0, 999);
@@ -161,7 +156,7 @@ class AdManager {
     );
   }
 
-  /// Watch ad to unlock skill (requires multiple watches)
+  // NEW: Watch ad to unlock skill (requires multiple watches)
   Future<bool> watchAdForSkillUnlock(BuildContext context) async {
     final ok = await adService.showRewardedAd(
       featureKey: 'skill_unlock',
@@ -173,7 +168,7 @@ class AdManager {
     );
     
     if (ok && _adWatchesForSkill >= _requiredAdWatches) {
-      _adWatchesForSkill = 0; // Reset
+      _adWatchesForSkill = 0;
       await _saveToPrefs();
       return true; // Unlocked
     }
@@ -191,7 +186,7 @@ class AdManager {
     return false;
   }
 
-  /// Watch ad for premium feature access (adds uses)
+  // NEW: Watch ad for premium feature access (adds uses)
   Future<bool> watchAdForPremiumFeature(BuildContext context) async {
     return adService.showRewardedAd(
       featureKey: 'premium_feature',
@@ -203,12 +198,12 @@ class AdManager {
     );
   }
 
-  /// Alias for challenge feature
+  // NEW: Alias for challenge feature
   Future<bool> watchAdForChallenge(BuildContext context) async {
     return await watchAdForPremiumFeature(context);
   }
 
-  /// Alias for skill feature access
+  // NEW: Alias for skill feature access
   Future<bool> watchAdForSkill(BuildContext context) async {
     return await watchAdForPremiumFeature(context);
   }
@@ -242,7 +237,7 @@ class AdManager {
   }
 
   // ═════════════════════════════════════════════════════════════════
-  // PERSISTENCE (SharedPreferences) — IMPLEMENTED
+  // PERSISTENCE (SharedPreferences) — NEW
   // ═════════════════════════════════════════════════════════════════
 
   Future<void> _loadFromPrefs() async {
@@ -258,16 +253,15 @@ class AdManager {
   }
 
   // ═════════════════════════════════════════════════════════════════
-  // DAILY RESET — IMPLEMENTED
+  // DAILY RESET — NEW
   // ═════════════════════════════════════════════════════════════════
 
   Future<void> _checkDailyReset() async {
     final prefs = await SharedPreferences.getInstance();
     final lastReset = prefs.getString(_keyLastResetDate);
-    final today = DateTime.now().toIso8601String().split('T')[0]; // YYYY-MM-DD
+    final today = DateTime.now().toIso8601String().split('T')[0];
     
     if (lastReset != today) {
-      // New day - reset limits
       resetDailyLimits();
       await prefs.setString(_keyLastResetDate, today);
     }
