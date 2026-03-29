@@ -1,3 +1,4 @@
+// frontend/lib/screens/comments/comments_screen.dart
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -28,14 +29,15 @@ class _CommentsScreenState extends State<CommentsScreen> {
   final _ctrl   = TextEditingController();
   final _scroll = ScrollController();
 
-  List _comments     = [];
-  Map  _aiComment    = {};   // pinned AI comment if exists
-  Map  _postDetails  = {};
-  Map  _posterProfile = {};
-  bool _loading      = true;
-  bool _sending      = false;
-  bool _isFollowing  = false;
-  bool _followLoading = false;
+  List _comments       = [];
+  Map  _aiComment      = {};
+  Map  _postDetails    = {};
+  Map  _posterProfile  = {};
+  bool _loading        = true;
+  bool _sending        = false;
+  bool _isFollowing    = false;
+  bool _followLoading  = false;
+  bool _aiLoading      = false;   // tracks AI insight request in progress
   String? _myUserId;
 
   @override
@@ -45,7 +47,11 @@ class _CommentsScreenState extends State<CommentsScreen> {
   }
 
   @override
-  void dispose() { _ctrl.dispose(); _scroll.dispose(); super.dispose(); }
+  void dispose() {
+    _ctrl.dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
 
   Future<void> _load() async {
     setState(() => _loading = true);
@@ -61,7 +67,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
       final commentsData = results[0] as Map? ?? {};
       final all = (commentsData['comments'] as List? ?? []).cast<Map>();
 
-      // Separate pinned AI comment from regular comments
+      // Separate pinned AI comment from regular comments.
       Map aiComment = {};
       List regular  = [];
       for (final c in all) {
@@ -80,13 +86,15 @@ class _CommentsScreenState extends State<CommentsScreen> {
         isFollowing   = pd['is_following'] == true;
       }
 
-      if (mounted) setState(() {
-        _comments      = regular;
-        _aiComment     = aiComment;
-        _posterProfile = posterProfile;
-        _isFollowing   = isFollowing;
-        _loading       = false;
-      });
+      if (mounted) {
+        setState(() {
+          _comments      = regular;
+          _aiComment     = aiComment;
+          _posterProfile = posterProfile;
+          _isFollowing   = isFollowing;
+          _loading       = false;
+        });
+      }
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }
@@ -99,14 +107,19 @@ class _CommentsScreenState extends State<CommentsScreen> {
     setState(() => _sending = true);
     try {
       final data = await api.addComment(widget.postId, text);
-      if (mounted) setState(() {
-        _comments.add(data['comment'] as Map? ?? {'content': text});
-        _sending = false;
-      });
-      await Future.delayed(const Duration(milliseconds: 100));
-      if (_scroll.hasClients) {
-        _scroll.animateTo(_scroll.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+      if (mounted) {
+        setState(() {
+          _comments.add(data['comment'] as Map? ?? {'content': text});
+          _sending = false;
+        });
+        await Future.delayed(const Duration(milliseconds: 100));
+        if (_scroll.hasClients) {
+          _scroll.animateTo(
+            _scroll.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
       }
     } catch (_) {
       if (mounted) setState(() => _sending = false);
@@ -140,6 +153,85 @@ class _CommentsScreenState extends State<CommentsScreen> {
     }
   }
 
+  /// Request AI insight for this post and save the response as a pinned comment.
+  Future<void> _requestAiInsight() async {
+    if (_aiLoading) return;
+    HapticFeedback.mediumImpact();
+    setState(() => _aiLoading = true);
+
+    try {
+      // 1. Call AI to analyze the post content.
+      final aiRes = await api.post('/ai/post-insight', {
+        'post_id': widget.postId,
+        'content': widget.postContent,
+        'author':  widget.postAuthor,
+      });
+
+      final aiText = aiRes['response']?.toString()
+          ?? aiRes['content']?.toString()
+          ?? aiRes['insight']?.toString()
+          ?? '';
+
+      if (aiText.isEmpty) {
+        if (mounted) {
+          setState(() => _aiLoading = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('AI could not generate a response. Try again.'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+        return;
+      }
+
+      // 2. Save to backend as a pinned AI comment.
+      final savedRes = await api.post(
+        '/posts/${widget.postId}/comments',
+        {
+          'content':    aiText,
+          'is_ai':      true,
+          'is_pinned':  true,
+        },
+      );
+
+      if (mounted) {
+        setState(() {
+          _aiComment  = savedRes['comment'] as Map? ??
+              {
+                'content':   aiText,
+                'is_ai':     true,
+                'is_pinned': true,
+              };
+          _aiLoading = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✅ RiseUp AI insight pinned to top'),
+            backgroundColor: AppColors.success,
+            duration: Duration(seconds: 2),
+          ),
+        );
+        // Scroll to top so user sees the pinned AI comment.
+        if (_scroll.hasClients) {
+          _scroll.animateTo(0,
+              duration: const Duration(milliseconds: 400),
+              curve: Curves.easeOut);
+        }
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _aiLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Failed to get AI insight. Please try again.'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+  }
+
   String _timeAgo(String? iso) {
     if (iso == null) return '';
     final dt = DateTime.tryParse(iso);
@@ -169,6 +261,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
     final posterAvatar = _posterProfile['avatar_url']?.toString();
     final posterId     = widget.postUserId;
     final isOwnPost    = posterId != null && posterId == _myUserId;
+    final totalComments = _comments.length + (_aiComment.isNotEmpty ? 1 : 0);
 
     return Scaffold(
       backgroundColor: bg,
@@ -176,42 +269,89 @@ class _CommentsScreenState extends State<CommentsScreen> {
         backgroundColor: card,
         elevation: 0,
         surfaceTintColor: Colors.transparent,
+        // FIX: context.pop() works correctly because home_screen now uses
+        // context.push (not context.go) to navigate here.
         leading: IconButton(
           icon: Icon(Icons.arrow_back_rounded, color: text),
           onPressed: () => context.pop(),
-          tooltip: 'Back to post',
+          tooltip: 'Back',
         ),
-        title: Text('Comments (${_comments.length + (_aiComment.isNotEmpty ? 1 : 0)})',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: text)),
+        title: Text(
+          'Comments ($totalComments)',
+          style: TextStyle(
+              fontSize: 16, fontWeight: FontWeight.w700, color: text),
+        ),
         actions: [
+          // AI insight button — generates and pins AI response as top comment.
+          _aiLoading
+              ? Container(
+                  width: 40,
+                  height: 40,
+                  margin: const EdgeInsets.only(right: 4),
+                  child: Center(
+                    child: SizedBox(
+                      width: 18, height: 18,
+                      child: CircularProgressIndicator(
+                        color: AppColors.primary, strokeWidth: 2),
+                    ),
+                  ),
+                )
+              : IconButton(
+                  icon: Container(
+                    padding: const EdgeInsets.all(5),
+                    decoration: BoxDecoration(
+                      gradient: _aiComment.isEmpty
+                          ? const LinearGradient(
+                              colors: [AppColors.primary, AppColors.accent])
+                          : null,
+                      color: _aiComment.isNotEmpty
+                          ? AppColors.primary.withOpacity(0.12)
+                          : null,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(
+                      Icons.auto_awesome,
+                      color: _aiComment.isNotEmpty
+                          ? AppColors.primary.withOpacity(0.5)
+                          : Colors.white,
+                      size: 16,
+                    ),
+                  ),
+                  tooltip: _aiComment.isEmpty
+                      ? 'Get AI insight (pins to top)'
+                      : 'AI insight already pinned',
+                  onPressed: _aiComment.isEmpty ? _requestAiInsight : null,
+                ),
+          // Share / copy link button.
           IconButton(
             icon: Icon(Iconsax.send_1, color: sub, size: 20),
-            tooltip: 'Share post',
+            tooltip: 'Copy post link',
             onPressed: () {
               Clipboard.setData(ClipboardData(
-                  text: 'riseup.app/post/${widget.postId}'));
+                  text: 'https://riseup.app/post/${widget.postId}'));
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Post link copied!'),
-                    backgroundColor: AppColors.success,
-                    duration: Duration(seconds: 1)));
+                const SnackBar(
+                  content: Text('✅ Post link copied!'),
+                  backgroundColor: AppColors.success,
+                  duration: Duration(seconds: 1),
+                ),
+              );
             },
           ),
         ],
         bottom: PreferredSize(
-            preferredSize: const Size.fromHeight(1),
-            child: Divider(height: 1, color: border)),
+          preferredSize: const Size.fromHeight(1),
+          child: Divider(height: 1, color: border),
+        ),
       ),
       body: Column(children: [
-        // ── Post preview with poster profile + follow ─────────────
-        GestureDetector(
-          onTap: posterId != null
-              ? () => context.push('/user-profile/$posterId')
-              : null,
-          child: Container(
-            color: card,
-            padding: const EdgeInsets.all(14),
-            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              // Poster avatar — tap to go to profile
+        // ── Post preview with poster profile + follow ──────────────
+        Container(
+          color: card,
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               GestureDetector(
                 onTap: posterId != null
                     ? () => context.push('/user-profile/$posterId')
@@ -219,8 +359,9 @@ class _CommentsScreenState extends State<CommentsScreen> {
                 child: Container(
                   width: 44, height: 44,
                   decoration: BoxDecoration(
-                      color: AppColors.primary.withOpacity(0.12),
-                      shape: BoxShape.circle),
+                    color: AppColors.primary.withOpacity(0.12),
+                    shape: BoxShape.circle,
+                  ),
                   child: ClipOval(
                     child: posterAvatar != null && posterAvatar.isNotEmpty
                         ? Image.network(posterAvatar, fit: BoxFit.cover,
@@ -230,58 +371,146 @@ class _CommentsScreenState extends State<CommentsScreen> {
                 ),
               ),
               const SizedBox(width: 10),
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Row(children: [
-                  GestureDetector(
-                    onTap: posterId != null
-                        ? () => context.push('/user-profile/$posterId')
-                        : null,
-                    child: Text(posterName, style: TextStyle(
-                        fontSize: 14, fontWeight: FontWeight.w700, color: text)),
-                  ),
-                  const Spacer(),
-                  if (!isOwnPost && posterId != null)
-                    GestureDetector(
-                      onTap: _toggleFollow,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: _isFollowing
-                              ? Colors.transparent
-                              : AppColors.primary,
-                          borderRadius: BorderRadius.circular(20),
-                          border: _isFollowing
-                              ? Border.all(color: isDark ? Colors.white24 : Colors.grey.shade300)
-                              : null,
-                        ),
-                        child: _followLoading
-                            ? const SizedBox(width: 14, height: 14,
-                                child: CircularProgressIndicator(
-                                    color: AppColors.primary, strokeWidth: 2))
-                            : Text(_isFollowing ? 'Following' : 'Follow',
-                                style: TextStyle(
-                                    color: _isFollowing
-                                        ? sub
-                                        : Colors.white,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w700)),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      GestureDetector(
+                        onTap: posterId != null
+                            ? () => context.push('/user-profile/$posterId')
+                            : null,
+                        child: Text(posterName,
+                            style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                                color: text)),
                       ),
+                      const Spacer(),
+                      if (!isOwnPost && posterId != null)
+                        GestureDetector(
+                          onTap: _toggleFollow,
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: _isFollowing
+                                  ? Colors.transparent
+                                  : AppColors.primary,
+                              borderRadius: BorderRadius.circular(20),
+                              border: _isFollowing
+                                  ? Border.all(
+                                      color: isDark
+                                          ? Colors.white24
+                                          : Colors.grey.shade300)
+                                  : null,
+                            ),
+                            child: _followLoading
+                                ? const SizedBox(
+                                    width: 14, height: 14,
+                                    child: CircularProgressIndicator(
+                                        color: AppColors.primary,
+                                        strokeWidth: 2))
+                                : Text(
+                                    _isFollowing ? 'Following' : 'Follow',
+                                    style: TextStyle(
+                                        color: _isFollowing
+                                            ? sub
+                                            : Colors.white,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w700),
+                                  ),
+                          ),
+                        ),
+                    ]),
+                    const SizedBox(height: 4),
+                    Text(
+                      widget.postContent,
+                      style: TextStyle(
+                          fontSize: 13, color: sub, height: 1.4),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                ]),
-                const SizedBox(height: 4),
-                Text(widget.postContent,
-                    style: TextStyle(fontSize: 13, color: sub, height: 1.4),
-                    maxLines: 2, overflow: TextOverflow.ellipsis),
-              ])),
-            ]),
+                  ],
+                ),
+              ),
+            ],
           ),
         ),
         Divider(height: 1, color: border),
 
+        // ── "Ask RiseUp AI" prompt banner (only when no AI comment yet) ──
+        if (!_loading && _aiComment.isEmpty)
+          GestureDetector(
+            onTap: _aiLoading ? null : _requestAiInsight,
+            child: Container(
+              width: double.infinity,
+              margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    AppColors.primary.withOpacity(0.08),
+                    AppColors.accent.withOpacity(0.06),
+                  ],
+                ),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                    color: AppColors.primary.withOpacity(0.2), width: 1),
+              ),
+              child: Row(children: [
+                Container(
+                  width: 28, height: 28,
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                        colors: [AppColors.primary, AppColors.accent]),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Center(
+                    child: Icon(Icons.auto_awesome,
+                        color: Colors.white, size: 14),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Ask RiseUp AI',
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.primary),
+                      ),
+                      Text(
+                        'Get an AI insight pinned at the top of comments',
+                        style: TextStyle(
+                            fontSize: 11,
+                            color: AppColors.primary.withOpacity(0.6)),
+                      ),
+                    ],
+                  ),
+                ),
+                _aiLoading
+                    ? const SizedBox(
+                        width: 16, height: 16,
+                        child: CircularProgressIndicator(
+                            color: AppColors.primary, strokeWidth: 2))
+                    : Icon(Icons.arrow_forward_ios_rounded,
+                        size: 13,
+                        color: AppColors.primary.withOpacity(0.6)),
+              ]),
+            ),
+          ),
+
         // ── Comments list ──────────────────────────────────────────
         Expanded(
           child: _loading
-              ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+              ? const Center(
+                  child: CircularProgressIndicator(color: AppColors.primary))
               : RefreshIndicator(
                   onRefresh: _load,
                   color: AppColors.primary,
@@ -297,17 +526,18 @@ class _CommentsScreenState extends State<CommentsScreen> {
                           text: text,
                           sub: sub,
                           surface: surface,
-                          onTap: () {},
                         ).animate().fadeIn(),
 
                       if (_comments.isEmpty && _aiComment.isEmpty)
                         Padding(
                           padding: const EdgeInsets.only(top: 60),
                           child: Column(children: [
-                            const Text('💬', style: TextStyle(fontSize: 48)),
+                            const Text('💬',
+                                style: TextStyle(fontSize: 48)),
                             const SizedBox(height: 12),
                             Text('No comments yet — be first!',
-                                style: TextStyle(color: sub, fontSize: 14)),
+                                style:
+                                    TextStyle(color: sub, fontSize: 14)),
                           ]),
                         ),
 
@@ -323,19 +553,29 @@ class _CommentsScreenState extends State<CommentsScreen> {
                           surface: surface,
                           onLike: () => _likeComment(c),
                           onProfileTap: () {
-                            final uid = (c['profiles'] as Map?)?['id']?.toString()
-                                ?? c['user_id']?.toString();
-                            if (uid != null) context.push('/user-profile/$uid');
+                            final uid =
+                                (c['profiles'] as Map?)?['id']?.toString()
+                                    ?? c['user_id']?.toString();
+                            if (uid != null) {
+                              context.push('/user-profile/$uid');
+                            }
                           },
                           onReply: () {
-                            final name = (c['profiles'] as Map?)?['full_name']?.toString() ?? 'User';
+                            final name =
+                                (c['profiles'] as Map?)?['full_name']
+                                    ?.toString() ??
+                                'User';
                             _ctrl.text = '@$name ';
-                            FocusScope.of(context).requestFocus(FocusNode());
+                            FocusScope.of(context)
+                                .requestFocus(FocusNode());
                           },
                           timeAgo: _timeAgo(c['created_at']?.toString()),
                           fmt: _fmt,
-                        ).animate().fadeIn(delay: Duration(milliseconds: i * 40));
+                        ).animate().fadeIn(
+                            delay: Duration(milliseconds: i * 40));
                       }),
+
+                      const SizedBox(height: 8),
                     ],
                   ),
                 ),
@@ -344,8 +584,9 @@ class _CommentsScreenState extends State<CommentsScreen> {
         // ── Comment input ──────────────────────────────────────────
         Container(
           decoration: BoxDecoration(
-              color: card,
-              border: Border(top: BorderSide(color: border))),
+            color: card,
+            border: Border(top: BorderSide(color: border)),
+          ),
           padding: EdgeInsets.fromLTRB(
               12, 8, 12, MediaQuery.of(context).padding.bottom + 8),
           child: Row(children: [
@@ -356,8 +597,9 @@ class _CommentsScreenState extends State<CommentsScreen> {
                     colors: [AppColors.primary, AppColors.accent]),
                 shape: BoxShape.circle,
               ),
-              child: const Center(child: Icon(Icons.person_rounded,
-                  color: Colors.white, size: 18)),
+              child: const Center(
+                  child: Icon(Icons.person_rounded,
+                      color: Colors.white, size: 18)),
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -387,13 +629,19 @@ class _CommentsScreenState extends State<CommentsScreen> {
                 width: 40, height: 40,
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
-                      colors: _sending
-                          ? [Colors.grey.shade400, Colors.grey.shade400]
-                          : [AppColors.primary, AppColors.accent]),
+                    colors: _sending
+                        ? [Colors.grey.shade400, Colors.grey.shade400]
+                        : [AppColors.primary, AppColors.accent],
+                  ),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: Icon(_sending ? Icons.hourglass_empty_rounded : Icons.send_rounded,
-                    color: Colors.white, size: 18),
+                child: Icon(
+                  _sending
+                      ? Icons.hourglass_empty_rounded
+                      : Icons.send_rounded,
+                  color: Colors.white,
+                  size: 18,
+                ),
               ),
             ),
           ]),
@@ -403,12 +651,17 @@ class _CommentsScreenState extends State<CommentsScreen> {
   }
 
   Widget _initials(String name) => Container(
-    color: AppColors.primary.withOpacity(0.15),
-    child: Center(child: Text(
-        name.isNotEmpty ? name[0].toUpperCase() : '?',
-        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800,
-            color: AppColors.primary))),
-  );
+        color: AppColors.primary.withOpacity(0.15),
+        child: Center(
+          child: Text(
+            name.isNotEmpty ? name[0].toUpperCase() : '?',
+            style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                color: AppColors.primary),
+          ),
+        ),
+      );
 }
 
 // ── Pinned AI Comment Card ─────────────────────────────────────────
@@ -416,72 +669,97 @@ class _AiCommentCard extends StatelessWidget {
   final Map comment;
   final bool isDark;
   final Color text, sub, surface;
-  final VoidCallback onTap;
 
   const _AiCommentCard({
-    required this.comment, required this.isDark,
-    required this.text, required this.sub, required this.surface,
-    required this.onTap,
+    required this.comment,
+    required this.isDark,
+    required this.text,
+    required this.sub,
+    required this.surface,
   });
 
   @override
   Widget build(BuildContext context) {
     final content = comment['content']?.toString() ?? '';
+
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 4, 16, 12),
       decoration: BoxDecoration(
         gradient: LinearGradient(
-          colors: [AppColors.primary.withOpacity(0.08), AppColors.accent.withOpacity(0.06)],
+          colors: [
+            AppColors.primary.withOpacity(0.08),
+            AppColors.accent.withOpacity(0.06),
+          ],
         ),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: AppColors.primary.withOpacity(0.2)),
       ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // Pinned header
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          decoration: BoxDecoration(
-            color: AppColors.primary.withOpacity(0.1),
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(15)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Pinned header
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: AppColors.primary.withOpacity(0.1),
+              borderRadius:
+                  const BorderRadius.vertical(top: Radius.circular(15)),
+            ),
+            child: Row(children: [
+              Container(
+                width: 22, height: 22,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                      colors: [AppColors.primary, AppColors.accent]),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Center(
+                  child: Icon(Icons.auto_awesome,
+                      color: Colors.white, size: 12),
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Text(
+                'RiseUp AI',
+                style: TextStyle(
+                    fontSize: 12,
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Text(
+                  'PINNED',
+                  style: TextStyle(
+                      fontSize: 8,
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.5),
+                ),
+              ),
+              const Spacer(),
+              Icon(Icons.push_pin_rounded,
+                  size: 14,
+                  color: AppColors.primary.withOpacity(0.6)),
+            ]),
           ),
-          child: Row(children: [
-            Container(
-              width: 22, height: 22,
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                    colors: [AppColors.primary, AppColors.accent]),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: const Center(child: Icon(Icons.auto_awesome,
-                  color: Colors.white, size: 12)),
+          // Content
+          Padding(
+            padding: const EdgeInsets.all(14),
+            child: SelectableText(
+              content,
+              style: TextStyle(fontSize: 13, color: text, height: 1.5),
             ),
-            const SizedBox(width: 8),
-            const Text('RiseUp AI',
-                style: TextStyle(fontSize: 12, color: AppColors.primary,
-                    fontWeight: FontWeight.w700)),
-            const SizedBox(width: 6),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: AppColors.primary.withOpacity(0.15),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Text('PINNED',
-                  style: TextStyle(fontSize: 8, color: AppColors.primary,
-                      fontWeight: FontWeight.w800, letterSpacing: 0.5)),
-            ),
-            const Spacer(),
-            Icon(Icons.push_pin_rounded, size: 14,
-                color: AppColors.primary.withOpacity(0.6)),
-          ]),
-        ),
-        // Content
-        Padding(
-          padding: const EdgeInsets.all(14),
-          child: SelectableText(content,
-              style: TextStyle(fontSize: 13, color: text, height: 1.5)),
-        ),
-      ]),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -496,89 +774,125 @@ class _CommentCard extends StatelessWidget {
   final String Function(int) fmt;
 
   const _CommentCard({
-    required this.comment, required this.isDark,
-    required this.text, required this.sub, required this.surface,
-    required this.onLike, required this.onProfileTap, required this.onReply,
-    required this.timeAgo, required this.fmt,
+    required this.comment,
+    required this.isDark,
+    required this.text,
+    required this.sub,
+    required this.surface,
+    required this.onLike,
+    required this.onProfileTap,
+    required this.onReply,
+    required this.timeAgo,
+    required this.fmt,
   });
 
   @override
   Widget build(BuildContext context) {
-    final profile  = comment['profiles'] as Map? ?? {};
-    final name     = profile['full_name']?.toString() ?? 'User';
-    final avatar   = profile['avatar_url']?.toString();
-    final content  = comment['content']?.toString() ?? '';
-    final isLiked  = comment['is_liked'] == true;
-    final likes    = comment['likes_count'] as int? ?? 0;
+    final profile = comment['profiles'] as Map? ?? {};
+    final name    = profile['full_name']?.toString() ?? 'User';
+    final avatar  = profile['avatar_url']?.toString();
+    final content = comment['content']?.toString() ?? '';
+    final isLiked = comment['is_liked'] == true;
+    final likes   = comment['likes_count'] as int? ?? 0;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // Avatar — tap opens profile
-        GestureDetector(
-          onTap: onProfileTap,
-          child: Container(
-            width: 38, height: 38,
-            decoration: BoxDecoration(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          GestureDetector(
+            onTap: onProfileTap,
+            child: Container(
+              width: 38, height: 38,
+              decoration: BoxDecoration(
                 color: AppColors.primary.withOpacity(0.1),
-                shape: BoxShape.circle),
-            child: ClipOval(
-              child: avatar != null && avatar.isNotEmpty
-                  ? Image.network(avatar, fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => _initials(name))
-                  : _initials(name),
-            ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-                color: surface, borderRadius: BorderRadius.circular(14)),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              // Name — tap opens profile
-              GestureDetector(
-                onTap: onProfileTap,
-                child: Text(name, style: TextStyle(
-                    fontSize: 13, fontWeight: FontWeight.w700, color: text)),
+                shape: BoxShape.circle,
               ),
-              const SizedBox(height: 4),
-              Text(content, style: TextStyle(
-                  fontSize: 13, color: text, height: 1.4)),
-            ]),
+              child: ClipOval(
+                child: avatar != null && avatar.isNotEmpty
+                    ? Image.network(avatar, fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => _initials(name))
+                    : _initials(name),
+              ),
+            ),
           ),
-          const SizedBox(height: 6),
-          Row(children: [
-            Text(timeAgo, style: TextStyle(fontSize: 11, color: sub)),
-            const SizedBox(width: 16),
-            GestureDetector(
-              onTap: onLike,
-              child: Row(children: [
-                Icon(isLiked ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-                    size: 14,
-                    color: isLiked ? Colors.red : sub),
-                const SizedBox(width: 4),
-                Text(fmt(likes), style: TextStyle(fontSize: 11, color: sub)),
-              ]),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: surface,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      GestureDetector(
+                        onTap: onProfileTap,
+                        child: Text(name,
+                            style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                                color: text)),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(content,
+                          style: TextStyle(
+                              fontSize: 13, color: text, height: 1.4)),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Row(children: [
+                  Text(timeAgo,
+                      style: TextStyle(fontSize: 11, color: sub)),
+                  const SizedBox(width: 16),
+                  GestureDetector(
+                    onTap: onLike,
+                    child: Row(children: [
+                      Icon(
+                        isLiked
+                            ? Icons.favorite_rounded
+                            : Icons.favorite_border_rounded,
+                        size: 14,
+                        color: isLiked ? Colors.red : sub,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(fmt(likes),
+                          style: TextStyle(fontSize: 11, color: sub)),
+                    ]),
+                  ),
+                  const SizedBox(width: 16),
+                  GestureDetector(
+                    onTap: onReply,
+                    child: Text('Reply',
+                        style: TextStyle(
+                            fontSize: 11,
+                            color: sub,
+                            fontWeight: FontWeight.w600)),
+                  ),
+                ]),
+              ],
             ),
-            const SizedBox(width: 16),
-            GestureDetector(
-              onTap: onReply,
-              child: Text('Reply', style: TextStyle(
-                  fontSize: 11, color: sub, fontWeight: FontWeight.w600)),
-            ),
-          ]),
-        ])),
-      ]),
+          ),
+        ],
+      ),
     );
   }
 
   Widget _initials(String name) => Container(
-    color: AppColors.primary.withOpacity(0.15),
-    child: Center(child: Text(
-        name.isNotEmpty ? name[0].toUpperCase() : '?',
-        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800,
-            color: AppColors.primary))),
-  );
+        color: AppColors.primary.withOpacity(0.15),
+        child: Center(
+          child: Text(
+            name.isNotEmpty ? name[0].toUpperCase() : '?',
+            style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w800,
+                color: AppColors.primary),
+          ),
+        ),
+      );
 }
