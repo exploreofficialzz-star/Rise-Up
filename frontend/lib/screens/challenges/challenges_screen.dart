@@ -143,7 +143,7 @@ class _ChallengesScreenState extends ConsumerState<ChallengesScreen> {
                 width: 40,
                 height: 4,
                 decoration: BoxDecoration(
-                  color: isDark ? Colors.white24 : Colors.black12,
+                  color: isDark ? Colors.white.withOpacity(0.24) : Colors.black.withOpacity(0.12),
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -215,7 +215,7 @@ class _ChallengesScreenState extends ConsumerState<ChallengesScreen> {
               plan['why_this_works'] ?? 'AI-generated plan tailored to your goals',
               style: TextStyle(
                 fontSize: 13,
-                color: isDark ? Colors.white70 : Colors.black54,
+                color: isDark ? Colors.white.withOpacity(0.7) : Colors.black.withOpacity(0.6),
                 height: 1.5,
               ),
             ),
@@ -252,7 +252,7 @@ class _ChallengesScreenState extends ConsumerState<ChallengesScreen> {
                       '${firstAction['time_minutes'] ?? 30} mins · ${firstAction['platforms']?.join(', ') ?? 'Any platform'}',
                       style: TextStyle(
                         fontSize: 12,
-                        color: isDark ? Colors.white54 : Colors.black45,
+                        color: isDark ? Colors.white.withOpacity(0.5) : Colors.black.withOpacity(0.5),
                       ),
                     ),
                   ],
@@ -317,7 +317,7 @@ class _ChallengesScreenState extends ConsumerState<ChallengesScreen> {
                   label,
                   style: TextStyle(
                     fontSize: 11,
-                    color: isDark ? Colors.white54 : Colors.black45,
+                    color: isDark ? Colors.white.withOpacity(0.5) : Colors.black.withOpacity(0.5),
                   ),
                 ),
                 const SizedBox(height: 2),
@@ -334,7 +334,7 @@ class _ChallengesScreenState extends ConsumerState<ChallengesScreen> {
                     subValue,
                     style: TextStyle(
                       fontSize: 11,
-                      color: isDark ? Colors.white38 : Colors.black38,
+                      color: isDark ? Colors.white.withOpacity(0.38) : Colors.black.withOpacity(0.38),
                     ),
                   ),
               ],
@@ -376,7 +376,7 @@ class _ChallengesScreenState extends ConsumerState<ChallengesScreen> {
                       width: 40,
                       height: 4,
                       decoration: BoxDecoration(
-                        color: isDark ? Colors.white24 : Colors.black12,
+                        color: isDark ? Colors.white.withOpacity(0.24) : Colors.black.withOpacity(0.12),
                         borderRadius: BorderRadius.circular(2),
                       ),
                     ),
@@ -395,7 +395,7 @@ class _ChallengesScreenState extends ConsumerState<ChallengesScreen> {
                     challenge['title'] ?? '',
                     style: TextStyle(
                       fontSize: 13,
-                      color: isDark ? Colors.white54 : Colors.black54,
+                      color: isDark ? Colors.white.withOpacity(0.5) : Colors.black.withOpacity(0.5),
                     ),
                   ),
                   const SizedBox(height: 20),
@@ -409,7 +409,7 @@ class _ChallengesScreenState extends ConsumerState<ChallengesScreen> {
                     decoration: InputDecoration(
                       hintText: "What action did you take today?",
                       hintStyle: TextStyle(
-                        color: isDark ? Colors.white38 : Colors.black38,
+                        color: isDark ? Colors.white.withOpacity(0.38) : Colors.black.withOpacity(0.38),
                       ),
                       filled: true,
                       fillColor: isDark ? Colors.white.withOpacity(0.05) : Colors.grey.shade100,
@@ -430,7 +430,7 @@ class _ChallengesScreenState extends ConsumerState<ChallengesScreen> {
                     decoration: InputDecoration(
                       hintText: "Amount earned (${challenge['currency_local']})",
                       hintStyle: TextStyle(
-                        color: isDark ? Colors.white38 : Colors.black38,
+                        color: isDark ? Colors.white.withOpacity(0.38) : Colors.black.withOpacity(0.38),
                       ),
                       filled: true,
                       fillColor: isDark ? Colors.white.withOpacity(0.05) : Colors.grey.shade100,
@@ -440,7 +440,7 @@ class _ChallengesScreenState extends ConsumerState<ChallengesScreen> {
                       ),
                       prefixIcon: Icon(
                         Iconsax.wallet_3,
-                        color: isDark ? Colors.white54 : Colors.black45,
+                        color: isDark ? Colors.white.withOpacity(0.5) : Colors.black.withOpacity(0.5),
                       ),
                       contentPadding: const EdgeInsets.all(16),
                     ),
@@ -451,7 +451,7 @@ class _ChallengesScreenState extends ConsumerState<ChallengesScreen> {
                     style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
-                      color: isDark ? Colors.white70 : Colors.black70,
+                      color: isDark ? Colors.white.withOpacity(0.7) : Colors.black.withOpacity(0.7),
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -594,7 +594,7 @@ class _ChallengesScreenState extends ConsumerState<ChallengesScreen> {
               intervention['assessment'] ?? 'You\'re falling behind pace',
               style: TextStyle(
                 fontSize: 14,
-                color: isDark ? Colors.white70 : Colors.black70,
+                color: isDark ? Colors.white.withOpacity(0.7) : Colors.black.withOpacity(0.7),
               ),
             ),
             const SizedBox(height: 16),
@@ -634,7 +634,7 @@ class _ChallengesScreenState extends ConsumerState<ChallengesScreen> {
                 style: TextStyle(
                   fontSize: 13,
                   fontStyle: FontStyle.italic,
-                  color: isDark ? Colors.white54 : Colors.black54,
+                  color: isDark ? Colors.white.withOpacity(0.5) : Colors.black.withOpacity(0.5),
                 ),
               ),
             ],
@@ -681,7 +681,7 @@ class _ChallengesScreenState extends ConsumerState<ChallengesScreen> {
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 14,
-                color: isDark ? Colors.white70 : Colors.black70,
+                color: isDark ? Colors.white.withOpacity(0.7) : Colors.black.withOpacity(0.7),
               ),
             ),
             const SizedBox(height: 20),
@@ -765,7 +765,7 @@ class _ChallengesScreenState extends ConsumerState<ChallengesScreen> {
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 14,
-                color: isDark ? Colors.white60 : Colors.black60,
+                color: isDark ? Colors.white.withOpacity(0.6) : Colors.black.withOpacity(0.6),
               ),
             ),
             const SizedBox(height: 24),
@@ -822,7 +822,7 @@ class _ChallengesScreenState extends ConsumerState<ChallengesScreen> {
     final bg = isDark ? Colors.black : Colors.white;
     final card = isDark ? AppColors.bgCard : Colors.white;
     final text = isDark ? Colors.white : Colors.black87;
-    final sub = isDark ? Colors.white54 : Colors.black45;
+    final sub = isDark ? Colors.white.withOpacity(0.54) : Colors.black.withOpacity(0.45);
 
     return Scaffold(
       backgroundColor: bg,
@@ -1086,7 +1086,7 @@ class _ChallengesScreenState extends ConsumerState<ChallengesScreen> {
             borderRadius: BorderRadius.circular(6),
             child: LinearProgressIndicator(
               value: progress.toDouble(),
-              backgroundColor: isDark ? Colors.white12 : Colors.grey.shade200,
+              backgroundColor: isDark ? Colors.white.withOpacity(0.12) : Colors.grey.shade200,
               valueColor: AlwaysStoppedAnimation(
                 behindPace ? AppColors.warning : AppColors.success,
               ),
@@ -1322,7 +1322,7 @@ class _CreateChallengeSheetState extends State<_CreateChallengeSheet> {
                 width: 40,
                 height: 4,
                 decoration: BoxDecoration(
-                  color: isDark ? Colors.white24 : Colors.black12,
+                  color: isDark ? Colors.white.withOpacity(0.24) : Colors.black.withOpacity(0.12),
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -1341,7 +1341,7 @@ class _CreateChallengeSheetState extends State<_CreateChallengeSheet> {
               'Describe your income goal. AI will build a personalized plan.',
               style: TextStyle(
                 fontSize: 14,
-                color: isDark ? Colors.white60 : Colors.black60,
+                color: isDark ? Colors.white.withOpacity(0.6) : Colors.black.withOpacity(0.6),
               ),
             ),
             const SizedBox(height: 20),
@@ -1354,7 +1354,7 @@ class _CreateChallengeSheetState extends State<_CreateChallengeSheet> {
               decoration: InputDecoration(
                 hintText: 'e.g., "I want to earn \$500 this month doing graphic design for small businesses"',
                 hintStyle: TextStyle(
-                  color: isDark ? Colors.white38 : Colors.black38,
+                  color: isDark ? Colors.white.withOpacity(0.38) : Colors.black.withOpacity(0.38),
                   fontSize: 14,
                 ),
                 filled: true,
@@ -1372,7 +1372,7 @@ class _CreateChallengeSheetState extends State<_CreateChallengeSheet> {
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
-                color: isDark ? Colors.white70 : Colors.black70,
+                color: isDark ? Colors.white.withOpacity(0.7) : Colors.black.withOpacity(0.7),
               ),
             ),
             const SizedBox(height: 8),
@@ -1389,7 +1389,7 @@ class _CreateChallengeSheetState extends State<_CreateChallengeSheet> {
                   selectedColor: AppColors.primary,
                   backgroundColor: isDark ? Colors.white.withOpacity(0.1) : Colors.grey.shade200,
                   labelStyle: TextStyle(
-                    color: isSelected ? Colors.white : (isDark ? Colors.white70 : Colors.black70),
+                    color: isSelected ? Colors.white : (isDark ? Colors.white.withOpacity(0.7) : Colors.black.withOpacity(0.7)),
                     fontWeight: FontWeight.w600,
                   ),
                 );
@@ -1405,7 +1405,7 @@ class _CreateChallengeSheetState extends State<_CreateChallengeSheet> {
               decoration: InputDecoration(
                 hintText: 'Any constraints? (time, skills, resources)',
                 hintStyle: TextStyle(
-                  color: isDark ? Colors.white38 : Colors.black38,
+                  color: isDark ? Colors.white.withOpacity(0.38) : Colors.black.withOpacity(0.38),
                 ),
                 filled: true,
                 fillColor: isDark ? Colors.white.withOpacity(0.05) : Colors.grey.shade100,
