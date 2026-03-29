@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'package:dio/dio.dart';
+import 'package:path/path.dart' as p;
 import '../config/app_constants.dart';
 import '../utils/storage_service.dart';
 
@@ -16,6 +18,45 @@ class ApiException implements Exception {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// MIME helpers — no hardcoding
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Returns {subtype, extension} from a file path or URL.
+/// e.g. 'photo.heic' → {subtype: 'heic', ext: 'heic'}
+Map<String, String> _mimeFromPath(String filePath) {
+  final ext = p.extension(filePath).toLowerCase().replaceFirst('.', '');
+  const map = <String, String>{
+    'jpg':  'jpeg',
+    'jpeg': 'jpeg',
+    'png':  'png',
+    'webp': 'webp',
+    'gif':  'gif',
+    'heic': 'heic',
+    'heif': 'heif',
+    'avif': 'avif',
+    'bmp':  'bmp',
+    'tiff': 'tiff',
+    'tif':  'tiff',
+    'svg':  'svg+xml',
+    'ico':  'x-icon',
+    'mp4':  'mp4',
+    'mov':  'quicktime',
+    'avi':  'x-msvideo',
+    'mkv':  'x-matroska',
+    'webm': 'webm',
+    '3gp':  '3gpp',
+  };
+  final subtype = map[ext] ?? 'jpeg';
+  final isVideo = ['mp4', 'mov', 'avi', 'mkv', 'webm', '3gp'].contains(ext);
+  return {
+    'type':    isVideo ? 'video' : 'image',
+    'subtype': subtype,
+    'ext':     ext.isEmpty ? 'jpg' : ext,
+    'mime':    '${isVideo ? "video" : "image"}/$subtype',
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ApiService — singleton, Dio-based, JWT + refresh token aware
 // ─────────────────────────────────────────────────────────────────────────────
 class ApiService {
@@ -23,8 +64,6 @@ class ApiService {
   factory ApiService() => _instance;
 
   late final Dio _dio;
-
-  /// Guards against infinite refresh loops
   bool _isRefreshing = false;
 
   ApiService._internal() {
@@ -35,7 +74,6 @@ class ApiService {
       headers: {'Content-Type': 'application/json'},
     ));
 
-    // ── Request interceptor: inject auth token ──────────────────
     _dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) async {
         final token = await storageService.read(key: 'access_token');
@@ -44,12 +82,7 @@ class ApiService {
         }
         return handler.next(options);
       },
-
-      onResponse: (response, handler) {
-        return handler.next(response);
-      },
-
-      // ── Error interceptor: 401 refresh + unified errors ───────
+      onResponse: (response, handler) => handler.next(response),
       onError: (error, handler) async {
         if (error.response?.statusCode == 401 && !_isRefreshing) {
           _isRefreshing = true;
@@ -67,19 +100,17 @@ class ApiService {
             }
           }
         }
-
         return handler.next(error);
       },
     ));
   }
 
-  // ── Internal: silent token refresh ───────────────────────────
   Future<bool> _refreshToken() async {
     try {
       final refresh = await storageService.read(key: 'refresh_token');
       if (refresh == null) return false;
-      final res =
-          await _dio.post('/auth/refresh', data: {'refresh_token': refresh});
+      final res = await _dio.post('/auth/refresh',
+          data: {'refresh_token': refresh});
       await storageService.write(
           key: 'access_token', value: res.data['access_token'] as String);
       await storageService.write(
@@ -90,64 +121,49 @@ class ApiService {
     }
   }
 
-  // ── Centralized error parser ──────────────────────────────────
   ApiException _handleError(dynamic e) {
     if (e is DioException) {
       final data = e.response?.data;
-      final msg = (data is Map ? data['detail'] ?? data['message'] : null) ??
-          e.message ??
-          'Something went wrong';
-      return ApiException(msg.toString(),
-          statusCode: e.response?.statusCode);
+      final msg =
+          (data is Map ? data['detail'] ?? data['message'] : null) ??
+              e.message ??
+              'Something went wrong';
+      return ApiException(msg.toString(), statusCode: e.response?.statusCode);
     }
     return ApiException(e.toString());
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Generic HTTP helpers ─────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Generic HTTP helpers ─────────────────────────────────────────────────
 
-  Future<dynamic> get(String path,
-      {Map<String, dynamic>? queryParams}) async {
+  Future<dynamic> get(String path, {Map<String, dynamic>? queryParams}) async {
     try {
       final res = await _dio.get(path, queryParameters: queryParams);
       return res.data;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<dynamic> post(String path, Map<String, dynamic> data,
       {Map<String, dynamic>? queryParams}) async {
     try {
-      final res =
-          await _dio.post(path, data: data, queryParameters: queryParams);
+      final res = await _dio.post(path, data: data, queryParameters: queryParams);
       return res.data;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<dynamic> patch(String path, Map<String, dynamic> data,
       {Map<String, dynamic>? queryParams}) async {
     try {
-      final res =
-          await _dio.patch(path, data: data, queryParameters: queryParams);
+      final res = await _dio.patch(path, data: data, queryParameters: queryParams);
       return res.data;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<dynamic> put(String path, Map<String, dynamic> data,
       {Map<String, dynamic>? queryParams}) async {
     try {
-      final res =
-          await _dio.put(path, data: data, queryParameters: queryParams);
+      final res = await _dio.put(path, data: data, queryParameters: queryParams);
       return res.data;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<dynamic> delete(String path,
@@ -155,31 +171,22 @@ class ApiService {
     try {
       final res = await _dio.delete(path, queryParameters: queryParams);
       return res.data;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Auth ─────────────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Auth ─────────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> signUp(
       String email, String password, String? name) async {
     try {
       final res = await _dio.post('/auth/signup', data: {
-        'email': email,
-        'password': password,
-        'full_name': name,
+        'email': email, 'password': password, 'full_name': name,
       });
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  Future<Map<String, dynamic>> signIn(
-      String email, String password) async {
+  Future<Map<String, dynamic>> signIn(String email, String password) async {
     try {
       final res = await _dio.post('/auth/signin',
           data: {'email': email, 'password': password});
@@ -191,36 +198,28 @@ class ApiService {
       await storageService.write(
           key: 'user_id', value: data['user_id'] as String);
       return data;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<void> signOut() async {
-    try {
-      await _dio.post('/auth/signout');
-    } catch (_) {}
+    try { await _dio.post('/auth/signout', data: {}); } catch (_) {}
     await storageService.deleteAll();
   }
 
   Future<Map<String, dynamic>> forgotPassword(String email) async {
     try {
-      final res = await _dio
-          .post('/auth/forgot-password', data: {'email': email});
+      final res = await _dio.post('/auth/forgot-password',
+          data: {'email': email});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> resendVerification(String email) async {
     try {
-      final res = await _dio
-          .post('/auth/resend-verification', data: {'email': email});
+      final res = await _dio.post('/auth/resend-verification',
+          data: {'email': email});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> checkVersion(String appVersion) async {
@@ -228,25 +227,17 @@ class ApiService {
       final res = await _dio.get('/auth/version',
           queryParameters: {'app_version': appVersion});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  Future<String?> getToken() => storageService.read(key: 'access_token');
+  Future<String?> getToken()  => storageService.read(key: 'access_token');
   Future<String?> getUserId() => storageService.read(key: 'user_id');
 
   Future<bool> isAuthenticated() async {
-    try {
-      return (await getToken()) != null;
-    } catch (_) {
-      return false;
-    }
+    try { return (await getToken()) != null; } catch (_) { return false; }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── AI Chat ──────────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── AI Chat ──────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> chat({
     required String message,
@@ -262,9 +253,7 @@ class ApiService {
         if (preferredModel != null) 'preferred_model': preferredModel,
       });
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> generateTasks(
@@ -275,60 +264,45 @@ class ApiService {
         if (category != null) 'category': category,
       });
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> generateRoadmap() async {
     try {
-      final res = await _dio.post('/ai/generate-roadmap');
+      final res = await _dio.post('/ai/generate-roadmap', data: {});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<List<dynamic>> getAiConversations() async {
     try {
       final res = await _dio.get('/ai/conversations');
       return (res.data['conversations'] as List?) ?? [];
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<List<dynamic>> getMessages(String conversationId) async {
     try {
-      final res =
-          await _dio.get('/ai/conversations/$conversationId/messages');
+      final res = await _dio.get('/ai/conversations/$conversationId/messages');
       return (res.data['messages'] as List?) ?? [];
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<List<dynamic>> getAvailableModels() async {
     try {
       final res = await _dio.get('/ai/models');
       return (res.data['models'] as List?) ?? [];
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Tasks ────────────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Tasks ────────────────────────────────────────────────────────────────
 
   Future<List<dynamic>> getTasks({String? status}) async {
     try {
       final res = await _dio.get('/tasks/',
           queryParameters: {if (status != null) 'status': status});
       return (res.data['tasks'] as List?) ?? [];
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> updateTask(String taskId,
@@ -339,50 +313,38 @@ class ApiService {
         if (earnings != null) 'actual_earnings': earnings,
       });
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> skipTask(String taskId) async {
     try {
       final res = await _dio.delete('/tasks/$taskId');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Skills ───────────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Skills ───────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> getSkillModules() async {
     try {
       final res = await _dio.get('/skills/modules');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> enrollSkill(String moduleId) async {
     try {
-      final res = await _dio
-          .post('/skills/enroll', data: {'module_id': moduleId});
+      final res = await _dio.post('/skills/enroll',
+          data: {'module_id': moduleId});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<List<dynamic>> getMyCourses() async {
     try {
       final res = await _dio.get('/skills/my-courses');
       return (res.data['enrollments'] as List?) ?? [];
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> updateSkillProgress({
@@ -399,14 +361,10 @@ class ApiService {
         if (earnings != null) 'earnings_from_skill': earnings,
       });
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Payments ─────────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Payments ─────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> initiatePayment(
       {String plan = 'monthly', String currency = 'NGN'}) async {
@@ -414,9 +372,7 @@ class ApiService {
       final res = await _dio.post('/payments/initiate',
           data: {'plan': plan, 'currency': currency});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> verifyPayment(
@@ -427,9 +383,7 @@ class ApiService {
         if (transactionId != null) 'transaction_id': transactionId,
       });
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> unlockViaAd({
@@ -444,69 +398,51 @@ class ApiService {
         'duration_hours': hours,
       });
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  Future<Map<String, dynamic>> checkFeatureAccess(
-      String featureKey) async {
+  Future<Map<String, dynamic>> checkFeatureAccess(String featureKey) async {
     try {
-      final res =
-          await _dio.get('/payments/check-access/$featureKey');
+      final res = await _dio.get('/payments/check-access/$featureKey');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> getSubscriptionStatus() async {
     try {
       final res = await _dio.get('/payments/subscription-status');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Progress ─────────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Progress ─────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> getStats() async {
     try {
       final res = await _dio.get('/progress/stats');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> getEarnings() async {
     try {
       final res = await _dio.get('/progress/earnings');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> getRoadmap() async {
     try {
       final res = await _dio.get('/progress/roadmap');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> getProfile() async {
     try {
       final res = await _dio.get('/progress/profile');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> updateProfile(
@@ -514,9 +450,7 @@ class ApiService {
     try {
       final res = await _dio.patch('/progress/profile', data: data);
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> logEarning({
@@ -535,56 +469,276 @@ class ApiService {
         'currency': currency,
       });
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Streaks ──────────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Avatar Upload — FIX: detects actual MIME from file extension ──────────
+
+  /// Upload a profile picture from a file path.
+  /// Automatically detects MIME type from the file extension.
+  /// Supports: JPEG, PNG, WebP, GIF, HEIC, HEIF, AVIF, BMP, TIFF, SVG
+  Future<Map<String, dynamic>> uploadAvatar(String filePath) async {
+    try {
+      final mime     = _mimeFromPath(filePath);
+      final mimeType = mime['type']!;
+      final subtype  = mime['subtype']!;
+      final ext      = mime['ext']!;
+      final fileName = 'avatar.$ext';
+
+      final formData = FormData.fromMap({
+        'file': await MultipartFile.fromFile(
+          filePath,
+          filename: fileName,
+          contentType: DioMediaType(mimeType, subtype),
+        ),
+      });
+
+      final res = await _dio.post(
+        '/progress/avatar',
+        data: formData,
+        options: Options(
+          headers: {'Content-Type': 'multipart/form-data'},
+        ),
+      );
+      return res.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Upload avatar from raw bytes (useful when using image_picker on web
+  /// or when bytes are available without a file path).
+  Future<Map<String, dynamic>> uploadAvatarBytes({
+    required List<int> bytes,
+    required String filename,
+    String mimeType = 'image/jpeg',
+  }) async {
+    try {
+      final parts = mimeType.split('/');
+      final formData = FormData.fromMap({
+        'file': MultipartFile.fromBytes(
+          bytes,
+          filename: filename,
+          contentType: DioMediaType(parts[0], parts.length > 1 ? parts[1] : 'jpeg'),
+        ),
+      });
+      final res = await _dio.post(
+        '/progress/avatar',
+        data: formData,
+        options: Options(headers: {'Content-Type': 'multipart/form-data'}),
+      );
+      return res.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  // ── Post Media Upload ─────────────────────────────────────────────────────
+
+  /// Upload an image or video for a post.
+  /// Returns: { "url": "...", "media_type": "image"|"video", "content_type": "..." }
+  ///
+  /// Call this BEFORE createPost to get the URL, then pass it to createPost.
+  Future<Map<String, dynamic>> uploadPostMedia(String filePath) async {
+    try {
+      final mime     = _mimeFromPath(filePath);
+      final mimeType = mime['type']!;       // 'image' or 'video'
+      final subtype  = mime['subtype']!;
+      final ext      = mime['ext']!;
+      final fileName = 'post_media_${DateTime.now().millisecondsSinceEpoch}.$ext';
+
+      final formData = FormData.fromMap({
+        'file': await MultipartFile.fromFile(
+          filePath,
+          filename: fileName,
+          contentType: DioMediaType(mimeType, subtype),
+        ),
+      });
+
+      final res = await _dio.post(
+        '/posts/status/upload-media',   // reuses the same upload endpoint
+        data: formData,
+        options: Options(headers: {'Content-Type': 'multipart/form-data'}),
+      );
+      return res.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Upload post media from raw bytes.
+  Future<Map<String, dynamic>> uploadPostMediaBytes({
+    required List<int> bytes,
+    required String filename,
+    required String mimeType,
+  }) async {
+    try {
+      final parts = mimeType.split('/');
+      final formData = FormData.fromMap({
+        'file': MultipartFile.fromBytes(
+          bytes,
+          filename: filename,
+          contentType: DioMediaType(
+              parts[0], parts.length > 1 ? parts[1] : 'jpeg'),
+        ),
+      });
+      final res = await _dio.post(
+        '/posts/status/upload-media',
+        data: formData,
+        options: Options(headers: {'Content-Type': 'multipart/form-data'}),
+      );
+      return res.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  // ── Social / Posts ────────────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> getFeed(
+      {String tab = 'for_you', int limit = 20, int offset = 0}) async {
+    try {
+      final r = await _dio.get('/posts/feed', queryParameters: {
+        'tab': tab, 'limit': limit, 'offset': offset,
+      });
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Create a text-only post.
+  /// For posts with images/videos, call uploadPostMedia first to get the URL,
+  /// then pass mediaUrl + mediaType here.
+  Future<Map<String, dynamic>> createPost({
+    required String content,
+    required String tag,
+    String? mediaUrl,
+    String? mediaType,
+  }) async {
+    try {
+      final r = await _dio.post('/posts', data: {
+        'content': content,
+        'tag': tag,
+        if (mediaUrl != null && mediaUrl.isNotEmpty) 'media_url': mediaUrl,
+        if (mediaType != null && mediaType.isNotEmpty) 'media_type': mediaType,
+      });
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  // FIX: send data: {} so servers don't reject bodyless POSTs
+  Future<Map<String, dynamic>> toggleLike(String postId) async {
+    try {
+      final r = await _dio.post('/posts/$postId/like', data: {});
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  Future<Map<String, dynamic>> toggleSave(String postId) async {
+    try {
+      final r = await _dio.post('/posts/$postId/save', data: {});
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  Future<Map<String, dynamic>> sharePost(String postId) async {
+    try {
+      final r = await _dio.post('/posts/$postId/share', data: {});
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  Future<Map<String, dynamic>> deletePost(String postId) async {
+    try {
+      final r = await _dio.delete('/posts/$postId');
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  Future<Map<String, dynamic>> getPostComments(String postId) async {
+    try {
+      final r = await _dio.get('/posts/$postId/comments');
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  Future<Map<String, dynamic>> addComment(String postId, String content,
+      {String? parentId}) async {
+    try {
+      final r = await _dio.post('/posts/$postId/comments', data: {
+        'content': content,
+        if (parentId != null) 'parent_id': parentId,
+      });
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  Future<Map<String, dynamic>> likeComment(String commentId) async {
+    try {
+      final r = await _dio.post('/posts/comments/$commentId/like', data: {});
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  Future<Map<String, dynamic>> toggleFollow(String targetUserId) async {
+    try {
+      final r = await _dio.post('/posts/users/$targetUserId/follow', data: {});
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  Future<Map<String, dynamic>> getUserProfile(String userId) async {
+    try {
+      final r = await _dio.get('/posts/users/$userId/profile');
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  Future<Map<String, dynamic>> getUserPosts(String userId) async {
+    try {
+      final r = await _dio.get('/posts/users/$userId/posts');
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  Future<Map<String, dynamic>> getLikedPosts(String userId) async {
+    try {
+      final r = await _dio.get('/posts/users/$userId/liked');
+      return r.data as Map<String, dynamic>;
+    } catch (e) { return {'posts': []}; }
+  }
+
+  Future<Map<String, dynamic>> logShare(
+      String shareType, String platform) async {
+    try {
+      final res = await _dio.post('/community/share',
+          data: {'share_type': shareType, 'platform': platform});
+      return res.data as Map<String, dynamic>;
+    } catch (_) { return {}; }
+  }
+
+  // ── Streaks ───────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> checkIn() async {
     try {
-      final res = await _dio.post('/streaks/check-in');
+      final res = await _dio.post('/streaks/check-in', data: {});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> getStreak() async {
     try {
       final res = await _dio.get('/streaks/');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Goals ────────────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Goals ─────────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> getGoals({String? status}) async {
     try {
-      final res = await _dio.get('/goals/', queryParameters: {
-        if (status != null) 'status': status,
-      });
+      final res = await _dio.get('/goals/',
+          queryParameters: {if (status != null) 'status': status});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  Future<Map<String, dynamic>> createGoal(
-      Map<String, dynamic> data) async {
+  Future<Map<String, dynamic>> createGoal(Map<String, dynamic> data) async {
     try {
       final res = await _dio.post('/goals/', data: data);
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> updateGoal(
@@ -592,46 +746,35 @@ class ApiService {
     try {
       final res = await _dio.patch('/goals/$goalId', data: data);
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> contributeToGoal(
-      String goalId, double amount,
-      {String? description}) async {
+      String goalId, double amount, {String? description}) async {
     try {
       final res = await _dio.post('/goals/$goalId/contribute', data: {
         'amount': amount,
         if (description != null) 'description': description,
       });
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> deleteGoal(String goalId) async {
     try {
       final res = await _dio.delete('/goals/$goalId');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> suggestGoals() async {
     try {
-      final res = await _dio.post('/goals/ai-suggest');
+      final res = await _dio.post('/goals/ai-suggest', data: {});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Expenses ─────────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Expenses ──────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> getExpenses(
       {String? month, String? category}) async {
@@ -641,29 +784,21 @@ class ApiService {
         if (category != null) 'category': category,
       });
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  Future<Map<String, dynamic>> logExpense(
-      Map<String, dynamic> data) async {
+  Future<Map<String, dynamic>> logExpense(Map<String, dynamic> data) async {
     try {
       final res = await _dio.post('/expenses/', data: data);
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  Future<Map<String, dynamic>> deleteExpense(
-      String expenseId) async {
+  Future<Map<String, dynamic>> deleteExpense(String expenseId) async {
     try {
       final res = await _dio.delete('/expenses/$expenseId');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> getBudgets({String? month}) async {
@@ -671,89 +806,65 @@ class ApiService {
       final res = await _dio.get('/expenses/budgets',
           queryParameters: {if (month != null) 'month': month});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  Future<Map<String, dynamic>> setBudget(
-      Map<String, dynamic> data) async {
+  Future<Map<String, dynamic>> setBudget(Map<String, dynamic> data) async {
     try {
       final res = await _dio.post('/expenses/budgets', data: data);
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  Future<Map<String, dynamic>> getMonthlySummary(
-      {String? month}) async {
+  Future<Map<String, dynamic>> getMonthlySummary({String? month}) async {
     try {
       final res = await _dio.get('/expenses/summary',
           queryParameters: {if (month != null) 'month': month});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Achievements ─────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Achievements ──────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> getAchievements() async {
     try {
       final res = await _dio.get('/achievements/');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> getMyAchievements() async {
     try {
       final res = await _dio.get('/achievements/my');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> checkAchievements() async {
     try {
-      final res = await _dio.post('/achievements/check');
+      final res = await _dio.post('/achievements/check', data: {});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Referrals ────────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Referrals ─────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> getMyReferralCode() async {
     try {
       final res = await _dio.get('/referrals/my-code');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> applyReferralCode(String code) async {
     try {
-      final res = await _dio
-          .post('/referrals/apply', data: {'referral_code': code});
+      final res = await _dio.post('/referrals/apply',
+          data: {'referral_code': code});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Notifications ────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Notifications ─────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> registerFcmToken(
       String token, String platform) async {
@@ -761,20 +872,15 @@ class ApiService {
       final res = await _dio.post('/notifications/register-token',
           data: {'token': token, 'platform': platform});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  Future<Map<String, dynamic>> getNotifications(
-      {int limit = 30}) async {
+  Future<Map<String, dynamic>> getNotifications({int limit = 30}) async {
     try {
       final res = await _dio.get('/notifications/',
           queryParameters: {'limit': limit});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> markNotificationsRead(
@@ -784,14 +890,10 @@ class ApiService {
         if (ids != null) 'notification_ids': ids,
       });
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Agentic AI ───────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Agentic AI ────────────────────────────────────────────────────────────
 
   Future<dynamic> runAgent({
     required String task,
@@ -802,9 +904,7 @@ class ApiService {
     String? workflowId,
   }) async {
     return post('/agent/run', {
-      'task': task,
-      'budget': budget,
-      'hours_per_day': hoursPerDay,
+      'task': task, 'budget': budget, 'hours_per_day': hoursPerDay,
       'currency': currency,
       if (context != null) 'context': context,
       if (workflowId != null) 'workflow_id': workflowId,
@@ -820,294 +920,69 @@ class ApiService {
     });
   }
 
-  Future<dynamic> executeTool(
-      String tool, Map<String, dynamic> input,
+  Future<dynamic> executeTool(String tool, Map<String, dynamic> input,
       {String? workflowId}) async {
     return post('/agent/execute-tool', {
-      'tool': tool,
-      'input': input,
+      'tool': tool, 'input': input,
       if (workflowId != null) 'workflow_id': workflowId,
     });
   }
 
   Future<dynamic> quickAgent(String task,
       {String outputType = 'any'}) async {
-    return post('/agent/quick', {
-      'task': task,
-      'output_type': outputType,
-    });
+    return post('/agent/quick', {'task': task, 'output_type': outputType});
   }
 
   Future<dynamic> analyzeAndImprove(String content,
       {String goal = 'improve'}) async {
-    return post('/agent/analyze', {
-      'content': content,
-      'goal': goal,
-    });
+    return post('/agent/analyze', {'content': content, 'goal': goal});
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Profile Avatar Upload ─────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Messages ──────────────────────────────────────────────────────────────
 
-  Future<Map<String, dynamic>> uploadAvatar(String filePath) async {
-    try {
-      final token = await getToken();
-      final formData = FormData.fromMap({
-        'file': await MultipartFile.fromFile(
-          filePath,
-          filename: 'avatar.jpg',
-          contentType: DioMediaType('image', 'jpeg'),
-        ),
-      });
-      final res = await _dio.post(
-        '/progress/avatar',
-        data: formData,
-        options:
-            Options(headers: {'Authorization': 'Bearer $token'}),
-      );
-      return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────────
-  // ── Social / Posts ───────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
-
-  Future<Map<String, dynamic>> getFeed(
-      {String tab = 'for_you',
-      int limit = 20,
-      int offset = 0}) async {
-    try {
-      final r = await _dio.get('/posts/feed', queryParameters: {
-        'tab': tab,
-        'limit': limit,
-        'offset': offset,
-      });
-      return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
-  }
-
-  Future<Map<String, dynamic>> createPost({
-    required String content,
-    required String tag,
-    String? mediaUrl,
-    String? mediaType,
-  }) async {
-    try {
-      final r = await _dio.post('/posts', data: {
-        'content': content,
-        'tag': tag,
-        if (mediaUrl != null) 'media_url': mediaUrl,
-        if (mediaType != null) 'media_type': mediaType,
-      });
-      return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
-  }
-
-  Future<Map<String, dynamic>> toggleLike(String postId) async {
-    try {
-      final r = await _dio.post('/posts/$postId/like');
-      return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
-  }
-
-  Future<Map<String, dynamic>> toggleSave(String postId) async {
-    try {
-      final r = await _dio.post('/posts/$postId/save');
-      return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
-  }
-
-  Future<Map<String, dynamic>> sharePost(String postId) async {
-    try {
-      final r = await _dio.post('/posts/$postId/share');
-      return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
-  }
-
-  Future<Map<String, dynamic>> deletePost(String postId) async {
-    try {
-      final r = await _dio.delete('/posts/$postId');
-      return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
-  }
-
-  Future<Map<String, dynamic>> getPostComments(
-      String postId) async {
-    try {
-      final r = await _dio.get('/posts/$postId/comments');
-      return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
-  }
-
-  Future<Map<String, dynamic>> addComment(
-      String postId, String content,
-      {String? parentId}) async {
-    try {
-      final r = await _dio.post('/posts/$postId/comments', data: {
-        'content': content,
-        if (parentId != null) 'parent_id': parentId,
-      });
-      return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
-  }
-
-  Future<Map<String, dynamic>> likeComment(
-      String commentId) async {
-    try {
-      final r =
-          await _dio.post('/posts/comments/$commentId/like');
-      return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
-  }
-
-  Future<Map<String, dynamic>> toggleFollow(
-      String targetUserId) async {
-    try {
-      final r =
-          await _dio.post('/posts/users/$targetUserId/follow');
-      return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
-  }
-
-  Future<Map<String, dynamic>> getUserProfile(
-      String userId) async {
-    try {
-      final r =
-          await _dio.get('/posts/users/$userId/profile');
-      return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
-  }
-
-  Future<Map<String, dynamic>> getUserPosts(String userId) async {
-    try {
-      final r = await _dio.get('/posts/users/$userId/posts');
-      return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
-  }
-
-  Future<Map<String, dynamic>> getLikedPosts(
-      String userId) async {
-    try {
-      final r = await _dio.get('/posts/users/$userId/liked');
-      return r.data as Map<String, dynamic>;
-    } catch (e) {
-      return {'posts': []};
-    }
-  }
-
-  Future<Map<String, dynamic>> logShare(
-      String shareType, String platform) async {
-    try {
-      final res = await _dio.post('/community/share',
-          data: {'share_type': shareType, 'platform': platform});
-      return res.data as Map<String, dynamic>;
-    } catch (_) {
-      return {};
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────────
-  // ── Messages ─────────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
-
-  /// Legacy: returns the raw {"conversations": [...]} map.
-  /// Used by app_providers.dart. Prefer getDMConversations() in new code.
   Future<Map<String, dynamic>> getConversations() async {
     try {
       final r = await _dio.get('/messages/conversations');
       return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  /// Legacy: gets or creates a conversation and returns the full response map.
-  /// Used by user_profile_screen.dart. Prefer getOrCreateDM() in new code.
   Future<Map<String, dynamic>> getOrCreateConversation(
       String otherUserId) async {
     try {
-      final r = await _dio
-          .post('/messages/conversations/with/$otherUserId');
+      final r = await _dio.post(
+          '/messages/conversations/with/$otherUserId', data: {});
       return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  /// Returns the enriched list of DM conversations for the current user.
-  /// Backend: GET /messages/conversations → {"conversations": [...]}
   Future<List<dynamic>> getDMConversations() async {
     try {
       final r = await _dio.get('/messages/conversations');
       return (r.data['conversations'] as List?) ?? [];
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  /// Search users by name for starting a new DM.
-  /// Backend: GET /messages/users/search?q=... → {"users": [...]}
   Future<List<dynamic>> searchUsers(String q) async {
     try {
-      final r = await _dio.get(
-        '/messages/users/search',
-        queryParameters: {'q': q},
-      );
+      final r = await _dio.get('/messages/users/search',
+          queryParameters: {'q': q});
       return (r.data['users'] as List?) ?? [];
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  /// Gets or creates a DM conversation with [otherUserId].
-  /// Returns the conversation UUID string.
-  /// Backend: POST /messages/conversations/with/{other_user_id} → {"conversation_id": "..."}
+  /// Gets or creates a DM and returns the conversation UUID.
+  /// Navigates to /messages/{conversationId} on success.
   Future<String> getOrCreateDM(String otherUserId) async {
     try {
-      final r = await _dio.post('/messages/conversations/with/$otherUserId');
+      final r = await _dio.post(
+          '/messages/conversations/with/$otherUserId', data: {});
       return (r.data['conversation_id'] as String?) ?? '';
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  /// Fetches messages for a DM conversation.
-  /// [conversationId] is the conversation UUID.
-  /// [since] is an optional ISO-8601 timestamp for incremental polling.
-  /// Backend: GET /messages/conversations/{id}/messages → {"messages": [...]}
-  Future<List<dynamic>> getDMMessages(
-    String conversationId, {
-    int limit = 50,
-    String? since,
-  }) async {
+  Future<List<dynamic>> getDMMessages(String conversationId,
+      {int limit = 50, String? since}) async {
     try {
       final r = await _dio.get(
         '/messages/conversations/$conversationId/messages',
@@ -1117,93 +992,60 @@ class ApiService {
         },
       );
       return (r.data['messages'] as List?) ?? [];
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  /// Sends a plain text DM in [conversationId].
-  /// Backend: POST /messages/conversations/{id}/send → {"message": {...}}
   Future<Map<String, dynamic>> sendDMMessage(
       String conversationId, String content) async {
     try {
       final r = await _dio.post(
-        '/messages/conversations/$conversationId/send',
-        data: {'content': content},
-      );
+          '/messages/conversations/$conversationId/send',
+          data: {'content': content});
       return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  /// Invokes RiseUp AI inside an existing DM conversation.
-  /// [adUnlocked] should be true after a rewarded ad has been watched.
-  /// Backend: POST /messages/conversations/{id}/ai-message → {"message":{}, "content":"", "quota":{}}
   Future<Map<String, dynamic>> sendAIMessageInDM(
-    String conversationId,
-    String content, {
-    bool adUnlocked = false,
-  }) async {
+      String conversationId, String content,
+      {bool adUnlocked = false}) async {
     try {
       final r = await _dio.post(
-        '/messages/conversations/$conversationId/ai-message',
-        data: {
-          'content': content,
-          'ad_unlocked': adUnlocked,
-        },
-      );
+          '/messages/conversations/$conversationId/ai-message',
+          data: {'content': content, 'ad_unlocked': adUnlocked});
       return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  /// Returns the AI message quota for the current user.
-  /// Backend: GET /messages/ai-quota → {is_premium, free_used, free_total, ...}
   Future<Map<String, dynamic>> getAIQuota() async {
     try {
       final r = await _dio.get('/messages/ai-quota');
       return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Groups ───────────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Groups ────────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> getGroups() async {
     try {
       final r = await _dio.get('/messages/groups');
       return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> toggleGroup(String groupId) async {
     try {
-      final r =
-          await _dio.post('/messages/groups/$groupId/join');
+      final r = await _dio.post('/messages/groups/$groupId/join', data: {});
       return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Live Sessions ────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Live Sessions ─────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> getLiveSessions() async {
     try {
       final r = await _dio.get('/live/sessions');
       return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> startLive({
@@ -1212,61 +1054,42 @@ class ApiService {
     bool isPremium = false,
   }) async {
     try {
-      final r = await _dio.post('/live/start', data: {
-        'title': title,
-        'topic': topic,
-        'is_premium': isPremium,
-      });
+      final r = await _dio.post('/live/start',
+          data: {'title': title, 'topic': topic, 'is_premium': isPremium});
       return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> endLive() async {
     try {
-      final r = await _dio.post('/live/end');
+      final r = await _dio.post('/live/end', data: {});
       return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> joinLive(String sessionId) async {
     try {
-      final r =
-          await _dio.post('/live/sessions/$sessionId/join');
+      final r = await _dio.post('/live/sessions/$sessionId/join', data: {});
       return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> leaveLive(String sessionId) async {
     try {
-      final r =
-          await _dio.post('/live/sessions/$sessionId/leave');
+      final r = await _dio.post('/live/sessions/$sessionId/leave', data: {});
       return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  Future<Map<String, dynamic>> sendCoins(
-      String sessionId, int amount) async {
+  Future<Map<String, dynamic>> sendCoins(String sessionId, int amount) async {
     try {
-      final r = await _dio.post(
-          '/live/sessions/$sessionId/coins',
+      final r = await _dio.post('/live/sessions/$sessionId/coins',
           data: {'amount': amount});
       return r.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Income Memory ─────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Income Memory ─────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> logMemoryEvent({
     required String eventType,
@@ -1278,193 +1101,143 @@ class ApiService {
   }) async {
     try {
       final res = await _dio.post('/memory/event', data: {
-        'event_type': eventType,
-        'title': title,
-        'amount_usd': amountUsd,
+        'event_type': eventType, 'title': title, 'amount_usd': amountUsd,
         if (platform != null) 'platform': platform,
         if (skillUsed != null) 'skill_used': skillUsed,
         'outcome': outcome ?? 'success',
       });
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> getMemoryProfile() async {
     try {
       final res = await _dio.get('/memory/profile');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> getMemoryInsights() async {
     try {
       final res = await _dio.get('/memory/insights');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> getIncomePatterns() async {
     try {
       final res = await _dio.get('/memory/streak-patterns');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Market Pulse ─────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Market Pulse ──────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> getTodaysPulse() async {
     try {
       final res = await _dio.get('/pulse/today');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> getArbitrageData() async {
     try {
       final res = await _dio.get('/pulse/arbitrage');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  Future<Map<String, dynamic>> scanSkillDemand(
-      String skill) async {
+  Future<Map<String, dynamic>> scanSkillDemand(String skill) async {
     try {
       final res = await _dio.get('/pulse/opportunity-scan',
           queryParameters: {'skill': skill});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Contracts & Invoices ─────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Contracts & Invoices ──────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> generateContract(
       Map<String, dynamic> data) async {
     try {
-      final res =
-          await _dio.post('/contracts/generate', data: data);
+      final res = await _dio.post('/contracts/generate', data: data);
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> generateInvoice(
       Map<String, dynamic> data) async {
     try {
-      final res =
-          await _dio.post('/contracts/invoice/generate', data: data);
+      final res = await _dio.post('/contracts/invoice/generate', data: data);
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> listContracts() async {
     try {
       final res = await _dio.get('/contracts/');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  Future<Map<String, dynamic>> markInvoicePaid(
-      String invoiceId) async {
+  Future<Map<String, dynamic>> markInvoicePaid(String invoiceId) async {
     try {
-      final res = await _dio
-          .patch('/contracts/invoice/$invoiceId/paid');
+      final res = await _dio.patch('/contracts/invoice/$invoiceId/paid',
+          data: {});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Client CRM ───────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Client CRM ────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> addCrmClient(
       Map<String, dynamic> data) async {
     try {
       final res = await _dio.post('/crm/clients', data: data);
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  Future<Map<String, dynamic>> getCrmClients(
-      {String? status}) async {
+  Future<Map<String, dynamic>> getCrmClients({String? status}) async {
     try {
       final res = await _dio.get('/crm/clients',
           queryParameters: {if (status != null) 'status': status});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> getDueFollowUps() async {
     try {
       final res = await _dio.get('/crm/follow-ups/due');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> generateFollowUpMessage(
       String clientId) async {
     try {
-      final res =
-          await _dio.post('/crm/clients/$clientId/ai-followup');
+      final res = await _dio.post('/crm/clients/$clientId/ai-followup',
+          data: {});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> getCrmAnalytics() async {
     try {
       final res = await _dio.get('/crm/analytics');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> updateCrmClient(
       String clientId, Map<String, dynamic> data) async {
     try {
-      final res =
-          await _dio.patch('/crm/clients/$clientId', data: data);
+      final res = await _dio.patch('/crm/clients/$clientId', data: data);
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Income Challenges ─────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Income Challenges ─────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> createChallenge(String type,
       {String? customGoal, double? targetUsd}) async {
@@ -1475,9 +1248,7 @@ class ApiService {
         if (targetUsd != null) 'custom_target_usd': targetUsd,
       });
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> challengeCheckIn(
@@ -1485,102 +1256,77 @@ class ApiService {
       {double amountUsd = 0, String? note}) async {
     try {
       final res = await _dio.post('/challenges/check-in', data: {
-        'challenge_id': challengeId,
-        'action_taken': action,
+        'challenge_id': challengeId, 'action_taken': action,
         'amount_earned_usd': amountUsd,
         if (note != null) 'note': note,
       });
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> listChallenges() async {
     try {
       final res = await _dio.get('/challenges/');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> getChallenge(String id) async {
     try {
       final res = await _dio.get('/challenges/$id');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  Future<Map<String, dynamic>> getChallengeIntervention(
-      String id) async {
+  Future<Map<String, dynamic>> getChallengeIntervention(String id) async {
     try {
-      final res =
-          await _dio.post('/challenges/$id/ai-intervention');
+      final res = await _dio.post('/challenges/$id/ai-intervention', data: {});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ── Portfolio ─────────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────
+  // ── Portfolio ─────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> getPortfolio() async {
     try {
       final res = await _dio.get('/portfolio/');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> addPortfolioProject(
       Map<String, dynamic> data) async {
     try {
-      final res =
-          await _dio.post('/portfolio/projects', data: data);
+      final res = await _dio.post('/portfolio/projects', data: data);
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> generatePortfolioFromWorkflow(
       String workflowId) async {
     try {
       final res = await _dio.post(
-          '/portfolio/generate-from-workflow/$workflowId');
+          '/portfolio/generate-from-workflow/$workflowId', data: {});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
   Future<Map<String, dynamic>> generateProfessionalBio() async {
     try {
-      final res = await _dio.post('/portfolio/ai-bio');
+      final res = await _dio.post('/portfolio/ai-bio', data: {});
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 
-  Future<Map<String, dynamic>> getPublicPortfolio(
-      String userId) async {
+  Future<Map<String, dynamic>> getPublicPortfolio(String userId) async {
     try {
       final res = await _dio.get('/portfolio/public/$userId');
       return res.data as Map<String, dynamic>;
-    } catch (e) {
-      throw _handleError(e);
-    }
+    } catch (e) { throw _handleError(e); }
   }
 } // end ApiService
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Global singleton — import this in every screen: import '../services/api_service.dart';
+// Global singleton
 // ─────────────────────────────────────────────────────────────────────────────
 final api = ApiService();
