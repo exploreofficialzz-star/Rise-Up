@@ -1,7 +1,7 @@
 // frontend/lib/screens/agent/agent_screen.dart
 //
-// APEX Agent — Kimi/Claude-style conversation interface
-// Enhanced for global users with persistent chat sessions
+// APEX Agent — Clean, centered interface matching the reference design
+// Adaptive to system theme (light/dark) with exact colors from image
 
 import 'dart:async';
 import 'dart:convert';
@@ -10,7 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:iconsax/iconsax.dart'; // FIX 1: was iconsax_flutter — wrong package
+import 'package:iconsax/iconsax.dart';
 import 'package:intl/intl.dart';
 import '../../config/app_constants.dart';
 import '../../providers/app_providers.dart';
@@ -80,6 +80,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
   String?    _sessionId;
   int        _thinkIdx    = -1;
   bool       _showSidebar = false;
+  bool       _hasStartedChat = false;
 
   @override
   void initState() {
@@ -101,26 +102,8 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
   void _init() async {
     if (_sessionId != null) {
       await _loadSession(_sessionId!);
-    } else {
-      _greet();
+      setState(() => _hasStartedChat = true);
     }
-  }
-
-  void _greet() {
-    final profile = ref.read(profileProvider).valueOrNull ?? {};
-    final name    = (profile['full_name']?.toString() ?? '').split(' ').first;
-
-    setState(() => _msgs.add(_Msg(
-          role: _Role.agent,
-          text: name.isNotEmpty
-              ? '**Hey $name** 👋\n\nI\'m **APEX** — your autonomous AI agent. '
-                'I can research, write, find opportunities, draft contracts, and even '
-                'post to social media for you.\n\nWhat do you want us to work on today?'
-              : '**Hey** 👋\n\nI\'m **APEX** — your autonomous AI agent. '
-                'I can research, write, find opportunities, draft contracts, and even '
-                'post to social media for you.\n\nWhat do you want us to work on today?',
-          modelTier: 'free',
-        )));
   }
 
   // ── Load existing session ───────────────────────────
@@ -141,7 +124,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
       });
       _scrollDown();
     } catch (e) {
-      _greet();
+      // Silent fail - show empty state
     }
   }
 
@@ -167,6 +150,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
       _msgs.add(_Msg(role: _Role.user, text: text));
       _isStreaming  = true;
       _inputEnabled = false;
+      _hasStartedChat = true;
     });
     _scrollDown();
 
@@ -416,8 +400,8 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
       _isStreaming  = false;
       _inputEnabled = true;
       _thinkIdx     = -1;
+      _hasStartedChat = false;
     });
-    _greet();
     _inputFocus.requestFocus();
   }
 
@@ -541,7 +525,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     return buf.toString().trim();
   }
 
-  // FIX 2: Safe currency symbol extraction
+  // Safe currency symbol extraction
   String _getCurrencySymbol(String currencyCode) {
     try {
       final formatted = NumberFormat.simpleCurrency(name: currencyCode)
@@ -603,20 +587,27 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bg     = isDark ? const Color(0xFF0A0A0A) : Colors.white;
-    final text   = isDark ? Colors.white : Colors.black87;
+    
+    // Exact colors from the image - blue/purple gradient
+    final gradientColors = isDark 
+        ? [const Color(0xFF4A90D9), const Color(0xFF7B68EE)]  // Dark mode: brighter blue to purple
+        : [const Color(0xFF5B7FFF), const Color(0xFF8B5CF6)]; // Light mode: blue to violet
 
     return Scaffold(
-      backgroundColor: bg,
-      appBar: _buildAppBar(isDark, text),
+      backgroundColor: isDark ? Colors.black : Colors.white,
       body: Row(
         children: [
-          if (_showSidebar) _buildSidebar(isDark),
+          if (_showSidebar) _buildSidebar(isDark, gradientColors),
           Expanded(
             child: Column(
               children: [
-                Expanded(child: _buildMessages(isDark)),
-                _buildInput(isDark, text),
+                _buildAppBar(isDark, gradientColors),
+                Expanded(
+                  child: _hasStartedChat || _msgs.isNotEmpty
+                      ? _buildMessages(isDark, gradientColors)
+                      : _buildEmptyState(isDark, gradientColors),
+                ),
+                _buildInput(isDark, gradientColors),
               ],
             ),
           ),
@@ -625,49 +616,53 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     );
   }
 
-  AppBar _buildAppBar(bool isDark, Color text) {
+  PreferredSizeWidget _buildAppBar(bool isDark, List<Color> gradientColors) {
     final runsRemaining = adManager.agentUsesRemaining;
     final isPremium     = adManager.isPremium;
 
     return AppBar(
-      backgroundColor:    isDark ? const Color(0xFF0A0A0A) : Colors.white,
-      elevation:          0,
-      surfaceTintColor:   Colors.transparent,
+      backgroundColor: isDark ? Colors.black : Colors.white,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      centerTitle: true,
       leading: IconButton(
         icon: Icon(
           _showSidebar ? Iconsax.close_square : Iconsax.menu_1,
-          color: text,
-          size: 22,
+          color: isDark ? Colors.white : Colors.black87,
+          size: 24,
         ),
         onPressed: () => setState(() => _showSidebar = !_showSidebar),
       ),
       title: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // Star icon with gradient background - exact style from image
           Container(
-            width: 28,
-            height: 28,
+            width: 32,
+            height: 32,
             decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [AppColors.primary, AppColors.accent],
+              gradient: LinearGradient(
+                colors: gradientColors,
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
-              borderRadius: BorderRadius.circular(7),
+              borderRadius: BorderRadius.circular(8),
             ),
             child: const Icon(
-              Icons.auto_awesome_rounded,
+              Icons.star_rounded,
               color: Colors.white,
-              size: 15,
+              size: 18,
             ),
           ),
-          const SizedBox(width: 9),
-          const Text(
+          const SizedBox(width: 10),
+          // APEX text - bigger and thicker as requested
+          Text(
             'APEX',
             style: TextStyle(
-              fontSize:      17,
-              fontWeight:    FontWeight.w800,
-              letterSpacing: 0.5,
+              fontSize: 22,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 2,
+              color: isDark ? Colors.white : Colors.black,
             ),
           ),
         ],
@@ -675,36 +670,38 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
       actions: [
         if (!isPremium)
           Container(
-            margin:  const EdgeInsets.only(right: 8),
+            margin: const EdgeInsets.only(right: 8),
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
               color: runsRemaining > 0
-                  ? AppColors.success.withOpacity(0.12)
-                  : AppColors.error.withOpacity(0.12),
+                  ? Colors.green.withOpacity(0.12)
+                  : Colors.red.withOpacity(0.12),
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
-              '$runsRemaining left',
+              '$runsRemaining',
               style: TextStyle(
-                fontSize:   11,
-                fontWeight: FontWeight.w600,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
                 color: runsRemaining > 0
-                    ? AppColors.success
-                    : AppColors.error,
+                    ? Colors.green
+                    : Colors.red,
               ),
             ),
           ),
         IconButton(
-          icon:    Icon(Icons.add_rounded, color: text, size: 22),
+          icon: Icon(Icons.add_rounded, 
+            color: isDark ? Colors.white : Colors.black87, 
+            size: 24),
           tooltip: 'New conversation',
           onPressed: _newChat,
         ),
         if (_workflowId != null)
           IconButton(
-            icon: const Icon(
+            icon: Icon(
               Iconsax.flash,
-              color: AppColors.primary,
-              size: 18,
+              color: gradientColors[0],
+              size: 20,
             ),
             tooltip: 'View Workflow',
             onPressed: () => context.push('/workflow/$_workflowId'),
@@ -713,12 +710,10 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     );
   }
 
-  Widget _buildSidebar(bool isDark) {
+  Widget _buildSidebar(bool isDark, List<Color> gradientColors) {
     return Container(
-      width: 260,
-      color: isDark
-          ? const Color(0xFF111111)
-          : const Color(0xFFF8F8F8),
+      width: 280,
+      color: isDark ? const Color(0xFF111111) : const Color(0xFFF8F8F8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -728,32 +723,35 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
               onTap: _newChat,
               child: Container(
                 padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 10),
+                    horizontal: 12, vertical: 12),
                 decoration: BoxDecoration(
                   color: isDark
                       ? Colors.white.withOpacity(0.05)
                       : Colors.white,
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(10),
                   border: Border.all(
-                    color: isDark ? Colors.white.withOpacity(0.12) : Colors.black.withOpacity(0.12),
+                    color: isDark 
+                        ? Colors.white.withOpacity(0.1) 
+                        : Colors.black.withOpacity(0.08),
                   ),
                 ),
                 child: Row(
                   children: [
                     Icon(
                       Icons.add,
-                      size: 18,
+                      size: 20,
                       color: isDark
                           ? Colors.white.withOpacity(0.7)
                           : Colors.black54,
                     ),
-                    const SizedBox(width: 8),
+                    const SizedBox(width: 10),
                     Text(
-                      'New conversation',
+                      'New chat',
                       style: TextStyle(
-                        fontSize: 13,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
                         color: isDark
-                            ? Colors.white.withOpacity(0.7)
+                            ? Colors.white.withOpacity(0.9)
                             : Colors.black87,
                       ),
                     ),
@@ -767,14 +765,30 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
               future: api.get('/agent/chat/sessions'),
               builder: (context, snapshot) {
                 if (!snapshot.hasData) {
-                  return const Center(
+                  return Center(
                     child: CircularProgressIndicator(
-                        strokeWidth: 2),
+                      strokeWidth: 2,
+                      color: gradientColors[0],
+                    ),
                   );
                 }
 
                 final sessions =
                     snapshot.data?['sessions'] as List? ?? [];
+
+                if (sessions.isEmpty) {
+                  return Center(
+                    child: Text(
+                      'No conversations yet',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: isDark 
+                            ? Colors.white.withOpacity(0.4) 
+                            : Colors.black.withOpacity(0.4),
+                      ),
+                    ),
+                  );
+                }
 
                 return ListView.builder(
                   itemCount: sessions.length,
@@ -783,25 +797,25 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
                     final isActive = session['id'] == _sessionId;
 
                     return ListTile(
-                      dense:    true,
+                      dense: true,
                       selected: isActive,
                       selectedTileColor:
-                          AppColors.primary.withOpacity(0.1),
+                          gradientColors[0].withOpacity(0.1),
                       leading: Icon(
                         Iconsax.message_text,
-                        size: 18,
+                        size: 20,
                         color: isActive
-                            ? AppColors.primary
+                            ? gradientColors[0]
                             : (isDark
-                                ? Colors.white.withOpacity(0.54)
-                                : Colors.black54),
+                                ? Colors.white.withOpacity(0.5)
+                                : Colors.black45),
                       ),
                       title: Text(
                         session['title'] ?? 'Untitled',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize:   13,
+                          fontSize: 14,
                           fontWeight: isActive
                               ? FontWeight.w600
                               : FontWeight.normal,
@@ -815,21 +829,20 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
                         style: TextStyle(
                           fontSize: 11,
                           color: isDark
-                              ? Colors.white.withOpacity(0.38)
+                              ? Colors.white.withOpacity(0.4)
                               : Colors.black38,
                         ),
                       ),
                       onTap: () {
-                        setState(
-                            () => _showSidebar = false);
+                        setState(() => _showSidebar = false);
                         _loadSession(session['id']);
                       },
                       trailing: isActive
                           ? Container(
                               width: 6,
                               height: 6,
-                              decoration: const BoxDecoration(
-                                color: AppColors.primary,
+                              decoration: BoxDecoration(
+                                color: gradientColors[0],
                                 shape: BoxShape.circle,
                               ),
                             )
@@ -856,7 +869,118 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     return '${date.day}/${date.month}/${date.year}';
   }
 
-  Widget _buildMessages(bool isDark) {
+  // Empty state matching the image exactly
+  Widget _buildEmptyState(bool isDark, List<Color> gradientColors) {
+    final profile = ref.read(profileProvider).valueOrNull ?? {};
+    final name    = (profile['full_name']?.toString() ?? '').split(' ').first;
+
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          // Large gradient glow behind APEX
+          Container(
+            width: 200,
+            height: 200,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: RadialGradient(
+                colors: [
+                  gradientColors[0].withOpacity(0.3),
+                  gradientColors[1].withOpacity(0.1),
+                  Colors.transparent,
+                ],
+                stops: const [0.0, 0.5, 1.0],
+              ),
+            ),
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Star icon - larger version
+                  Container(
+                    width: 56,
+                    height: 56,
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: gradientColors,
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(14),
+                      boxShadow: [
+                        BoxShadow(
+                          color: gradientColors[0].withOpacity(0.4),
+                          blurRadius: 20,
+                          spreadRadius: 2,
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      Icons.star_rounded,
+                      color: Colors.white,
+                      size: 32,
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  // APEX text - much bigger and thicker
+                  Text(
+                    'APEX',
+                    style: TextStyle(
+                      fontSize: 56,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 4,
+                      color: isDark ? Colors.white : Colors.black,
+                      height: 1,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 48),
+          // Hey with wave
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                'Hey',
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w500,
+                  color: isDark ? Colors.white : Colors.black87,
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Text(
+                '👋',
+                style: TextStyle(fontSize: 24),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          // Subtitle
+          Text(
+            'What can I help you with today?',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w400,
+              color: isDark 
+                  ? Colors.white.withOpacity(0.6) 
+                  : Colors.black.withOpacity(0.5),
+            ),
+          ),
+        ],
+      ),
+    ).animate().fadeIn(duration: 600.ms).scale(
+      begin: const Offset(0.95, 0.95),
+      end: const Offset(1, 1),
+      duration: 600.ms,
+      curve: Curves.easeOut,
+    );
+  }
+
+  Widget _buildMessages(bool isDark, List<Color> gradientColors) {
     return ListView.builder(
       controller: _scrollCtrl,
       padding: const EdgeInsets.fromLTRB(0, 8, 0, 16),
@@ -864,21 +988,31 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
       itemBuilder: (_, i) {
         final msg = _msgs[i];
         return switch (msg.role) {
-          _Role.user     => _UserBubble(msg: msg),
+          _Role.user     => _UserBubble(msg: msg, gradientColors: gradientColors),
           _Role.agent    => _AgentBubble(
               msg:        msg,
               isDark:     isDark,
+              gradientColors: gradientColors,
               onWorkflow: _workflowId != null
                   ? () => context.push('/workflow/$_workflowId')
                   : null,
             ),
-          _Role.thinking => _ThinkingBubble(msg: msg, isDark: isDark),
-          _Role.tool     => _ToolLine(msg: msg, isDark: isDark),
+          _Role.thinking => _ThinkingBubble(
+              msg: msg, 
+              isDark: isDark,
+              gradientColors: gradientColors,
+            ),
+          _Role.tool     => _ToolLine(
+              msg: msg, 
+              isDark: isDark,
+              gradientColors: gradientColors,
+            ),
           _Role.action   => _ActionLine(msg: msg),
           _Role.error    => _ErrorLine(msg: msg),
           _Role.system   => _SystemMsg(
               msg:       msg,
               isDark:    isDark,
+              gradientColors: gradientColors,
               onUpgrade: () => context.push('/premium'),
               onWatchAd: () => adManager
                   .watchAdForAgentUse(context)
@@ -891,24 +1025,28 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     );
   }
 
-  Widget _buildInput(bool isDark, Color text) {
-    // FIX 3: Colors.black30/black24 don't exist — use withOpacity
+  Widget _buildInput(bool isDark, List<Color> gradientColors) {
     final hintColor = isDark
-        ? Colors.white.withOpacity(0.3)
-        : Colors.black.withOpacity(0.3);
+        ? Colors.white.withOpacity(0.35)
+        : Colors.black.withOpacity(0.35);
     final disabledIconColor = isDark
-        ? Colors.white.withOpacity(0.24)
-        : Colors.black.withOpacity(0.24);
+        ? Colors.white.withOpacity(0.2)
+        : Colors.black.withOpacity(0.2);
+    final inputBg = isDark 
+        ? const Color(0xFF1A1A1A) 
+        : const Color(0xFFF5F5F7);
 
     return SafeArea(
       top: false,
       child: Container(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
         decoration: BoxDecoration(
-          color: isDark ? const Color(0xFF0A0A0A) : Colors.white,
+          color: isDark ? Colors.black : Colors.white,
           border: Border(
             top: BorderSide(
-              color: isDark ? Colors.white.withOpacity(0.1) : Colors.black.withOpacity(0.12),
+              color: isDark 
+                  ? Colors.white.withOpacity(0.08) 
+                  : Colors.black.withOpacity(0.06),
               width: 0.5,
             ),
           ),
@@ -920,14 +1058,12 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
               child: Container(
                 constraints: const BoxConstraints(maxHeight: 200),
                 decoration: BoxDecoration(
-                  color: isDark
-                      ? const Color(0xFF1A1A1A)
-                      : const Color(0xFFF5F5F5),
+                  color: inputBg,
                   borderRadius: BorderRadius.circular(24),
                   border: Border.all(
-                    color: isDark
-                        ? Colors.white.withOpacity(0.1)
-                        : Colors.black.withOpacity(0.12),
+                    color: isDark 
+                        ? Colors.white.withOpacity(0.1) 
+                        : Colors.black.withOpacity(0.08),
                   ),
                 ),
                 child: TextField(
@@ -938,35 +1074,35 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
                   minLines:        1,
                   textInputAction: TextInputAction.newline,
                   style: TextStyle(
-                    fontSize: 15,
-                    color:    text,
-                    height:   1.45,
+                    fontSize: 16,
+                    color:    isDark ? Colors.white : Colors.black87,
+                    height:   1.4,
                   ),
                   decoration: InputDecoration(
-                    hintText:       'What do you want us to work on?',
+                    hintText:       'Ask anything...',
                     hintStyle:      TextStyle(
-                      fontSize: 15,
+                      fontSize: 16,
                       color:    hintColor,
                     ),
                     border:         InputBorder.none,
                     contentPadding: const EdgeInsets.fromLTRB(
-                        20, 14, 20, 14),
+                        20, 16, 20, 16),
                   ),
                 ),
               ),
             ),
-            const SizedBox(width: 10),
+            const SizedBox(width: 12),
             GestureDetector(
               onTap: _isStreaming ? null : _submit,
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 200),
-                width:  44,
-                height: 44,
+                width:  48,
+                height: 48,
                 decoration: BoxDecoration(
                   gradient: _isStreaming
                       ? null
-                      : const LinearGradient(
-                          colors: [AppColors.primary, AppColors.accent],
+                      : LinearGradient(
+                          colors: gradientColors,
                           begin: Alignment.topLeft,
                           end:   Alignment.bottomRight,
                         ),
@@ -975,12 +1111,19 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
                           ? Colors.white.withOpacity(0.1)
                           : Colors.black.withOpacity(0.1))
                       : null,
-                  borderRadius: BorderRadius.circular(22),
+                  borderRadius: BorderRadius.circular(24),
+                  boxShadow: _isStreaming ? null : [
+                    BoxShadow(
+                      color: gradientColors[0].withOpacity(0.3),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
                 ),
                 child: Icon(
                   Icons.arrow_upward_rounded,
                   color: _isStreaming ? disabledIconColor : Colors.white,
-                  size: 20,
+                  size: 22,
                 ),
               ),
             ),
@@ -997,7 +1140,8 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
 
 class _UserBubble extends StatelessWidget {
   final _Msg msg;
-  const _UserBubble({required this.msg});
+  final List<Color> gradientColors;
+  const _UserBubble({required this.msg, required this.gradientColors});
 
   @override
   Widget build(BuildContext context) {
@@ -1005,10 +1149,14 @@ class _UserBubble extends StatelessWidget {
       alignment: Alignment.centerRight,
       child: Container(
         margin:  const EdgeInsets.fromLTRB(80, 4, 16, 4),
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-        decoration: const BoxDecoration(
-          color: AppColors.primary,
-          borderRadius: BorderRadius.only(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: gradientColors,
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: const BorderRadius.only(
             topLeft:     Radius.circular(20),
             topRight:    Radius.circular(20),
             bottomLeft:  Radius.circular(20),
@@ -1019,7 +1167,7 @@ class _UserBubble extends StatelessWidget {
           msg.text,
           style: const TextStyle(
             color:    Colors.white,
-            fontSize: 15,
+            fontSize: 16,
             height:   1.45,
           ),
         ),
@@ -1032,21 +1180,22 @@ class _UserBubble extends StatelessWidget {
 class _AgentBubble extends StatelessWidget {
   final _Msg         msg;
   final bool         isDark;
+  final List<Color>  gradientColors;
   final VoidCallback? onWorkflow;
 
   const _AgentBubble({
     required this.msg,
     required this.isDark,
+    required this.gradientColors,
     this.onWorkflow,
   });
 
   @override
   Widget build(BuildContext context) {
     final textColor = isDark ? Colors.white : Colors.black87;
-    // FIX 4: Colors.black38/white38 don't exist — use withOpacity
     final subColor = isDark
-        ? Colors.white.withOpacity(0.38)
-        : Colors.black.withOpacity(0.38);
+        ? Colors.white.withOpacity(0.5)
+        : Colors.black.withOpacity(0.5);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 80, 8),
@@ -1054,49 +1203,50 @@ class _AgentBubble extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.only(bottom: 6),
+            padding: const EdgeInsets.only(bottom: 8),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
-                  width: 22,
-                  height: 22,
+                  width: 28,
+                  height: 28,
                   decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [AppColors.primary, AppColors.accent],
+                    gradient: LinearGradient(
+                      colors: gradientColors,
                     ),
-                    borderRadius: BorderRadius.circular(6),
+                    borderRadius: BorderRadius.circular(7),
                   ),
                   child: const Icon(
-                    Icons.auto_awesome_rounded,
+                    Icons.star_rounded,
                     color: Colors.white,
-                    size: 12,
+                    size: 14,
                   ),
                 ),
-                const SizedBox(width: 8),
-                const Text(
+                const SizedBox(width: 10),
+                Text(
                   'APEX',
                   style: TextStyle(
-                    fontSize:      12,
+                    fontSize:      14,
                     fontWeight:    FontWeight.w800,
-                    letterSpacing: 0.5,
+                    letterSpacing: 1,
+                    color:         textColor,
                   ),
                 ),
                 if (msg.modelTier != null) ...[
-                  const SizedBox(width: 6),
+                  const SizedBox(width: 8),
                   Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 2),
+                        horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
                       color: msg.modelTier == 'premium'
-                          ? Colors.amber.withOpacity(0.2)
-                          : Colors.grey.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(4),
+                          ? Colors.amber.withOpacity(0.15)
+                          : Colors.grey.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(6),
                     ),
                     child: Text(
                       msg.modelTier!.toUpperCase(),
                       style: TextStyle(
-                        fontSize:   9,
+                        fontSize:   10,
                         fontWeight: FontWeight.w700,
                         color: msg.modelTier == 'premium'
                             ? Colors.amber
@@ -1109,7 +1259,7 @@ class _AgentBubble extends StatelessWidget {
             ),
           ),
           _MdText(text: msg.text, isDark: isDark),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           Row(
             children: [
               _IconBtn(
@@ -1127,20 +1277,20 @@ class _AgentBubble extends StatelessWidget {
                 },
               ),
               if (onWorkflow != null) ...[
-                const SizedBox(width: 14),
+                const SizedBox(width: 16),
                 GestureDetector(
                   onTap: onWorkflow,
-                  child: const Row(
+                  child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(Iconsax.flash,
-                          size: 14, color: AppColors.primary),
-                      SizedBox(width: 4),
+                          size: 16, color: gradientColors[0]),
+                      const SizedBox(width: 6),
                       Text(
                         'View Workflow',
                         style: TextStyle(
-                          fontSize:   12,
-                          color:      AppColors.primary,
+                          fontSize:   13,
+                          color:      gradientColors[0],
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -1160,7 +1310,12 @@ class _AgentBubble extends StatelessWidget {
 class _ThinkingBubble extends StatefulWidget {
   final _Msg msg;
   final bool isDark;
-  const _ThinkingBubble({required this.msg, required this.isDark});
+  final List<Color> gradientColors;
+  const _ThinkingBubble({
+    required this.msg, 
+    required this.isDark,
+    required this.gradientColors,
+  });
 
   @override
   State<_ThinkingBubble> createState() => _ThinkingBubbleState();
@@ -1185,10 +1340,9 @@ class _ThinkingBubbleState extends State<_ThinkingBubble>
 
   @override
   Widget build(BuildContext context) {
-    // FIX 5: Colors.black38/white38 don't exist — use withOpacity
     final sub = widget.isDark
-        ? Colors.white.withOpacity(0.38)
-        : Colors.black.withOpacity(0.38);
+        ? Colors.white.withOpacity(0.5)
+        : Colors.black.withOpacity(0.5);
     final empty =
         widget.msg.text.isEmpty || widget.msg.isCollapsed;
 
@@ -1198,18 +1352,18 @@ class _ThinkingBubbleState extends State<_ThinkingBubble>
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Container(
-            width: 22,
-            height: 22,
+            width: 28,
+            height: 28,
             decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [AppColors.primary, AppColors.accent],
+              gradient: LinearGradient(
+                colors: widget.gradientColors,
               ),
-              borderRadius: BorderRadius.circular(6),
+              borderRadius: BorderRadius.circular(7),
             ),
             child: const Icon(
-              Icons.auto_awesome_rounded,
+              Icons.star_rounded,
               color: Colors.white,
-              size: 12,
+              size: 14,
             ),
           ),
           const SizedBox(width: 12),
@@ -1220,7 +1374,7 @@ class _ThinkingBubbleState extends State<_ThinkingBubble>
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  fontSize:   13,
+                  fontSize:   14,
                   color:      sub,
                   fontStyle:  FontStyle.italic,
                   height:     1.4,
@@ -1228,7 +1382,7 @@ class _ThinkingBubbleState extends State<_ThinkingBubble>
               ),
             ),
           if (!empty) const SizedBox(width: 8),
-          _Dots(controller: _ctrl),
+          _Dots(controller: _ctrl, color: widget.gradientColors[0]),
         ],
       ),
     ).animate().fadeIn(duration: 200.ms);
@@ -1238,7 +1392,12 @@ class _ThinkingBubbleState extends State<_ThinkingBubble>
 class _ToolLine extends StatelessWidget {
   final _Msg msg;
   final bool isDark;
-  const _ToolLine({required this.msg, required this.isDark});
+  final List<Color> gradientColors;
+  const _ToolLine({
+    required this.msg, 
+    required this.isDark,
+    required this.gradientColors,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1248,7 +1407,7 @@ class _ToolLine extends StatelessWidget {
     final icon  = _categoryIcon(msg.toolCategory);
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(50, 2, 80, 2),
+      padding: const EdgeInsets.fromLTRB(54, 2, 80, 2),
       child: Row(
         children: [
           Container(
@@ -1263,7 +1422,7 @@ class _ToolLine extends StatelessWidget {
           Text(
             '$icon ${msg.text}',
             style: TextStyle(
-              fontSize: 12,
+              fontSize: 13,
               color:    color.withOpacity(0.8),
             ),
           ),
@@ -1282,11 +1441,11 @@ class _ToolLine extends StatelessWidget {
   }
 
   Color _categoryColor(String? cat) => switch (cat) {
-        'research' => AppColors.info,
-        'action'   => AppColors.success,
+        'research' => Colors.blue,
+        'action'   => Colors.green,
         'document' => Colors.amber,
-        'thinking' => AppColors.primary,
-        _          => AppColors.primary,
+        'thinking' => Colors.purple,
+        _          => Colors.purple,
       };
 
   String _categoryIcon(String? cat) => switch (cat) {
@@ -1305,12 +1464,12 @@ class _ActionLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(50, 2, 80, 2),
+      padding: const EdgeInsets.fromLTRB(54, 2, 80, 2),
       child: Text(
         msg.text,
         style: const TextStyle(
-          fontSize:   12,
-          color:      AppColors.success,
+          fontSize:   13,
+          color:      Colors.green,
           fontWeight: FontWeight.w500,
         ),
       ),
@@ -1330,16 +1489,16 @@ class _ErrorLine extends StatelessWidget {
         padding: const EdgeInsets.symmetric(
             horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
-          color:        AppColors.error.withOpacity(0.08),
+          color:        Colors.red.withOpacity(0.08),
           borderRadius: BorderRadius.circular(12),
           border:       Border.all(
-              color: AppColors.error.withOpacity(0.2)),
+              color: Colors.red.withOpacity(0.2)),
         ),
         child: Text(
           msg.text,
           style: const TextStyle(
-            fontSize: 14,
-            color:    AppColors.error,
+            fontSize: 15,
+            color:    Colors.red,
             height:   1.4,
           ),
         ),
@@ -1351,12 +1510,14 @@ class _ErrorLine extends StatelessWidget {
 class _SystemMsg extends StatelessWidget {
   final _Msg         msg;
   final bool         isDark;
+  final List<Color>  gradientColors;
   final VoidCallback onUpgrade;
   final VoidCallback onWatchAd;
 
   const _SystemMsg({
     required this.msg,
     required this.isDark,
+    required this.gradientColors,
     required this.onUpgrade,
     required this.onWatchAd,
   });
@@ -1370,12 +1531,11 @@ class _SystemMsg extends StatelessWidget {
         decoration: BoxDecoration(
           color: isDark
               ? const Color(0xFF1A1A1A)
-              : const Color(0xFFF5F5F5),
+              : const Color(0xFFF5F5F7),
           borderRadius: BorderRadius.circular(16),
-          // FIX 6: Colors.black12 → withOpacity(0.12)
           border: Border.all(
             color: isDark
-                ? Colors.white.withOpacity(0.1)
+                ? Colors.white.withOpacity(0.08)
                 : Colors.black.withOpacity(0.06),
           ),
         ),
@@ -1390,19 +1550,18 @@ class _SystemMsg extends StatelessWidget {
                   child: OutlinedButton(
                     onPressed: onWatchAd,
                     style: OutlinedButton.styleFrom(
-                      side: const BorderSide(
-                          color: AppColors.primary),
+                      side: BorderSide(color: gradientColors[0]),
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(10)),
                       padding: const EdgeInsets.symmetric(
                           vertical: 12),
                     ),
-                    child: const Text(
+                    child: Text(
                       'Watch Ad',
                       style: TextStyle(
-                        color:      AppColors.primary,
+                        color:      gradientColors[0],
                         fontWeight: FontWeight.w600,
-                        fontSize:   13,
+                        fontSize:   14,
                       ),
                     ),
                   ),
@@ -1412,7 +1571,7 @@ class _SystemMsg extends StatelessWidget {
                   child: ElevatedButton(
                     onPressed: onUpgrade,
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.primary,
+                      backgroundColor: gradientColors[0],
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(10)),
                       padding: const EdgeInsets.symmetric(
@@ -1423,7 +1582,7 @@ class _SystemMsg extends StatelessWidget {
                       style: TextStyle(
                         color:      Colors.white,
                         fontWeight: FontWeight.w600,
-                        fontSize:   13,
+                        fontSize:   14,
                       ),
                     ),
                   ),
@@ -1449,7 +1608,6 @@ class _MdText extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final base  = isDark ? Colors.white : Colors.black87;
-    // FIX 7: Colors.black60/white60 don't exist — use withOpacity
     final muted = isDark
         ? Colors.white.withOpacity(0.6)
         : Colors.black.withOpacity(0.6);
@@ -1466,7 +1624,7 @@ class _MdText extends StatelessWidget {
           text: '  ${line.substring(2)}',
           style: TextStyle(
             color:      muted,
-            fontSize:   13,
+            fontSize:   14,
             height:     1.5,
             fontStyle:  FontStyle.italic,
           ),
@@ -1482,7 +1640,7 @@ class _MdText extends StatelessWidget {
           spans.add(TextSpan(
             text:  line.substring(last, m.start),
             style: TextStyle(
-              color: base, fontSize: 15, height: 1.5),
+              color: base, fontSize: 16, height: 1.5),
           ));
         }
 
@@ -1491,7 +1649,7 @@ class _MdText extends StatelessWidget {
             text:  m.group(1),
             style: TextStyle(
               color:      base,
-              fontSize:   15,
+              fontSize:   16,
               height:     1.5,
               fontWeight: FontWeight.w700,
             ),
@@ -1501,7 +1659,7 @@ class _MdText extends StatelessWidget {
             text:  m.group(2),
             style: TextStyle(
               color:     muted,
-              fontSize:  14,
+              fontSize:  15,
               height:    1.5,
               fontStyle: FontStyle.italic,
             ),
@@ -1510,8 +1668,8 @@ class _MdText extends StatelessWidget {
           spans.add(TextSpan(
             text:  m.group(3),
             style: TextStyle(
-              color:           AppColors.accent,
-              fontSize:        13,
+              color:           gradientColors[1],
+              fontSize:        14,
               height:          1.5,
               fontFamily:      'monospace',
               backgroundColor: isDark
@@ -1527,7 +1685,7 @@ class _MdText extends StatelessWidget {
         spans.add(TextSpan(
           text:  line.substring(last),
           style: TextStyle(
-            color: base, fontSize: 15, height: 1.5),
+            color: base, fontSize: 16, height: 1.5),
         ));
       }
     }
@@ -1538,7 +1696,8 @@ class _MdText extends StatelessWidget {
 
 class _Dots extends StatelessWidget {
   final AnimationController controller;
-  const _Dots({required this.controller});
+  final Color color;
+  const _Dots({required this.controller, required this.color});
 
   @override
   Widget build(BuildContext context) {
@@ -1554,11 +1713,11 @@ class _Dots extends StatelessWidget {
                       ? phase * 2
                       : (1 - phase) * 2);
           return Container(
-            margin: const EdgeInsets.only(right: 3),
-            width:  5,
-            height: 5,
+            margin: const EdgeInsets.only(right: 4),
+            width:  6,
+            height: 6,
             decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(op),
+              color: color.withOpacity(op),
               shape: BoxShape.circle,
             ),
           );
@@ -1582,7 +1741,7 @@ class _IconBtn extends StatelessWidget {
   @override
   Widget build(BuildContext context) => GestureDetector(
         onTap:  onTap,
-        child: Icon(icon, size: 18, color: color),
+        child: Icon(icon, size: 20, color: color),
       );
 }
 
@@ -1597,14 +1756,17 @@ class _LimitSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // FIX 8: Colors.white24/black12 don't exist — use withOpacity
     final handleColor = isDark
-        ? Colors.white.withOpacity(0.24)
-        : Colors.black.withOpacity(0.12);
-    // FIX 9: Colors.black60/white60 don't exist — use withOpacity
+        ? Colors.white.withOpacity(0.2)
+        : Colors.black.withOpacity(0.1);
     final subColor = isDark
         ? Colors.white.withOpacity(0.6)
         : Colors.black.withOpacity(0.6);
+
+    // Blue/purple gradient matching the design
+    final gradientColors = isDark 
+        ? [const Color(0xFF4A90D9), const Color(0xFF7B68EE)]
+        : [const Color(0xFF5B7FFF), const Color(0xFF8B5CF6)];
 
     return Container(
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
@@ -1626,14 +1788,15 @@ class _LimitSheet extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 24),
-          const Icon(Iconsax.lock_1,
-              size: 48, color: AppColors.primary),
+          Icon(Iconsax.lock_1,
+              size: 48, color: gradientColors[0]),
           const SizedBox(height: 16),
-          const Text(
+          Text(
             'Daily limit reached',
             style: TextStyle(
-              fontSize:   18,
+              fontSize:   20,
               fontWeight: FontWeight.w700,
+              color:      isDark ? Colors.white : Colors.black,
             ),
           ),
           const SizedBox(height: 8),
@@ -1643,7 +1806,7 @@ class _LimitSheet extends StatelessWidget {
             'for unlimited access.',
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontSize: 14,
+              fontSize: 15,
               height:   1.5,
               color:    subColor,
             ),
@@ -1655,19 +1818,18 @@ class _LimitSheet extends StatelessWidget {
                 child: OutlinedButton(
                   onPressed: onWatchAd,
                   style: OutlinedButton.styleFrom(
-                    side: const BorderSide(
-                        color: AppColors.primary),
+                    side: BorderSide(color: gradientColors[0]),
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12)),
                     padding: const EdgeInsets.symmetric(
                         vertical: 14),
                   ),
-                  child: const Text(
+                  child: Text(
                     'Watch Ad',
                     style: TextStyle(
-                      color:      AppColors.primary,
+                      color:      gradientColors[0],
                       fontWeight: FontWeight.w600,
-                      fontSize:   14,
+                      fontSize:   15,
                     ),
                   ),
                 ),
@@ -1680,7 +1842,7 @@ class _LimitSheet extends StatelessWidget {
                     context.push('/premium');
                   },
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primary,
+                    backgroundColor: gradientColors[0],
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12)),
                     padding: const EdgeInsets.symmetric(
@@ -1691,7 +1853,7 @@ class _LimitSheet extends StatelessWidget {
                     style: TextStyle(
                       color:      Colors.white,
                       fontWeight: FontWeight.w600,
-                      fontSize:   14,
+                      fontSize:   15,
                     ),
                   ),
                 ),
