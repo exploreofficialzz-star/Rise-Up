@@ -1,17 +1,25 @@
-"""Notifications Router — FCM token registration, push notifications, in-app notification feed"""
+"""
+Notifications Router — FCM token registration, push notifications, in-app notification feed.
+send_push_to_user lives in notification_service so all routers share one implementation.
+"""
 import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+
 from middleware.rate_limit import limiter, GENERAL_LIMIT
 from services.supabase_service import supabase_service
-from config import settings
+from services.notification_service import notification_service, send_push_to_user
 from utils.auth import get_current_user
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
 logger = logging.getLogger(__name__)
 
+
+# ─────────────────────────────────────────────────────────────
+# Pydantic Models
+# ─────────────────────────────────────────────────────────────
 
 class FCMTokenRequest(BaseModel):
     token: str
@@ -19,54 +27,68 @@ class FCMTokenRequest(BaseModel):
 
 
 class SendNotificationRequest(BaseModel):
-    user_id:     str
-    title:       str
-    body:        str
-    notif_type:  str = "system"
-    data:        Optional[dict] = None
+    user_id:    str
+    title:      str
+    body:       str
+    notif_type: str = "system"
+    data:       Optional[dict] = None
 
 
 class MarkReadRequest(BaseModel):
-    notification_ids: Optional[list] = None  # None = mark all
+    notification_ids: Optional[list] = None   # None = mark all
 
 
-# ── FCM Token Management ─────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# FCM Token Management
+# ─────────────────────────────────────────────────────────────
 
 @router.post("/register-token")
 @limiter.limit(GENERAL_LIMIT)
 async def register_fcm_token(
-    req: FCMTokenRequest, request: Request, user: dict = Depends(get_current_user)
+    req: FCMTokenRequest,
+    request: Request,
+    user: dict = Depends(get_current_user),
 ):
-    """Register or update a device FCM push token"""
-    supabase_service.db.table("fcm_tokens").upsert({
-        "user_id":   user["id"],
-        "token":     req.token,
-        "platform":  req.platform,
-        "is_active": True,
-    }, on_conflict="user_id,token").execute()
-
+    """Register or update a device FCM push token."""
+    supabase_service.client.table("fcm_tokens").upsert(
+        {
+            "user_id":   user["id"],
+            "token":     req.token,
+            "platform":  req.platform,
+            "is_active": True,
+        },
+        on_conflict="user_id,token",
+    ).execute()
     return {"success": True, "message": "Push notifications enabled"}
 
 
 @router.delete("/unregister-token")
-async def unregister_fcm_token(token: str, user: dict = Depends(get_current_user)):
-    """Deactivate a FCM token (logout or unsubscribe)"""
-    supabase_service.db.table("fcm_tokens").update({"is_active": False}).eq(
-        "user_id", user["id"]
-    ).eq("token", token).execute()
+async def unregister_fcm_token(
+    token: str,
+    user: dict = Depends(get_current_user),
+):
+    """Deactivate a FCM token on logout or unsubscribe."""
+    supabase_service.client.table("fcm_tokens").update(
+        {"is_active": False}
+    ).eq("user_id", user["id"]).eq("token", token).execute()
     return {"success": True}
 
 
-# ── In-App Notifications ─────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# In-App Notification Feed
+# ─────────────────────────────────────────────────────────────
 
 @router.get("/")
-async def list_notifications(limit: int = 30, user: dict = Depends(get_current_user)):
-    """Get user's in-app notification history"""
+async def list_notifications(
+    limit: int = 30,
+    user: dict = Depends(get_current_user),
+):
+    """Get user's in-app notification history."""
     res = (
-        supabase_service.db.table("notifications")
+        supabase_service.client.table("notifications")
         .select("*")
         .eq("user_id", user["id"])
-        .order("sent_at", desc=True)
+        .order("created_at", desc=True)
         .limit(limit)
         .execute()
     )
@@ -80,125 +102,90 @@ async def list_notifications(limit: int = 30, user: dict = Depends(get_current_u
 
 
 @router.post("/mark-read")
-async def mark_notifications_read(req: MarkReadRequest, user: dict = Depends(get_current_user)):
-    """Mark notifications as read"""
-    q = supabase_service.db.table("notifications").update({"is_read": True}).eq("user_id", user["id"])
+async def mark_notifications_read(
+    req: MarkReadRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Mark one, many, or all notifications as read."""
+    q = (
+        supabase_service.client.table("notifications")
+        .update({"is_read": True})
+        .eq("user_id", user["id"])
+    )
     if req.notification_ids:
         q = q.in_("id", req.notification_ids)
     q.execute()
     return {"success": True}
 
 
-# ── Server-Side Push Sending ─────────────────────────────────
-
-async def send_push_to_user(
-    user_id: str,
-    title: str,
-    body: str,
-    notif_type: str = "system",
-    data: Optional[dict] = None,
-) -> bool:
-    """
-    Internal helper — send a FCM push notification to all active tokens for a user.
-    Uses Firebase Admin SDK (requires FIREBASE_SERVICE_ACCOUNT_JSON env var).
-    Falls back gracefully if Firebase not configured.
-    """
-    # Store in-app notification regardless of FCM
-    try:
-        supabase_service.db.table("notifications").insert({
-            "user_id": user_id,
-            "title":   title,
-            "body":    body,
-            "type":    notif_type,
-            "data":    data or {},
-        }).execute()
-    except Exception as e:
-        logger.warning(f"In-app notification store failed: {e}")
-
-    # Get active FCM tokens
-    tokens_res = (
-        supabase_service.db.table("fcm_tokens")
-        .select("token, platform")
-        .eq("user_id", user_id)
-        .eq("is_active", True)
-        .execute()
-    )
-    tokens = [t["token"] for t in (tokens_res.data or [])]
-    if not tokens:
-        return False
-
-    # Send via Firebase Admin SDK
-    firebase_key = getattr(settings, "FIREBASE_SERVICE_ACCOUNT_JSON", None)
-    if not firebase_key:
-        logger.info("Firebase not configured — push skipped, in-app notification stored")
-        return False
-
-    try:
-        import firebase_admin
-        from firebase_admin import credentials, messaging
-
-        if not firebase_admin._apps:
-            import json
-            cred = credentials.Certificate(json.loads(firebase_key))
-            firebase_admin.initialize_app(cred)
-
-        message = messaging.MulticastMessage(
-            tokens=tokens,
-            notification=messaging.Notification(title=title, body=body),
-            data={k: str(v) for k, v in (data or {}).items()},
-            android=messaging.AndroidConfig(priority="high"),
-            apns=messaging.APNSConfig(
-                payload=messaging.APNSPayload(aps=messaging.Aps(sound="default"))
-            ),
-        )
-        response = messaging.send_each_for_multicast(message)
-        logger.info(f"Push sent: {response.success_count}/{len(tokens)} delivered")
-
-        # Deactivate failed tokens
-        failed_tokens = [
-            tokens[i] for i, r in enumerate(response.responses) if not r.success
-        ]
-        if failed_tokens:
-            supabase_service.db.table("fcm_tokens").update({"is_active": False}).in_(
-                "token", failed_tokens
-            ).execute()
-
-        return response.success_count > 0
-    except Exception as e:
-        logger.error(f"Push notification error: {e}")
-        return False
-
-
-# ── Trigger endpoints (called by Supabase Edge Functions / cron) ─
+# ─────────────────────────────────────────────────────────────
+# Manual / Cron Trigger Endpoints
+# ─────────────────────────────────────────────────────────────
 
 @router.post("/send-streak-reminder")
 @limiter.limit("10/minute")
-async def send_streak_reminder(request: Request, user: dict = Depends(get_current_user)):
-    """Trigger a streak reminder for the calling user (for testing/manual trigger)"""
+async def send_streak_reminder(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Trigger a streak reminder for the calling user."""
     profile = await supabase_service.get_profile(user["id"])
-    name = (profile.get("full_name") or "Champion").split()[0] if profile else "Champion"
+    name = (
+        (profile.get("full_name") or "Champion").split()[0]
+        if profile
+        else "Champion"
+    )
     streak = profile.get("current_streak", 0) if profile else 0
 
-    success = await send_push_to_user(
-        user["id"],
-        "🔥 Keep your streak alive!",
-        f"Hey {name}! Your {streak}-day streak is at risk. Check in now!",
-        "streak_reminder",
+    await notification_service.send_streak_reminder(
+        user_id=user["id"],
+        name=name,
+        streak=streak,
     )
-    return {"sent": success}
+    return {"sent": True}
 
 
 @router.post("/send-task-reminder")
 @limiter.limit("10/minute")
-async def send_task_reminder(request: Request, user: dict = Depends(get_current_user)):
-    """Trigger a task reminder for the calling user"""
+async def send_task_reminder(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Trigger a task reminder for the calling user."""
     profile = await supabase_service.get_profile(user["id"])
-    name = (profile.get("full_name") or "Champion").split()[0] if profile else "Champion"
-
-    success = await send_push_to_user(
-        user["id"],
-        "💰 New income waiting!",
-        f"Hey {name}! You have income tasks ready. Take 10 minutes and make some money today!",
-        "task_reminder",
+    name = (
+        (profile.get("full_name") or "Champion").split()[0]
+        if profile
+        else "Champion"
     )
-    return {"sent": success}
+
+    await notification_service.send_task_reminder(
+        user_id=user["id"],
+        name=name,
+    )
+    return {"sent": True}
+
+
+# ─────────────────────────────────────────────────────────────
+# Admin Send Endpoint (internal use)
+# ─────────────────────────────────────────────────────────────
+
+@router.post("/send")
+@limiter.limit("20/minute")
+async def send_notification(
+    req: SendNotificationRequest,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """
+    Admin / server-side endpoint to push a notification to any user.
+    Requires the caller to be authenticated (add admin guard if needed).
+    """
+    delivered = await send_push_to_user(
+        user_id=req.user_id,
+        title=req.title,
+        body=req.body,
+        notif_type=req.notif_type,
+        data=req.data,
+    )
+    return {"success": True, "fcm_delivered": delivered}
