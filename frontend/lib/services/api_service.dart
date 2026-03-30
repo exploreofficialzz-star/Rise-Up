@@ -1011,6 +1011,18 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
+  /// Marks the current user as online. Call this on app resume / screen open.
+  /// Fire-and-forget — errors are silently swallowed so presence never blocks UI.
+  Future<void> updatePresence() async {
+    try { await _dio.post('/messages/presence', data: {}); } catch (_) {}
+  }
+
+  /// Marks the current user as offline. Call this on app pause / sign-out.
+  /// Fire-and-forget — errors are silently swallowed so presence never blocks UI.
+  Future<void> setOffline() async {
+    try { await _dio.delete('/messages/presence'); } catch (_) {}
+  }
+
   // ── Groups ────────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> getGroups() async {
