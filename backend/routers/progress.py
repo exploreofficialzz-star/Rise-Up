@@ -50,11 +50,24 @@ async def get_profile(user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.warning(f"Could not fetch stats for {user['id']}: {e}")
 
+    # FIX: query follower counts directly — get_user_stats does NOT return
+    # followers/following keys, so setdefault always fell back to 0.
+    follower_counts = {"followers": 0, "following": 0}
+    try:
+        follower_counts = await supabase_service.get_follower_counts(user["id"])
+    except Exception as e:
+        logger.warning(f"Could not fetch follower counts for {user['id']}: {e}")
+
     if profile and isinstance(profile, dict):
-        profile.setdefault("followers_count", stats.get("followers", 0))
-        profile.setdefault("following_count", stats.get("following", 0))
+        # Use directly queried counts — never rely on stats dict for these
+        profile["followers_count"] = follower_counts.get("followers", 0)
+        profile["following_count"] = follower_counts.get("following", 0)
         profile.setdefault("is_premium",
                            profile.get("subscription_tier") == "premium")
+
+    # Also attach counts to stats so user_profile_screen can read _stats['followers']
+    stats["followers"] = follower_counts.get("followers", 0)
+    stats["following"] = follower_counts.get("following", 0)
 
     return {"profile": profile or {}, "stats": stats}
 
@@ -81,7 +94,7 @@ async def update_profile(
     return {"profile": updated or {}, "message": "Profile saved!"}
 
 
-# ── MIME type → file extension map (all common image formats) ─────────────────
+# ── MIME type → file extension map ────────────────────────────────────────────
 _IMAGE_TYPES: dict[str, str] = {
     "image/jpeg":      "jpg",
     "image/jpg":       "jpg",
@@ -102,7 +115,7 @@ _IMAGE_TYPES: dict[str, str] = {
     "image/x-png":     "png",
 }
 
-_MAX_SIZE_BYTES = 10 * 1024 * 1024   # 10 MB — generous for any device camera
+_MAX_SIZE_BYTES = 10 * 1024 * 1024   # 10 MB
 _BUCKET         = "avatars"
 
 
@@ -111,20 +124,9 @@ async def upload_avatar(
     file: UploadFile = File(...),
     user: dict = Depends(get_current_user),
 ):
-    """
-    Upload profile picture to Supabase Storage bucket 'avatars'.
-
-    Accepts any common image format:
-      JPEG · PNG · WebP · GIF · HEIC · HEIF · AVIF · BMP · TIFF · SVG · ICO
-
-    Max size: 10 MB.
-    Returns: { "avatar_url": "...", "message": "..." }
-    """
     user_id = user["id"]
 
-    # ── Normalise & validate MIME type ────────────────────────────────────────
-    raw_ct       = (file.content_type or "").lower().split(";")[0].strip()
-    # Some mobile clients send no content-type — sniff by filename extension
+    raw_ct = (file.content_type or "").lower().split(";")[0].strip()
     if not raw_ct or raw_ct == "application/octet-stream":
         fname = (file.filename or "").lower()
         for mime, _ in _IMAGE_TYPES.items():
@@ -134,7 +136,7 @@ async def upload_avatar(
                 raw_ct = mime
                 break
         else:
-            raw_ct = "image/jpeg"   # safe default for unknown mobile uploads
+            raw_ct = "image/jpeg"
 
     if raw_ct not in _IMAGE_TYPES:
         raise HTTPException(
@@ -147,7 +149,6 @@ async def upload_avatar(
 
     ext = _IMAGE_TYPES[raw_ct]
 
-    # ── Read & validate size ──────────────────────────────────────────────────
     contents = await file.read()
     if len(contents) == 0:
         raise HTTPException(status_code=400, detail="File is empty")
@@ -157,13 +158,11 @@ async def upload_avatar(
             detail=f"Image must be under {_MAX_SIZE_BYTES // (1024*1024)} MB"
         )
 
-    # ── Build unique storage path  {user_id}/{uuid}.{ext} ────────────────────
     storage_path = f"{user_id}/{uuid.uuid4()}.{ext}"
 
     try:
         sb = supabase_service.client
 
-        # ── Upload (upsert=true handles re-uploads cleanly) ───────────────────
         try:
             sb.storage.from_(_BUCKET).upload(
                 path=storage_path,
@@ -173,7 +172,6 @@ async def upload_avatar(
         except Exception as upload_err:
             err_str = str(upload_err).lower()
             if any(k in err_str for k in ("already exists", "duplicate", "23505")):
-                # Remove stale object then retry without upsert flag
                 try:
                     sb.storage.from_(_BUCKET).remove([storage_path])
                 except Exception:
@@ -186,7 +184,6 @@ async def upload_avatar(
             else:
                 raise
 
-        # ── Resolve public URL ────────────────────────────────────────────────
         url_result = sb.storage.from_(_BUCKET).get_public_url(storage_path)
         avatar_url: str = (
             url_result
@@ -201,7 +198,6 @@ async def upload_avatar(
         if not avatar_url:
             raise HTTPException(status_code=500, detail="Could not generate public URL")
 
-        # ── Persist URL to profile ────────────────────────────────────────────
         await supabase_service.update_profile(user_id, {"avatar_url": avatar_url})
 
         logger.info(f"✅ Avatar uploaded for {user_id} ({ext}, {len(contents)//1024} KB): {storage_path}")
@@ -242,16 +238,16 @@ async def get_leaderboard(
         result = []
         for i, p in enumerate(leaders.data or []):
             result.append({
-                "rank":       i + 1,
-                "user_id":    p.get("id"),
-                "full_name":  p.get("full_name", "User"),
-                "stage":      p.get("stage", "survival"),
-                "country":    p.get("country", ""),
+                "rank":         i + 1,
+                "user_id":      p.get("id"),
+                "full_name":    p.get("full_name", "User"),
+                "stage":        p.get("stage", "survival"),
+                "country":      p.get("country", ""),
                 "total_earned": p.get("total_earned", 0),
-                "currency":   p.get("currency", "USD"),
-                "xp_points":  p.get("xp_points", 0),
-                "avatar_url": p.get("avatar_url"),
-                "is_premium": p.get("subscription_tier") == "premium",
+                "currency":     p.get("currency", "USD"),
+                "xp_points":    p.get("xp_points", 0),
+                "avatar_url":   p.get("avatar_url"),
+                "is_premium":   p.get("subscription_tier") == "premium",
             })
 
         return {"leaders": result, "total": len(result)}
