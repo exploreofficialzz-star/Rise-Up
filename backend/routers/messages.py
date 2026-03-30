@@ -10,18 +10,23 @@ Fix log:
             1. get all conversation_ids for current user
             2. intersect with other user's conversation_ids
             3. filter by type='direct' → return first match or create new
+  v3.1 — get_or_create_conversation: FIX — conversations insert now includes
+          "user_id" to satisfy NOT NULL constraint on that column (was causing
+          Postgres error 23502).
 """
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime, timezone, timedelta
+import logging
 
 from services.supabase_service import supabase_service
 from services.ai_service import ai_service
 from utils.auth import get_current_user
 
 router = APIRouter(prefix="/messages", tags=["Messages"])
+logger = logging.getLogger(__name__)
 
 # ── Freemium constants ────────────────────────────────────────────────
 FREE_MSGS_PER_WINDOW   = 3
@@ -109,12 +114,12 @@ async def get_conversations(user: dict = Depends(get_current_user)):
             unread = unread_res.count or 0
 
             enriched.append({
-                "id":           c["id"],
+                "id":              c["id"],
                 "conversation_id": c["id"],   # duplicate key for frontend compatibility
-                "other_user":   other["profiles"] if other else None,
-                "last_message": last_msg,
-                "unread_count": unread,
-                "updated_at":   c["updated_at"],
+                "other_user":      other["profiles"] if other else None,
+                "last_message":    last_msg,
+                "unread_count":    unread,
+                "updated_at":      c["updated_at"],
             })
 
         return {"conversations": enriched}
@@ -129,8 +134,8 @@ async def get_or_create_conversation(
     user: dict = Depends(get_current_user),
 ):
     """
-    FIX v3: removed rpc("get_conversation_between") — that function doesn't
-    exist in the DB.  Replaced with a safe 3-step query.
+    FIX v3.1: conversations insert now includes "user_id" to satisfy the
+    NOT NULL constraint on that column (was causing 23502 error).
     """
     try:
         db = _db()
@@ -169,8 +174,10 @@ async def get_or_create_conversation(
                     return {"conversation_id": existing_res.data[0]["id"]}
 
         # ── Create new direct conversation ────────────────────────────
+        # FIX v3.1: added "user_id" — conversations.user_id is NOT NULL
         convo_res = db.table("conversations").insert({
             "type":       "direct",
+            "user_id":    user["id"],    # ← FIXED: was missing, caused error 23502
             "created_by": user["id"],
         }).execute()
 
@@ -189,9 +196,7 @@ async def get_or_create_conversation(
     except HTTPException:
         raise
     except Exception as e:
-        logger_msg = f"get_or_create_conversation error [{user['id']} → {other_user_id}]: {e}"
-        import logging
-        logging.getLogger(__name__).error(logger_msg)
+        logger.error(f"get_or_create_conversation error [{user['id']} → {other_user_id}]: {e}")
         raise HTTPException(500, f"Could not open conversation: {str(e)}")
 
 
@@ -343,11 +348,11 @@ async def send_ai_message(
                         raise HTTPException(
                             402,
                             detail={
-                                "code":       "quota_exceeded",
-                                "message":    "Free AI messages used. Watch an ad to continue.",
-                                "free_used":  quota.get("free_used", 0),
-                                "ads_today":  ads_today,
-                                "max_ads_day":MAX_AD_UNLOCKS_PER_DAY,
+                                "code":        "quota_exceeded",
+                                "message":     "Free AI messages used. Watch an ad to continue.",
+                                "free_used":   quota.get("free_used", 0),
+                                "ads_today":   ads_today,
+                                "max_ads_day": MAX_AD_UNLOCKS_PER_DAY,
                             }
                         )
 
