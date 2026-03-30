@@ -62,21 +62,16 @@ class SupabaseService:
         res = self.db.table("profiles").upsert(data).execute()
         return res.data[0] if res.data else {}
 
-    # ── FIX: Follower counts — queried directly from the followers table ──────
-    # Supports both common column naming conventions with graceful fallback.
+    # ── Follower counts ───────────────────────────────────────
+    # FIX: _FOLLOW_TABLE corrected from "followers" → "follows"
+    # to match the actual Supabase table name (confirmed via PGRST205 error
+    # hint: "Perhaps you meant the table 'public.follows'").
     #
-    # Common schema variants:
-    #   followers(follower_id, following_id)   ← most common
-    #   followers(user_id, target_id)
-    #   user_follows(follower_id, following_id)
-    #
-    # If your table uses different column names, update _FOLLOW_TABLE,
-    # _FOLLOWER_COL (the person doing the following), and
-    # _FOLLOWING_COL (the person being followed) below.
-    # ─────────────────────────────────────────────────────────────────────────
-    _FOLLOW_TABLE   = "followers"
-    _FOLLOWER_COL   = "follower_id"    # the user WHO is following someone
-    _FOLLOWING_COL  = "following_id"   # the user BEING followed
+    # Schema: follows(follower_id, following_id)
+    # ─────────────────────────────────────────────────────────
+    _FOLLOW_TABLE   = "follows"          # ← FIXED (was "followers")
+    _FOLLOWER_COL   = "follower_id"      # the user WHO is following someone
+    _FOLLOWING_COL  = "following_id"     # the user BEING followed
 
     async def get_follower_counts(self, user_id: str) -> dict:
         """
@@ -84,9 +79,6 @@ class SupabaseService:
 
         followers = number of people following this user
         following = number of people this user follows
-
-        Tries the primary table/column names first, then falls back to
-        alternative naming so it works regardless of your migration naming.
         """
         followers_count = 0
         following_count = 0
@@ -106,7 +98,6 @@ class SupabaseService:
                 f"Check _FOLLOW_TABLE='{self._FOLLOW_TABLE}' and "
                 f"_FOLLOWING_COL='{self._FOLLOWING_COL}' in supabase_service.py"
             )
-            # Fallback: try alternative column name
             try:
                 res = (
                     self.db.table(self._FOLLOW_TABLE)
@@ -133,7 +124,6 @@ class SupabaseService:
                 f"Check _FOLLOW_TABLE='{self._FOLLOW_TABLE}' and "
                 f"_FOLLOWER_COL='{self._FOLLOWER_COL}' in supabase_service.py"
             )
-            # Fallback: try alternative column name
             try:
                 res = (
                     self.db.table(self._FOLLOW_TABLE)
@@ -422,7 +412,6 @@ class SupabaseService:
         completed_tasks = [t for t in tasks if t.get("status") == "completed"]
         active_tasks    = [t for t in tasks if t.get("status") == "in_progress"]
 
-        # FIX: include follower counts in stats so every caller has them
         follower_counts = {"followers": 0, "following": 0}
         try:
             follower_counts = await self.get_follower_counts(user_id)
@@ -434,8 +423,6 @@ class SupabaseService:
             "total_earned": earnings["total"],
             "followers":    follower_counts["followers"],
             "following":    follower_counts["following"],
-            # posts count is fetched separately by posts router;
-            # include 0 here so the key always exists
             "posts":        0,
             "tasks": {
                 "total":     len(tasks),
