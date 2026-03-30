@@ -1,3 +1,4 @@
+// frontend/lib/screens/auth/splash_screen.dart
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -20,6 +21,12 @@ class _SplashScreenState extends State<SplashScreen>
       vsync: this,
       duration: const Duration(milliseconds: 1200),
     )..repeat();
+
+    // FIX: Token check and minimum display time run in parallel.
+    // Previously: await 2800ms THEN check token → total ≥ 2800ms.
+    // Now: both run at the same time → total = max(1500ms, token_check_time).
+    // Since flutter_secure_storage reads locally, token check is typically <100ms,
+    // making the effective splash exactly 1500ms instead of 2800ms.
     _navigate();
   }
 
@@ -29,17 +36,31 @@ class _SplashScreenState extends State<SplashScreen>
     super.dispose();
   }
 
-  Future<void> _navigate() async {
-    await Future.delayed(const Duration(milliseconds: 2800));
-    if (!mounted) return;
-    if (kIsWeb) { context.go('/login'); return; }
+  Future<String?> _readToken() async {
     try {
-      final token = await storageService.read(key: 'access_token');
-      if (!mounted) return;
-      context.go(token != null && token.isNotEmpty ? '/home' : '/login');
+      return await storageService.read(key: 'access_token');
     } catch (_) {
-      if (mounted) context.go('/login');
+      return null;
     }
+  }
+
+  Future<void> _navigate() async {
+    if (kIsWeb) {
+      await Future.delayed(const Duration(milliseconds: 1200));
+      if (mounted) context.go('/login');
+      return;
+    }
+
+    // Run minimum display time and token check concurrently.
+    final results = await Future.wait([
+      Future.delayed(const Duration(milliseconds: 1500)), // min splash display
+      _readToken(),                                        // local storage read
+    ]);
+
+    if (!mounted) return;
+
+    final token = results[1] as String?;
+    context.go(token != null && token.isNotEmpty ? '/home' : '/login');
   }
 
   @override
@@ -53,15 +74,14 @@ class _SplashScreenState extends State<SplashScreen>
       backgroundColor: bgColor,
       body: Stack(
         children: [
-          // ── Logo + RiseUp — upper portion like image 2 ──
+          // ── Logo + RiseUp ──────────────────────────────
           Positioned(
-            top: screenH * 0.28, // upper 28% — matches image 2
+            top: screenH * 0.28,
             left: 0,
             right: 0,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Logo — bigger
                 Image.asset(
                   'assets/images/riseup_logo.png',
                   width: 130,
@@ -72,11 +92,7 @@ class _SplashScreenState extends State<SplashScreen>
                     size: 100,
                   ),
                 ),
-
-                // Tight gap — matches image 2
                 const SizedBox(height: 4),
-
-                // RiseUp — bigger, tight to logo
                 ShaderMask(
                   shaderCallback: (bounds) => const LinearGradient(
                     colors: [
@@ -101,7 +117,7 @@ class _SplashScreenState extends State<SplashScreen>
             ),
           ),
 
-          // ── Animated dots ────────────────────────────
+          // ── Animated dots ──────────────────────────────
           Positioned(
             bottom: 100,
             left: 0,
@@ -124,7 +140,7 @@ class _SplashScreenState extends State<SplashScreen>
             ),
           ),
 
-          // ── By chAs ──────────────────────────────────
+          // ── By chAs ────────────────────────────────────
           Positioned(
             bottom: 40,
             left: 0,
@@ -150,7 +166,8 @@ class _Dot extends StatelessWidget {
   final AnimationController ctrl;
   final double delay;
   final Color color;
-  const _Dot({required this.ctrl, required this.delay, required this.color});
+  const _Dot(
+      {required this.ctrl, required this.delay, required this.color});
 
   @override
   Widget build(BuildContext context) {
