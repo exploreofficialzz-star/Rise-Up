@@ -62,6 +62,91 @@ class SupabaseService:
         res = self.db.table("profiles").upsert(data).execute()
         return res.data[0] if res.data else {}
 
+    # ── FIX: Follower counts — queried directly from the followers table ──────
+    # Supports both common column naming conventions with graceful fallback.
+    #
+    # Common schema variants:
+    #   followers(follower_id, following_id)   ← most common
+    #   followers(user_id, target_id)
+    #   user_follows(follower_id, following_id)
+    #
+    # If your table uses different column names, update _FOLLOW_TABLE,
+    # _FOLLOWER_COL (the person doing the following), and
+    # _FOLLOWING_COL (the person being followed) below.
+    # ─────────────────────────────────────────────────────────────────────────
+    _FOLLOW_TABLE   = "followers"
+    _FOLLOWER_COL   = "follower_id"    # the user WHO is following someone
+    _FOLLOWING_COL  = "following_id"   # the user BEING followed
+
+    async def get_follower_counts(self, user_id: str) -> dict:
+        """
+        Returns {"followers": int, "following": int} for a given user.
+
+        followers = number of people following this user
+        following = number of people this user follows
+
+        Tries the primary table/column names first, then falls back to
+        alternative naming so it works regardless of your migration naming.
+        """
+        followers_count = 0
+        following_count = 0
+
+        # ── Count followers (people following this user) ──────────────────────
+        try:
+            res = (
+                self.db.table(self._FOLLOW_TABLE)
+                .select("id", count="exact")
+                .eq(self._FOLLOWING_COL, user_id)
+                .execute()
+            )
+            followers_count = res.count or 0
+        except Exception as e:
+            logger.warning(
+                f"get_follower_counts[followers] user={user_id}: {e}. "
+                f"Check _FOLLOW_TABLE='{self._FOLLOW_TABLE}' and "
+                f"_FOLLOWING_COL='{self._FOLLOWING_COL}' in supabase_service.py"
+            )
+            # Fallback: try alternative column name
+            try:
+                res = (
+                    self.db.table(self._FOLLOW_TABLE)
+                    .select("id", count="exact")
+                    .eq("target_id", user_id)
+                    .execute()
+                )
+                followers_count = res.count or 0
+            except Exception:
+                followers_count = 0
+
+        # ── Count following (people this user follows) ────────────────────────
+        try:
+            res = (
+                self.db.table(self._FOLLOW_TABLE)
+                .select("id", count="exact")
+                .eq(self._FOLLOWER_COL, user_id)
+                .execute()
+            )
+            following_count = res.count or 0
+        except Exception as e:
+            logger.warning(
+                f"get_follower_counts[following] user={user_id}: {e}. "
+                f"Check _FOLLOW_TABLE='{self._FOLLOW_TABLE}' and "
+                f"_FOLLOWER_COL='{self._FOLLOWER_COL}' in supabase_service.py"
+            )
+            # Fallback: try alternative column name
+            try:
+                res = (
+                    self.db.table(self._FOLLOW_TABLE)
+                    .select("id", count="exact")
+                    .eq("user_id", user_id)
+                    .execute()
+                )
+                following_count = res.count or 0
+            except Exception:
+                following_count = 0
+
+        return {"followers": followers_count, "following": following_count}
+
     # ── Conversations ──────────────────────────────────────────
     async def create_conversation(self, user_id: str, title: str = "New Chat") -> dict:
         res = self.db.table("conversations").insert(
@@ -91,11 +176,11 @@ class SupabaseService:
     ) -> dict:
         res = self.db.table("messages").insert({
             "conversation_id": conversation_id,
-            "user_id": user_id,
-            "role": role,
-            "content": content,
-            "ai_model": ai_model,
-            "metadata": metadata or {},
+            "user_id":         user_id,
+            "role":            role,
+            "content":         content,
+            "ai_model":        ai_model,
+            "metadata":        metadata or {},
         }).execute()
         try:
             self.db.rpc("increment_message_count", {"conv_id": conversation_id}).execute()
@@ -147,9 +232,9 @@ class SupabaseService:
 
     async def enroll_skill(self, user_id: str, module_id: str) -> dict:
         res = self.db.table("user_skill_enrollments").upsert({
-            "user_id": user_id,
+            "user_id":   user_id,
             "module_id": module_id,
-            "status": "enrolled",
+            "status":    "enrolled",
         }).execute()
         return res.data[0] if res.data else {}
 
@@ -206,12 +291,12 @@ class SupabaseService:
         currency: str = "NGN",
     ) -> dict:
         res = self.db.table("earnings").insert({
-            "user_id": user_id,
-            "amount": amount,
+            "user_id":     user_id,
+            "amount":      amount,
             "source_type": source_type,
-            "source_id": source_id,
+            "source_id":   source_id,
             "description": description,
-            "currency": currency,
+            "currency":    currency,
         }).execute()
         try:
             self.db.rpc(
@@ -229,7 +314,7 @@ class SupabaseService:
             .order("earned_at", desc=True)
             .execute()
         )
-        data = res.data or []
+        data  = res.data or []
         total = sum(float(e["amount"]) for e in data)
         return {"total": total, "count": len(data), "breakdown": data[:10]}
 
@@ -242,11 +327,11 @@ class SupabaseService:
         expires_at=None,
     ) -> dict:
         res = self.db.table("feature_unlocks").insert({
-            "user_id": user_id,
-            "feature_key": feature_key,
+            "user_id":       user_id,
+            "feature_key":   feature_key,
             "unlock_method": method,
-            "is_active": True,
-            "expires_at": expires_at,
+            "is_active":     True,
+            "expires_at":    expires_at,
         }).execute()
         return res.data[0] if res.data else {}
 
@@ -295,13 +380,13 @@ class SupabaseService:
         plan: str = "monthly",
     ) -> dict:
         res = self.db.table("payments").insert({
-            "user_id": user_id,
-            "flutterwave_tx_ref": tx_ref,
-            "amount": amount,
-            "currency": currency,
-            "payment_type": payment_type,
-            "plan": plan,
-            "status": "pending",
+            "user_id":              user_id,
+            "flutterwave_tx_ref":   tx_ref,
+            "amount":               amount,
+            "currency":             currency,
+            "payment_type":         payment_type,
+            "plan":                 plan,
+            "status":               "pending",
         }).execute()
         return res.data[0] if res.data else {}
 
@@ -319,11 +404,11 @@ class SupabaseService:
         self, user_id: str, ad_unit_id: str, feature_unlocked: str = None
     ) -> dict:
         res = self.db.table("ad_views").insert({
-            "user_id": user_id,
-            "ad_unit_id": ad_unit_id,
-            "ad_type": "rewarded",
+            "user_id":          user_id,
+            "ad_unit_id":       ad_unit_id,
+            "ad_type":          "rewarded",
             "feature_unlocked": feature_unlocked,
-            "reward_granted": feature_unlocked is not None,
+            "reward_granted":   feature_unlocked is not None,
         }).execute()
         return res.data[0] if res.data else {}
 
@@ -337,9 +422,21 @@ class SupabaseService:
         completed_tasks = [t for t in tasks if t.get("status") == "completed"]
         active_tasks    = [t for t in tasks if t.get("status") == "in_progress"]
 
+        # FIX: include follower counts in stats so every caller has them
+        follower_counts = {"followers": 0, "following": 0}
+        try:
+            follower_counts = await self.get_follower_counts(user_id)
+        except Exception as e:
+            logger.warning(f"get_user_stats follower counts {user_id}: {e}")
+
         return {
             "profile":      profile,
             "total_earned": earnings["total"],
+            "followers":    follower_counts["followers"],
+            "following":    follower_counts["following"],
+            # posts count is fetched separately by posts router;
+            # include 0 here so the key always exists
+            "posts":        0,
             "tasks": {
                 "total":     len(tasks),
                 "completed": len(completed_tasks),
@@ -347,9 +444,9 @@ class SupabaseService:
                 "suggested": len([t for t in tasks if t.get("status") == "suggested"]),
             },
             "skills": {
-                "enrolled":   len(enrollments),
-                "completed":  len([e for e in enrollments if e.get("status") == "completed"]),
-                "in_progress":len([e for e in enrollments if e.get("status") == "in_progress"]),
+                "enrolled":    len(enrollments),
+                "completed":   len([e for e in enrollments if e.get("status") == "completed"]),
+                "in_progress": len([e for e in enrollments if e.get("status") == "in_progress"]),
             },
             "stage":        profile.get("stage", "survival") if profile else "survival",
             "subscription": profile.get("subscription_tier", "free") if profile else "free",
@@ -357,24 +454,6 @@ class SupabaseService:
 
     # ── Market Pulse / Economic Context ───────────────────────
     async def get_economic_indicators(self, country_code: str) -> dict:
-        """
-        Fetch cached economic indicators for a given country from the DB.
-
-        Tries the `economic_indicators` table first (populated by a background
-        scheduler or migration).  Falls back to a safe empty dict so callers
-        never crash — market_pulse.py logs a warning and continues without it.
-
-        Expected table schema (create via migration if needed):
-          economic_indicators (
-            country_code  TEXT PRIMARY KEY,
-            gdp_growth    NUMERIC,
-            inflation     NUMERIC,
-            unemployment  NUMERIC,
-            currency_trend TEXT,
-            interest_rate  NUMERIC,
-            updated_at    TIMESTAMPTZ DEFAULT now()
-          )
-        """
         try:
             res = (
                 self.db.table("economic_indicators")
@@ -391,9 +470,6 @@ class SupabaseService:
     async def upsert_economic_indicators(
         self, country_code: str, data: dict
     ) -> dict:
-        """
-        Upsert economic indicator data for a country (called by scheduler / admin).
-        """
         data["country_code"] = country_code.upper()
         try:
             res = (
@@ -408,17 +484,6 @@ class SupabaseService:
 
     # ── Market Pulse Cache ────────────────────────────────────
     async def get_pulse_cache(self, cache_key: str) -> dict:
-        """
-        Retrieve a cached market-pulse payload by key.
-
-        Expected table schema:
-          pulse_cache (
-            cache_key   TEXT PRIMARY KEY,
-            payload     JSONB,
-            expires_at  TIMESTAMPTZ,
-            created_at  TIMESTAMPTZ DEFAULT now()
-          )
-        """
         try:
             from datetime import datetime, timezone
             res = (
@@ -430,12 +495,11 @@ class SupabaseService:
             )
             if not res.data:
                 return {}
-            # Honour TTL
             expires_at = res.data.get("expires_at")
             if expires_at:
                 from dateutil.parser import parse as parse_dt
                 if parse_dt(expires_at) < datetime.now(timezone.utc):
-                    return {}  # expired
+                    return {}
             return res.data.get("payload") or {}
         except Exception as e:
             logger.debug(f"get_pulse_cache({cache_key}): {e}")
@@ -444,7 +508,6 @@ class SupabaseService:
     async def set_pulse_cache(
         self, cache_key: str, payload: dict, ttl_seconds: int = 3600
     ) -> bool:
-        """Store a market-pulse payload with a TTL."""
         try:
             from datetime import datetime, timezone, timedelta
             expires_at = (
@@ -549,10 +612,6 @@ class SupabaseService:
 
     # ── Agent Quota ───────────────────────────────────────────
     async def get_agent_quota(self, user_id: str) -> dict:
-        """
-        Return the current agent usage quota for a user.
-        Falls back to a sensible default if the table doesn't exist yet.
-        """
         try:
             res = (
                 self.db.table("agent_quotas")
