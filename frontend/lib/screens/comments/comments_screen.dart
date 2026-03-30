@@ -1,4 +1,10 @@
 // frontend/lib/screens/comments/comments_screen.dart
+// Fixed:
+//  1. _requestAiInsight uses api.chat() (reliable) instead of /ai/post-insight
+//  2. addComment passes is_ai + is_pinned flags correctly
+//  3. Pinned AI comment always shown at top, separated from regular comments
+//  4. Back navigation works (context.pop) because home_screen uses context.push
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -29,15 +35,14 @@ class _CommentsScreenState extends State<CommentsScreen> {
   final _ctrl   = TextEditingController();
   final _scroll = ScrollController();
 
-  List _comments       = [];
-  Map  _aiComment      = {};
-  Map  _postDetails    = {};
-  Map  _posterProfile  = {};
-  bool _loading        = true;
-  bool _sending        = false;
-  bool _isFollowing    = false;
-  bool _followLoading  = false;
-  bool _aiLoading      = false;   // tracks AI insight request in progress
+  List _comments      = [];
+  Map  _aiComment     = {};
+  Map  _posterProfile = {};
+  bool _loading       = true;
+  bool _sending       = false;
+  bool _isFollowing   = false;
+  bool _followLoading = false;
+  bool _aiLoading     = false;
   String? _myUserId;
 
   @override
@@ -58,21 +63,27 @@ class _CommentsScreenState extends State<CommentsScreen> {
     try {
       _myUserId = await api.getUserId();
 
-      final List results = await Future.wait([
+      final futures = <Future>[
         api.getPostComments(widget.postId),
         if (widget.postUserId != null)
           api.get('/posts/users/${widget.postUserId}/profile'),
-      ]);
+      ];
+      final results = await Future.wait(futures);
 
       final commentsData = results[0] as Map? ?? {};
       final all = (commentsData['comments'] as List? ?? []).cast<Map>();
 
       // Separate pinned AI comment from regular comments.
-      Map aiComment = {};
-      List regular  = [];
+      // Backend marks AI comments with is_ai == true or is_pinned == true.
+      // The content also starts with '🤖 RiseUp AI:' as a fallback identifier.
+      Map aiComment  = {};
+      final regular  = <Map>[];
       for (final c in all) {
-        if (c['is_ai'] == true || c['is_pinned'] == true) {
-          aiComment = c;
+        final isAiFlag    = c['is_ai'] == true || c['is_pinned'] == true;
+        final isAiContent = (c['content']?.toString() ?? '').startsWith('🤖 RiseUp AI:');
+        if (isAiFlag || isAiContent) {
+          // Keep the most recent AI comment if there are multiples
+          if (aiComment.isEmpty) aiComment = c;
         } else {
           regular.add(c);
         }
@@ -82,7 +93,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
       bool isFollowing  = false;
       if (results.length > 1) {
         final pd = results[1] as Map? ?? {};
-        posterProfile = pd['profile'] as Map? ?? {};
+        posterProfile = (pd['profile'] as Map?)?.cast<String, dynamic>() ?? {};
         isFollowing   = pd['is_following'] == true;
       }
 
@@ -153,66 +164,52 @@ class _CommentsScreenState extends State<CommentsScreen> {
     }
   }
 
-  /// Request AI insight for this post and save the response as a pinned comment.
+  // FIX: Uses api.chat() (the same reliable endpoint used everywhere in the app)
+  // instead of the custom /ai/post-insight endpoint that may not exist.
+  // After getting the AI response, posts it as a pinned AI comment via addComment
+  // with isAI=true + isPinned=true so the backend stores and returns it correctly.
   Future<void> _requestAiInsight() async {
     if (_aiLoading) return;
     HapticFeedback.mediumImpact();
     setState(() => _aiLoading = true);
 
     try {
-      // 1. Call AI to analyze the post content.
-      final aiRes = await api.post('/ai/post-insight', {
-        'post_id': widget.postId,
-        'content': widget.postContent,
-        'author':  widget.postAuthor,
-      });
+      final res = await api.chat(
+        message:
+            'A community member posted: "${widget.postContent}"\n\n'
+            'Give a short, actionable wealth-building insight or advice '
+            'for this post (2-3 sentences). Be direct and helpful. '
+            'Do not start with "I" or say you are an AI explicitly.',
+        mode: 'community',
+      );
 
-      final aiText = aiRes['response']?.toString()
-          ?? aiRes['content']?.toString()
-          ?? aiRes['insight']?.toString()
-          ?? '';
+      final aiText = res['content']?.toString().trim() ?? '';
+      if (aiText.isEmpty) throw Exception('Empty AI response');
 
-      if (aiText.isEmpty) {
-        if (mounted) {
-          setState(() => _aiLoading = false);
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('AI could not generate a response. Try again.'),
-              duration: Duration(seconds: 2),
-            ),
-          );
-        }
-        return;
-      }
-
-      // 2. Save to backend as a pinned AI comment.
-      final savedRes = await api.post(
-        '/posts/${widget.postId}/comments',
-        {
-          'content':    aiText,
-          'is_ai':      true,
-          'is_pinned':  true,
-        },
+      // Post as pinned AI comment — is_ai + is_pinned so the load() method
+      // separates it from regular comments and shows it at the top.
+      final savedRes = await api.addComment(
+        widget.postId,
+        '🤖 RiseUp AI: $aiText',
+        isAI: true,
+        isPinned: true,
       );
 
       if (mounted) {
         setState(() {
-          _aiComment  = savedRes['comment'] as Map? ??
-              {
-                'content':   aiText,
-                'is_ai':     true,
-                'is_pinned': true,
-              };
+          _aiComment = savedRes['comment'] as Map? ?? {
+            'content':   '🤖 RiseUp AI: $aiText',
+            'is_ai':     true,
+            'is_pinned': true,
+          };
           _aiLoading = false;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('✅ RiseUp AI insight pinned to top'),
-            backgroundColor: AppColors.success,
-            duration: Duration(seconds: 2),
-          ),
-        );
-        // Scroll to top so user sees the pinned AI comment.
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('✅ RiseUp AI insight pinned at the top'),
+          backgroundColor: AppColors.success,
+          duration: Duration(seconds: 2),
+        ));
+        // Scroll to top so user immediately sees the pinned AI comment.
         if (_scroll.hasClients) {
           _scroll.animateTo(0,
               duration: const Duration(milliseconds: 400),
@@ -222,12 +219,11 @@ class _CommentsScreenState extends State<CommentsScreen> {
     } catch (_) {
       if (mounted) {
         setState(() => _aiLoading = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Failed to get AI insight. Please try again.'),
-            duration: Duration(seconds: 2),
-          ),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('AI response failed. Please try again.'),
+          backgroundColor: AppColors.error,
+          duration: Duration(seconds: 2),
+        ));
       }
     }
   }
@@ -269,8 +265,6 @@ class _CommentsScreenState extends State<CommentsScreen> {
         backgroundColor: card,
         elevation: 0,
         surfaceTintColor: Colors.transparent,
-        // FIX: context.pop() works correctly because home_screen now uses
-        // context.push (not context.go) to navigate here.
         leading: IconButton(
           icon: Icon(Icons.arrow_back_rounded, color: text),
           onPressed: () => context.pop(),
@@ -278,23 +272,19 @@ class _CommentsScreenState extends State<CommentsScreen> {
         ),
         title: Text(
           'Comments ($totalComments)',
-          style: TextStyle(
-              fontSize: 16, fontWeight: FontWeight.w700, color: text),
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: text),
         ),
         actions: [
-          // AI insight button — generates and pins AI response as top comment.
+          // AI insight button — calls _requestAiInsight() to pin AI response
           _aiLoading
               ? Container(
-                  width: 40,
-                  height: 40,
+                  width: 40, height: 40,
                   margin: const EdgeInsets.only(right: 4),
-                  child: Center(
-                    child: SizedBox(
-                      width: 18, height: 18,
-                      child: CircularProgressIndicator(
+                  child: const Center(child: SizedBox(
+                    width: 18, height: 18,
+                    child: CircularProgressIndicator(
                         color: AppColors.primary, strokeWidth: 2),
-                    ),
-                  ),
+                  )),
                 )
               : IconButton(
                   icon: Container(
@@ -305,15 +295,13 @@ class _CommentsScreenState extends State<CommentsScreen> {
                               colors: [AppColors.primary, AppColors.accent])
                           : null,
                       color: _aiComment.isNotEmpty
-                          ? AppColors.primary.withOpacity(0.12)
-                          : null,
+                          ? AppColors.primary.withOpacity(0.12) : null,
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Icon(
                       Icons.auto_awesome,
                       color: _aiComment.isNotEmpty
-                          ? AppColors.primary.withOpacity(0.5)
-                          : Colors.white,
+                          ? AppColors.primary.withOpacity(0.5) : Colors.white,
                       size: 16,
                     ),
                   ),
@@ -322,20 +310,18 @@ class _CommentsScreenState extends State<CommentsScreen> {
                       : 'AI insight already pinned',
                   onPressed: _aiComment.isEmpty ? _requestAiInsight : null,
                 ),
-          // Share / copy link button.
+          // Copy link
           IconButton(
             icon: Icon(Iconsax.send_1, color: sub, size: 20),
             tooltip: 'Copy post link',
             onPressed: () {
               Clipboard.setData(ClipboardData(
                   text: 'https://riseup.app/post/${widget.postId}'));
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('✅ Post link copied!'),
-                  backgroundColor: AppColors.success,
-                  duration: Duration(seconds: 1),
-                ),
-              );
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text('✅ Post link copied!'),
+                backgroundColor: AppColors.success,
+                duration: Duration(seconds: 1),
+              ));
             },
           ),
         ],
@@ -345,117 +331,98 @@ class _CommentsScreenState extends State<CommentsScreen> {
         ),
       ),
       body: Column(children: [
-        // ── Post preview with poster profile + follow ──────────────
+        // ── Post preview ────────────────────────────────────────────
         Container(
           color: card,
           padding: const EdgeInsets.all(14),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              GestureDetector(
-                onTap: posterId != null
-                    ? () => context.push('/user-profile/$posterId')
-                    : null,
-                child: Container(
-                  width: 44, height: 44,
-                  decoration: BoxDecoration(
-                    color: AppColors.primary.withOpacity(0.12),
-                    shape: BoxShape.circle,
-                  ),
-                  child: ClipOval(
-                    child: posterAvatar != null && posterAvatar.isNotEmpty
-                        ? Image.network(posterAvatar, fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => _initials(posterName))
-                        : _initials(posterName),
-                  ),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            GestureDetector(
+              onTap: posterId != null
+                  ? () => context.push('/user-profile/$posterId')
+                  : null,
+              child: Container(
+                width: 44, height: 44,
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withOpacity(0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: ClipOval(
+                  child: posterAvatar != null && posterAvatar.isNotEmpty
+                      ? Image.network(posterAvatar, fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => _initials(posterName))
+                      : _initials(posterName),
                 ),
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(children: [
-                      GestureDetector(
-                        onTap: posterId != null
-                            ? () => context.push('/user-profile/$posterId')
-                            : null,
-                        child: Text(posterName,
-                            style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w700,
-                                color: text)),
-                      ),
-                      const Spacer(),
-                      if (!isOwnPost && posterId != null)
-                        GestureDetector(
-                          onTap: _toggleFollow,
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 200),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 14, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: _isFollowing
-                                  ? Colors.transparent
-                                  : AppColors.primary,
-                              borderRadius: BorderRadius.circular(20),
-                              border: _isFollowing
-                                  ? Border.all(
-                                      color: isDark
-                                          ? Colors.white24
-                                          : Colors.grey.shade300)
-                                  : null,
-                            ),
-                            child: _followLoading
-                                ? const SizedBox(
-                                    width: 14, height: 14,
-                                    child: CircularProgressIndicator(
-                                        color: AppColors.primary,
-                                        strokeWidth: 2))
-                                : Text(
-                                    _isFollowing ? 'Following' : 'Follow',
-                                    style: TextStyle(
-                                        color: _isFollowing
-                                            ? sub
-                                            : Colors.white,
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w700),
-                                  ),
-                          ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  GestureDetector(
+                    onTap: posterId != null
+                        ? () => context.push('/user-profile/$posterId')
+                        : null,
+                    child: Text(posterName, style: TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w700, color: text)),
+                  ),
+                  const Spacer(),
+                  if (!isOwnPost && posterId != null)
+                    GestureDetector(
+                      onTap: _toggleFollow,
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: _isFollowing
+                              ? Colors.transparent : AppColors.primary,
+                          borderRadius: BorderRadius.circular(20),
+                          border: _isFollowing
+                              ? Border.all(
+                                  color: isDark
+                                      ? Colors.white24 : Colors.grey.shade300)
+                              : null,
                         ),
-                    ]),
-                    const SizedBox(height: 4),
-                    Text(
-                      widget.postContent,
-                      style: TextStyle(
-                          fontSize: 13, color: sub, height: 1.4),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+                        child: _followLoading
+                            ? const SizedBox(width: 14, height: 14,
+                                child: CircularProgressIndicator(
+                                    color: AppColors.primary, strokeWidth: 2))
+                            : Text(
+                                _isFollowing ? 'Following' : 'Follow',
+                                style: TextStyle(
+                                    color: _isFollowing ? sub : Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700),
+                              ),
+                      ),
                     ),
-                  ],
+                ]),
+                const SizedBox(height: 4),
+                Text(
+                  widget.postContent,
+                  style: TextStyle(fontSize: 13, color: sub, height: 1.4),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                 ),
-              ),
-            ],
-          ),
+              ]),
+            ),
+          ]),
         ),
         Divider(height: 1, color: border),
 
-        // ── "Ask RiseUp AI" prompt banner (only when no AI comment yet) ──
+        // ── Ask RiseUp AI banner (only when no AI comment yet) ──────
         if (!_loading && _aiComment.isEmpty)
           GestureDetector(
             onTap: _aiLoading ? null : _requestAiInsight,
             child: Container(
               width: double.infinity,
               margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [
-                    AppColors.primary.withOpacity(0.08),
-                    AppColors.accent.withOpacity(0.06),
-                  ],
-                ),
+                gradient: LinearGradient(colors: [
+                  AppColors.primary.withOpacity(0.08),
+                  AppColors.accent.withOpacity(0.06),
+                ]),
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(
                     color: AppColors.primary.withOpacity(0.2), width: 1),
@@ -468,35 +435,22 @@ class _CommentsScreenState extends State<CommentsScreen> {
                         colors: [AppColors.primary, AppColors.accent]),
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  child: const Center(
-                    child: Icon(Icons.auto_awesome,
-                        color: Colors.white, size: 14),
-                  ),
+                  child: const Center(child: Icon(Icons.auto_awesome,
+                      color: Colors.white, size: 14)),
                 ),
                 const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
+                Expanded(child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        'Ask RiseUp AI',
-                        style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.primary),
-                      ),
-                      Text(
-                        'Get an AI insight pinned at the top of comments',
-                        style: TextStyle(
-                            fontSize: 11,
-                            color: AppColors.primary.withOpacity(0.6)),
-                      ),
-                    ],
-                  ),
-                ),
+                  const Text('Ask RiseUp AI', style: TextStyle(
+                      fontSize: 12, fontWeight: FontWeight.w700,
+                      color: AppColors.primary)),
+                  Text('Get an AI insight pinned at the top of comments',
+                      style: TextStyle(fontSize: 11,
+                          color: AppColors.primary.withOpacity(0.6))),
+                ])),
                 _aiLoading
-                    ? const SizedBox(
-                        width: 16, height: 16,
+                    ? const SizedBox(width: 16, height: 16,
                         child: CircularProgressIndicator(
                             color: AppColors.primary, strokeWidth: 2))
                     : Icon(Icons.arrow_forward_ios_rounded,
@@ -506,11 +460,11 @@ class _CommentsScreenState extends State<CommentsScreen> {
             ),
           ),
 
-        // ── Comments list ──────────────────────────────────────────
+        // ── Comments list ────────────────────────────────────────────
         Expanded(
           child: _loading
-              ? const Center(
-                  child: CircularProgressIndicator(color: AppColors.primary))
+              ? const Center(child: CircularProgressIndicator(
+                  color: AppColors.primary))
               : RefreshIndicator(
                   onRefresh: _load,
                   color: AppColors.primary,
@@ -518,61 +472,47 @@ class _CommentsScreenState extends State<CommentsScreen> {
                     controller: _scroll,
                     padding: const EdgeInsets.symmetric(vertical: 12),
                     children: [
-                      // ── Pinned AI Comment ──────────────────────
+                      // ── Pinned AI Comment (always first) ──────────
                       if (_aiComment.isNotEmpty)
                         _AiCommentCard(
                           comment: _aiComment,
-                          isDark: isDark,
-                          text: text,
-                          sub: sub,
-                          surface: surface,
+                          isDark: isDark, text: text, sub: sub, surface: surface,
                         ).animate().fadeIn(),
 
                       if (_comments.isEmpty && _aiComment.isEmpty)
                         Padding(
                           padding: const EdgeInsets.only(top: 60),
                           child: Column(children: [
-                            const Text('💬',
-                                style: TextStyle(fontSize: 48)),
+                            const Text('💬', style: TextStyle(fontSize: 48)),
                             const SizedBox(height: 12),
                             Text('No comments yet — be first!',
-                                style:
-                                    TextStyle(color: sub, fontSize: 14)),
+                                style: TextStyle(color: sub, fontSize: 14)),
                           ]),
                         ),
 
-                      // ── Regular comments ───────────────────────
+                      // ── Regular comments ───────────────────────────
                       ..._comments.asMap().entries.map((entry) {
                         final i = entry.key;
                         final c = entry.value as Map;
                         return _CommentCard(
-                          comment: c,
-                          isDark: isDark,
-                          text: text,
-                          sub: sub,
-                          surface: surface,
+                          comment: c, isDark: isDark, text: text,
+                          sub: sub, surface: surface,
                           onLike: () => _likeComment(c),
                           onProfileTap: () {
                             final uid =
                                 (c['profiles'] as Map?)?['id']?.toString()
                                     ?? c['user_id']?.toString();
-                            if (uid != null) {
-                              context.push('/user-profile/$uid');
-                            }
+                            if (uid != null) context.push('/user-profile/$uid');
                           },
                           onReply: () {
                             final name =
-                                (c['profiles'] as Map?)?['full_name']
-                                    ?.toString() ??
-                                'User';
+                                (c['profiles'] as Map?)?['full_name']?.toString() ?? 'User';
                             _ctrl.text = '@$name ';
-                            FocusScope.of(context)
-                                .requestFocus(FocusNode());
+                            FocusScope.of(context).requestFocus(FocusNode());
                           },
                           timeAgo: _timeAgo(c['created_at']?.toString()),
                           fmt: _fmt,
-                        ).animate().fadeIn(
-                            delay: Duration(milliseconds: i * 40));
+                        ).animate().fadeIn(delay: Duration(milliseconds: i * 30));
                       }),
 
                       const SizedBox(height: 8),
@@ -581,7 +521,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
                 ),
         ),
 
-        // ── Comment input ──────────────────────────────────────────
+        // ── Comment input ─────────────────────────────────────────────
         Container(
           decoration: BoxDecoration(
             color: card,
@@ -592,14 +532,13 @@ class _CommentsScreenState extends State<CommentsScreen> {
           child: Row(children: [
             Container(
               width: 36, height: 36,
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
                     colors: [AppColors.primary, AppColors.accent]),
                 shape: BoxShape.circle,
               ),
-              child: const Center(
-                  child: Icon(Icons.person_rounded,
-                      color: Colors.white, size: 18)),
+              child: const Center(child: Icon(Icons.person_rounded,
+                  color: Colors.white, size: 18)),
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -628,19 +567,15 @@ class _CommentsScreenState extends State<CommentsScreen> {
               child: Container(
                 width: 40, height: 40,
                 decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: _sending
-                        ? [Colors.grey.shade400, Colors.grey.shade400]
-                        : [AppColors.primary, AppColors.accent],
-                  ),
+                  gradient: LinearGradient(colors: _sending
+                      ? [Colors.grey.shade400, Colors.grey.shade400]
+                      : [AppColors.primary, AppColors.accent]),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Icon(
                   _sending
-                      ? Icons.hourglass_empty_rounded
-                      : Icons.send_rounded,
-                  color: Colors.white,
-                  size: 18,
+                      ? Icons.hourglass_empty_rounded : Icons.send_rounded,
+                  color: Colors.white, size: 18,
                 ),
               ),
             ),
@@ -651,120 +586,95 @@ class _CommentsScreenState extends State<CommentsScreen> {
   }
 
   Widget _initials(String name) => Container(
-        color: AppColors.primary.withOpacity(0.15),
-        child: Center(
-          child: Text(
-            name.isNotEmpty ? name[0].toUpperCase() : '?',
-            style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w800,
-                color: AppColors.primary),
-          ),
-        ),
-      );
+    color: AppColors.primary.withOpacity(0.15),
+    child: Center(child: Text(
+      name.isNotEmpty ? name[0].toUpperCase() : '?',
+      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800,
+          color: AppColors.primary),
+    )),
+  );
 }
 
-// ── Pinned AI Comment Card ─────────────────────────────────────────
+// ── Pinned AI Comment Card ─────────────────────────────────────────────────
 class _AiCommentCard extends StatelessWidget {
-  final Map comment;
-  final bool isDark;
+  final Map   comment;
+  final bool  isDark;
   final Color text, sub, surface;
 
   const _AiCommentCard({
-    required this.comment,
-    required this.isDark,
-    required this.text,
-    required this.sub,
-    required this.surface,
+    required this.comment, required this.isDark,
+    required this.text, required this.sub, required this.surface,
   });
 
   @override
   Widget build(BuildContext context) {
-    final content = comment['content']?.toString() ?? '';
+    // Strip the "🤖 RiseUp AI:" prefix for display — the card header already shows it.
+    String content = comment['content']?.toString() ?? '';
+    if (content.startsWith('🤖 RiseUp AI:')) {
+      content = content.replaceFirst('🤖 RiseUp AI:', '').trim();
+    }
 
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 4, 16, 12),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            AppColors.primary.withOpacity(0.08),
-            AppColors.accent.withOpacity(0.06),
-          ],
-        ),
+        gradient: LinearGradient(colors: [
+          AppColors.primary.withOpacity(0.08),
+          AppColors.accent.withOpacity(0.06),
+        ]),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: AppColors.primary.withOpacity(0.2)),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Pinned header
-          Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(0.1),
-              borderRadius:
-                  const BorderRadius.vertical(top: Radius.circular(15)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        // Header bar
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: AppColors.primary.withOpacity(0.1),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(15)),
+          ),
+          child: Row(children: [
+            Container(
+              width: 22, height: 22,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                    colors: [AppColors.primary, AppColors.accent]),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: const Center(child: Icon(Icons.auto_awesome,
+                  color: Colors.white, size: 12)),
             ),
-            child: Row(children: [
-              Container(
-                width: 22, height: 22,
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                      colors: [AppColors.primary, AppColors.accent]),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: const Center(
-                  child: Icon(Icons.auto_awesome,
-                      color: Colors.white, size: 12),
-                ),
-              ),
-              const SizedBox(width: 8),
-              const Text(
-                'RiseUp AI',
-                style: TextStyle(
-                    fontSize: 12,
-                    color: AppColors.primary,
-                    fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(width: 6),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
+            const SizedBox(width: 8),
+            const Text('RiseUp AI', style: TextStyle(
+                fontSize: 12, color: AppColors.primary, fontWeight: FontWeight.w700)),
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
                   color: AppColors.primary.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Text(
-                  'PINNED',
-                  style: TextStyle(
-                      fontSize: 8,
-                      color: AppColors.primary,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.5),
-                ),
-              ),
-              const Spacer(),
-              Icon(Icons.push_pin_rounded,
-                  size: 14,
-                  color: AppColors.primary.withOpacity(0.6)),
-            ]),
-          ),
-          // Content
-          Padding(
-            padding: const EdgeInsets.all(14),
-            child: SelectableText(
-              content,
-              style: TextStyle(fontSize: 13, color: text, height: 1.5),
+                  borderRadius: BorderRadius.circular(8)),
+              child: const Text('PINNED', style: TextStyle(
+                  fontSize: 8, color: AppColors.primary,
+                  fontWeight: FontWeight.w800, letterSpacing: 0.5)),
             ),
+            const Spacer(),
+            Icon(Icons.push_pin_rounded, size: 14,
+                color: AppColors.primary.withOpacity(0.6)),
+          ]),
+        ),
+        // Content
+        Padding(
+          padding: const EdgeInsets.all(14),
+          child: SelectableText(
+            content,
+            style: TextStyle(fontSize: 13, color: text, height: 1.5),
           ),
-        ],
-      ),
+        ),
+      ]),
     );
   }
 }
 
-// ── Regular Comment Card ───────────────────────────────────────────
+// ── Regular Comment Card ───────────────────────────────────────────────────
 class _CommentCard extends StatelessWidget {
   final Map     comment;
   final bool    isDark;
@@ -774,16 +684,10 @@ class _CommentCard extends StatelessWidget {
   final String Function(int) fmt;
 
   const _CommentCard({
-    required this.comment,
-    required this.isDark,
-    required this.text,
-    required this.sub,
-    required this.surface,
-    required this.onLike,
-    required this.onProfileTap,
-    required this.onReply,
-    required this.timeAgo,
-    required this.fmt,
+    required this.comment, required this.isDark,
+    required this.text, required this.sub, required this.surface,
+    required this.onLike, required this.onProfileTap, required this.onReply,
+    required this.timeAgo, required this.fmt,
   });
 
   @override
@@ -797,102 +701,70 @@ class _CommentCard extends StatelessWidget {
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          GestureDetector(
-            onTap: onProfileTap,
-            child: Container(
-              width: 38, height: 38,
-              decoration: BoxDecoration(
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        GestureDetector(
+          onTap: onProfileTap,
+          child: Container(
+            width: 38, height: 38,
+            decoration: BoxDecoration(
                 color: AppColors.primary.withOpacity(0.1),
-                shape: BoxShape.circle,
-              ),
-              child: ClipOval(
-                child: avatar != null && avatar.isNotEmpty
-                    ? Image.network(avatar, fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => _initials(name))
-                    : _initials(name),
-              ),
+                shape: BoxShape.circle),
+            child: ClipOval(
+              child: avatar != null && avatar.isNotEmpty
+                  ? Image.network(avatar, fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => _initials(name))
+                  : _initials(name),
             ),
           ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: surface,
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      GestureDetector(
-                        onTap: onProfileTap,
-                        child: Text(name,
-                            style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w700,
-                                color: text)),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(content,
-                          style: TextStyle(
-                              fontSize: 13, color: text, height: 1.4)),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Row(children: [
-                  Text(timeAgo,
-                      style: TextStyle(fontSize: 11, color: sub)),
-                  const SizedBox(width: 16),
-                  GestureDetector(
-                    onTap: onLike,
-                    child: Row(children: [
-                      Icon(
-                        isLiked
-                            ? Icons.favorite_rounded
-                            : Icons.favorite_border_rounded,
-                        size: 14,
-                        color: isLiked ? Colors.red : sub,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(fmt(likes),
-                          style: TextStyle(fontSize: 11, color: sub)),
-                    ]),
-                  ),
-                  const SizedBox(width: 16),
-                  GestureDetector(
-                    onTap: onReply,
-                    child: Text('Reply',
-                        style: TextStyle(
-                            fontSize: 11,
-                            color: sub,
-                            fontWeight: FontWeight.w600)),
-                  ),
-                ]),
-              ],
-            ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+                color: surface, borderRadius: BorderRadius.circular(14)),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              GestureDetector(
+                onTap: onProfileTap,
+                child: Text(name, style: TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w700, color: text)),
+              ),
+              const SizedBox(height: 4),
+              Text(content, style: TextStyle(
+                  fontSize: 13, color: text, height: 1.4)),
+            ]),
           ),
-        ],
-      ),
+          const SizedBox(height: 6),
+          Row(children: [
+            Text(timeAgo, style: TextStyle(fontSize: 11, color: sub)),
+            const SizedBox(width: 16),
+            GestureDetector(
+              onTap: onLike,
+              child: Row(children: [
+                Icon(isLiked ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                    size: 14, color: isLiked ? Colors.red : sub),
+                const SizedBox(width: 4),
+                Text(fmt(likes), style: TextStyle(fontSize: 11, color: sub)),
+              ]),
+            ),
+            const SizedBox(width: 16),
+            GestureDetector(
+              onTap: onReply,
+              child: Text('Reply', style: TextStyle(
+                  fontSize: 11, color: sub, fontWeight: FontWeight.w600)),
+            ),
+          ]),
+        ])),
+      ]),
     );
   }
 
   Widget _initials(String name) => Container(
-        color: AppColors.primary.withOpacity(0.15),
-        child: Center(
-          child: Text(
-            name.isNotEmpty ? name[0].toUpperCase() : '?',
-            style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w800,
-                color: AppColors.primary),
-          ),
-        ),
-      );
+    color: AppColors.primary.withOpacity(0.15),
+    child: Center(child: Text(
+      name.isNotEmpty ? name[0].toUpperCase() : '?',
+      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800,
+          color: AppColors.primary),
+    )),
+  );
 }
