@@ -1,3 +1,4 @@
+// frontend/lib/services/api_service.dart
 import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:path/path.dart' as p;
@@ -18,11 +19,8 @@ class ApiException implements Exception {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MIME helpers — no hardcoding
+// MIME helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// Returns {subtype, extension} from a file path or URL.
-/// e.g. 'photo.heic' → {subtype: 'heic', ext: 'heic'}
 Map<String, String> _mimeFromPath(String filePath) {
   final ext = p.extension(filePath).toLowerCase().replaceFirst('.', '');
   const map = <String, String>{
@@ -69,8 +67,11 @@ class ApiService {
   ApiService._internal() {
     _dio = Dio(BaseOptions(
       baseUrl: kApiBaseUrl,
-      connectTimeout: const Duration(seconds: 30),
-      receiveTimeout: const Duration(seconds: 60),
+      // FIX: Reduced from 30s → 12s connect, 60s → 25s receive.
+      // On mobile, a server that won't respond in 12s won't respond at all.
+      // Faster timeouts = faster error feedback = less perceived "hang".
+      connectTimeout: const Duration(seconds: 12),
+      receiveTimeout: const Duration(seconds: 25),
       headers: {'Content-Type': 'application/json'},
     ));
 
@@ -472,23 +473,19 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  // ── Avatar Upload — FIX: detects actual MIME from file extension ──────────
+  // ── Avatar Upload ─────────────────────────────────────────────────────────
 
-  /// Upload a profile picture from a file path.
-  /// Automatically detects MIME type from the file extension.
-  /// Supports: JPEG, PNG, WebP, GIF, HEIC, HEIF, AVIF, BMP, TIFF, SVG
   Future<Map<String, dynamic>> uploadAvatar(String filePath) async {
     try {
       final mime     = _mimeFromPath(filePath);
       final mimeType = mime['type']!;
       final subtype  = mime['subtype']!;
       final ext      = mime['ext']!;
-      final fileName = 'avatar.$ext';
 
       final formData = FormData.fromMap({
         'file': await MultipartFile.fromFile(
           filePath,
-          filename: fileName,
+          filename: 'avatar.$ext',
           contentType: DioMediaType(mimeType, subtype),
         ),
       });
@@ -496,16 +493,12 @@ class ApiService {
       final res = await _dio.post(
         '/progress/avatar',
         data: formData,
-        options: Options(
-          headers: {'Content-Type': 'multipart/form-data'},
-        ),
+        options: Options(headers: {'Content-Type': 'multipart/form-data'}),
       );
       return res.data as Map<String, dynamic>;
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Upload avatar from raw bytes (useful when using image_picker on web
-  /// or when bytes are available without a file path).
   Future<Map<String, dynamic>> uploadAvatarBytes({
     required List<int> bytes,
     required String filename,
@@ -517,7 +510,8 @@ class ApiService {
         'file': MultipartFile.fromBytes(
           bytes,
           filename: filename,
-          contentType: DioMediaType(parts[0], parts.length > 1 ? parts[1] : 'jpeg'),
+          contentType: DioMediaType(
+              parts[0], parts.length > 1 ? parts[1] : 'jpeg'),
         ),
       });
       final res = await _dio.post(
@@ -531,17 +525,14 @@ class ApiService {
 
   // ── Post Media Upload ─────────────────────────────────────────────────────
 
-  /// Upload an image or video for a post.
-  /// Returns: { "url": "...", "media_type": "image"|"video", "content_type": "..." }
-  ///
-  /// Call this BEFORE createPost to get the URL, then pass it to createPost.
   Future<Map<String, dynamic>> uploadPostMedia(String filePath) async {
     try {
       final mime     = _mimeFromPath(filePath);
-      final mimeType = mime['type']!;       // 'image' or 'video'
+      final mimeType = mime['type']!;
       final subtype  = mime['subtype']!;
       final ext      = mime['ext']!;
-      final fileName = 'post_media_${DateTime.now().millisecondsSinceEpoch}.$ext';
+      final fileName =
+          'post_media_${DateTime.now().millisecondsSinceEpoch}.$ext';
 
       final formData = FormData.fromMap({
         'file': await MultipartFile.fromFile(
@@ -552,7 +543,7 @@ class ApiService {
       });
 
       final res = await _dio.post(
-        '/posts/status/upload-media',   // reuses the same upload endpoint
+        '/posts/status/upload-media',
         data: formData,
         options: Options(headers: {'Content-Type': 'multipart/form-data'}),
       );
@@ -560,7 +551,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Upload post media from raw bytes.
   Future<Map<String, dynamic>> uploadPostMediaBytes({
     required List<int> bytes,
     required String filename,
@@ -597,9 +587,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Create a text-only post.
-  /// For posts with images/videos, call uploadPostMedia first to get the URL,
-  /// then pass mediaUrl + mediaType here.
   Future<Map<String, dynamic>> createPost({
     required String content,
     required String tag,
@@ -617,7 +604,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  // FIX: send data: {} so servers don't reject bodyless POSTs
   Future<Map<String, dynamic>> toggleLike(String postId) async {
     try {
       final r = await _dio.post('/posts/$postId/like', data: {});
@@ -653,12 +639,16 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
+  // FIX: Added isAI + isPinned so AI comments from home feed and comments
+  // screen are stored correctly and can be separated on read.
   Future<Map<String, dynamic>> addComment(String postId, String content,
-      {String? parentId}) async {
+      {String? parentId, bool isAI = false, bool isPinned = false}) async {
     try {
       final r = await _dio.post('/posts/$postId/comments', data: {
-        'content': content,
+        'content':   content,
         if (parentId != null) 'parent_id': parentId,
+        if (isAI)    'is_ai':     true,
+        if (isPinned) 'is_pinned': true,
       });
       return r.data as Map<String, dynamic>;
     } catch (e) { throw _handleError(e); }
@@ -971,8 +961,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Gets or creates a DM and returns the conversation UUID.
-  /// Navigates to /messages/{conversationId} on success.
   Future<String> getOrCreateDM(String otherUserId) async {
     try {
       final r = await _dio.post(
