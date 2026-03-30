@@ -22,16 +22,16 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabs;
   Map<String, dynamic> _profile = {};
-  Map<String, dynamic> _stats = {};
-  List _posts = [];
-  bool _loading = true;
-  bool _isFollowing = false;
+  Map<String, dynamic> _stats   = {};
+  List _posts      = [];
+  bool _loading    = true;
+  bool _isFollowing  = false;
   bool _isOwnProfile = false;
   bool _followLoading = false;
 
   BannerAd? _bannerAd;
   bool _isAdLoaded = false;
-  bool _isPremium = false;
+  bool _isPremium  = false;
 
   @override
   void initState() {
@@ -49,7 +49,6 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
   Future<void> _initAd() async {
     if (_isPremium) return;
-
     try {
       final bannerAd = BannerAd(
         adUnitId: Platform.isAndroid
@@ -59,12 +58,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
         request: const AdRequest(),
         listener: BannerAdListener(
           onAdLoaded: (ad) {
-            if (mounted) {
-              setState(() {
-                _bannerAd = ad as BannerAd;
-                _isAdLoaded = true;
-              });
-            }
+            if (mounted) setState(() { _bannerAd = ad as BannerAd; _isAdLoaded = true; });
           },
           onAdFailedToLoad: (ad, error) {
             ad.dispose();
@@ -78,7 +72,6 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
   Future<void> _load() async {
     setState(() => _loading = true);
-
     try {
       final myId = await api.getUserId() ?? '';
       _isOwnProfile = myId == widget.userId;
@@ -93,17 +86,14 @@ class _UserProfileScreenState extends State<UserProfileScreen>
       if (mounted) {
         setState(() {
           final d = results[0] as Map? ?? {};
-          _profile = (d['profile'] as Map?)?.cast<String, dynamic>() ?? {};
-          _stats = (d['stats'] as Map?)?.cast<String, dynamic>() ?? {};
+          _profile     = (d['profile'] as Map?)?.cast<String, dynamic>() ?? {};
+          _stats       = (d['stats']   as Map?)?.cast<String, dynamic>() ?? {};
           _isFollowing = d['is_following'] == true;
-          _posts = (results[1] as Map?)?['posts'] as List? ?? [];
-          _isPremium = _profile['subscription_tier'] == 'premium';
-          _loading = false;
+          _posts       = (results[1] as Map?)?['posts'] as List? ?? [];
+          _isPremium   = _profile['subscription_tier'] == 'premium';
+          _loading     = false;
         });
-
-        if (!_isPremium) {
-          _initAd();
-        }
+        if (!_isPremium) _initAd();
       }
     } catch (_) {
       if (mounted) setState(() => _loading = false);
@@ -112,29 +102,23 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
   Future<void> _toggleFollow() async {
     if (_followLoading || _isOwnProfile) return;
-
     setState(() => _followLoading = true);
 
     try {
       final r = await api.toggleFollow(widget.userId);
       final following = r['following'] == true;
-
       if (mounted) {
         setState(() {
-          _isFollowing = following;
-          _followLoading = false;
+          _isFollowing    = following;
+          _followLoading  = false;
           final c = (_stats['followers'] as int? ?? 0);
           _stats = {
             ..._stats,
             'followers': following ? c + 1 : (c - 1).clamp(0, 999999),
           };
         });
-
         HapticFeedback.lightImpact();
-        _showSnackBar(
-          following ? 'Now following' : 'Unfollowed',
-          isError: false,
-        );
+        _showSnackBar(following ? 'Now following' : 'Unfollowed', isError: false);
       }
     } catch (_) {
       if (mounted) {
@@ -146,10 +130,17 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
   Future<void> _sendMessage() async {
     try {
-      final r = await api.getOrCreateConversation(widget.userId);
+      final r      = await api.getOrCreateConversation(widget.userId);
       final convId = r['conversation_id']?.toString() ?? r['id']?.toString();
       if (convId != null && mounted) {
-        context.push('/messages/$convId');
+        // FIX: use context.push so back button works
+        final name   = _profile['full_name']?.toString() ?? 'User';
+        final avatar = _profile['avatar_url']?.toString() ?? '';
+        context.push(
+          '/conversation/$convId'
+          '?name=${Uri.encodeComponent(name)}'
+          '&avatar=${Uri.encodeComponent(avatar)}',
+        );
       }
     } catch (_) {
       if (mounted) _showSnackBar('Could not open messages', isError: true);
@@ -164,7 +155,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
   String _fmt(dynamic n) {
     final count = (n as num?)?.toInt() ?? 0;
     if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
-    if (count >= 1000) return '${(count / 1000).toStringAsFixed(1)}K';
+    if (count >= 1000)    return '${(count / 1000).toStringAsFixed(1)}K';
     return '$count';
   }
 
@@ -175,72 +166,60 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     final diff = DateTime.now().difference(dt);
     if (diff.inSeconds < 60) return 'Just now';
     if (diff.inMinutes < 60) return '${diff.inMinutes}m';
-    if (diff.inHours < 24) return '${diff.inHours}h';
-    if (diff.inDays < 7) return '${diff.inDays}d';
-    if (diff.inDays < 30) return '${(diff.inDays / 7).floor()}w';
+    if (diff.inHours < 24)   return '${diff.inHours}h';
+    if (diff.inDays < 7)     return '${diff.inDays}d';
+    if (diff.inDays < 30)    return '${(diff.inDays / 7).floor()}w';
     return DateFormat.yMMMd().format(dt);
   }
 
   void _showSnackBar(String message, {required bool isError}) {
     if (!mounted) return;
-    
     if (isError) HapticFeedback.vibrate();
-    
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
-          children: [
-            Icon(
-              isError ? Icons.error_outline : Icons.check_circle,
-              color: Colors.white,
-              size: 20,
-            ),
-            const SizedBox(width: 8),
-            Expanded(child: Text(message)),
-          ],
-        ),
-        backgroundColor: isError ? AppColors.error : AppColors.success,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        duration: Duration(seconds: isError ? 3 : 2),
-      ),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Row(children: [
+        Icon(isError ? Icons.error_outline : Icons.check_circle,
+            color: Colors.white, size: 20),
+        const SizedBox(width: 8),
+        Expanded(child: Text(message)),
+      ]),
+      backgroundColor: isError ? AppColors.error : AppColors.success,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      duration: Duration(seconds: isError ? 3 : 2),
+    ));
   }
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bg = isDark ? Colors.black : Colors.white;
-    final card = isDark ? AppColors.bgCard : Colors.white;
+    final bg     = isDark ? Colors.black : Colors.white;
+    final card   = isDark ? AppColors.bgCard : Colors.white;
     final border = isDark ? AppColors.bgSurface : Colors.grey.shade200;
-    final text = isDark ? Colors.white : Colors.black87;
-    final sub = isDark ? Colors.white54 : Colors.black45;
+    final text   = isDark ? Colors.white : Colors.black87;
+    final sub    = isDark ? Colors.white54 : Colors.black45;
 
-    final name = _profile['full_name']?.toString() ?? 'User';
-    final bio = _profile['bio']?.toString() ?? '';
-    final status = _profile['status']?.toString() ?? '';
+    final name    = _profile['full_name']?.toString() ?? 'User';
+    final bio     = _profile['bio']?.toString() ?? '';
+    final status  = _profile['status']?.toString() ?? '';
     final country = _profile['country']?.toString() ?? '';
-    final stage = _profile['stage']?.toString() ?? 'survival';
-    final avatar = _profile['avatar_url']?.toString();
-    final earned = (_profile['total_earned'] as num?)?.toDouble() ?? 0;
+    final stage   = _profile['stage']?.toString() ?? 'survival';
+    final avatar  = _profile['avatar_url']?.toString();
+    final earned  = (_profile['total_earned'] as num?)?.toDouble() ?? 0;
     final isOnline = _profile['is_online'] == true;
-    final skills = (_profile['current_skills'] as List?)?.cast<String>() ?? [];
+    final skills  = (_profile['current_skills'] as List?)?.cast<String>() ?? [];
 
     final screenWidth = MediaQuery.of(context).size.width;
-    final isTablet = screenWidth > 600;
+    final isTablet    = screenWidth > 600;
 
     if (_loading) {
       return Scaffold(
         backgroundColor: bg,
         body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const CircularProgressIndicator(color: AppColors.primary),
-              const SizedBox(height: 16),
-              Text('Loading...', style: TextStyle(color: sub)),
-            ],
-          ),
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            const CircularProgressIndicator(color: AppColors.primary),
+            const SizedBox(height: 16),
+            Text('Loading...', style: TextStyle(color: sub)),
+          ]),
         ),
       );
     }
@@ -259,7 +238,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                   padding: const EdgeInsets.symmetric(vertical: 8),
                   child: Center(
                     child: SizedBox(
-                      width: _bannerAd!.size.width.toDouble(),
+                      width:  _bannerAd!.size.width.toDouble(),
                       height: _bannerAd!.size.height.toDouble(),
                       child: AdWidget(ad: _bannerAd!),
                     ),
@@ -272,10 +251,18 @@ class _UserProfileScreenState extends State<UserProfileScreen>
               pinned: true,
               backgroundColor: card,
               surfaceTintColor: Colors.transparent,
+              // FIX: back button — context.pop() works when arrived via context.push()
               leading: IconButton(
                 icon: Icon(Icons.arrow_back_rounded, color: text),
-                onPressed: () => context.pop(),
+                onPressed: () {
+                  if (Navigator.of(context).canPop()) {
+                    context.pop();
+                  } else {
+                    context.go('/home');
+                  }
+                },
               ),
+              // FIX: Only one share button — in AppBar. Removed duplicate from action row below.
               actions: [
                 IconButton(
                   icon: Icon(Icons.ios_share_rounded, color: text, size: 20),
@@ -290,10 +277,8 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                 background: Container(
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
-                      colors: [
-                        AppColors.primary.withOpacity(0.8),
-                        AppColors.accent.withOpacity(0.6),
-                      ],
+                      colors: [AppColors.primary.withOpacity(0.8),
+                               AppColors.accent.withOpacity(0.6)],
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                     ),
@@ -312,40 +297,31 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                   Hero(
                                     tag: 'avatar-${widget.userId}',
                                     child: Container(
-                                      width: isTablet ? 100 : 80,
+                                      width:  isTablet ? 100 : 80,
                                       height: isTablet ? 100 : 80,
                                       decoration: BoxDecoration(
                                         shape: BoxShape.circle,
                                         border: Border.all(color: Colors.white, width: 3),
-                                        boxShadow: [
-                                          BoxShadow(
-                                            color: Colors.black.withOpacity(0.2),
-                                            blurRadius: 10,
-                                            offset: const Offset(0, 4),
-                                          ),
-                                        ],
+                                        boxShadow: [BoxShadow(
+                                          color: Colors.black.withOpacity(0.2),
+                                          blurRadius: 10, offset: const Offset(0, 4),
+                                        )],
                                       ),
                                       child: ClipOval(
                                         child: avatar != null && avatar.isNotEmpty
-                                            ? Image.network(
-                                                avatar,
-                                                fit: BoxFit.cover,
-                                                errorBuilder: (_, __, ___) => _avatarFallback(name),
-                                              )
+                                            ? Image.network(avatar, fit: BoxFit.cover,
+                                                errorBuilder: (_, __, ___) => _avatarFallback(name))
                                             : _avatarFallback(name),
                                       ),
                                     ),
                                   ),
                                   if (isOnline)
                                     Positioned(
-                                      bottom: 2,
-                                      right: 2,
+                                      bottom: 2, right: 2,
                                       child: Container(
-                                        width: 18,
-                                        height: 18,
+                                        width: 18, height: 18,
                                         decoration: BoxDecoration(
-                                          color: AppColors.success,
-                                          shape: BoxShape.circle,
+                                          color: AppColors.success, shape: BoxShape.circle,
                                           border: Border.all(color: Colors.white, width: 2),
                                         ),
                                       ),
@@ -360,15 +336,10 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                     Row(
                                       children: [
                                         Flexible(
-                                          child: Text(
-                                            name,
-                                            style: const TextStyle(
-                                              fontSize: 20,
-                                              fontWeight: FontWeight.w800,
-                                              color: Colors.white,
-                                            ),
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
+                                          child: Text(name,
+                                              style: const TextStyle(fontSize: 20,
+                                                  fontWeight: FontWeight.w800, color: Colors.white),
+                                              overflow: TextOverflow.ellipsis),
                                         ),
                                         const SizedBox(width: 6),
                                         Container(
@@ -377,39 +348,24 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                             color: Colors.white.withOpacity(0.2),
                                             borderRadius: BorderRadius.circular(20),
                                           ),
-                                          child: Text(
-                                            _stageLabel(stage),
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 10,
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                          ),
+                                          child: Text(_stageLabel(stage),
+                                              style: const TextStyle(color: Colors.white,
+                                                  fontSize: 10, fontWeight: FontWeight.w700)),
                                         ),
                                       ],
                                     ),
                                     const SizedBox(height: 4),
                                     if (status.isNotEmpty)
-                                      Text(
-                                        status,
-                                        style: const TextStyle(
-                                          color: Colors.white70,
-                                          fontSize: 12,
-                                        ),
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
+                                      Text(status,
+                                          style: const TextStyle(color: Colors.white70, fontSize: 12),
+                                          maxLines: 1, overflow: TextOverflow.ellipsis),
                                     if (country.isNotEmpty)
-                                      Row(
-                                        children: [
-                                          const Icon(Iconsax.location, size: 12, color: Colors.white60),
-                                          const SizedBox(width: 4),
-                                          Text(
-                                            country,
-                                            style: const TextStyle(color: Colors.white60, fontSize: 11),
-                                          ),
-                                        ],
-                                      ),
+                                      Row(children: [
+                                        const Icon(Iconsax.location, size: 12, color: Colors.white60),
+                                        const SizedBox(width: 4),
+                                        Text(country,
+                                            style: const TextStyle(color: Colors.white60, fontSize: 11)),
+                                      ]),
                                   ],
                                 ),
                               ),
@@ -418,7 +374,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                           const SizedBox(height: 16),
                           Row(
                             children: [
-                              _StatChip(_fmt(_stats['posts']), 'Posts', Colors.white),
+                              _StatChip(_fmt(_stats['posts']),     'Posts',     Colors.white),
                               const SizedBox(width: 20),
                               _StatChip(_fmt(_stats['followers']), 'Followers', Colors.white),
                               const SizedBox(width: 20),
@@ -430,26 +386,15 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                   decoration: BoxDecoration(
                                     color: AppColors.gold.withOpacity(0.25),
                                     borderRadius: BorderRadius.circular(20),
-                                    border: Border.all(
-                                      color: AppColors.gold.withOpacity(0.3),
-                                      width: 1,
-                                    ),
+                                    border: Border.all(color: AppColors.gold.withOpacity(0.3)),
                                   ),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      const Icon(Iconsax.dollar_circle, size: 12, color: AppColors.gold),
-                                      const SizedBox(width: 4),
-                                      Text(
-                                        '${_fmt(earned.toInt())} earned',
-                                        style: const TextStyle(
-                                          color: AppColors.gold,
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
+                                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                                    const Icon(Iconsax.dollar_circle, size: 12, color: AppColors.gold),
+                                    const SizedBox(width: 4),
+                                    Text('${_fmt(earned.toInt())} earned',
+                                        style: const TextStyle(color: AppColors.gold, fontSize: 11,
+                                            fontWeight: FontWeight.w700)),
+                                  ]),
                                 ),
                             ],
                           ),
@@ -469,6 +414,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     if (!_isOwnProfile)
+                      // FIX: Only Follow + Message buttons. Share removed (it's in AppBar).
                       Row(
                         children: [
                           Expanded(
@@ -481,44 +427,35 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                   color: _isFollowing ? Colors.transparent : AppColors.primary,
                                   borderRadius: BorderRadius.circular(12),
                                   border: _isFollowing
-                                      ? Border.all(
-                                          color: isDark ? Colors.white.withOpacity(0.3) : Colors.grey.shade300,
-                                        )
+                                      ? Border.all(color: isDark
+                                          ? Colors.white.withOpacity(0.3)
+                                          : Colors.grey.shade300)
                                       : null,
                                 ),
                                 child: Center(
                                   child: _followLoading
-                                      ? const SizedBox(
-                                          width: 18,
-                                          height: 18,
+                                      ? const SizedBox(width: 18, height: 18,
                                           child: CircularProgressIndicator(
-                                            color: AppColors.primary,
-                                            strokeWidth: 2,
+                                              color: AppColors.primary, strokeWidth: 2))
+                                      : Row(mainAxisSize: MainAxisSize.min, children: [
+                                          Icon(
+                                            _isFollowing ? Icons.check_rounded : Icons.add_rounded,
+                                            color: _isFollowing
+                                                ? (isDark ? Colors.white : Colors.black87)
+                                                : Colors.white,
+                                            size: 16,
                                           ),
-                                        )
-                                      : Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            Icon(
-                                              _isFollowing ? Icons.check_rounded : Icons.add_rounded,
+                                          const SizedBox(width: 5),
+                                          Text(
+                                            _isFollowing ? 'Following' : 'Follow',
+                                            style: TextStyle(
                                               color: _isFollowing
                                                   ? (isDark ? Colors.white : Colors.black87)
                                                   : Colors.white,
-                                              size: 16,
+                                              fontWeight: FontWeight.w700, fontSize: 13,
                                             ),
-                                            const SizedBox(width: 5),
-                                            Text(
-                                              _isFollowing ? 'Following' : 'Follow',
-                                              style: TextStyle(
-                                                color: _isFollowing
-                                                    ? (isDark ? Colors.white : Colors.black87)
-                                                    : Colors.white,
-                                                fontWeight: FontWeight.w700,
-                                                fontSize: 13,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
+                                          ),
+                                        ]),
                                 ),
                               ),
                             ),
@@ -533,47 +470,21 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                   color: isDark ? AppColors.bgSurface : Colors.grey.shade100,
                                   borderRadius: BorderRadius.circular(12),
                                   border: Border.all(
-                                    color: isDark ? Colors.white.withOpacity(0.12) : Colors.grey.shade300,
-                                  ),
+                                      color: isDark ? Colors.white.withOpacity(0.12)
+                                                    : Colors.grey.shade300),
                                 ),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(Iconsax.message, size: 16, color: isDark ? Colors.white : Colors.black87),
-                                    const SizedBox(width: 5),
-                                    Text(
-                                      'Message',
-                                      style: TextStyle(
-                                        color: isDark ? Colors.white : Colors.black87,
-                                        fontWeight: FontWeight.w700,
-                                        fontSize: 13,
-                                      ),
-                                    ),
-                                  ],
-                                ),
+                                child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                                  Icon(Iconsax.message, size: 16,
+                                      color: isDark ? Colors.white : Colors.black87),
+                                  const SizedBox(width: 5),
+                                  Text('Message', style: TextStyle(
+                                      color: isDark ? Colors.white : Colors.black87,
+                                      fontWeight: FontWeight.w700, fontSize: 13)),
+                                ]),
                               ),
                             ),
                           ),
-                          const SizedBox(width: 10),
-                          GestureDetector(
-                            onTap: _shareProfile,
-                            child: Container(
-                              width: 44,
-                              height: 44,
-                              decoration: BoxDecoration(
-                                color: isDark ? AppColors.bgSurface : Colors.grey.shade100,
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(
-                                  color: isDark ? Colors.white.withOpacity(0.12) : Colors.grey.shade300,
-                                ),
-                              ),
-                              child: Icon(
-                                Icons.ios_share_rounded,
-                                size: 18,
-                                color: isDark ? Colors.white : Colors.black87,
-                              ),
-                            ),
-                          ),
+                          // FIX: Removed the third share button — share is in AppBar only
                         ],
                       )
                     else
@@ -586,14 +497,12 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                             color: isDark ? AppColors.bgSurface : Colors.grey.shade100,
                             borderRadius: BorderRadius.circular(12),
                             border: Border.all(
-                              color: isDark ? Colors.white.withOpacity(0.12) : Colors.grey.shade300,
-                            ),
+                                color: isDark ? Colors.white.withOpacity(0.12)
+                                              : Colors.grey.shade300),
                           ),
                           child: const Center(
-                            child: Text(
-                              'Edit Profile',
-                              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
-                            ),
+                            child: Text('Edit Profile',
+                                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
                           ),
                         ),
                       ),
@@ -618,14 +527,8 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                               color: AppColors.primary.withOpacity(0.1),
                               borderRadius: BorderRadius.circular(20),
                             ),
-                            child: Text(
-                              skills[i],
-                              style: const TextStyle(
-                                fontSize: 11,
-                                color: AppColors.primary,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
+                            child: Text(skills[i], style: const TextStyle(
+                                fontSize: 11, color: AppColors.primary, fontWeight: FontWeight.w600)),
                           ),
                         ),
                       ),
@@ -643,7 +546,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                 child: Container(
                   color: card,
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  child: _buildNativeAdPlaceholder(isDark),
+                  child: _buildUpgradeBanner(),
                 ),
               ),
 
@@ -662,8 +565,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                     Tab(icon: Icon(Iconsax.heart, size: 20)),
                   ],
                 ),
-                card,
-                border,
+                card, border,
               ),
             ),
 
@@ -672,81 +574,40 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                 controller: _tabs,
                 children: [
                   _posts.isEmpty
-                      ? Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const Text('📝', style: TextStyle(fontSize: 48)),
-                              const SizedBox(height: 12),
-                              Text('No posts yet', style: TextStyle(color: sub, fontSize: 14)),
-                            ],
-                          ),
-                        )
+                      ? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                          const Text('📝', style: TextStyle(fontSize: 48)),
+                          const SizedBox(height: 12),
+                          Text('No posts yet', style: TextStyle(color: sub, fontSize: 14)),
+                        ]))
                       : ListView.separated(
                           padding: EdgeInsets.zero,
                           itemCount: _posts.length,
-                          separatorBuilder: (_, __) => Divider(height: 8, thickness: 8, color: border),
+                          separatorBuilder: (_, __) =>
+                              Divider(height: 8, thickness: 8, color: border),
                           itemBuilder: (_, i) {
-                            final p = _posts[i] as Map;
+                            final p      = _posts[i] as Map;
                             final content = p['content']?.toString() ?? '';
-                            final likes = (p['likes_count'] as num?)?.toInt() ?? 0;
+                            final likes   = (p['likes_count'] as num?)?.toInt() ?? 0;
                             final isLiked = p['is_liked'] == true;
-                            final tag = p['tag']?.toString() ?? '';
-
-                            if (!_isPremium && i > 0 && i % 5 == 0) {
-                              return Column(
-                                children: [
-                                  _buildInlineAdPlaceholder(isDark),
-                                  _buildPostItem(
-                                    p: p,
-                                    content: content,
-                                    likes: likes,
-                                    isLiked: isLiked,
-                                    tag: tag,
-                                    isDark: isDark,
-                                    card: card,
-                                    border: border,
-                                    text: text,
-                                    sub: sub,
-                                    avatar: avatar,
-                                    name: name,
-                                    index: i,
-                                  ),
-                                ],
-                              );
-                            }
+                            final tag     = p['tag']?.toString() ?? '';
 
                             return _buildPostItem(
-                              p: p,
-                              content: content,
-                              likes: likes,
-                              isLiked: isLiked,
-                              tag: tag,
-                              isDark: isDark,
-                              card: card,
-                              border: border,
-                              text: text,
-                              sub: sub,
-                              avatar: avatar,
-                              name: name,
+                              p: p, content: content, likes: likes, isLiked: isLiked,
+                              tag: tag, isDark: isDark, card: card, border: border,
+                              text: text, sub: sub,
+                              avatar: _profile['avatar_url']?.toString(),
+                              name: _profile['full_name']?.toString() ?? 'User',
                               index: i,
                             );
                           },
                         ),
 
-                  Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Text('❤️', style: TextStyle(fontSize: 48)),
-                        const SizedBox(height: 12),
-                        Text(
-                          'Liked posts are private',
-                          style: TextStyle(color: sub, fontSize: 14),
-                        ),
-                      ],
-                    ),
-                  ),
+                  // Liked posts tab — private for other users
+                  Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                    const Text('❤️', style: TextStyle(fontSize: 48)),
+                    const SizedBox(height: 12),
+                    Text('Liked posts are private', style: TextStyle(color: sub, fontSize: 14)),
+                  ])),
                 ],
               ),
             ),
@@ -757,19 +618,10 @@ class _UserProfileScreenState extends State<UserProfileScreen>
   }
 
   Widget _buildPostItem({
-    required Map p,
-    required String content,
-    required int likes,
-    required bool isLiked,
-    required String tag,
-    required bool isDark,
-    required Color card,
-    required Color border,
-    required Color text,
-    required Color sub,
-    required String? avatar,
-    required String name,
-    required int index,
+    required Map p, required String content, required int likes,
+    required bool isLiked, required String tag, required bool isDark,
+    required Color card, required Color border, required Color text,
+    required Color sub, required String? avatar, required String name, required int index,
   }) {
     return Container(
       color: card,
@@ -781,39 +633,31 @@ class _UserProfileScreenState extends State<UserProfileScreen>
             children: [
               GestureDetector(
                 onTap: () {
-                  if (widget.userId != p['user_id']?.toString()) {
-                    context.push('/user-profile/${p['user_id']}');
+                  final postUserId = p['user_id']?.toString() ?? '';
+                  if (postUserId != widget.userId && postUserId.isNotEmpty) {
+                    context.push('/user-profile/$postUserId');
                   }
                 },
                 child: Container(
-                  width: 38,
-                  height: 38,
+                  width: 38, height: 38,
                   decoration: BoxDecoration(
-                    color: AppColors.primary.withOpacity(0.12),
-                    shape: BoxShape.circle,
-                  ),
+                    color: AppColors.primary.withOpacity(0.12), shape: BoxShape.circle),
                   child: ClipOval(
                     child: avatar != null && avatar.isNotEmpty
-                        ? Image.network(avatar, fit: BoxFit.cover, errorBuilder: (_, __, ___) => _avatarFallback(name))
+                        ? Image.network(avatar, fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => _avatarFallback(name))
                         : _avatarFallback(name),
                   ),
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      name,
-                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: text),
-                    ),
-                    Text(
-                      _timeAgo(p['created_at']?.toString()),
-                      style: TextStyle(fontSize: 11, color: sub),
-                    ),
-                  ],
-                ),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(name,
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: text)),
+                  Text(_timeAgo(p['created_at']?.toString()),
+                      style: TextStyle(fontSize: 11, color: sub)),
+                ]),
               ),
               if (tag.isNotEmpty)
                 Container(
@@ -822,33 +666,20 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                     color: AppColors.primary.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(20),
                   ),
-                  child: Text(
-                    tag,
-                    style: const TextStyle(
-                      fontSize: 10,
-                      color: AppColors.primary,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
+                  child: Text(tag, style: const TextStyle(
+                      fontSize: 10, color: AppColors.primary, fontWeight: FontWeight.w600)),
                 ),
             ],
           ),
           const SizedBox(height: 10),
-          Text(
-            content,
-            style: TextStyle(fontSize: 14, color: text, height: 1.5),
-          ),
+          Text(content, style: TextStyle(fontSize: 14, color: text, height: 1.5)),
           if (p['media_url'] != null) ...[
             const SizedBox(height: 10),
             ClipRRect(
               borderRadius: BorderRadius.circular(12),
-              child: Image.network(
-                p['media_url'].toString(),
-                fit: BoxFit.cover,
-                width: double.infinity,
-                height: 200,
-                errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-              ),
+              child: Image.network(p['media_url'].toString(),
+                  fit: BoxFit.cover, width: double.infinity,
+                  errorBuilder: (_, __, ___) => const SizedBox.shrink()),
             ),
           ],
           const SizedBox(height: 10),
@@ -861,10 +692,13 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                 onTap: () async {
                   try {
                     final r = await api.toggleLike(p['id'].toString());
-                    setState(() {
-                      p['is_liked'] = r['liked'] == true;
-                      p['likes_count'] = r['liked'] == true ? likes + 1 : (likes - 1).clamp(0, 999999);
-                    });
+                    if (mounted) {
+                      setState(() {
+                        p['is_liked']    = r['liked'] == true;
+                        p['likes_count'] = r['liked'] == true
+                            ? likes + 1 : (likes - 1).clamp(0, 999999);
+                      });
+                    }
                     HapticFeedback.lightImpact();
                   } catch (_) {
                     _showSnackBar('Failed to like', isError: true);
@@ -874,15 +708,13 @@ class _UserProfileScreenState extends State<UserProfileScreen>
               const SizedBox(width: 18),
               _ActionButton(
                 icon: Iconsax.message,
-                count: (p['post_comments'] as List?)?.length ?? 0,
+                count: (p['post_comments'] as List?)?.length ?? p['comments_count'] ?? 0,
                 color: sub,
                 onTap: () => context.push('/comments/${p['id']}'),
               ),
               const SizedBox(width: 18),
               _ActionButton(
-                icon: Iconsax.send_1,
-                count: null,
-                color: sub,
+                icon: Iconsax.send_1, count: null, color: sub,
                 onTap: () {
                   Clipboard.setData(ClipboardData(text: 'riseup.app/post/${p['id']}'));
                   _showSnackBar('Link copied', isError: false);
@@ -895,7 +727,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     ).animate().fadeIn(delay: Duration(milliseconds: index * 40));
   }
 
-  Widget _buildNativeAdPlaceholder(bool isDark) {
+  Widget _buildUpgradeBanner() {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -908,39 +740,25 @@ class _UserProfileScreenState extends State<UserProfileScreen>
           Container(
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
+              color: AppColors.primary.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
             child: const Icon(Icons.workspace_premium, color: AppColors.primary),
           ),
           const SizedBox(width: 12),
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Remove Ads & Unlock Features',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.primary,
-                  ),
-                ),
-                Text(
-                  'Upgrade to Pro for an ad-free experience',
-                  style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-                ),
-              ],
-            ),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Remove Ads & Unlock Features',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                      color: AppColors.primary)),
+              Text('Upgrade to Pro for an ad-free experience',
+                  style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+            ]),
           ),
           ElevatedButton(
             onPressed: () => context.go('/premium'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
+              backgroundColor: AppColors.primary, foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              minimumSize: Size.zero,
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              minimumSize: Size.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap,
             ),
             child: const Text('Upgrade', style: TextStyle(fontSize: 12)),
           ),
@@ -949,78 +767,28 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     );
   }
 
-  Widget _buildInlineAdPlaceholder(bool isDark) {
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      color: isDark ? AppColors.bgCard : Colors.white,
-      child: Center(
-        child: Column(
-          children: [
-            Text(
-              'Advertisement',
-              style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
-            ),
-            const SizedBox(height: 4),
-            Container(
-              height: 60,
-              width: double.infinity,
-              margin: const EdgeInsets.symmetric(horizontal: 16),
-              decoration: BoxDecoration(
-                color: AppColors.primary.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Center(
-                child: Text(
-                  'Ad Placeholder',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 11, color: Colors.grey),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _buildBioText(String bio, Color textColor) {
     final urlRegex = RegExp(r'https?://\S+|www\.\S+');
-    final matches = urlRegex.allMatches(bio);
-
+    final matches  = urlRegex.allMatches(bio);
     if (matches.isEmpty) {
       return Text(bio, style: TextStyle(fontSize: 13, color: textColor, height: 1.5));
     }
-
     final spans = <TextSpan>[];
     int lastEnd = 0;
-
     for (final match in matches) {
       if (match.start > lastEnd) {
-        spans.add(TextSpan(
-          text: bio.substring(lastEnd, match.start),
-          style: TextStyle(fontSize: 13, color: textColor, height: 1.5),
-        ));
+        spans.add(TextSpan(text: bio.substring(lastEnd, match.start),
+            style: TextStyle(fontSize: 13, color: textColor, height: 1.5)));
       }
-      spans.add(TextSpan(
-        text: bio.substring(match.start, match.end),
-        style: const TextStyle(
-          fontSize: 13,
-          color: AppColors.primary,
-          height: 1.5,
-          decoration: TextDecoration.underline,
-        ),
-      ));
+      spans.add(TextSpan(text: bio.substring(match.start, match.end),
+          style: const TextStyle(fontSize: 13, color: AppColors.primary,
+              height: 1.5, decoration: TextDecoration.underline)));
       lastEnd = match.end;
     }
-
     if (lastEnd < bio.length) {
-      spans.add(TextSpan(
-        text: bio.substring(lastEnd),
-        style: TextStyle(fontSize: 13, color: textColor, height: 1.5),
-      ));
+      spans.add(TextSpan(text: bio.substring(lastEnd),
+          style: TextStyle(fontSize: 13, color: textColor, height: 1.5)));
     }
-
     return SelectableText.rich(TextSpan(children: spans));
   }
 
@@ -1034,32 +802,24 @@ class _UserProfileScreenState extends State<UserProfileScreen>
           color: isDark ? AppColors.bgCard : Colors.white,
           borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 36,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade400,
-                borderRadius: BorderRadius.circular(4),
-              ),
-            ),
-            const SizedBox(height: 20),
-            _moreOption(Icons.ios_share_rounded, 'Share Profile', sub, _shareProfile),
-            if (!_isOwnProfile) ...[
-              _moreOption(Icons.block_rounded, 'Block User', Colors.red, () {
-                Navigator.pop(context);
-                _showBlockConfirmation();
-              }),
-              _moreOption(Icons.flag_rounded, 'Report User', Colors.orange, () {
-                Navigator.pop(context);
-                _showReportSheet();
-              }),
-            ],
-            const SizedBox(height: 8),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(width: 36, height: 4,
+              decoration: BoxDecoration(color: Colors.grey.shade400,
+                  borderRadius: BorderRadius.circular(4))),
+          const SizedBox(height: 20),
+          _moreOption(Icons.ios_share_rounded, 'Share Profile', sub, _shareProfile),
+          if (!_isOwnProfile) ...[
+            _moreOption(Icons.block_rounded, 'Block User', Colors.red, () {
+              Navigator.pop(context);
+              _showBlockConfirmation();
+            }),
+            _moreOption(Icons.flag_rounded, 'Report User', Colors.orange, () {
+              Navigator.pop(context);
+              _showReportSheet();
+            }),
           ],
-        ),
+          const SizedBox(height: 8),
+        ]),
       ),
     );
   }
@@ -1071,15 +831,9 @@ class _UserProfileScreenState extends State<UserProfileScreen>
         title: const Text('Block User?'),
         content: const Text('You won\'t see posts or messages from this user.'),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
           ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _showSnackBar('User blocked', isError: false);
-            },
+            onPressed: () { Navigator.pop(context); _showSnackBar('User blocked', isError: false); },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
             child: const Text('Block', style: TextStyle(color: Colors.white)),
           ),
@@ -1094,95 +848,76 @@ class _UserProfileScreenState extends State<UserProfileScreen>
       context: context,
       builder: (context) => Container(
         padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('Report User', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 16),
-            ...reasons.map(
-              (reason) => ListTile(
-                title: Text(reason),
-                onTap: () {
-                  Navigator.pop(context);
-                  _showSnackBar('Report submitted', isError: false);
-                },
-              ),
-            ),
-          ],
-        ),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text('Report User', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 16),
+          ...reasons.map((reason) => ListTile(
+            title: Text(reason),
+            onTap: () { Navigator.pop(context); _showSnackBar('Report submitted', isError: false); },
+          )),
+        ]),
       ),
     );
   }
 
-  Widget _moreOption(IconData icon, String label, Color color, VoidCallback onTap) => GestureDetector(
+  Widget _moreOption(IconData icon, String label, Color color, VoidCallback onTap) =>
+      GestureDetector(
         onTap: onTap,
         child: Container(
           width: double.infinity,
           padding: const EdgeInsets.all(14),
           margin: const EdgeInsets.only(bottom: 8),
           decoration: BoxDecoration(
-            color: color.withOpacity(0.08),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Row(
-            children: [
-              Icon(icon, color: color, size: 20),
-              const SizedBox(width: 12),
-              Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w600, fontSize: 14)),
-            ],
-          ),
+            color: color.withOpacity(0.08), borderRadius: BorderRadius.circular(12)),
+          child: Row(children: [
+            Icon(icon, color: color, size: 20),
+            const SizedBox(width: 12),
+            Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w600, fontSize: 14)),
+          ]),
         ),
       );
 
   Widget _avatarFallback(String name) => Container(
         color: AppColors.primary.withOpacity(0.15),
         child: Center(
-          child: Text(
-            name.isNotEmpty ? name[0].toUpperCase() : '?',
-            style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: AppColors.primary),
-          ),
+          child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+              style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800,
+                  color: AppColors.primary)),
         ),
       );
 
   String _stageLabel(String stage) {
     const labels = {
-      'earning': '💰 Earning',
-      'growing': '📈 Growing',
-      'wealth': '👑 Wealth',
+      'earning':  '💰 Earning',
+      'growing':  '📈 Growing',
+      'wealth':   '👑 Wealth',
       'survival': '🌱 Survival',
+      'stability':'⚡ Stability',
     };
     return labels[stage] ?? '🌱 Survival';
   }
 }
+
+// ── Sub-widgets ────────────────────────────────────────────────────────────
 
 class _ActionButton extends StatelessWidget {
   final IconData icon;
   final int? count;
   final Color color;
   final VoidCallback onTap;
-
-  const _ActionButton({
-    required this.icon,
-    this.count,
-    required this.color,
-    required this.onTap,
-  });
+  const _ActionButton({required this.icon, this.count, required this.color, required this.onTap});
 
   @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Row(
-        children: [
+  Widget build(BuildContext context) => GestureDetector(
+        onTap: onTap,
+        child: Row(children: [
           Icon(icon, color: color, size: 20),
           if (count != null) ...[
             const SizedBox(width: 4),
             Text('$count', style: TextStyle(color: color, fontSize: 13)),
           ],
-        ],
-      ),
-    );
-  }
+        ]),
+      );
 }
 
 class _StatChip extends StatelessWidget {
@@ -1191,12 +926,10 @@ class _StatChip extends StatelessWidget {
   const _StatChip(this.value, this.label, this.color);
 
   @override
-  Widget build(BuildContext context) => Column(
-        children: [
-          Text(value, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: color)),
-          Text(label, style: TextStyle(fontSize: 10, color: color.withOpacity(0.7))),
-        ],
-      );
+  Widget build(BuildContext context) => Column(children: [
+        Text(value, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: color)),
+        Text(label, style: TextStyle(fontSize: 10, color: color.withOpacity(0.7))),
+      ]);
 }
 
 class _TabDelegate extends SliverPersistentHeaderDelegate {
@@ -1204,10 +937,8 @@ class _TabDelegate extends SliverPersistentHeaderDelegate {
   final Color bg, border;
   const _TabDelegate(this.tabBar, this.bg, this.border);
 
-  @override
-  double get minExtent => tabBar.preferredSize.height + 1;
-  @override
-  double get maxExtent => tabBar.preferredSize.height + 1;
+  @override double get minExtent => tabBar.preferredSize.height + 1;
+  @override double get maxExtent => tabBar.preferredSize.height + 1;
 
   @override
   Widget build(BuildContext _, double __, bool ___) => Container(
