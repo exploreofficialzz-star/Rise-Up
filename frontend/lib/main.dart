@@ -1,3 +1,4 @@
+// frontend/lib/main.dart
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -6,19 +7,35 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'config/app_constants.dart';
 import 'config/router.dart';
-import 'services/ad_service.dart';
 import 'services/ad_manager.dart';
 import 'services/notification_service.dart';
 import 'utils/storage_service.dart';
 import 'utils/connectivity_wrapper.dart';
-import 'services/api_service.dart';
 import 'utils/version_check_service.dart';
 import 'providers/locale_provider.dart';
-import 'providers/currency_provider.dart';
+
+// ── Isolated init helpers — run in parallel ───────────────────────────────
+
+Future<void> _initSupabase() async {
+  if (kSupabaseUrl.isEmpty || kSupabaseAnonKey.isEmpty) return;
+  try {
+    await Supabase.initialize(url: kSupabaseUrl, anonKey: kSupabaseAnonKey);
+  } catch (_) {}
+}
+
+Future<void> _initNotifications() async {
+  if (kIsWeb) return;
+  try {
+    await notificationService.initialize();
+  } catch (_) {}
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Storage must be ready before anything reads from it
   storageService.init();
 
   if (!kIsWeb) {
@@ -33,41 +50,18 @@ void main() async {
     ]);
   }
 
-  // Supabase — guarded against empty keys
-  try {
-    if (kSupabaseUrl.isNotEmpty && kSupabaseAnonKey.isNotEmpty) {
-      await Supabase.initialize(
-          url: kSupabaseUrl, anonKey: kSupabaseAnonKey);
-    } else {
-      debugPrint('[RiseUp] WARNING: Supabase keys missing');
-    }
-  } catch (e) {
-    debugPrint('[RiseUp] Supabase init error: $e');
-  }
+  // FIX: Run Supabase + notifications in parallel instead of sequential.
+  // Previously a blocking api.getProfile() network call happened here,
+  // adding 1–3 seconds before runApp() was ever called. Removed entirely.
+  // Premium status is resolved lazily inside HomeScreen after login.
+  await Future.wait([
+    _initSupabase(),
+    _initNotifications(),
+  ]);
 
-  // Notifications — optional
-  if (!kIsWeb) {
-    try {
-      await notificationService.initialize();
-    } catch (e) {
-      debugPrint('[RiseUp] Notifications init skipped: $e');
-    }
-  }
-
-  // Ads — skip for premium, show for free
-  try {
-    bool isPremium = false;
-    try {
-      final token = await storageService.read(key: 'access_token');
-      if (token != null) {
-        final profile = await api.getProfile();
-        isPremium = (profile['profile']?['subscription_tier'] ?? 'free') == 'premium';
-      }
-    } catch (_) {}
-    await adManager.initialize(isPremium: isPremium);
-  } catch (e) {
-    debugPrint('[RiseUp] Ads init error: $e');
-  }
+  // FIX: Ads initialize fire-and-forget — never blocks the UI thread.
+  // Defaults to free tier; HomeScreen updates ad behaviour once profile loads.
+  adManager.initialize(isPremium: false).catchError((_) {});
 
   FlutterError.onError = (details) {
     FlutterError.presentError(details);
@@ -75,6 +69,8 @@ void main() async {
 
   runApp(const ProviderScope(child: RiseUpApp()));
 }
+
+// ── App root ───────────────────────────────────────────────────────────────
 
 class RiseUpApp extends StatefulWidget {
   const RiseUpApp({super.key});
@@ -87,17 +83,14 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     if (!kIsWeb) WidgetsBinding.instance.addObserver(this);
-    WidgetsBinding.instance
-        .addPostFrameCallback((_) => _runVersionCheck());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _runVersionCheck());
   }
 
   Future<void> _runVersionCheck() async {
     try {
-      final matches =
-          router.routerDelegate.currentConfiguration.matches;
+      final matches = router.routerDelegate.currentConfiguration.matches;
       if (matches.isNotEmpty) {
-        final ctx =
-            router.routerDelegate.navigatorKey.currentContext;
+        final ctx = router.routerDelegate.navigatorKey.currentContext;
         if (ctx != null && ctx.mounted) {
           versionCheckService.checkAndPrompt(ctx);
         }
@@ -113,7 +106,8 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // App Open Ad disabled — caused black screen on startup
+    // App Open Ad disabled — caused black screen on startup.
+    // Per-screen refresh is handled by HomeScreen's own observer.
   }
 
   @override
@@ -121,49 +115,49 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
     return Consumer(
       builder: (context, ref, child) {
         final locale = ref.watch(localeProvider);
-        
+
         return MaterialApp.router(
           title: 'RiseUp',
           debugShowCheckedModeBanner: false,
           theme: AppTheme.light,
           darkTheme: AppTheme.dark,
           themeMode: ThemeMode.system,
-          
-          // Localization
           locale: locale,
           supportedLocales: const [
-            Locale('en'), // English
-            Locale('es'), // Spanish
-            Locale('fr'), // French
-            Locale('de'), // German
-            Locale('pt'), // Portuguese
-            Locale('hi'), // Hindi
-            Locale('ar'), // Arabic
-            Locale('zh'), // Chinese
-            Locale('ja'), // Japanese
-            Locale('ru'), // Russian
-            Locale('sw'), // Swahili
-            Locale('yo'), // Yoruba
-            Locale('ig'), // Igbo
-            Locale('ha'), // Hausa
+            Locale('en'),
+            Locale('es'),
+            Locale('fr'),
+            Locale('de'),
+            Locale('pt'),
+            Locale('hi'),
+            Locale('ar'),
+            Locale('zh'),
+            Locale('ja'),
+            Locale('ru'),
+            Locale('sw'),
+            Locale('yo'),
+            Locale('ig'),
+            Locale('ha'),
           ],
           localizationsDelegates: const [
             GlobalMaterialLocalizations.delegate,
             GlobalWidgetsLocalizations.delegate,
             GlobalCupertinoLocalizations.delegate,
           ],
-          
           routerConfig: router,
           builder: (context, child) {
             ErrorWidget.builder =
                 (details) => _GlobalErrorWidget(details: details);
-            return ConnectivityWrapper(child: child ?? const SizedBox.shrink());
+            return ConnectivityWrapper(
+                child: child ?? const SizedBox.shrink());
           },
         );
       },
     );
   }
 }
+
+// ── Global error widget ────────────────────────────────────────────────────
 
 class _GlobalErrorWidget extends StatelessWidget {
   final FlutterErrorDetails details;
@@ -173,8 +167,7 @@ class _GlobalErrorWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Scaffold(
-      backgroundColor:
-          isDark ? AppColors.bgDark : Colors.white,
+      backgroundColor: isDark ? AppColors.bgDark : Colors.white,
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
@@ -186,9 +179,10 @@ class _GlobalErrorWidget extends StatelessWidget {
               Text(
                 'Something went wrong',
                 style: TextStyle(
-                    color: isDark ? Colors.white : Colors.black87,
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold),
+                  color: isDark ? Colors.white : Colors.black87,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
               const SizedBox(height: 8),
               Text(
