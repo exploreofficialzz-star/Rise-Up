@@ -1,6 +1,14 @@
 // frontend/lib/screens/messages/messages_screen.dart
-// Fixed: context.push (preserves back stack), convId key fallback, consistent navigation
+// v4 — Production ready
+//
+// Changes:
+//  • Presence heartbeat every 30 s (POST /messages/presence)
+//  • Conversation list auto-refreshes every 15 s (live unread + online dots)
+//  • AppLifecycleObserver: heartbeat pauses when app backgrounded, resumes on foreground
+//  • setOffline() called on dispose
+//  • is_online now comes from backend last_seen computation — no guessing
 
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -16,28 +24,70 @@ class MessagesScreen extends StatefulWidget {
 }
 
 class _MessagesScreenState extends State<MessagesScreen>
-    with AutomaticKeepAliveClientMixin {
+    with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
   final _searchCtrl = TextEditingController();
-  List _convos = [];
-  bool _loading = true;
-  bool _error   = false;
-  String _query = '';
+
+  List  _convos  = [];
+  bool  _loading = true;
+  bool  _error   = false;
+  String _query  = '';
+
+  Timer? _presenceTimer;
+  Timer? _refreshTimer;
 
   @override
   bool get wantKeepAlive => true;
 
+  // ── Lifecycle ───────────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _load();
+    _startPresence();
+    _startAutoRefresh();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _presenceTimer?.cancel();
+    _refreshTimer?.cancel();
     _searchCtrl.dispose();
+    // Tell the server this user is no longer active
+    api.setOffline();
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _startPresence();
+      _load();
+    } else if (state == AppLifecycleState.paused ||
+               state == AppLifecycleState.inactive) {
+      _presenceTimer?.cancel();
+      api.setOffline();
+    }
+  }
+
+  // ── Presence heartbeat ──────────────────────────────────────────────────
+  void _startPresence() {
+    api.updatePresence(); // immediate
+    _presenceTimer?.cancel();
+    _presenceTimer =
+        Timer.periodic(const Duration(seconds: 30), (_) => api.updatePresence());
+  }
+
+  // ── Auto-refresh conversation list ──────────────────────────────────────
+  void _startAutoRefresh() {
+    _refreshTimer?.cancel();
+    _refreshTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (mounted) _loadSilent();
+    });
+  }
+
+  // ── Data loading ────────────────────────────────────────────────────────
   Future<void> _load() async {
     if (!mounted) return;
     setState(() { _loading = true; _error = false; });
@@ -49,6 +99,15 @@ class _MessagesScreenState extends State<MessagesScreen>
     }
   }
 
+  /// Refresh without showing the loading spinner (background refresh)
+  Future<void> _loadSilent() async {
+    try {
+      final data = await api.getDMConversations();
+      if (mounted) setState(() => _convos = data);
+    } catch (_) {}
+  }
+
+  // ── Filtering ───────────────────────────────────────────────────────────
   List get _filtered {
     if (_query.isEmpty) return _convos;
     final q = _query.toLowerCase();
@@ -70,6 +129,7 @@ class _MessagesScreenState extends State<MessagesScreen>
     return '${(diff.inDays / 7).floor()}w';
   }
 
+  // ── New message sheet ───────────────────────────────────────────────────
   void _openNewMessage() {
     HapticFeedback.lightImpact();
     showModalBottomSheet(
@@ -79,7 +139,6 @@ class _MessagesScreenState extends State<MessagesScreen>
       builder: (_) => _NewMessageSheet(
         onConversationCreated: (convId, name, avatar) {
           Navigator.pop(context);
-          // FIX: use context.push so back button works
           context.push(
             '/conversation/$convId'
             '?name=${Uri.encodeComponent(name)}'
@@ -91,6 +150,7 @@ class _MessagesScreenState extends State<MessagesScreen>
     );
   }
 
+  // ── Build ───────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -108,8 +168,8 @@ class _MessagesScreenState extends State<MessagesScreen>
         backgroundColor: cardColor,
         elevation: 0,
         surfaceTintColor: Colors.transparent,
-        title: Text('Messages',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: textColor)),
+        title: Text('Messages', style: TextStyle(
+            fontSize: 18, fontWeight: FontWeight.w700, color: textColor)),
         actions: [
           IconButton(
             icon: Icon(Iconsax.edit, color: textColor, size: 22),
@@ -123,6 +183,7 @@ class _MessagesScreenState extends State<MessagesScreen>
         ),
       ),
       body: Column(children: [
+        // Search bar
         Container(
           color: cardColor,
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
@@ -135,12 +196,16 @@ class _MessagesScreenState extends State<MessagesScreen>
               hintStyle: TextStyle(color: subColor, fontSize: 13),
               filled: true, fillColor: surfColor,
               border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: BorderSide.none),
               prefixIcon: Icon(Iconsax.search_normal, color: subColor, size: 18),
               suffixIcon: _query.isNotEmpty
                   ? IconButton(
                       icon: Icon(Icons.close, color: subColor, size: 16),
-                      onPressed: () { _searchCtrl.clear(); setState(() => _query = ''); })
+                      onPressed: () {
+                        _searchCtrl.clear();
+                        setState(() => _query = '');
+                      })
                   : null,
               contentPadding: const EdgeInsets.symmetric(vertical: 10),
             ),
@@ -148,53 +213,65 @@ class _MessagesScreenState extends State<MessagesScreen>
         ),
         Divider(height: 1, color: borderColor),
 
-        // RiseUp AI pinned tile
+        // Pinned RiseUp AI tile
         if (_query.isEmpty) ...[
           _AIPinnedTile(
             isDark: isDark, bgColor: bgColor,
-            textColor: textColor, subColor: subColor, borderColor: borderColor,
-            // FIX: use context.push so back button works on conversation screen
-            onTap: () => context.push('/conversation/ai?name=RiseUp+AI&avatar=🤖&isAI=true'),
+            textColor: textColor, subColor: subColor,
+            onTap: () => context.push(
+                '/conversation/ai?name=RiseUp+AI&avatar=🤖&isAI=true'),
           ),
           Divider(height: 1, color: borderColor, indent: 76),
         ],
 
-        Expanded(child: _buildBody(isDark, bgColor, borderColor, textColor, subColor)),
+        Expanded(
+          child: _buildBody(isDark, bgColor, borderColor, textColor, subColor),
+        ),
       ]),
     );
   }
 
-  Widget _buildBody(bool isDark, Color bg, Color border, Color text, Color sub) {
+  Widget _buildBody(
+      bool isDark, Color bg, Color border, Color text, Color sub) {
     if (_loading) {
-      return const Center(
-          child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2));
+      return const Center(child: CircularProgressIndicator(
+          color: AppColors.primary, strokeWidth: 2));
     }
 
     if (_error) {
-      return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+      return Center(child: Column(
+          mainAxisAlignment: MainAxisAlignment.center, children: [
         const Text('😕', style: TextStyle(fontSize: 48)),
         const SizedBox(height: 12),
-        Text('Could not load messages', style: TextStyle(color: sub, fontSize: 14)),
+        Text('Could not load messages',
+            style: TextStyle(color: sub, fontSize: 14)),
         const SizedBox(height: 12),
         TextButton.icon(
           onPressed: _load,
           icon: const Icon(Icons.refresh, color: AppColors.primary),
-          label: const Text('Retry', style: TextStyle(color: AppColors.primary)),
+          label: const Text('Retry',
+              style: TextStyle(color: AppColors.primary)),
         ),
       ]));
     }
 
     if (_filtered.isEmpty) {
-      return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Text(_query.isEmpty ? '💬' : '🔍', style: const TextStyle(fontSize: 52)),
+      return Center(child: Column(
+          mainAxisAlignment: MainAxisAlignment.center, children: [
+        Text(_query.isEmpty ? '💬' : '🔍',
+            style: const TextStyle(fontSize: 52)),
         const SizedBox(height: 12),
         Text(
-          _query.isEmpty ? 'No conversations yet' : 'No results for "$_query"',
-          style: TextStyle(color: sub, fontSize: 14, fontWeight: FontWeight.w500),
+          _query.isEmpty
+              ? 'No conversations yet'
+              : 'No results for "$_query"',
+          style: TextStyle(
+              color: sub, fontSize: 14, fontWeight: FontWeight.w500),
         ),
         if (_query.isEmpty) ...[
           const SizedBox(height: 8),
-          Text('Tap ✏️ to message someone', style: TextStyle(color: sub, fontSize: 12)),
+          Text('Tap ✏️ to message someone',
+              style: TextStyle(color: sub, fontSize: 12)),
         ],
       ]));
     }
@@ -205,26 +282,34 @@ class _MessagesScreenState extends State<MessagesScreen>
       child: ListView.separated(
         padding: EdgeInsets.zero,
         itemCount: _filtered.length,
-        separatorBuilder: (_, __) => Divider(height: 1, color: border, indent: 76),
+        separatorBuilder: (_, __) =>
+            Divider(height: 1, color: border, indent: 76),
         itemBuilder: (_, i) => _ConvoTile(
           convo: _filtered[i],
-          isDark: isDark, bgColor: bg,
-          textColor: text, subColor: sub,
-          timeAgo: _timeAgo, index: i,
+          isDark: isDark,
+          bgColor: bg,
+          textColor: text,
+          subColor: sub,
+          timeAgo: _timeAgo,
+          index: i,
         ),
       ),
     );
   }
 }
 
-// ── Pinned AI tile ─────────────────────────────────────────────────────────
+// ── Pinned AI tile ────────────────────────────────────────────────────────
 class _AIPinnedTile extends StatelessWidget {
   final bool isDark;
-  final Color bgColor, textColor, subColor, borderColor;
+  final Color bgColor, textColor, subColor;
   final VoidCallback onTap;
+
   const _AIPinnedTile({
-    required this.isDark, required this.bgColor, required this.textColor,
-    required this.subColor, required this.borderColor, required this.onTap,
+    required this.isDark,
+    required this.bgColor,
+    required this.textColor,
+    required this.subColor,
+    required this.onTap,
   });
 
   @override
@@ -238,25 +323,32 @@ class _AIPinnedTile extends StatelessWidget {
           Container(
             width: 52, height: 52,
             decoration: const BoxDecoration(
-              gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]),
+              gradient: LinearGradient(
+                  colors: [AppColors.primary, AppColors.accent]),
               shape: BoxShape.circle,
             ),
-            child: const Center(child: Text('🤖', style: TextStyle(fontSize: 26))),
+            child: const Center(
+                child: Text('🤖', style: TextStyle(fontSize: 26))),
           ),
           const SizedBox(width: 12),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Expanded(child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
               Text('RiseUp AI', style: TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.w700, color: textColor)),
+                  fontSize: 15, fontWeight: FontWeight.w700,
+                  color: textColor)),
               const SizedBox(width: 6),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 5, vertical: 1),
                 decoration: BoxDecoration(
-                  gradient: const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
+                  gradient: const LinearGradient(
+                      colors: [AppColors.primary, AppColors.accent]),
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child: const Text('AI', style: TextStyle(
-                    color: Colors.white, fontSize: 8, fontWeight: FontWeight.w700)),
+                    color: Colors.white, fontSize: 8,
+                    fontWeight: FontWeight.w700)),
               ),
             ]),
             const SizedBox(height: 2),
@@ -264,15 +356,19 @@ class _AIPinnedTile extends StatelessWidget {
                 style: TextStyle(fontSize: 13, color: subColor),
                 maxLines: 1, overflow: TextOverflow.ellipsis),
           ])),
-          Container(width: 9, height: 9,
-              decoration: const BoxDecoration(color: AppColors.success, shape: BoxShape.circle)),
+          // AI is always "online"
+          Container(
+            width: 9, height: 9,
+            decoration: const BoxDecoration(
+                color: AppColors.success, shape: BoxShape.circle),
+          ),
         ]),
       ),
     );
   }
 }
 
-// ── Conversation list tile ─────────────────────────────────────────────────
+// ── Conversation list tile ────────────────────────────────────────────────
 class _ConvoTile extends StatelessWidget {
   final Map convo;
   final bool isDark;
@@ -281,31 +377,32 @@ class _ConvoTile extends StatelessWidget {
   final int index;
 
   const _ConvoTile({
-    required this.convo, required this.isDark, required this.bgColor,
-    required this.textColor, required this.subColor,
-    required this.timeAgo, required this.index,
+    required this.convo,
+    required this.isDark,
+    required this.bgColor,
+    required this.textColor,
+    required this.subColor,
+    required this.timeAgo,
+    required this.index,
   });
 
   @override
   Widget build(BuildContext context) {
-    final other    = convo['other_user'] as Map? ?? {};
-    final lastMsg  = convo['last_message'] as Map?;
-    final unread   = convo['unread_count'] as int? ?? 0;
+    final other   = convo['other_user'] as Map? ?? {};
+    final lastMsg = convo['last_message'] as Map?;
+    final unread  = convo['unread_count'] as int? ?? 0;
 
-    // FIX: fallback to 'conversation_id' if 'id' is missing (backend inconsistency)
-    final convId   = convo['id']?.toString()
-                  ?? convo['conversation_id']?.toString()
-                  ?? '';
+    final convId =
+        convo['id']?.toString() ?? convo['conversation_id']?.toString() ?? '';
     final name     = other['full_name']?.toString() ?? 'User';
     final avatar   = other['avatar_url']?.toString() ?? '';
-    final isOnline = other['is_online'] == true;
+    final isOnline = other['is_online'] == true;  // computed server-side from last_seen
     final initial  = name.isNotEmpty ? name[0].toUpperCase() : '?';
 
     return GestureDetector(
       onTap: () {
-        HapticFeedback.lightImpact();
-        // FIX: guard against empty convId; use context.push to preserve back stack
         if (convId.isEmpty) return;
+        HapticFeedback.lightImpact();
         context.push(
           '/conversation/$convId'
           '?name=${Uri.encodeComponent(name)}'
@@ -316,6 +413,7 @@ class _ConvoTile extends StatelessWidget {
         color: bgColor,
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         child: Row(children: [
+          // Avatar + online dot
           Stack(children: [
             _buildAvatar(avatar, initial, 52),
             if (isOnline)
@@ -324,34 +422,40 @@ class _ConvoTile extends StatelessWidget {
                 child: Container(
                   width: 14, height: 14,
                   decoration: BoxDecoration(
-                    color: AppColors.success, shape: BoxShape.circle,
+                    color: AppColors.success,
+                    shape: BoxShape.circle,
                     border: Border.all(color: bgColor, width: 2),
                   ),
                 ),
               ),
           ]),
           const SizedBox(width: 12),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Expanded(child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
               Expanded(child: Text(name, style: TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.w700, color: textColor))),
+                  fontSize: 15, fontWeight: FontWeight.w700,
+                  color: textColor))),
               Text(
                 timeAgo(convo['updated_at']?.toString()),
                 style: TextStyle(
                   fontSize: 11,
                   color: unread > 0 ? AppColors.primary : subColor,
-                  fontWeight: unread > 0 ? FontWeight.w600 : FontWeight.w400,
+                  fontWeight:
+                      unread > 0 ? FontWeight.w600 : FontWeight.w400,
                 ),
               ),
             ]),
             const SizedBox(height: 3),
             Row(children: [
               Expanded(child: Text(
-                lastMsg?['content']?.toString() ?? 'Start a conversation...',
+                lastMsg?['content']?.toString() ??
+                    'Start a conversation...',
                 style: TextStyle(
                   fontSize: 13,
                   color: unread > 0 ? textColor : subColor,
-                  fontWeight: unread > 0 ? FontWeight.w500 : FontWeight.w400,
+                  fontWeight:
+                      unread > 0 ? FontWeight.w500 : FontWeight.w400,
                 ),
                 maxLines: 1, overflow: TextOverflow.ellipsis,
               )),
@@ -364,7 +468,8 @@ class _ConvoTile extends StatelessWidget {
                       color: AppColors.primary, shape: BoxShape.circle),
                   child: Center(child: Text(
                     unread > 99 ? '99+' : '$unread',
-                    style: const TextStyle(color: Colors.white,
+                    style: const TextStyle(
+                        color: Colors.white,
                         fontSize: 10, fontWeight: FontWeight.w700),
                   )),
                 ),
@@ -383,14 +488,16 @@ class _ConvoTile extends StatelessWidget {
         gradient: isUrl ? null : const LinearGradient(
             colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)]),
         image: isUrl
-            ? DecorationImage(image: NetworkImage(avatar), fit: BoxFit.cover)
+            ? DecorationImage(
+                image: NetworkImage(avatar), fit: BoxFit.cover)
             : null,
         shape: BoxShape.circle,
       ),
       child: isUrl
           ? null
           : Center(child: Text(initial, style: TextStyle(
-              fontSize: size * 0.42, color: Colors.white, fontWeight: FontWeight.w700))),
+              fontSize: size * 0.42, color: Colors.white,
+              fontWeight: FontWeight.w700))),
     );
   }
 }
@@ -399,7 +506,9 @@ class _ConvoTile extends StatelessWidget {
 // NEW MESSAGE BOTTOM SHEET
 // ════════════════════════════════════════════════════════════════════════════
 class _NewMessageSheet extends StatefulWidget {
-  final void Function(String convId, String name, String avatar) onConversationCreated;
+  final void Function(String convId, String name, String avatar)
+      onConversationCreated;
+
   const _NewMessageSheet({required this.onConversationCreated});
 
   @override
@@ -411,14 +520,14 @@ class _NewMessageSheetState extends State<_NewMessageSheet> {
   List  _results  = [];
   bool  _loading  = false;
   bool  _opening  = false;
-  String _lastQuery = '';
+  String _lastQ   = '';
 
   @override
   void dispose() { _ctrl.dispose(); super.dispose(); }
 
   Future<void> _search(String q) async {
-    if (q == _lastQuery) return;
-    _lastQuery = q;
+    if (q == _lastQ) return;
+    _lastQ = q;
     if (q.trim().length < 2) {
       setState(() { _results = []; _loading = false; });
       return;
@@ -426,7 +535,9 @@ class _NewMessageSheetState extends State<_NewMessageSheet> {
     setState(() => _loading = true);
     try {
       final res = await api.searchUsers(q);
-      if (mounted && q == _lastQuery) setState(() { _results = res; _loading = false; });
+      if (mounted && q == _lastQ) {
+        setState(() { _results = res; _loading = false; });
+      }
     } catch (_) {
       if (mounted) setState(() { _results = []; _loading = false; });
     }
@@ -437,10 +548,10 @@ class _NewMessageSheetState extends State<_NewMessageSheet> {
     setState(() => _opening = true);
     try {
       final convId = await api.getOrCreateDM(user['id'].toString());
-      if (convId.isEmpty) throw Exception('No conversation ID returned');
+      if (convId.isEmpty) throw Exception('No conversation ID');
       final name   = user['full_name']?.toString() ?? 'User';
       final avatar = user['avatar_url']?.toString()
-                  ?? (name.isNotEmpty ? name[0].toUpperCase() : '?');
+          ?? (name.isNotEmpty ? name[0].toUpperCase() : '?');
       widget.onConversationCreated(convId, name, avatar);
     } catch (_) {
       if (mounted) setState(() => _opening = false);
@@ -474,8 +585,8 @@ class _NewMessageSheetState extends State<_NewMessageSheet> {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
           child: Row(children: [
-            Text('New Message',
-                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: textColor)),
+            Text('New Message', style: TextStyle(
+                fontSize: 17, fontWeight: FontWeight.w700, color: textColor)),
             const Spacer(),
             IconButton(
               icon: Icon(Icons.close, color: subColor),
@@ -495,7 +606,8 @@ class _NewMessageSheetState extends State<_NewMessageSheet> {
               hintStyle: TextStyle(color: subColor, fontSize: 13),
               filled: true, fillColor: surfColor,
               border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: BorderSide.none),
               prefixIcon: Icon(Iconsax.search_normal, color: subColor, size: 18),
               contentPadding: const EdgeInsets.symmetric(vertical: 12),
             ),
@@ -504,58 +616,95 @@ class _NewMessageSheetState extends State<_NewMessageSheet> {
         if (_loading)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 24),
-            child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2),
+            child: CircularProgressIndicator(
+                color: AppColors.primary, strokeWidth: 2),
           )
         else if (_results.isEmpty && _ctrl.text.length >= 2)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 32),
-            child: Text('No users found', style: TextStyle(color: subColor, fontSize: 13)),
+            child: Text('No users found',
+                style: TextStyle(color: subColor, fontSize: 13)),
           )
         else
           ConstrainedBox(
-            constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.45),
+            constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.45),
             child: ListView.builder(
               shrinkWrap: true,
               padding: const EdgeInsets.only(bottom: 16),
               itemCount: _results.length,
               itemBuilder: (_, i) {
-                final u     = _results[i] as Map;
-                final name  = u['full_name']?.toString() ?? 'User';
-                final av    = u['avatar_url']?.toString() ?? '';
-                final isUrl = av.startsWith('http');
-                final stage = u['stage']?.toString() ?? '';
+                final u       = _results[i] as Map;
+                final name    = u['full_name']?.toString() ?? 'User';
+                final av      = u['avatar_url']?.toString() ?? '';
+                final isUrl   = av.startsWith('http');
+                final stage   = u['stage']?.toString() ?? '';
+                final online  = u['is_online'] == true;
 
                 return ListTile(
                   onTap: () => _openDM(u),
-                  leading: CircleAvatar(
-                    radius: 22,
-                    backgroundColor: AppColors.primary,
-                    backgroundImage: isUrl ? NetworkImage(av) : null,
-                    child: isUrl
-                        ? null
-                        : Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
-                            style: const TextStyle(
-                                color: Colors.white, fontWeight: FontWeight.w700)),
-                  ),
+                  leading: Stack(children: [
+                    CircleAvatar(
+                      radius: 22,
+                      backgroundColor: AppColors.primary,
+                      backgroundImage: isUrl ? NetworkImage(av) : null,
+                      child: isUrl
+                          ? null
+                          : Text(
+                              name.isNotEmpty ? name[0].toUpperCase() : '?',
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700)),
+                    ),
+                    if (online)
+                      Positioned(
+                        bottom: 0, right: 0,
+                        child: Container(
+                          width: 12, height: 12,
+                          decoration: BoxDecoration(
+                            color: AppColors.success,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                                color: isDark
+                                    ? AppColors.bgCard
+                                    : Colors.white,
+                                width: 2),
+                          ),
+                        ),
+                      ),
+                  ]),
                   title: Text(name, style: TextStyle(
-                      fontSize: 14, fontWeight: FontWeight.w600, color: textColor)),
+                      fontSize: 14, fontWeight: FontWeight.w600,
+                      color: textColor)),
                   subtitle: stage.isNotEmpty
-                      ? Text(stage[0].toUpperCase() + stage.substring(1),
-                          style: TextStyle(fontSize: 12, color: AppColors.stageColor(stage)))
+                      ? Text(
+                          stage[0].toUpperCase() + stage.substring(1),
+                          style: TextStyle(
+                              fontSize: 12,
+                              color: AppColors.stageColor(stage)))
                       : null,
                   trailing: _opening
-                      ? const SizedBox(width: 18, height: 18,
+                      ? const SizedBox(
+                          width: 18, height: 18,
                           child: CircularProgressIndicator(
-                              strokeWidth: 2, color: AppColors.primary))
+                              strokeWidth: 2,
+                              color: AppColors.primary))
                       : Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 5),
                           decoration: BoxDecoration(
                             gradient: const LinearGradient(
-                                colors: [AppColors.primary, AppColors.accent]),
+                                colors: [
+                                  AppColors.primary,
+                                  AppColors.accent
+                                ]),
                             borderRadius: BorderRadius.circular(20),
                           ),
-                          child: const Text('Message', style: TextStyle(
-                              color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600)),
+                          child: const Text('Message',
+                              style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600)),
                         ),
                 );
               },
