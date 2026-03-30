@@ -1,11 +1,12 @@
 // frontend/lib/screens/home/home_screen.dart
-// Fixed:
-//  1. context.push for user-profile nav (back button works)
-//  2. Ask RiseUp AI → posts AI reply as comment
-//  3. Chat Privately → counts against same quota
-//  4. 3 free uses/day; 4th shows ad; max 5 ads/day then 4-hour lockout
-//  5. Feed ads every 4-5 posts with proper aspect ratio
+// Performance fixes:
+//  1. WidgetsBindingObserver → detects resume, refreshes after 5+ min background
+//  2. Profile caching → shows instantly from cache, refreshes in background
+//  3. Parallel loading → profile + status + feed load simultaneously
+//  4. Reduced animation stagger 40ms → 20ms, only new items animate
+//  5. ListView cacheExtent → pre-renders off-screen items for smooth scroll
 
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -69,9 +70,9 @@ class PostModel {
     final createdAt = DateTime.tryParse(data['created_at']?.toString() ?? '') ?? DateTime.now();
     final diff = DateTime.now().difference(createdAt);
     final String time;
-    if (diff.inMinutes < 60)  time = '${diff.inMinutes}m ago';
+    if (diff.inMinutes < 60)    time = '${diff.inMinutes}m ago';
     else if (diff.inHours < 24) time = '${diff.inHours}h ago';
-    else time = '${diff.inDays}d ago';
+    else                        time = '${diff.inDays}d ago';
 
     final fullName  = profile['full_name']?.toString() ?? 'User';
     final stage     = profile['stage']?.toString() ?? 'survival';
@@ -112,20 +113,27 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late TabController _tabCtrl;
   Map<String, dynamic> _profile = {};
 
-  // ── AI Quota ─────────────────────────────────────────────────────────────
+  // FIX: Track when app was paused to determine whether to refresh on resume.
+  DateTime? _lastPausedAt;
+  static const Duration _refreshThreshold = Duration(minutes: 5);
+
+  // ── AI Quota ──────────────────────────────────────────────────────────────
   int _aiUsedToday      = 0;
   int _adsWatchedToday  = 0;
   DateTime? _adLockoutUntil;
-  DateTime? _quotaDate;           // which date the quota belongs to
+  DateTime? _quotaDate;
 
   static const int      _dailyFreeLimit    = 3;
   static const int      _maxAdsPerDay      = 5;
   static const Duration _adLockoutDuration = Duration(hours: 4);
   static const String   _kQuotaKey         = 'home_ai_quota_v1';
+
+  // FIX: Profile is cached so it appears instantly on every open.
+  static const String _kProfileCacheKey = 'riseup_profile_cache_v1';
 
   // ── Feed ──────────────────────────────────────────────────────────────────
   List<dynamic> _statusUsers = [];
@@ -134,7 +142,13 @@ class _HomeScreenState extends State<HomeScreen>
   final _feeds   = <String, List<PostModel>>{'for_you': [], 'following': [], 'trending': []};
   final _loading = <String, bool>{'for_you': false, 'following': false, 'trending': false};
   final _offsets = <String, int>{'for_you': 0, 'following': 0, 'trending': 0};
-  final _tabs    = ['for_you', 'following', 'trending'];
+
+  // FIX: Track already-animated items so only new ones fade in.
+  // Without this, every setState (e.g. a like tap) re-triggers staggered
+  // fade-ins on ALL list items, causing visible flicker and GPU waste.
+  final _animatedUpTo = <String, int>{'for_you': 0, 'following': 0, 'trending': 0};
+
+  final _tabs = ['for_you', 'following', 'trending'];
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final Map<String, bool> _followState = {};
   static const String _kFollowedKey = 'riseup_followed_users';
@@ -142,6 +156,10 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void initState() {
     super.initState();
+    // FIX: Register lifecycle observer here in HomeScreen.
+    // main.dart's observer does nothing — this one drives data refresh.
+    WidgetsBinding.instance.addObserver(this);
+
     _tabCtrl = TabController(length: 3, vsync: this);
     _tabCtrl.addListener(() {
       if (!_tabCtrl.indexIsChanging) {
@@ -149,18 +167,52 @@ class _HomeScreenState extends State<HomeScreen>
         if (_feeds[tab]!.isEmpty) _loadFeed(tab);
       }
     });
+
     _loadAiQuota();
-    _loadPersistedFollowState().then((_) {
-      _loadProfile();
-      _loadStatus();
-      _loadFeed('for_you');
-    });
+    _initData();
+  }
+
+  // FIX: All data loads start in parallel — saves up to 2-3 round-trip delays.
+  Future<void> _initData() async {
+    await _loadPersistedFollowState();
+    await Future.wait([
+      _loadProfile(),
+      _loadStatus(),
+      _loadFeed('for_you'),
+    ]);
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _tabCtrl.dispose();
     super.dispose();
+  }
+
+  // FIX: App lifecycle — record pause time, refresh on resume if stale.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      _lastPausedAt = DateTime.now();
+    } else if (state == AppLifecycleState.resumed) {
+      _onAppResumed();
+    }
+  }
+
+  void _onAppResumed() {
+    final now = DateTime.now();
+    final wasAway = _lastPausedAt == null ||
+        now.difference(_lastPausedAt!) >= _refreshThreshold;
+    if (!wasAway || !mounted) return;
+
+    _lastPausedAt = null;
+    final activeTab = _tabs[_tabCtrl.index];
+    // Refresh silently in background — no loading spinner shown to user.
+    Future.wait([
+      _loadProfile(),
+      _loadStatus(),
+      _loadFeed(activeTab, refresh: true),
+    ]);
   }
 
   // ── AI Quota persistence ──────────────────────────────────────────────────
@@ -173,12 +225,11 @@ class _HomeScreenState extends State<HomeScreen>
       if (parts.length < 5) return;
       final savedDate = DateTime.tryParse(parts[0]);
       final today = DateTime.now();
-      // Reset if it's a new day
       if (savedDate == null ||
           savedDate.year != today.year ||
           savedDate.month != today.month ||
           savedDate.day != today.day) {
-        await _saveAiQuota(); // reset
+        await _saveAiQuota();
         return;
       }
       if (mounted) {
@@ -195,9 +246,9 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> _saveAiQuota() async {
     try {
-      final prefs    = await SharedPreferences.getInstance();
-      final today    = DateTime.now();
-      final lockStr  = _adLockoutUntil?.toIso8601String() ?? 'null';
+      final prefs   = await SharedPreferences.getInstance();
+      final today   = DateTime.now();
+      final lockStr = _adLockoutUntil?.toIso8601String() ?? 'null';
       await prefs.setString(_kQuotaKey,
           '${today.toIso8601String().substring(0, 10)}|$_aiUsedToday|$_adsWatchedToday|$lockStr|v1');
     } catch (_) {}
@@ -206,7 +257,7 @@ class _HomeScreenState extends State<HomeScreen>
   // ── Follow state ──────────────────────────────────────────────────────────
   Future<void> _loadPersistedFollowState() async {
     try {
-      final prefs   = await SharedPreferences.getInstance();
+      final prefs    = await SharedPreferences.getInstance();
       final followed = prefs.getStringList(_kFollowedKey) ?? [];
       if (mounted) setState(() { for (final uid in followed) _followState[uid] = true; });
     } catch (_) {}
@@ -214,17 +265,35 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> _persistFollowState() async {
     try {
-      final prefs   = await SharedPreferences.getInstance();
+      final prefs    = await SharedPreferences.getInstance();
       final followed = _followState.entries.where((e) => e.value).map((e) => e.key).toList();
       await prefs.setStringList(_kFollowedKey, followed);
     } catch (_) {}
   }
 
+  // FIX: Two-phase profile load:
+  //  Phase 1 — load from SharedPreferences cache → instant, no flicker
+  //  Phase 2 — fetch from API → update and re-cache
   Future<void> _loadProfile() async {
+    // Phase 1: immediate cached display
     try {
-      final data = await api.getProfile();
-      if (mounted) setState(() =>
-          _profile = (data['profile'] as Map?)?.cast<String, dynamic>() ?? {});
+      final prefs  = await SharedPreferences.getInstance();
+      final cached = prefs.getString(_kProfileCacheKey);
+      if (cached != null && mounted) {
+        setState(() => _profile =
+            Map<String, dynamic>.from(jsonDecode(cached) as Map));
+      }
+    } catch (_) {}
+
+    // Phase 2: fresh API fetch
+    try {
+      final data    = await api.getProfile();
+      final profile = (data['profile'] as Map?)?.cast<String, dynamic>() ?? {};
+      if (mounted && profile.isNotEmpty) {
+        setState(() => _profile = profile);
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_kProfileCacheKey, jsonEncode(profile));
+      }
     } catch (_) {}
   }
 
@@ -263,11 +332,14 @@ class _HomeScreenState extends State<HomeScreen>
               }
             }
           }
+          final prevCount = refresh ? 0 : (_feeds[tab]?.length ?? 0);
           if (refresh) {
             _feeds[tab] = posts;
           } else {
             _feeds[tab] = [..._feeds[tab]!, ...posts];
           }
+          // Only items beyond prevCount are new and need animation.
+          _animatedUpTo[tab] = prevCount;
           _offsets[tab] = _offsets[tab]! + posts.length;
           _loading[tab] = false;
         });
@@ -346,47 +418,59 @@ class _HomeScreenState extends State<HomeScreen>
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => SafeArea(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Container(width: 36, height: 4, margin: const EdgeInsets.only(top: 12, bottom: 4),
+          Container(width: 36, height: 4,
+              margin: const EdgeInsets.only(top: 12, bottom: 4),
               decoration: BoxDecoration(color: Colors.grey.withOpacity(0.3),
                   borderRadius: BorderRadius.circular(2))),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-            child: Text('Share Post', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700,
+            child: Text('Share Post', style: TextStyle(fontSize: 15,
+                fontWeight: FontWeight.w700,
                 color: isDark ? Colors.white : Colors.black87)),
           ),
           ListTile(
             leading: Container(width: 40, height: 40,
-                decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.1),
+                decoration: BoxDecoration(
+                    color: AppColors.primary.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(10)),
-                child: const Icon(Icons.link_rounded, color: AppColors.primary, size: 20)),
-            title: Text('Copy post link', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                child: const Icon(Icons.link_rounded,
+                    color: AppColors.primary, size: 20)),
+            title: Text('Copy post link', style: TextStyle(fontSize: 13,
+                fontWeight: FontWeight.w600,
                 color: isDark ? Colors.white : Colors.black87)),
             subtitle: Text('riseup.app/post/${post.id}',
-                style: TextStyle(fontSize: 11, color: isDark ? Colors.white38 : Colors.black38),
+                style: TextStyle(fontSize: 11,
+                    color: isDark ? Colors.white38 : Colors.black38),
                 maxLines: 1, overflow: TextOverflow.ellipsis),
             onTap: () {
               Navigator.pop(ctx);
-              Clipboard.setData(ClipboardData(text: 'https://riseup.app/post/${post.id}'));
+              Clipboard.setData(
+                  ClipboardData(text: 'https://riseup.app/post/${post.id}'));
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                 content: Text('✅ Post link copied to clipboard'),
-                backgroundColor: AppColors.success, duration: Duration(seconds: 2)));
+                backgroundColor: AppColors.success,
+                duration: Duration(seconds: 2)));
             },
           ),
           ListTile(
             leading: Container(width: 40, height: 40,
                 decoration: BoxDecoration(color: Colors.blue.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(10)),
-                child: const Icon(Icons.copy_rounded, color: Colors.blue, size: 20)),
-            title: Text('Copy post text', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                child: const Icon(Icons.copy_rounded,
+                    color: Colors.blue, size: 20)),
+            title: Text('Copy post text', style: TextStyle(fontSize: 13,
+                fontWeight: FontWeight.w600,
                 color: isDark ? Colors.white : Colors.black87)),
-            subtitle: Text(post.content, style: TextStyle(fontSize: 11,
-                color: isDark ? Colors.white38 : Colors.black38),
+            subtitle: Text(post.content,
+                style: TextStyle(fontSize: 11,
+                    color: isDark ? Colors.white38 : Colors.black38),
                 maxLines: 1, overflow: TextOverflow.ellipsis),
             onTap: () {
               Navigator.pop(ctx);
               Clipboard.setData(ClipboardData(text: post.content));
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                content: Text('✅ Post text copied'), backgroundColor: AppColors.success,
+                content: Text('✅ Post text copied'),
+                backgroundColor: AppColors.success,
                 duration: Duration(seconds: 2)));
             },
           ),
@@ -401,12 +485,9 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  // AI HANDLING — unified quota for both buttons
+  // AI HANDLING
   // ════════════════════════════════════════════════════════════════════════
 
-  /// Entry point for both "Ask RiseUp AI" and "Chat Privately".
-  /// [isPrivate] = true → navigate to private chat (counts quota)
-  /// [isPrivate] = false → post AI reply as a comment on the post
   Future<void> _handleAiRequest(PostModel post, {required bool isPrivate}) async {
     SoundService.tap();
 
@@ -415,7 +496,6 @@ class _HomeScreenState extends State<HomeScreen>
       return;
     }
 
-    // Free usage available
     if (_aiUsedToday < _dailyFreeLimit) {
       setState(() => _aiUsedToday++);
       await _saveAiQuota();
@@ -423,13 +503,8 @@ class _HomeScreenState extends State<HomeScreen>
       return;
     }
 
-    // Over free limit — check lockout
-    if (_isAdLocked) {
-      _showLockoutDialog();
-      return;
-    }
+    if (_isAdLocked) { _showLockoutDialog(); return; }
 
-    // Max ads reached → start lockout
     if (_adsWatchedToday >= _maxAdsPerDay) {
       setState(() => _adLockoutUntil = DateTime.now().add(_adLockoutDuration));
       await _saveAiQuota();
@@ -437,7 +512,6 @@ class _HomeScreenState extends State<HomeScreen>
       return;
     }
 
-    // Show ad gate
     final confirmed = await _showAdPrompt();
     if (!confirmed || !mounted) return;
 
@@ -445,7 +519,7 @@ class _HomeScreenState extends State<HomeScreen>
       featureKey: 'post_ai',
       onRewarded: () async {
         setState(() {
-          _aiUsedToday     = 0;           // reset daily free count after ad
+          _aiUsedToday     = 0;
           _adsWatchedToday = _adsWatchedToday + 1;
         });
         await _saveAiQuota();
@@ -464,14 +538,17 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> _executeAiAction(PostModel post, {required bool isPrivate}) async {
     if (isPrivate) {
-      // Chat Privately — navigate to AI chat with post context
+      // FIX: Navigate to RiseUp AI mentor inside the Messages tab,
+      // pre-loading the post as context so the mentor can discuss it directly.
       context.push(
-        '/chat?mode=general'
+        '/conversation/ai'
+        '?name=${Uri.encodeComponent("RiseUp AI")}'
+        '&avatar=${Uri.encodeComponent("🤖")}'
+        '&isAI=true'
         '&postContext=${Uri.encodeComponent(post.content)}'
         '&postAuthor=${Uri.encodeComponent(post.name)}',
       );
     } else {
-      // Ask RiseUp AI — generate response and post it as a comment
       await _postAIComment(post);
     }
   }
@@ -479,7 +556,6 @@ class _HomeScreenState extends State<HomeScreen>
   Future<void> _postAIComment(PostModel post) async {
     if (!mounted) return;
 
-    // Show in-progress snackbar
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Row(children: const [
         SizedBox(width: 18, height: 18,
@@ -504,10 +580,10 @@ class _HomeScreenState extends State<HomeScreen>
       final aiText = res['content']?.toString().trim() ?? '';
       if (aiText.isEmpty) throw Exception('Empty AI response');
 
-      // Post the AI response as a comment on the post
-      await api.addComment(post.id, '🤖 RiseUp AI: $aiText');
-
-      // Optimistically update comment count
+      // FIX: Pass isAI + isPinned so backend stores it correctly and
+      // comments_screen can separate it from regular comments.
+      await api.addComment(post.id, '🤖 RiseUp AI: $aiText',
+          isAI: true, isPinned: true);
       if (mounted) setState(() => post.comments++);
 
       ScaffoldMessenger.of(context).hideCurrentSnackBar();
@@ -550,19 +626,24 @@ class _HomeScreenState extends State<HomeScreen>
               'Watch a 30-second ad to unlock more, or upgrade to '
               'Premium for unlimited access.\n\n'
               '${_maxAdsPerDay - _adsWatchedToday} ad unlock${_maxAdsPerDay - _adsWatchedToday == 1 ? "" : "s"} remaining today.',
-              style: TextStyle(color: isDark ? Colors.white.withOpacity(0.6) : Colors.black54,
+              style: TextStyle(
+                  color: isDark ? Colors.white.withOpacity(0.6) : Colors.black54,
                   height: 1.5),
             ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context, false),
-                child: const Text('Not now', style: TextStyle(color: AppColors.textMuted)),
+                child: const Text('Not now',
+                    style: TextStyle(color: AppColors.textMuted)),
               ),
               ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10))),
                 onPressed: () => Navigator.pop(context, true),
-                child: const Text('Watch Ad', style: TextStyle(color: Colors.white)),
+                child: const Text('Watch Ad',
+                    style: TextStyle(color: Colors.white)),
               ),
             ],
           ),
@@ -576,7 +657,8 @@ class _HomeScreenState extends State<HomeScreen>
     final diff   = exp != null ? exp.difference(DateTime.now()) : Duration.zero;
     final h      = diff.inHours;
     final m      = (diff.inMinutes % 60).toString().padLeft(2, '0');
-    final timeStr = diff.isNegative ? 'shortly' : (h > 0 ? '${h}h ${m}m' : '${diff.inMinutes}m');
+    final timeStr =
+        diff.isNegative ? 'shortly' : (h > 0 ? '${h}h ${m}m' : '${diff.inMinutes}m');
 
     showDialog(
       context: context,
@@ -587,18 +669,26 @@ class _HomeScreenState extends State<HomeScreen>
         content: Text(
           'You\'ve used all your AI unlocks for today.\n\n'
           'Resets in $timeStr — or upgrade to Premium for unlimited access.',
-          style: TextStyle(color: isDark ? Colors.white60 : Colors.black54, height: 1.5),
+          style: TextStyle(
+              color: isDark ? Colors.white60 : Colors.black54, height: 1.5),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('OK', style: TextStyle(color: AppColors.textMuted)),
+            child: const Text('OK',
+                style: TextStyle(color: AppColors.textMuted)),
           ),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.gold,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
-            onPressed: () { Navigator.pop(context); context.push('/premium'); },
-            child: const Text('Go Premium', style: TextStyle(color: Colors.white)),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.gold,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10))),
+            onPressed: () {
+              Navigator.pop(context);
+              context.push('/premium');
+            },
+            child: const Text('Go Premium',
+                style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
@@ -609,7 +699,8 @@ class _HomeScreenState extends State<HomeScreen>
     final items = user['items'] as List? ?? [];
     if (items.isEmpty) return;
     showModalBottomSheet(
-      context: context, isScrollControlled: true,
+      context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => _StatusViewSheet(user: user),
     );
@@ -637,15 +728,19 @@ class _HomeScreenState extends State<HomeScreen>
         elevation: 0, surfaceTintColor: Colors.transparent, titleSpacing: 0,
         leading: IconButton(
           icon: Icon(Icons.menu_rounded, color: iconColor, size: 24),
-          onPressed: () { HapticFeedback.lightImpact(); _scaffoldKey.currentState?.openDrawer(); },
+          onPressed: () {
+            HapticFeedback.lightImpact();
+            _scaffoldKey.currentState?.openDrawer();
+          },
         ),
         title: ShaderMask(
           shaderCallback: (bounds) => const LinearGradient(
             colors: [Color(0xFFFF6B00), Color(0xFFFFD700), Color(0xFF6C5CE7)],
             stops: [0.0, 0.4, 1.0],
           ).createShader(bounds),
-          child: const Text('RiseUp', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900,
-              color: Colors.white, letterSpacing: -0.5)),
+          child: const Text('RiseUp',
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900,
+                  color: Colors.white, letterSpacing: -0.5)),
         ),
         centerTitle: true,
         actions: [
@@ -658,13 +753,23 @@ class _HomeScreenState extends State<HomeScreen>
                 borderRadius: BorderRadius.circular(20),
               ),
               child: Text('🤖 $_aiRemaining left',
-                  style: const TextStyle(color: AppColors.primary, fontSize: 11,
-                      fontWeight: FontWeight.w600)),
+                  style: const TextStyle(color: AppColors.primary,
+                      fontSize: 11, fontWeight: FontWeight.w600)),
             ),
-          IconButton(icon: Icon(Iconsax.search_normal, color: iconColor, size: 20),
-              onPressed: () { HapticFeedback.lightImpact(); context.go('/explore'); }),
-          IconButton(icon: Icon(Iconsax.notification, color: iconColor, size: 20),
-              onPressed: () { HapticFeedback.lightImpact(); context.go('/notifications'); }),
+          IconButton(
+            icon: Icon(Iconsax.search_normal, color: iconColor, size: 20),
+            onPressed: () {
+              HapticFeedback.lightImpact();
+              context.go('/explore');
+            },
+          ),
+          IconButton(
+            icon: Icon(Iconsax.notification, color: iconColor, size: 20),
+            onPressed: () {
+              HapticFeedback.lightImpact();
+              context.go('/notifications');
+            },
+          ),
           const SizedBox(width: 4),
         ],
         bottom: PreferredSize(
@@ -688,13 +793,16 @@ class _HomeScreenState extends State<HomeScreen>
                     return _StoryAddButton(
                       isDark: isDark,
                       onTap: () => Navigator.push(context,
-                          MaterialPageRoute(builder: (_) => const CreateStatusScreen()))
+                              MaterialPageRoute(
+                                  builder: (_) => const CreateStatusScreen()))
                           .then((_) => _loadStatus()),
                     );
                   }
                   final user = _statusUsers[i - 1] as Map<String, dynamic>;
                   return _StoryItem(
-                      user: user, isDark: isDark, onTap: () => _viewStatus(user));
+                      user: user,
+                      isDark: isDark,
+                      onTap: () => _viewStatus(user));
                 },
               ),
             ),
@@ -712,9 +820,12 @@ class _HomeScreenState extends State<HomeScreen>
               unselectedLabelColor: subColor,
               indicatorColor: AppColors.primary,
               indicatorWeight: 2.5,
-              labelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              labelStyle: const TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.w600),
               tabs: const [
-                Tab(text: 'For You'), Tab(text: 'Following'), Tab(text: 'Trending'),
+                Tab(text: 'For You'),
+                Tab(text: 'Following'),
+                Tab(text: 'Trending'),
               ],
             ),
             Divider(height: 1, color: borderColor),
@@ -728,30 +839,42 @@ class _HomeScreenState extends State<HomeScreen>
             children: _tabs.map((tab) {
               final posts     = _feeds[tab]!;
               final isLoading = _loading[tab] == true;
+              // FIX: Items already rendered before this load cycle don't animate.
+              final alreadyAnimated = _animatedUpTo[tab] ?? 0;
 
               if (isLoading && posts.isEmpty) {
                 return const Center(
-                    child: CircularProgressIndicator(color: AppColors.primary));
+                    child: CircularProgressIndicator(
+                        color: AppColors.primary));
               }
 
               if (posts.isEmpty) {
-                return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                  const Text('📭', style: TextStyle(fontSize: 48)),
-                  const SizedBox(height: 12),
-                  Text('No posts yet', style: TextStyle(color: subColor, fontSize: 14)),
-                  const SizedBox(height: 8),
-                  GestureDetector(
-                    onTap: () => _loadFeed(tab, refresh: true),
-                    child: Text('Refresh', style: TextStyle(
-                        color: AppColors.primary, fontWeight: FontWeight.w600)),
+                return Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Text('📭', style: TextStyle(fontSize: 48)),
+                      const SizedBox(height: 12),
+                      Text('No posts yet',
+                          style: TextStyle(color: subColor, fontSize: 14)),
+                      const SizedBox(height: 8),
+                      GestureDetector(
+                        onTap: () => _loadFeed(tab, refresh: true),
+                        child: Text('Refresh',
+                            style: TextStyle(color: AppColors.primary,
+                                fontWeight: FontWeight.w600)),
+                      ),
+                    ],
                   ),
-                ]));
+                );
               }
 
               return RefreshIndicator(
                 onRefresh: () => _loadFeed(tab, refresh: true),
                 color: AppColors.primary,
                 child: ListView.separated(
+                  // FIX: Pre-render 500px of off-screen items for smooth scroll.
+                  cacheExtent: 500,
                   padding: EdgeInsets.zero,
                   itemCount: adManager.feedItemCount(posts.length) + 1,
                   separatorBuilder: (_, __) =>
@@ -769,15 +892,14 @@ class _HomeScreenState extends State<HomeScreen>
                               : GestureDetector(
                                   onTap: () => _loadFeed(tab),
                                   child: Text('Load more',
-                                      style: TextStyle(color: subColor, fontSize: 13))),
+                                      style: TextStyle(
+                                          color: subColor, fontSize: 13))),
                         ),
                       );
                     }
 
-                    // FIX: feed ad with proper aspect ratio (matches image posts)
                     if (adManager.shouldShowFeedAd(i)) {
                       return AspectRatio(
-                        // Use same ratio as image posts (natural width, standard ad height)
                         aspectRatio: MediaQuery.of(context).size.width /
                             (MediaQuery.of(context).size.width * 0.28 + 48),
                         child: FeedAdCard(
@@ -794,11 +916,18 @@ class _HomeScreenState extends State<HomeScreen>
                     final post      = posts[postIndex];
                     final following = _followState[post.userId] ?? post.isFollowing;
 
-                    return PostCard(
+                    // FIX: Only animate items that are genuinely new in this load.
+                    // Existing items use a plain widget (no animation overhead).
+                    // Delay capped at 20ms per item (was 40ms) → max 400ms for 20 items.
+                    final isNewItem = postIndex >= alreadyAnimated;
+                    final newItemOffset = postIndex - alreadyAnimated;
+
+                    Widget card = PostCard(
                       post: post, isDark: isDark, cardColor: cardColor,
-                      borderColor: borderColor, textColor: textColor, subColor: subColor,
-                      onAskAI:      (p) => _handleAiRequest(p, isPrivate: false),
-                      onPrivateChat:(p) => _handleAiRequest(p, isPrivate: true),
+                      borderColor: borderColor, textColor: textColor,
+                      subColor: subColor,
+                      onAskAI:       (p) => _handleAiRequest(p, isPrivate: false),
+                      onPrivateChat: (p) => _handleAiRequest(p, isPrivate: true),
                       isPremium:    _isPremium,
                       aiRemaining:  _aiRemaining,
                       currentUserId: _profile['id']?.toString() ?? '',
@@ -806,16 +935,23 @@ class _HomeScreenState extends State<HomeScreen>
                       onLike: (p) async {
                         HapticFeedback.mediumImpact();
                         SoundService.like();
-                        setState(() { p.isLiked = !p.isLiked; p.likes += p.isLiked ? 1 : -1; });
+                        setState(() {
+                          p.isLiked = !p.isLiked;
+                          p.likes += p.isLiked ? 1 : -1;
+                        });
                         try {
                           final res = await api.toggleLike(p.id);
                           if (mounted) setState(() => p.isLiked = res['liked'] == true);
                         } catch (_) {
                           if (mounted) {
-                            setState(() { p.isLiked = !p.isLiked; p.likes += p.isLiked ? 1 : -1; });
-                            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                                content: Text('Could not like post. Try again.'),
-                                duration: Duration(seconds: 2)));
+                            setState(() {
+                              p.isLiked = !p.isLiked;
+                              p.likes += p.isLiked ? 1 : -1;
+                            });
+                            ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                    content: Text('Could not like post. Try again.'),
+                                    duration: Duration(seconds: 2)));
                           }
                         }
                       },
@@ -828,10 +964,11 @@ class _HomeScreenState extends State<HomeScreen>
                           if (mounted) {
                             setState(() => p.isSaved = res['saved'] == true);
                             if (res['saved'] == true) {
-                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                                  content: Text('✅ Post saved'),
-                                  backgroundColor: AppColors.success,
-                                  duration: Duration(seconds: 1)));
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                      content: Text('✅ Post saved'),
+                                      backgroundColor: AppColors.success,
+                                      duration: Duration(seconds: 1)));
                             }
                           }
                         } catch (_) {
@@ -848,7 +985,16 @@ class _HomeScreenState extends State<HomeScreen>
                       },
                       onShare:  _handleShare,
                       onFollow: _handleFollow,
-                    ).animate().fadeIn(delay: Duration(milliseconds: i * 40));
+                    );
+
+                    if (isNewItem) {
+                      card = card.animate().fadeIn(
+                        delay: Duration(milliseconds: newItemOffset * 20),
+                        duration: const Duration(milliseconds: 200),
+                      );
+                    }
+
+                    return card;
                   },
                 ),
               );
@@ -891,7 +1037,8 @@ class _PostCardState extends State<PostCard> {
   }
 
   bool get _isOwnPost =>
-      widget.post.userId.isNotEmpty && widget.post.userId == widget.currentUserId;
+      widget.post.userId.isNotEmpty &&
+      widget.post.userId == widget.currentUserId;
 
   @override
   Widget build(BuildContext context) {
@@ -904,18 +1051,20 @@ class _PostCardState extends State<PostCard> {
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
               GestureDetector(
-                // FIX: context.push so back button works on user profile
                 onTap: () => context.push('/user-profile/${p.userId}'),
                 child: Container(
                   width: 44, height: 44,
                   decoration: BoxDecoration(
-                    color: AppColors.primary.withOpacity(0.12), shape: BoxShape.circle),
+                      color: AppColors.primary.withOpacity(0.12),
+                      shape: BoxShape.circle),
                   child: ClipOval(
                     child: p.avatarUrl.isNotEmpty
                         ? Image.network(p.avatarUrl, fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) =>
-                                Center(child: Text(p.avatar, style: const TextStyle(fontSize: 22))))
-                        : Center(child: Text(p.avatar, style: const TextStyle(fontSize: 22))),
+                            errorBuilder: (_, __, ___) => Center(
+                                child: Text(p.avatar,
+                                    style: const TextStyle(fontSize: 22))))
+                        : Center(child: Text(p.avatar,
+                            style: const TextStyle(fontSize: 22))),
                   ),
                 ),
               ),
@@ -923,38 +1072,43 @@ class _PostCardState extends State<PostCard> {
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Row(children: [
                   GestureDetector(
-                    // FIX: context.push so back button works
                     onTap: () => context.push('/user-profile/${p.userId}'),
-                    child: Text(p.name, style: TextStyle(
-                        fontSize: 14, fontWeight: FontWeight.w700, color: widget.textColor)),
+                    child: Text(p.name, style: TextStyle(fontSize: 14,
+                        fontWeight: FontWeight.w700, color: widget.textColor)),
                   ),
                   if (p.verified) ...[
                     const SizedBox(width: 3),
-                    const Icon(Icons.verified_rounded, color: AppColors.primary, size: 14),
+                    const Icon(Icons.verified_rounded,
+                        color: AppColors.primary, size: 14),
                   ],
                   if (p.isPremiumPost) ...[
                     const SizedBox(width: 4),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                      decoration: BoxDecoration(color: AppColors.gold.withOpacity(0.2),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(
+                          color: AppColors.gold.withOpacity(0.2),
                           borderRadius: BorderRadius.circular(4)),
-                      child: const Text('⭐', style: TextStyle(fontSize: 9)),
+                      child: const Text('⭐',
+                          style: TextStyle(fontSize: 9)),
                     ),
                   ],
                 ]),
                 Row(children: [
-                  Text(p.username, style: TextStyle(fontSize: 12, color: widget.subColor)),
-                  Text(' · ${p.time}', style: TextStyle(fontSize: 12, color: widget.subColor)),
+                  Text(p.username, style: TextStyle(
+                      fontSize: 12, color: widget.subColor)),
+                  Text(' · ${p.time}', style: TextStyle(
+                      fontSize: 12, color: widget.subColor)),
                 ]),
               ])),
 
-              // Follow / Following button
               if (p.userId.isNotEmpty && !_isOwnPost) ...[
                 GestureDetector(
                   onTap: () => widget.onFollow(p.userId),
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 200),
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 5),
                     decoration: BoxDecoration(
                       color: widget.isFollowing
                           ? widget.subColor.withOpacity(0.12)
@@ -969,14 +1123,17 @@ class _PostCardState extends State<PostCard> {
                     ),
                     child: Row(mainAxisSize: MainAxisSize.min, children: [
                       if (widget.isFollowing) ...[
-                        Icon(Icons.check_rounded, size: 11, color: widget.subColor.withOpacity(0.8)),
+                        Icon(Icons.check_rounded, size: 11,
+                            color: widget.subColor.withOpacity(0.8)),
                         const SizedBox(width: 3),
                       ],
-                      Text(widget.isFollowing ? 'Following' : 'Follow', style: TextStyle(
-                        fontWeight: FontWeight.w600, fontSize: 11,
-                        color: widget.isFollowing
-                            ? widget.subColor.withOpacity(0.8) : AppColors.primary,
-                      )),
+                      Text(widget.isFollowing ? 'Following' : 'Follow',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 11,
+                            color: widget.isFollowing
+                                ? widget.subColor.withOpacity(0.8)
+                                : AppColors.primary,
+                          )),
                     ]),
                   ),
                 ),
@@ -985,15 +1142,17 @@ class _PostCardState extends State<PostCard> {
 
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.1),
+                decoration: BoxDecoration(
+                    color: AppColors.primary.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(20)),
-                child: Text(p.tag, style: const TextStyle(
-                    fontSize: 10, color: AppColors.primary, fontWeight: FontWeight.w600)),
+                child: Text(p.tag, style: const TextStyle(fontSize: 10,
+                    color: AppColors.primary, fontWeight: FontWeight.w600)),
               ),
               const SizedBox(width: 4),
               GestureDetector(
                 onTap: _showPostOptions,
-                child: Icon(Icons.more_horiz, color: widget.subColor, size: 20),
+                child: Icon(Icons.more_horiz,
+                    color: widget.subColor, size: 20),
               ),
             ]),
 
@@ -1001,20 +1160,24 @@ class _PostCardState extends State<PostCard> {
 
             Text(p.content, style: TextStyle(
               fontSize: 14.5,
-              color: widget.isDark ? const Color(0xFFE8E8F0) : Colors.black87,
+              color: widget.isDark
+                  ? const Color(0xFFE8E8F0) : Colors.black87,
               height: 1.6, letterSpacing: 0.1,
             )),
 
             if (p.mediaUrl != null && p.mediaUrl!.isNotEmpty) ...[
               const SizedBox(height: 10),
-              _PostMedia(url: p.mediaUrl!, mediaType: p.mediaType ?? 'image', isDark: widget.isDark),
+              _PostMedia(url: p.mediaUrl!, mediaType: p.mediaType ?? 'image',
+                  isDark: widget.isDark),
             ],
 
             const SizedBox(height: 14),
 
             Row(children: [
               _ActionBtn(
-                icon: p.isLiked ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                icon: p.isLiked
+                    ? Icons.favorite_rounded
+                    : Icons.favorite_border_rounded,
                 label: _fmt(p.likes),
                 color: p.isLiked ? Colors.red : widget.subColor,
                 onTap: () => widget.onLike(p),
@@ -1028,8 +1191,13 @@ class _PostCardState extends State<PostCard> {
               const Spacer(),
               GestureDetector(
                 onTap: () => widget.onSave(p),
-                child: Icon(p.isSaved ? Iconsax.archive_tick : Iconsax.archive_add,
-                    color: p.isSaved ? AppColors.primary : widget.subColor, size: 20),
+                child: Icon(
+                    p.isSaved
+                        ? Iconsax.archive_tick
+                        : Iconsax.archive_add,
+                    color: p.isSaved
+                        ? AppColors.primary : widget.subColor,
+                    size: 20),
               ),
             ]),
             const SizedBox(height: 12),
@@ -1040,8 +1208,10 @@ class _PostCardState extends State<PostCard> {
         Container(
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
           decoration: BoxDecoration(
-            border: Border(top: BorderSide(color: widget.borderColor, width: 0.8)),
-            color: widget.isDark ? Colors.black.withOpacity(0.3) : Colors.grey.shade50,
+            border: Border(
+                top: BorderSide(color: widget.borderColor, width: 0.8)),
+            color: widget.isDark
+                ? Colors.black.withOpacity(0.3) : Colors.grey.shade50,
           ),
           child: Row(children: [
             Expanded(
@@ -1050,25 +1220,33 @@ class _PostCardState extends State<PostCard> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(vertical: 9),
                   decoration: BoxDecoration(
-                    color: AppColors.primary.withOpacity(widget.isDark ? 0.15 : 0.08),
+                    color: AppColors.primary.withOpacity(
+                        widget.isDark ? 0.15 : 0.08),
                     borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: AppColors.primary.withOpacity(0.25), width: 0.8),
+                    border: Border.all(
+                        color: AppColors.primary.withOpacity(0.25),
+                        width: 0.8),
                   ),
-                  child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
                     Container(
                       width: 18, height: 18,
                       decoration: BoxDecoration(
-                        gradient: const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
+                        gradient: const LinearGradient(
+                            colors: [AppColors.primary, AppColors.accent]),
                         borderRadius: BorderRadius.circular(5),
                       ),
-                      child: const Icon(Icons.auto_awesome, color: Colors.white, size: 10),
+                      child: const Icon(Icons.auto_awesome,
+                          color: Colors.white, size: 10),
                     ),
                     const SizedBox(width: 6),
                     Text(
                       widget.aiRemaining > 0 || widget.isPremium
                           ? 'Ask RiseUp AI'
                           : 'Ask RiseUp AI 📺',
-                      style: const TextStyle(fontSize: 12, color: AppColors.primary,
+                      style: const TextStyle(fontSize: 12,
+                          color: AppColors.primary,
                           fontWeight: FontWeight.w600),
                     ),
                   ]),
@@ -1082,15 +1260,23 @@ class _PostCardState extends State<PostCard> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(vertical: 9),
                   decoration: BoxDecoration(
-                    color: AppColors.accent.withOpacity(widget.isDark ? 0.15 : 0.08),
+                    color: AppColors.accent.withOpacity(
+                        widget.isDark ? 0.15 : 0.08),
                     borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: AppColors.accent.withOpacity(0.25), width: 0.8),
+                    border: Border.all(
+                        color: AppColors.accent.withOpacity(0.25),
+                        width: 0.8),
                   ),
-                  child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                    Icon(Iconsax.lock_1, color: AppColors.accent, size: 14),
+                  child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                    Icon(Iconsax.lock_1,
+                        color: AppColors.accent, size: 14),
                     SizedBox(width: 6),
-                    Text('Chat Privately', style: TextStyle(
-                        fontSize: 12, color: AppColors.accent, fontWeight: FontWeight.w600)),
+                    Text('Chat Privately',
+                        style: TextStyle(fontSize: 12,
+                            color: AppColors.accent,
+                            fontWeight: FontWeight.w600)),
                   ]),
                 ),
               ),
@@ -1108,21 +1294,33 @@ class _PostCardState extends State<PostCard> {
       backgroundColor: widget.isDark ? AppColors.bgCard : Colors.white,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) => SafeArea(child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(width: 36, height: 4, margin: const EdgeInsets.only(top: 12, bottom: 8),
-            decoration: BoxDecoration(color: Colors.grey.withOpacity(0.3),
+      builder: (ctx) =>
+          SafeArea(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Container(width: 36, height: 4,
+            margin: const EdgeInsets.only(top: 12, bottom: 8),
+            decoration: BoxDecoration(
+                color: Colors.grey.withOpacity(0.3),
                 borderRadius: BorderRadius.circular(2))),
-        ListTile(leading: const Icon(Iconsax.flag), title: const Text('Report post'),
+        ListTile(
+            leading: const Icon(Iconsax.flag),
+            title: const Text('Report post'),
             onTap: () => Navigator.pop(ctx)),
-        ListTile(leading: const Icon(Iconsax.copy), title: const Text('Copy text'),
+        ListTile(
+            leading: const Icon(Iconsax.copy),
+            title: const Text('Copy text'),
             onTap: () {
               Clipboard.setData(ClipboardData(text: p.content));
               Navigator.pop(ctx);
               ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('Copied to clipboard')));
             }),
-        ListTile(leading: const Icon(Iconsax.share), title: const Text('Share to...'),
-            onTap: () { Navigator.pop(ctx); widget.onShare(p); }),
+        ListTile(
+            leading: const Icon(Iconsax.share),
+            title: const Text('Share to...'),
+            onTap: () {
+              Navigator.pop(ctx);
+              widget.onShare(p);
+            }),
         const SizedBox(height: 20),
       ])),
     );
@@ -1133,7 +1331,8 @@ class _PostCardState extends State<PostCard> {
 class _PostMedia extends StatelessWidget {
   final String url, mediaType;
   final bool isDark;
-  const _PostMedia({required this.url, required this.mediaType, required this.isDark});
+  const _PostMedia(
+      {required this.url, required this.mediaType, required this.isDark});
 
   @override
   Widget build(BuildContext context) {
@@ -1142,31 +1341,47 @@ class _PostMedia extends StatelessWidget {
       borderRadius: BorderRadius.circular(12),
       child: isVideo
           ? Stack(children: [
-              Container(width: double.infinity, height: 220,
-                  color: isDark ? Colors.grey.shade900 : Colors.grey.shade200,
-                  child: const Icon(Icons.videocam_rounded, size: 48, color: Colors.white54)),
-              Positioned.fill(child: Center(child: Container(
+              Container(
+                  width: double.infinity, height: 220,
+                  color: isDark
+                      ? Colors.grey.shade900 : Colors.grey.shade200,
+                  child: const Icon(Icons.videocam_rounded,
+                      size: 48, color: Colors.white54)),
+              Positioned.fill(
+                  child: Center(
+                      child: Container(
                 width: 56, height: 56,
-                decoration: BoxDecoration(color: Colors.black.withOpacity(0.6),
+                decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.6),
                     shape: BoxShape.circle),
-                child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 36),
+                child: const Icon(Icons.play_arrow_rounded,
+                    color: Colors.white, size: 36),
               ))),
             ])
-          : Image.network(url, width: double.infinity, fit: BoxFit.cover,
+          : Image.network(url,
+              width: double.infinity, fit: BoxFit.cover,
               loadingBuilder: (_, child, progress) {
                 if (progress == null) return child;
-                return Container(width: double.infinity, height: 220,
-                    color: isDark ? Colors.grey.shade900 : Colors.grey.shade200,
-                    child: Center(child: CircularProgressIndicator(
-                        value: progress.expectedTotalBytes != null
-                            ? progress.cumulativeBytesLoaded / progress.expectedTotalBytes!
-                            : null,
-                        color: AppColors.primary, strokeWidth: 2)));
+                return Container(
+                    width: double.infinity, height: 220,
+                    color: isDark
+                        ? Colors.grey.shade900 : Colors.grey.shade200,
+                    child: Center(
+                        child: CircularProgressIndicator(
+                            value: progress.expectedTotalBytes != null
+                                ? progress.cumulativeBytesLoaded /
+                                    progress.expectedTotalBytes!
+                                : null,
+                            color: AppColors.primary,
+                            strokeWidth: 2)));
               },
-              errorBuilder: (_, __, ___) => Container(width: double.infinity, height: 120,
-                  color: isDark ? Colors.grey.shade900 : Colors.grey.shade200,
-                  child: const Center(child: Icon(Icons.broken_image_rounded,
-                      color: Colors.white54, size: 36)))),
+              errorBuilder: (_, __, ___) => Container(
+                  width: double.infinity, height: 120,
+                  color: isDark
+                      ? Colors.grey.shade900 : Colors.grey.shade200,
+                  child: const Center(
+                      child: Icon(Icons.broken_image_rounded,
+                          color: Colors.white54, size: 36)))),
     );
   }
 }
@@ -1177,7 +1392,9 @@ class _ActionBtn extends StatelessWidget {
   final String label;
   final Color color;
   final VoidCallback onTap;
-  const _ActionBtn({required this.icon, required this.label, required this.color, required this.onTap});
+  const _ActionBtn(
+      {required this.icon, required this.label,
+       required this.color, required this.onTap});
 
   @override
   Widget build(BuildContext context) => GestureDetector(
@@ -1185,7 +1402,9 @@ class _ActionBtn extends StatelessWidget {
         child: Row(children: [
           Icon(icon, color: color, size: 20),
           const SizedBox(width: 5),
-          Text(label, style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w500)),
+          Text(label,
+              style: TextStyle(color: color, fontSize: 13,
+                  fontWeight: FontWeight.w500)),
         ]),
       );
 }
@@ -1198,11 +1417,11 @@ class _AppDrawer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bg       = isDark ? Colors.black : Colors.white;
-    final border   = isDark ? AppColors.bgSurface : Colors.grey.shade200;
-    final sub      = isDark ? Colors.white.withOpacity(0.54) : Colors.black45;
-    final name     = profile['full_name']?.toString() ?? 'User';
-    final stage    = profile['stage']?.toString() ?? 'survival';
+    final bg        = isDark ? Colors.black : Colors.white;
+    final border    = isDark ? AppColors.bgSurface : Colors.grey.shade200;
+    final sub       = isDark ? Colors.white.withOpacity(0.54) : Colors.black45;
+    final name      = profile['full_name']?.toString() ?? 'User';
+    final stage     = profile['stage']?.toString() ?? 'survival';
     final stageInfo = StageInfo.get(stage);
     final isPremium = profile['subscription_tier'] == 'premium';
     final avatarUrl = profile['avatar_url']?.toString() ?? '';
@@ -1216,56 +1435,82 @@ class _AppDrawer extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
             child: Row(children: [
               GestureDetector(
-                onTap: () { Navigator.pop(context); context.go('/profile'); },
+                onTap: () {
+                  Navigator.pop(context);
+                  context.go('/profile');
+                },
                 child: Container(
                   width: 48, height: 48,
-                  decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.12),
+                  decoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(0.12),
                       shape: BoxShape.circle),
-                  child: ClipOval(child: avatarUrl.isNotEmpty
-                      ? Image.network(avatarUrl, fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => Center(child: Text(
-                              name.isNotEmpty ? name[0].toUpperCase() : 'U',
-                              style: const TextStyle(color: AppColors.primary, fontSize: 20,
-                                  fontWeight: FontWeight.w800))))
-                      : Center(child: Text(name.isNotEmpty ? name[0].toUpperCase() : 'U',
-                          style: const TextStyle(color: AppColors.primary, fontSize: 20,
-                              fontWeight: FontWeight.w800)))),
+                  child: ClipOval(
+                      child: avatarUrl.isNotEmpty
+                          ? Image.network(avatarUrl, fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => Center(
+                                  child: Text(
+                                      name.isNotEmpty
+                                          ? name[0].toUpperCase() : 'U',
+                                      style: const TextStyle(
+                                          color: AppColors.primary,
+                                          fontSize: 20,
+                                          fontWeight: FontWeight.w800))))
+                          : Center(
+                              child: Text(
+                                  name.isNotEmpty ? name[0].toUpperCase() : 'U',
+                                  style: const TextStyle(
+                                      color: AppColors.primary,
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.w800)))),
                 ),
               ),
               const SizedBox(width: 12),
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(name, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700,
-                    color: isDark ? Colors.white : Colors.black87),
+              Expanded(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                Text(name,
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700,
+                        color: isDark ? Colors.white : Colors.black87),
                     maxLines: 1, overflow: TextOverflow.ellipsis),
                 const SizedBox(height: 3),
                 Row(children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 7, vertical: 2),
                     decoration: BoxDecoration(
                         color: (stageInfo['color'] as Color).withOpacity(0.15),
                         borderRadius: BorderRadius.circular(8)),
-                    child: Text('${stageInfo['emoji']} ${stageInfo['label']}', style: TextStyle(
-                        fontSize: 10, color: stageInfo['color'] as Color, fontWeight: FontWeight.w600)),
+                    child: Text(
+                        '${stageInfo['emoji']} ${stageInfo['label']}',
+                        style: TextStyle(fontSize: 10,
+                            color: stageInfo['color'] as Color,
+                            fontWeight: FontWeight.w600)),
                   ),
                   if (isPremium) ...[
                     const SizedBox(width: 6),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                      decoration: BoxDecoration(color: AppColors.gold.withOpacity(0.15),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 7, vertical: 2),
+                      decoration: BoxDecoration(
+                          color: AppColors.gold.withOpacity(0.15),
                           borderRadius: BorderRadius.circular(8)),
-                      child: const Text('⭐ Pro', style: TextStyle(fontSize: 10,
-                          color: AppColors.gold, fontWeight: FontWeight.w600)),
+                      child: const Text('⭐ Pro',
+                          style: TextStyle(fontSize: 10,
+                              color: AppColors.gold,
+                              fontWeight: FontWeight.w600)),
                     ),
                   ],
                 ]),
               ])),
-              IconButton(icon: Icon(Icons.close_rounded, color: sub, size: 20),
+              IconButton(
+                  icon: Icon(Icons.close_rounded, color: sub, size: 20),
                   onPressed: () => Navigator.of(context).pop()),
             ]),
           ),
           Divider(color: border, height: 1),
-
-          Expanded(child: ListView(padding: const EdgeInsets.symmetric(vertical: 4), children: [
+          Expanded(child: ListView(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              children: [
             _DSection('INCOME TOOLS', sub),
             _DItem(Iconsax.chart, 'Dashboard', 'Earnings, stats & tasks', isDark,
                 onTap: () { Navigator.pop(context); context.go('/dashboard'); }),
@@ -1329,23 +1574,33 @@ class _AppDrawer extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.all(14),
               child: GestureDetector(
-                onTap: () { Navigator.pop(context); context.push('/premium'); },
+                onTap: () {
+                  Navigator.pop(context);
+                  context.push('/premium');
+                },
                 child: Container(
                   padding: const EdgeInsets.all(13),
                   decoration: BoxDecoration(
                     color: AppColors.primary.withOpacity(isDark ? 0.12 : 0.07),
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: AppColors.primary.withOpacity(0.25)),
+                    border: Border.all(
+                        color: AppColors.primary.withOpacity(0.25)),
                   ),
                   child: Row(children: [
                     const Text('⭐', style: TextStyle(fontSize: 18)),
                     const SizedBox(width: 10),
-                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      const Text('Upgrade to Premium', style: TextStyle(fontSize: 13,
-                          fontWeight: FontWeight.w700, color: AppColors.primary)),
-                      Text('Unlimited AI + all features', style: TextStyle(fontSize: 11, color: sub)),
+                    Expanded(child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                      const Text('Upgrade to Premium',
+                          style: TextStyle(fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.primary)),
+                      Text('Unlimited AI + all features',
+                          style: TextStyle(fontSize: 11, color: sub)),
                     ])),
-                    const Icon(Icons.arrow_forward_ios_rounded, size: 13, color: AppColors.primary),
+                    const Icon(Icons.arrow_forward_ios_rounded,
+                        size: 13, color: AppColors.primary),
                   ]),
                 ),
               ),
@@ -1357,18 +1612,24 @@ class _AppDrawer extends StatelessWidget {
 }
 
 class _DSection extends StatelessWidget {
-  final String label; final Color color;
+  final String label;
+  final Color color;
   const _DSection(this.label, this.color);
   @override
   Widget build(BuildContext context) => Padding(
       padding: const EdgeInsets.fromLTRB(18, 12, 18, 4),
-      child: Text(label, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
-          color: color, letterSpacing: 1.1)));
+      child: Text(label,
+          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+              color: color, letterSpacing: 1.1)));
 }
 
 class _DItem extends StatelessWidget {
-  final IconData icon; final String label, sub; final bool isDark;
-  final VoidCallback onTap; final String? badge; final Color? badgeColor;
+  final IconData icon;
+  final String label, sub;
+  final bool isDark;
+  final VoidCallback onTap;
+  final String? badge;
+  final Color? badgeColor;
   const _DItem(this.icon, this.label, this.sub, this.isDark,
       {required this.onTap, this.badge, this.badgeColor});
 
@@ -1376,66 +1637,93 @@ class _DItem extends StatelessWidget {
   Widget build(BuildContext context) {
     final textC = isDark ? Colors.white : Colors.black87;
     final subC  = isDark ? Colors.white.withOpacity(0.54) : Colors.black45;
-    return Material(color: Colors.transparent, child: InkWell(
-      onTap: () { HapticFeedback.lightImpact(); onTap(); },
-      child: Padding(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-        child: Row(children: [
-          Container(width: 36, height: 36,
-              decoration: BoxDecoration(color: isDark ? AppColors.bgSurface : Colors.grey.shade100,
-                  borderRadius: BorderRadius.circular(9)),
-              child: Icon(icon, size: 17, color: isDark ? Colors.white.withOpacity(0.7) : Colors.black54)),
-          const SizedBox(width: 13),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: textC)),
-              if (badge != null) ...[
-                const SizedBox(width: 6),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                  decoration: BoxDecoration(
-                      color: (badgeColor ?? AppColors.primary).withOpacity(0.15),
-                      borderRadius: BorderRadius.circular(5)),
-                  child: Text(badge!, style: TextStyle(fontSize: 9,
-                      color: badgeColor ?? AppColors.primary, fontWeight: FontWeight.w700)),
-                ),
-              ],
-            ]),
-            Text(sub, style: TextStyle(fontSize: 11, color: subC)),
-          ])),
-          Icon(Icons.chevron_right_rounded, size: 15,
-              color: isDark ? Colors.white.withOpacity(0.24) : Colors.black.withOpacity(0.26)),
-        ]),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () { HapticFeedback.lightImpact(); onTap(); },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+          child: Row(children: [
+            Container(width: 36, height: 36,
+                decoration: BoxDecoration(
+                    color: isDark
+                        ? AppColors.bgSurface : Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(9)),
+                child: Icon(icon, size: 17,
+                    color: isDark
+                        ? Colors.white.withOpacity(0.7) : Colors.black54)),
+            const SizedBox(width: 13),
+            Expanded(child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+              Row(children: [
+                Text(label, style: TextStyle(fontSize: 13,
+                    fontWeight: FontWeight.w600, color: textC)),
+                if (badge != null) ...[
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 5, vertical: 2),
+                    decoration: BoxDecoration(
+                        color: (badgeColor ?? AppColors.primary)
+                            .withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(5)),
+                    child: Text(badge!,
+                        style: TextStyle(fontSize: 9,
+                            color: badgeColor ?? AppColors.primary,
+                            fontWeight: FontWeight.w700)),
+                  ),
+                ],
+              ]),
+              Text(sub, style: TextStyle(fontSize: 11, color: subC)),
+            ])),
+            Icon(Icons.chevron_right_rounded, size: 15,
+                color: isDark
+                    ? Colors.white.withOpacity(0.24)
+                    : Colors.black.withOpacity(0.26)),
+          ]),
+        ),
       ),
-    ));
+    );
   }
 }
 
 // ── Story Add Button ───────────────────────────────────────────────────────
 class _StoryAddButton extends StatelessWidget {
-  final bool isDark; final VoidCallback onTap;
+  final bool isDark;
+  final VoidCallback onTap;
   const _StoryAddButton({required this.isDark, required this.onTap});
 
   @override
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.only(right: 14),
-    child: GestureDetector(onTap: onTap, child: Column(children: [
-      Container(width: 58, height: 58,
-          decoration: BoxDecoration(shape: BoxShape.circle,
-              color: isDark ? AppColors.bgSurface : Colors.grey.shade200,
-              border: Border.all(color: AppColors.primary.withOpacity(0.4), width: 1.5)),
-          child: const Center(child: Icon(Icons.add, color: AppColors.primary, size: 24))),
-      const SizedBox(height: 5),
-      Text('You', style: TextStyle(fontSize: 11,
-          color: isDark ? Colors.white.withOpacity(0.6) : Colors.black54,
-          fontWeight: FontWeight.w600)),
-    ])),
+    child: GestureDetector(
+      onTap: onTap,
+      child: Column(children: [
+        Container(width: 58, height: 58,
+            decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: isDark ? AppColors.bgSurface : Colors.grey.shade200,
+                border: Border.all(
+                    color: AppColors.primary.withOpacity(0.4), width: 1.5)),
+            child: const Center(
+                child: Icon(Icons.add, color: AppColors.primary, size: 24))),
+        const SizedBox(height: 5),
+        Text('You', style: TextStyle(fontSize: 11,
+            color: isDark ? Colors.white.withOpacity(0.6) : Colors.black54,
+            fontWeight: FontWeight.w600)),
+      ]),
+    ),
   );
 }
 
 // ── Story Item ─────────────────────────────────────────────────────────────
 class _StoryItem extends StatelessWidget {
-  final Map<String, dynamic> user; final bool isDark; final VoidCallback onTap;
-  const _StoryItem({required this.user, required this.isDark, required this.onTap});
+  final Map<String, dynamic> user;
+  final bool isDark;
+  final VoidCallback onTap;
+  const _StoryItem(
+      {required this.user, required this.isDark, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -1446,34 +1734,55 @@ class _StoryItem extends StatelessWidget {
     final hasUnseen = user['has_unseen'] == true;
     final shortName = name.split(' ').first;
 
-    return Padding(padding: const EdgeInsets.only(right: 14),
-      child: GestureDetector(onTap: onTap, child: Column(children: [
-        Stack(children: [
-          Container(width: 58, height: 58,
-            decoration: BoxDecoration(shape: BoxShape.circle,
-              gradient: hasUnseen ? const LinearGradient(
-                  colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)],
-                  begin: Alignment.topLeft, end: Alignment.bottomRight) : null,
-              color: hasUnseen ? null : (isDark ? AppColors.bgSurface : Colors.grey.shade300)),
-            child: Padding(padding: const EdgeInsets.all(2.5),
-              child: Container(decoration: BoxDecoration(shape: BoxShape.circle,
-                  color: isDark ? Colors.black : Colors.white),
-                child: ClipOval(child: avatar != null && avatar.isNotEmpty
-                    ? Image.network(avatar, fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => _initials(name))
-                    : _initials(name))))),
-          if (isOnline)
-            Positioned(bottom: 1, right: 1, child: Container(width: 13, height: 13,
-                decoration: BoxDecoration(color: AppColors.success, shape: BoxShape.circle,
-                    border: Border.all(color: isDark ? Colors.black : Colors.white, width: 2)))),
+    return Padding(
+      padding: const EdgeInsets.only(right: 14),
+      child: GestureDetector(
+        onTap: onTap,
+        child: Column(children: [
+          Stack(children: [
+            Container(width: 58, height: 58,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: hasUnseen
+                    ? const LinearGradient(
+                        colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight)
+                    : null,
+                color: hasUnseen
+                    ? null
+                    : (isDark ? AppColors.bgSurface : Colors.grey.shade300)),
+              child: Padding(
+                padding: const EdgeInsets.all(2.5),
+                child: Container(
+                  decoration: BoxDecoration(shape: BoxShape.circle,
+                      color: isDark ? Colors.black : Colors.white),
+                  child: ClipOval(
+                      child: avatar != null && avatar.isNotEmpty
+                          ? Image.network(avatar, fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => _initials(name))
+                          : _initials(name))))),
+            if (isOnline)
+              Positioned(bottom: 1, right: 1,
+                  child: Container(width: 13, height: 13,
+                      decoration: BoxDecoration(
+                          color: AppColors.success,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                              color: isDark ? Colors.black : Colors.white,
+                              width: 2)))),
+          ]),
+          const SizedBox(height: 5),
+          SizedBox(width: 62,
+            child: Text(shortName,
+                textAlign: TextAlign.center, maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 11,
+                    color: isDark
+                        ? Colors.white.withOpacity(0.6)
+                        : Colors.black54))),
         ]),
-        const SizedBox(height: 5),
-        SizedBox(width: 62,
-          child: Text(shortName, textAlign: TextAlign.center, maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 11,
-                  color: isDark ? Colors.white.withOpacity(0.6) : Colors.black54))),
-      ])),
+      ),
     );
   }
 
@@ -1499,7 +1808,8 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
   void initState() { super.initState(); _markViewed(); }
 
   void _markViewed() {
-    final items = (widget.user['items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    final items =
+        (widget.user['items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
     if (items.isEmpty) return;
     final id = items[_currentIndex]['id']?.toString();
     if (id == null) return;
@@ -1510,7 +1820,9 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
     final items = widget.user['items'] as List? ?? [];
     if (_currentIndex < items.length - 1) {
       setState(() { _currentIndex++; _markViewed(); });
-    } else { Navigator.pop(context); }
+    } else {
+      Navigator.pop(context);
+    }
   }
 
   void _prev() {
@@ -1519,8 +1831,10 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final items   = (widget.user['items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
-    final profile = (widget.user['profile'] as Map?)?.cast<String, dynamic>() ?? {};
+    final items   =
+        (widget.user['items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    final profile =
+        (widget.user['profile'] as Map?)?.cast<String, dynamic>() ?? {};
     if (items.isEmpty) return const SizedBox.shrink();
 
     final name   = profile['full_name']?.toString() ?? 'User';
@@ -1532,30 +1846,45 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
     final link   = item['link_url']?.toString();
 
     Color bgColor = AppColors.primary;
-    try { bgColor = Color(int.parse(bg.replaceFirst('#', '0xFF'))); } catch (_) {}
+    try {
+      bgColor = Color(int.parse(bg.replaceFirst('#', '0xFF')));
+    } catch (_) {}
 
     return Container(
       height: MediaQuery.of(context).size.height * 0.85,
-      decoration: BoxDecoration(color: media != null ? Colors.black : bgColor,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(20))),
+      decoration: BoxDecoration(
+          color: media != null ? Colors.black : bgColor,
+          borderRadius:
+              const BorderRadius.vertical(top: Radius.circular(20))),
       child: Stack(children: [
         if (media != null && item['media_type'] == 'image')
-          Positioned.fill(child: ClipRRect(
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-              child: Image.network(media, fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => const Center(
-                      child: Icon(Icons.broken_image, color: Colors.white54, size: 48)))))
+          Positioned.fill(
+              child: ClipRRect(
+                  borderRadius:
+                      const BorderRadius.vertical(top: Radius.circular(20)),
+                  child: Image.network(media, fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => const Center(
+                          child: Icon(Icons.broken_image,
+                              color: Colors.white54, size: 48)))))
         else if (media == null && text.isNotEmpty)
-          Positioned.fill(child: Center(child: Padding(padding: const EdgeInsets.all(32),
-              child: Text(text, textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white, fontSize: 22,
-                      fontWeight: FontWeight.w600, height: 1.5))))),
+          Positioned.fill(
+              child: Center(
+                  child: Padding(
+                      padding: const EdgeInsets.all(32),
+                      child: Text(text,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Colors.white,
+                              fontSize: 22, fontWeight: FontWeight.w600,
+                              height: 1.5))))),
 
         Positioned(top: 12, left: 12, right: 12,
           child: Row(children: List.generate(items.length, (i) => Expanded(
-            child: Container(height: 3, margin: const EdgeInsets.symmetric(horizontal: 2),
+            child: Container(height: 3,
+                margin: const EdgeInsets.symmetric(horizontal: 2),
                 decoration: BoxDecoration(
-                    color: i <= _currentIndex ? Colors.white : Colors.white.withOpacity(0.3),
+                    color: i <= _currentIndex
+                        ? Colors.white
+                        : Colors.white.withOpacity(0.3),
                     borderRadius: BorderRadius.circular(2))))))),
 
         Positioned(top: 24, left: 16, right: 16,
@@ -1563,35 +1892,48 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
             Container(width: 36, height: 36,
                 decoration: BoxDecoration(shape: BoxShape.circle,
                     color: Colors.white.withOpacity(0.24)),
-                child: ClipOval(child: avatar != null && avatar.isNotEmpty
-                    ? Image.network(avatar, fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => Center(child: Text(
+                child: ClipOval(
+                    child: avatar != null && avatar.isNotEmpty
+                        ? Image.network(avatar, fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => Center(
+                                child: Text(
+                                    name.isNotEmpty
+                                        ? name[0].toUpperCase() : '?',
+                                    style: const TextStyle(color: Colors.white,
+                                        fontWeight: FontWeight.w800))))
+                        : Center(child: Text(
                             name.isNotEmpty ? name[0].toUpperCase() : '?',
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800))))
-                    : Center(child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800))))),
+                            style: const TextStyle(color: Colors.white,
+                                fontWeight: FontWeight.w800))))),
             const SizedBox(width: 8),
             Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(name, style: const TextStyle(color: Colors.white,
                   fontWeight: FontWeight.w700, fontSize: 13)),
               Text(items.length == 1 ? '1 status' : '${items.length} statuses',
-                  style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 11)),
+                  style: TextStyle(color: Colors.white.withOpacity(0.6),
+                      fontSize: 11)),
             ]),
             const Spacer(),
-            IconButton(icon: const Icon(Icons.close_rounded, color: Colors.white),
+            IconButton(
+                icon: const Icon(Icons.close_rounded, color: Colors.white),
                 onPressed: () => Navigator.pop(context)),
           ])),
 
         if (link != null)
           Positioned(bottom: 80, left: 16, right: 16,
-            child: Container(padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(color: Colors.black.withOpacity(0.6),
+            child: Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.6),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.white.withOpacity(0.3))),
+                  border: Border.all(
+                      color: Colors.white.withOpacity(0.3))),
               child: Row(children: [
-                const Icon(Icons.link_rounded, color: Colors.white, size: 18),
+                const Icon(Icons.link_rounded,
+                    color: Colors.white, size: 18),
                 const SizedBox(width: 8),
-                Expanded(child: Text(item['link_title']?.toString() ?? link,
+                Expanded(child: Text(
+                    item['link_title']?.toString() ?? link,
                     style: const TextStyle(color: Colors.white, fontSize: 13),
                     maxLines: 2, overflow: TextOverflow.ellipsis)),
               ]))),
