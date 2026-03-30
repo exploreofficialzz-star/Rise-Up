@@ -1,14 +1,15 @@
 """
-routers/messages.py  — RiseUp Messaging System (Production v2)
-Handles:
-  • Direct messages between users
-  • AI mentor messages inside DM conversations
-  • User search for new DMs
-  • AI message quota enforcement (free: 3/4-hr window, 5 unlocks/day)
+routers/messages.py  — RiseUp Messaging System (Production v3)
 
 Fix log:
   v2.1 — get_conversations: replaced unreliable PostgREST filter-on-joined-table
           with a safe 2-step query (member IDs → conversations)
+  v3.0 — get_or_create_conversation: REMOVED broken rpc("get_conversation_between")
+          call — that PostgreSQL function does not exist in the DB, causing 500.
+          Replaced with a pure 3-step Python/PostgREST query:
+            1. get all conversation_ids for current user
+            2. intersect with other user's conversation_ids
+            3. filter by type='direct' → return first match or create new
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -23,8 +24,8 @@ from utils.auth import get_current_user
 router = APIRouter(prefix="/messages", tags=["Messages"])
 
 # ── Freemium constants ────────────────────────────────────────────────
-FREE_MSGS_PER_WINDOW  = 3
-WINDOW_HOURS          = 4
+FREE_MSGS_PER_WINDOW   = 3
+WINDOW_HOURS           = 4
 MAX_AD_UNLOCKS_PER_DAY = 5
 # ─────────────────────────────────────────────────────────────────────
 
@@ -40,7 +41,7 @@ class AiMessageRequest(BaseModel):
     ad_unlocked: bool = False
 
 
-# ── DB helper (always fresh client, never captured at import time) ────
+# ── DB helper ────────────────────────────────────────────────────────
 def _db():
     return supabase_service.db
 
@@ -55,8 +56,7 @@ async def get_conversations(user: dict = Depends(get_current_user)):
     try:
         db = _db()
 
-        # ── Step 1: get conversation IDs this user belongs to ────────
-        # Avoids unreliable PostgREST filter-on-joined-table syntax
+        # Step 1: get conversation IDs this user belongs to
         member_res = (
             db.table("conversation_members")
             .select("conversation_id")
@@ -69,7 +69,7 @@ async def get_conversations(user: dict = Depends(get_current_user)):
 
         conv_ids = [r["conversation_id"] for r in member_rows]
 
-        # ── Step 2: fetch conversations + all their members ──────────
+        # Step 2: fetch conversations + all their members
         convos_res = (
             db.table("conversations")
             .select(
@@ -82,13 +82,12 @@ async def get_conversations(user: dict = Depends(get_current_user)):
         )
         convos = convos_res.data or []
 
-        # ── Step 3: fetch last message + unread count per conversation ─
+        # Step 3: enrich with last message + unread count
         enriched = []
         for c in convos:
             members = c.get("conversation_members") or []
             other   = next((m for m in members if m["user_id"] != user["id"]), None)
 
-            # Last message
             msgs_res = (
                 db.table("messages")
                 .select("content, created_at, is_read, sender_id")
@@ -99,7 +98,6 @@ async def get_conversations(user: dict = Depends(get_current_user)):
             )
             last_msg = (msgs_res.data or [None])[0]
 
-            # Unread count
             unread_res = (
                 db.table("messages")
                 .select("id", count="exact")
@@ -111,8 +109,9 @@ async def get_conversations(user: dict = Depends(get_current_user)):
             unread = unread_res.count or 0
 
             enriched.append({
-                "id":         c["id"],
-                "other_user": other["profiles"] if other else None,
+                "id":           c["id"],
+                "conversation_id": c["id"],   # duplicate key for frontend compatibility
+                "other_user":   other["profiles"] if other else None,
                 "last_message": last_msg,
                 "unread_count": unread,
                 "updated_at":   c["updated_at"],
@@ -123,36 +122,77 @@ async def get_conversations(user: dict = Depends(get_current_user)):
         raise HTTPException(500, str(e))
 
 
-# ── Get or create a conversation with another user ───────────────────
+# ── Get or create a DM conversation ─────────────────────────────────
 @router.post("/conversations/with/{other_user_id}")
 async def get_or_create_conversation(
     other_user_id: str,
     user: dict = Depends(get_current_user),
 ):
+    """
+    FIX v3: removed rpc("get_conversation_between") — that function doesn't
+    exist in the DB.  Replaced with a safe 3-step query.
+    """
     try:
         db = _db()
-        existing = (
-            db.rpc("get_conversation_between", {
-                "user1": user["id"], "user2": other_user_id
-            })
-            .execute()
-            .data
-        )
-        if existing:
-            return {"conversation_id": existing[0]["id"]}
 
-        convo = db.table("conversations").insert({
-            "type": "direct", "created_by": user["id"],
-        }).execute().data[0]
+        # ── Step 1: all conversations current user is in ──────────────
+        my_res = (
+            db.table("conversation_members")
+            .select("conversation_id")
+            .eq("user_id", user["id"])
+            .execute()
+        )
+        my_ids = [r["conversation_id"] for r in (my_res.data or [])]
+
+        if my_ids:
+            # ── Step 2: intersect with other user's conversations ─────
+            their_res = (
+                db.table("conversation_members")
+                .select("conversation_id")
+                .eq("user_id", other_user_id)
+                .in_("conversation_id", my_ids)
+                .execute()
+            )
+            shared_ids = [r["conversation_id"] for r in (their_res.data or [])]
+
+            if shared_ids:
+                # ── Step 3: find a direct-type conversation ───────────
+                existing_res = (
+                    db.table("conversations")
+                    .select("id")
+                    .in_("id", shared_ids)
+                    .eq("type", "direct")
+                    .limit(1)
+                    .execute()
+                )
+                if existing_res.data:
+                    return {"conversation_id": existing_res.data[0]["id"]}
+
+        # ── Create new direct conversation ────────────────────────────
+        convo_res = db.table("conversations").insert({
+            "type":       "direct",
+            "created_by": user["id"],
+        }).execute()
+
+        if not convo_res.data:
+            raise HTTPException(500, "Failed to create conversation")
+
+        convo_id = convo_res.data[0]["id"]
 
         db.table("conversation_members").insert([
-            {"conversation_id": convo["id"], "user_id": user["id"]},
-            {"conversation_id": convo["id"], "user_id": other_user_id},
+            {"conversation_id": convo_id, "user_id": user["id"]},
+            {"conversation_id": convo_id, "user_id": other_user_id},
         ]).execute()
 
-        return {"conversation_id": convo["id"]}
+        return {"conversation_id": convo_id}
+
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        logger_msg = f"get_or_create_conversation error [{user['id']} → {other_user_id}]: {e}"
+        import logging
+        logging.getLogger(__name__).error(logger_msg)
+        raise HTTPException(500, f"Could not open conversation: {str(e)}")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -182,6 +222,7 @@ async def get_messages(
 
         msgs = q.execute().data or []
 
+        # Mark received messages as read
         db.table("messages") \
             .update({"is_read": True}) \
             .eq("conversation_id", conversation_id) \
@@ -219,6 +260,7 @@ async def send_message(
         msg = db.table("messages").insert(data).execute().data[0]
         db.table("conversations").update({"updated_at": "now()"}).eq("id", conversation_id).execute()
 
+        # Notify other members
         members = (
             db.table("conversation_members")
             .select("user_id")
@@ -363,10 +405,10 @@ async def send_ai_message(
             "content":    ai_content,
             "model":      result.get("model", "ai"),
             "quota": {
-                "free_used":       quota.get("free_used", 0),
-                "free_remaining":  max(0, FREE_MSGS_PER_WINDOW - quota.get("free_used", 0)),
-                "window_expires":  quota.get("window_expires"),
-                "is_premium":      is_premium,
+                "free_used":      quota.get("free_used", 0),
+                "free_remaining": max(0, FREE_MSGS_PER_WINDOW - quota.get("free_used", 0)),
+                "window_expires": quota.get("window_expires"),
+                "is_premium":     is_premium,
             },
         }
     except HTTPException:
@@ -408,13 +450,13 @@ async def search_users(
 
 @router.get("/ai-quota")
 async def get_ai_quota(user: dict = Depends(get_current_user)):
-    db        = _db()
-    quota     = _get_or_create_quota(db, user["id"])
-    is_premium= _is_premium(db, user["id"])
-    now       = datetime.now(timezone.utc)
-    ads_today = _get_ads_today(quota, now)
-    window_exp= quota.get("window_expires")
-    in_window = False
+    db         = _db()
+    quota      = _get_or_create_quota(db, user["id"])
+    is_premium = _is_premium(db, user["id"])
+    now        = datetime.now(timezone.utc)
+    ads_today  = _get_ads_today(quota, now)
+    window_exp = quota.get("window_expires")
+    in_window  = False
     if window_exp:
         exp_dt    = datetime.fromisoformat(window_exp)
         in_window = exp_dt > now
@@ -433,7 +475,7 @@ async def get_ai_quota(user: dict = Depends(get_current_user)):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# PRIVATE HELPERS — all accept db as first arg (no module-level capture)
+# PRIVATE HELPERS
 # ═══════════════════════════════════════════════════════════════════════
 
 def _assert_member(db, conversation_id: str, user_id: str):
