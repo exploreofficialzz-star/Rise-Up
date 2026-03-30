@@ -1,5 +1,6 @@
 // frontend/lib/screens/messages/conversation_screen.dart
-// Production v2 — real message history, live DM, AI freemium gate, ad flow
+// Production — fixed back nav (works via context.push from messages_screen),
+// AI quota for DM AI, typing animation, DM polling, ad lockout.
 
 import 'dart:async';
 import 'dart:convert';
@@ -18,10 +19,10 @@ import '../../utils/storage_service.dart';
 // ────────────────────────────────────────────────────────────────────
 // Freemium constants (mirror backend)
 // ────────────────────────────────────────────────────────────────────
-const int    _kFreeMessages  = 3;
-const int    _kMaxAdsPerDay  = 5;
-const Duration _kWindowDur   = Duration(hours: 4);
-const String _kQuotaKey      = 'ai_chat_quota_v2';
+const int      _kFreeMessages  = 3;
+const int      _kMaxAdsPerDay  = 5;
+const Duration _kWindowDur     = Duration(hours: 4);
+const String   _kQuotaKey      = 'ai_chat_quota_v2';
 
 // ────────────────────────────────────────────────────────────────────
 // Message model
@@ -30,8 +31,8 @@ class _Msg {
   final String  id, content, sender, avatar;
   final bool    isMe, isAI;
   final DateTime time;
-  String  displayText;
-  bool    isTyping;
+  String displayText;
+  bool   isTyping;
 
   _Msg({
     String? id,
@@ -51,9 +52,7 @@ class _Msg {
 // Widget
 // ────────────────────────────────────────────────────────────────────
 class ConversationScreen extends StatefulWidget {
-  /// Route param name kept as `userId` for backward-compat with router.dart.
-  /// For DMs this holds the conversation UUID; for AI it is "ai".
-  final String userId;
+  final String userId;   // conversation UUID or "ai"
   final String name;
   final String avatar;
   final bool   isAI;
@@ -80,17 +79,17 @@ class _ConversationScreenState extends State<ConversationScreen> {
   bool   _historyLoaded = false;
   bool   _aiResponding  = false;
   bool   _dmSending     = false;
-  bool   _aiJoined      = false;      // AI invited into a peer DM
-  String? _aiConvId;                  // AI conversation UUID from /ai/chat
+  bool   _aiJoined      = false;
+  String? _aiConvId;
 
   // ── Typing animation
   Timer? _typingTimer;
 
   // ── Polling (peer DMs only)
-  Timer?   _pollTimer;
-  String?  _lastPollTime;
+  Timer?  _pollTimer;
+  String? _lastPollTime;
 
-  // ── Freemium quota (local cache, synced with backend)
+  // ── Freemium quota
   Map<String, dynamic> _quota = {
     'free_used':      0,
     'window_expires': null,
@@ -99,7 +98,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
     'is_premium':     false,
   };
 
-  // ── Countdown for daily-limit sheet
   Timer?  _countdownTimer;
   String  _countdown = '';
 
@@ -128,7 +126,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // ────────────────────────────────────────────────────────────────
   Future<void> _loadQuota() async {
     try {
-      // Try backend first for authoritative state
       final remote = await api.getAIQuota();
       _quota = {
         'free_used':      remote['free_used'] ?? 0,
@@ -139,7 +136,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
       };
       await _saveQuota();
     } catch (_) {
-      // Fall back to local
       final raw = await storageService.read(key: _kQuotaKey);
       if (raw != null) {
         try { _quota = Map<String, dynamic>.from(jsonDecode(raw)); } catch (_) {}
@@ -153,7 +149,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
     } catch (_) {}
   }
 
-  bool get _isPremium => _quota['is_premium'] == true;
+  bool get _isPremium      => _quota['is_premium'] == true;
+  int  get _freeUsed       => _quota['free_used'] as int? ?? 0;
+  int  get _adsToday       => _quota['ads_today'] as int? ?? 0;
+  bool get _hasFreeMsgs    => _freeUsed < _kFreeMessages;
+  bool get _canWatchAd     => _adsToday < _kMaxAdsPerDay;
 
   bool get _inUnlockedWindow {
     final exp = _quota['window_expires'] as String?;
@@ -162,17 +162,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
     return dt != null && dt.isAfter(DateTime.now());
   }
 
-  int get _freeUsed     => _quota['free_used'] as int? ?? 0;
-  int get _adsToday     => _quota['ads_today'] as int? ?? 0;
-  bool get _hasFreeMsgs => _freeUsed < _kFreeMessages;
-  bool get _canWatchAd  => _adsToday < _kMaxAdsPerDay;
-
-  // ── Decide if user may send an AI message right now
   _QuotaResult _checkAIQuota() {
-    if (_isPremium)         return _QuotaResult.allowed;
-    if (_inUnlockedWindow)  return _QuotaResult.allowed;
-    if (_hasFreeMsgs)       return _QuotaResult.allowed;
-    if (_canWatchAd)        return _QuotaResult.showAdGate;
+    if (_isPremium)        return _QuotaResult.allowed;
+    if (_inUnlockedWindow) return _QuotaResult.allowed;
+    if (_hasFreeMsgs)      return _QuotaResult.allowed;
+    if (_canWatchAd)       return _QuotaResult.showAdGate;
     return _QuotaResult.dailyLimit;
   }
 
@@ -183,7 +177,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (_historyLoaded) return;
     try {
       if (widget.isAI) {
-        // Find existing AI conversation
         final convos = await api.getAiConversations();
         if (convos.isNotEmpty) {
           _aiConvId = convos.first['id']?.toString();
@@ -197,15 +190,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   content: m['content']?.toString() ?? '',
                   sender:  isAI ? 'RiseUp AI' : 'You',
                   avatar:  isAI ? '🤖' : '👤',
-                  isMe:    !isAI,
-                  isAI:    isAI,
+                  isMe:    !isAI, isAI: isAI,
                   time:    DateTime.tryParse(m['created_at']?.toString() ?? ''),
                 ));
               }
             });
           }
         }
-        // If no history, show welcome message
         if (_msgs.isEmpty) {
           _msgs.add(_Msg(
             content: "Hey! 👋 I'm your RiseUp AI mentor. Ask me anything about "
@@ -214,7 +205,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
           ));
         }
       } else {
-        // DM history
         if (widget.userId.isEmpty || widget.userId == 'ai') return;
         final msgs = await api.getDMMessages(widget.userId);
         if (mounted && msgs.isNotEmpty) {
@@ -224,23 +214,23 @@ class _ConversationScreenState extends State<ConversationScreen> {
               final senderId = m['sender_id']?.toString() ?? '';
               final isMe     = senderId == myId;
               final profile  = m['profiles'] as Map? ?? {};
-              final name     = profile['full_name']?.toString() ?? widget.name;
-              final av       = profile['avatar_url']?.toString() ?? widget.avatar;
               _msgs.add(_Msg(
                 id:      m['id']?.toString(),
                 content: m['content']?.toString() ?? '',
-                sender:  isMe ? 'You' : name,
-                avatar:  isMe ? '👤' : av,
+                sender:  isMe ? 'You' : (profile['full_name']?.toString() ?? widget.name),
+                avatar:  isMe ? '👤' : (profile['avatar_url']?.toString() ?? widget.avatar),
                 isMe:    isMe,
                 time:    DateTime.tryParse(m['created_at']?.toString() ?? ''),
               ));
             }
           });
-          _lastPollTime = msgs.last['created_at']?.toString();
+          if (_msgs.isNotEmpty) {
+            _lastPollTime = msgs.last['created_at']?.toString();
+          }
         }
       }
     } catch (_) {
-      // History load failure is non-fatal
+      // non-fatal
     } finally {
       if (mounted) setState(() => _historyLoaded = true);
       _scrollDown(jump: true);
@@ -255,11 +245,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   Future<void> _poll() async {
-    if (!_historyLoaded || widget.userId.isEmpty) return;
+    if (!_historyLoaded || widget.userId.isEmpty || widget.userId == 'ai') return;
     try {
       final newMsgs = await api.getDMMessages(
-        widget.userId, since: _lastPollTime,
-      );
+          widget.userId, since: _lastPollTime);
       if (!mounted || newMsgs.isEmpty) return;
       final myId = await api.getUserId() ?? '';
       setState(() {
@@ -267,7 +256,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
           final id       = m['id']?.toString() ?? '';
           final senderId = m['sender_id']?.toString() ?? '';
           final isMe     = senderId == myId;
-          // Skip dupes
           if (_msgs.any((msg) => msg.id == id)) continue;
           final profile = m['profiles'] as Map? ?? {};
           _msgs.add(_Msg(
@@ -280,8 +268,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
           ));
         }
       });
-      _lastPollTime = newMsgs.last['created_at']?.toString();
-      _scrollDown();
+      if (newMsgs.isNotEmpty) {
+        _lastPollTime = newMsgs.last['created_at']?.toString();
+        _scrollDown();
+      }
     } catch (_) {}
   }
 
@@ -324,23 +314,17 @@ class _ConversationScreenState extends State<ConversationScreen> {
       Map<String, dynamic> res;
 
       if (widget.isAI) {
-        // Pure AI conversation — uses /ai/chat endpoint
         res = await api.chat(
-          message: text,
-          conversationId: _aiConvId,
-          mode: 'general',
+          message: text, conversationId: _aiConvId, mode: 'general',
         );
         _aiConvId ??= res['conversation_id']?.toString();
       } else {
-        // AI invited into a peer DM — uses /messages/conversations/{id}/ai-message
         res = await api.sendAIMessageInDM(
-          widget.userId, text, adUnlocked: adUnlocked,
-        );
+            widget.userId, text, adUnlocked: adUnlocked);
       }
 
       final aiContent = (res['content'] ?? 'I\'m here to help! 💡').toString();
 
-      // Update quota from server response
       if (res['quota'] != null) {
         final q = res['quota'] as Map;
         _quota['free_used']      = q['free_used'] ?? _quota['free_used'];
@@ -363,9 +347,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() => _aiResponding = false);
-
       if (e.statusCode == 402) {
-        // Quota exceeded — show ad gate with the text they tried to send
         await _showAdGate(text);
       } else if (e.statusCode == 429) {
         _showDailyLimit();
@@ -390,9 +372,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final optimisticId = 'opt_${DateTime.now().millisecondsSinceEpoch}';
     setState(() {
       _msgs.add(_Msg(
-        id: optimisticId, content: text,
-        sender: 'You', avatar: '👤', isMe: true,
-      ));
+          id: optimisticId, content: text, sender: 'You', avatar: '👤', isMe: true));
       _dmSending = true;
     });
     _scrollDown();
@@ -402,18 +382,14 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (mounted) setState(() => _dmSending = false);
     } catch (_) {
       if (mounted) {
-        // Remove optimistic message on failure
         setState(() {
           _msgs.removeWhere((m) => m.id == optimisticId);
           _dmSending = false;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Failed to send. Check your connection.'),
-            backgroundColor: AppColors.error,
-            duration: Duration(seconds: 2),
-          ),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Failed to send. Check your connection.'),
+          backgroundColor: AppColors.error, duration: Duration(seconds: 2),
+        ));
       }
     }
   }
@@ -434,7 +410,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ────────────────────────────────────────────────────────────────
-  // Typing animation (character-by-character reveal)
+  // Typing animation
   // ────────────────────────────────────────────────────────────────
   void _typeMessage(_Msg msg) {
     msg.isTyping    = true;
@@ -461,66 +437,51 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (jump) {
         _scroll.jumpTo(_scroll.position.maxScrollExtent);
       } else {
-        _scroll.animateTo(
-          _scroll.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOut,
-        );
+        _scroll.animateTo(_scroll.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 220), curve: Curves.easeOut);
       }
     });
   }
 
   // ════════════════════════════════════════════════════════════════
-  // FREEMIUM GATE FLOWS
+  // FREEMIUM GATE
   // ════════════════════════════════════════════════════════════════
-
   Future<void> _showAdGate(String pendingText) async {
     final watched = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => _AdGateSheet(
-        freeUsed: _freeUsed,
-        adsToday: _adsToday,
-        maxAds: _kMaxAdsPerDay,
-        windowHours: _kWindowDur.inHours,
+        freeUsed: _freeUsed, adsToday: _adsToday,
+        maxAds: _kMaxAdsPerDay, windowHours: _kWindowDur.inHours,
       ),
     );
-
     if (watched != true || !mounted) return;
 
-    // Show the rewarded ad
     if (!adService.isRewardedReady) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Ad not ready yet. Please try again in a moment.'),
-          duration: Duration(seconds: 2),
-        ),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Ad not ready yet. Please try again in a moment.'),
+        duration: Duration(seconds: 2),
+      ));
       return;
     }
 
     await adService.showRewardedAd(
       featureKey: 'ai_chat',
       onRewarded: () async {
-        // Reset window locally
         _quota['free_used']      = 0;
         _quota['ads_today']      = _adsToday + 1;
         _quota['ads_date']       = DateTime.now().toIso8601String().substring(0, 10);
-        _quota['window_expires'] =
-            DateTime.now().add(_kWindowDur).toIso8601String();
+        _quota['window_expires'] = DateTime.now().add(_kWindowDur).toIso8601String();
         await _saveQuota();
-        // Now send the pending message with ad_unlocked=true
         if (mounted) await _sendAI(pendingText, adUnlocked: true);
       },
       onDismissed: () {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Watch the full ad to unlock AI messages.'),
-              duration: Duration(seconds: 2),
-            ),
-          );
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Watch the full ad to unlock AI messages.'),
+            duration: Duration(seconds: 2),
+          ));
         }
       },
     );
@@ -532,10 +493,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => _DailyLimitSheet(
-        onUpgrade: () {
-          Navigator.pop(context);
-          context.go('/premium');
-        },
+        onUpgrade: () { Navigator.pop(context); context.go('/premium'); },
       ),
     );
   }
@@ -559,13 +517,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
       backgroundColor: bgColor,
       appBar: _buildAppBar(isDark, bgColor, cardColor, borderColor, textColor, subColor),
       body: Column(children: [
+        if (_aiJoined && !widget.isAI) _AIJoinedBanner(),
 
-        // AI-joined banner (peer DMs only)
-        if (_aiJoined && !widget.isAI)
-          _AIJoinedBanner(),
-
-        // Quota ribbon — shows remaining free messages for free users
-        if (!_isPremium && !_inUnlockedWindow && !widget.isAI == false || widget.isAI)
+        if ((widget.isAI || _aiJoined) && !_isPremium)
           _QuotaRibbon(
             isPremium:     _isPremium,
             inWindow:      _inUnlockedWindow,
@@ -576,23 +530,24 @@ class _ConversationScreenState extends State<ConversationScreen> {
             windowExpires: _quota['window_expires'] as String?,
           ),
 
-        // Message list
         Expanded(
           child: !_historyLoaded
-              ? const Center(
-                  child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2))
+              ? const Center(child: CircularProgressIndicator(
+                  color: AppColors.primary, strokeWidth: 2))
               : ListView.builder(
                   controller: _scroll,
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                   itemCount: _msgs.length + (isSending ? 1 : 0),
                   itemBuilder: (_, i) {
-                    if (i == _msgs.length) return _buildTypingIndicator(isDark, surfColor);
-                    return _buildBubble(_msgs[i], isDark, textColor, surfColor, cardColor);
+                    if (i == _msgs.length) {
+                      return _buildTypingIndicator(isDark, surfColor);
+                    }
+                    return _buildBubble(
+                        _msgs[i], isDark, textColor, surfColor, cardColor);
                   },
                 ),
         ),
 
-        // Input bar
         _buildInputBar(isDark, cardColor, borderColor, textColor, subColor, surfColor, isSending),
       ]),
     );
@@ -610,79 +565,68 @@ class _ConversationScreenState extends State<ConversationScreen> {
       backgroundColor: card,
       elevation: 0,
       surfaceTintColor: Colors.transparent,
+      // FIX: back button — works correctly since we arrive via context.push()
       leading: IconButton(
         icon: Icon(Icons.arrow_back_ios_new_rounded, color: text, size: 18),
-        onPressed: () => context.pop(),
-      ),
-      title: GestureDetector(
-        onTap: widget.isAI ? null : () {
-          // Future: open user profile
+        onPressed: () {
+          if (Navigator.of(context).canPop()) {
+            context.pop();
+          } else {
+            context.go('/messages');
+          }
         },
-        child: Row(children: [
-          Stack(children: [
-            // Avatar
-            Container(
-              width: 36, height: 36,
-              decoration: BoxDecoration(
-                gradient: avatarIsUrl ? null
-                    : const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
-                image: avatarIsUrl
-                    ? DecorationImage(image: NetworkImage(widget.avatar), fit: BoxFit.cover)
-                    : null,
-                shape: BoxShape.circle,
-              ),
-              child: avatarIsUrl ? null : Center(
-                child: Text(
-                  widget.avatar.startsWith('http') ? '' : widget.avatar,
-                  style: const TextStyle(fontSize: 18),
-                ),
-              ),
-            ),
-            // Online dot
-            Positioned(
-              bottom: 0, right: 0,
-              child: Container(
-                width: 10, height: 10,
-                decoration: BoxDecoration(
-                  color: AppColors.success, shape: BoxShape.circle,
-                  border: Border.all(color: card, width: 1.5),
-                ),
-              ),
-            ),
-          ]),
-          const SizedBox(width: 10),
-          Flexible(child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(mainAxisSize: MainAxisSize.min, children: [
-                Flexible(child: Text(widget.name,
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: text),
-                    overflow: TextOverflow.ellipsis)),
-                if (widget.isAI || _aiJoined) ...[
-                  const SizedBox(width: 5),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                          colors: [AppColors.primary, AppColors.accent]),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: const Text('AI',
-                        style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.w700)),
-                  ),
-                ],
-              ]),
-              Text(
-                widget.isAI ? 'Always online' : 'Online',
-                style: const TextStyle(fontSize: 11, color: AppColors.success),
-              ),
-            ],
-          )),
-        ]),
       ),
+      title: Row(children: [
+        Stack(children: [
+          Container(
+            width: 36, height: 36,
+            decoration: BoxDecoration(
+              gradient: avatarIsUrl ? null
+                  : const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
+              image: avatarIsUrl
+                  ? DecorationImage(image: NetworkImage(widget.avatar), fit: BoxFit.cover)
+                  : null,
+              shape: BoxShape.circle,
+            ),
+            child: avatarIsUrl ? null : Center(
+              child: Text(widget.avatar,
+                  style: const TextStyle(fontSize: 18)),
+            ),
+          ),
+          Positioned(bottom: 0, right: 0,
+            child: Container(width: 10, height: 10,
+              decoration: BoxDecoration(color: AppColors.success, shape: BoxShape.circle,
+                  border: Border.all(color: card, width: 1.5)))),
+        ]),
+        const SizedBox(width: 10),
+        Flexible(child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(mainAxisSize: MainAxisSize.min, children: [
+              Flexible(child: Text(widget.name, style: TextStyle(
+                  fontSize: 14, fontWeight: FontWeight.w700, color: text),
+                  overflow: TextOverflow.ellipsis)),
+              if (widget.isAI || _aiJoined) ...[
+                const SizedBox(width: 5),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                        colors: [AppColors.primary, AppColors.accent]),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Text('AI', style: TextStyle(
+                      color: Colors.white, fontSize: 8, fontWeight: FontWeight.w700)),
+                ),
+              ],
+            ]),
+            Text(widget.isAI ? 'Always online' : 'Online',
+                style: const TextStyle(fontSize: 11, color: AppColors.success)),
+          ],
+        )),
+      ]),
       actions: [
-        // Invite AI (peer DMs only, before AI has joined)
         if (!widget.isAI && !_aiJoined)
           Padding(
             padding: const EdgeInsets.only(right: 6, top: 8, bottom: 8),
@@ -698,9 +642,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 child: const Row(mainAxisSize: MainAxisSize.min, children: [
                   Icon(Icons.auto_awesome, color: AppColors.primary, size: 13),
                   SizedBox(width: 4),
-                  Text('Invite AI',
-                      style: TextStyle(color: AppColors.primary, fontSize: 11,
-                          fontWeight: FontWeight.w600)),
+                  Text('Invite AI', style: TextStyle(color: AppColors.primary,
+                      fontSize: 11, fontWeight: FontWeight.w600)),
                 ]),
               ),
             ),
@@ -712,25 +655,20 @@ class _ConversationScreenState extends State<ConversationScreen> {
             child: Row(mainAxisSize: MainAxisSize.min, children: [
               Icon(Icons.auto_awesome, color: AppColors.success, size: 13),
               SizedBox(width: 4),
-              Text('AI Active',
-                  style: TextStyle(color: AppColors.success, fontSize: 11,
-                      fontWeight: FontWeight.w600)),
+              Text('AI Active', style: TextStyle(color: AppColors.success,
+                  fontSize: 11, fontWeight: FontWeight.w600)),
             ]),
           ),
 
-        // Call button
         IconButton(
           icon: Icon(Iconsax.call, color: text, size: 20),
-          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Voice calls coming soon 📞'), duration: Duration(seconds: 1)),
-          ),
+          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Voice calls coming soon 📞'), duration: Duration(seconds: 1))),
         ),
-        // Video button
         IconButton(
           icon: Icon(Iconsax.video, color: text, size: 20),
-          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Video calls coming soon 🎥'), duration: Duration(seconds: 1)),
-          ),
+          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Video calls coming soon 🎥'), duration: Duration(seconds: 1))),
         ),
       ],
       bottom: PreferredSize(
@@ -744,7 +682,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // Input bar
   // ────────────────────────────────────────────────────────────────
   Widget _buildInputBar(
-    bool isDark, Color card, Color border, Color text, Color sub, Color surf, bool isSending,
+    bool isDark, Color card, Color border, Color text,
+    Color sub, Color surf, bool isSending,
   ) {
     return Container(
       decoration: BoxDecoration(
@@ -754,23 +693,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
       padding: EdgeInsets.fromLTRB(
           12, 8, 12, MediaQuery.of(context).padding.bottom + 8),
       child: Row(children: [
-        // Image attachment
         IconButton(
           icon: Icon(Iconsax.image, color: sub, size: 22),
           onPressed: () async {
             final file = await ImagePicker().pickImage(source: ImageSource.gallery);
             if (file != null && mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Photo selected ✅ — media upload coming soon'),
-                  backgroundColor: AppColors.success,
-                  duration: Duration(seconds: 2),
-                ),
-              );
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text('Photo selected ✅ — media upload coming soon'),
+                backgroundColor: AppColors.success, duration: Duration(seconds: 2),
+              ));
             }
           },
         ),
-        // Text field
         Expanded(
           child: TextField(
             controller: _textCtrl,
@@ -785,17 +719,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
               hintStyle: TextStyle(color: sub, fontSize: 13),
               filled: true, fillColor: surf,
               border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(24),
-                borderSide: BorderSide.none,
-              ),
-              contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             ),
             onSubmitted: isSending ? null : (_) => _onSend(),
           ),
         ),
         const SizedBox(width: 8),
-        // Send button
         GestureDetector(
           onTap: isSending ? null : () { HapticFeedback.lightImpact(); _onSend(); },
           child: AnimatedContainer(
@@ -811,10 +741,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
             ),
             child: Center(
               child: isSending
-                  ? const SizedBox(
-                      width: 18, height: 18,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Colors.white))
+                  ? const SizedBox(width: 18, height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                   : const Icon(Icons.send_rounded, color: Colors.white, size: 18),
             ),
           ),
@@ -829,7 +757,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Widget _buildBubble(
     _Msg m, bool isDark, Color textColor, Color surfColor, Color cardColor,
   ) {
-    final aiBg    = isDark ? const Color(0xFF1A1A2E) : Colors.grey.shade100;
+    final aiBg        = isDark ? const Color(0xFF1A1A2E) : Colors.grey.shade100;
     final avatarIsUrl = m.avatar.startsWith('http');
 
     return Padding(
@@ -837,18 +765,14 @@ class _ConversationScreenState extends State<ConversationScreen> {
       child: Column(
         crossAxisAlignment: m.isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
         children: [
-          // Sender label (non-self only)
           if (!m.isMe)
             Padding(
               padding: const EdgeInsets.only(bottom: 4, left: 36),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Text(
-                  m.sender,
-                  style: TextStyle(
-                    fontSize: 11, fontWeight: FontWeight.w600,
-                    color: m.isAI ? AppColors.primary : AppColors.warning,
-                  ),
-                ),
+                Text(m.sender, style: TextStyle(
+                  fontSize: 11, fontWeight: FontWeight.w600,
+                  color: m.isAI ? AppColors.primary : AppColors.warning,
+                )),
                 if (m.isAI) ...[
                   const SizedBox(width: 3),
                   const Icon(Icons.auto_awesome, size: 10, color: AppColors.primary),
@@ -860,26 +784,24 @@ class _ConversationScreenState extends State<ConversationScreen> {
             mainAxisAlignment: m.isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              // Avatar (non-self)
               if (!m.isMe) ...[
                 Container(
                   width: 28, height: 28,
                   decoration: BoxDecoration(
                     gradient: avatarIsUrl ? null
-                        : const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
+                        : const LinearGradient(
+                            colors: [AppColors.primary, AppColors.accent]),
                     image: avatarIsUrl
                         ? DecorationImage(image: NetworkImage(m.avatar), fit: BoxFit.cover)
                         : null,
                     shape: BoxShape.circle,
                   ),
                   child: avatarIsUrl ? null : Center(
-                    child: Text(m.avatar, style: const TextStyle(fontSize: 14)),
-                  ),
+                      child: Text(m.avatar, style: const TextStyle(fontSize: 14))),
                 ),
                 const SizedBox(width: 8),
               ],
 
-              // Bubble
               Flexible(
                 child: Container(
                   constraints: BoxConstraints(
@@ -893,31 +815,24 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       bottomLeft:  Radius.circular(m.isMe ? 18 : 4),
                       bottomRight: Radius.circular(m.isMe ? 4 : 18),
                     ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.06),
-                        blurRadius: 6, offset: const Offset(0, 2),
-                      ),
-                    ],
+                    boxShadow: [BoxShadow(
+                      color: Colors.black.withOpacity(0.06),
+                      blurRadius: 6, offset: const Offset(0, 2),
+                    )],
                   ),
                   child: m.isMe || !m.isAI
-                      ? Text(m.displayText,
-                          style: TextStyle(
-                            color: m.isMe ? Colors.white : textColor,
-                            fontSize: 14, height: 1.5,
-                          ))
+                      ? Text(m.displayText, style: TextStyle(
+                          color: m.isMe ? Colors.white : textColor,
+                          fontSize: 14, height: 1.5))
                       : MarkdownBody(
                           data: m.displayText,
                           styleSheet: MarkdownStyleSheet(
                             p: TextStyle(
-                              color: isDark
-                                  ? const Color(0xFFE8E8F0) : Colors.black87,
+                              color: isDark ? const Color(0xFFE8E8F0) : Colors.black87,
                               fontSize: 14, height: 1.55,
                             ),
                             strong: const TextStyle(
-                              fontWeight: FontWeight.w700,
-                              color: AppColors.primaryLight,
-                            ),
+                                fontWeight: FontWeight.w700, color: AppColors.primaryLight),
                             code: TextStyle(
                               fontFamily: 'monospace',
                               backgroundColor: isDark
@@ -931,20 +846,14 @@ class _ConversationScreenState extends State<ConversationScreen> {
             ],
           ),
 
-          // Timestamp
           Padding(
             padding: EdgeInsets.only(
-              top: 4,
-              left: m.isMe ? 0 : 40,
-              right: m.isMe ? 4 : 0,
+              top: 4, left: m.isMe ? 0 : 40, right: m.isMe ? 4 : 0,
             ),
-            child: Text(
-              _formatTime(m.time),
-              style: TextStyle(
-                fontSize: 10,
-                color: isDark ? Colors.white24 : Colors.black26,
-              ),
-            ),
+            child: Text(_formatTime(m.time), style: TextStyle(
+              fontSize: 10,
+              color: isDark ? Colors.white24 : Colors.black26,
+            )),
           ),
         ],
       ),
@@ -990,9 +899,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
   }
 
-  // ────────────────────────────────────────────────────────────────
-  // Helpers
-  // ────────────────────────────────────────────────────────────────
   String _formatTime(DateTime dt) {
     final h = dt.hour.toString().padLeft(2, '0');
     final m = dt.minute.toString().padLeft(2, '0');
@@ -1019,14 +925,15 @@ class _AIJoinedBanner extends StatelessWidget {
         Icon(Icons.auto_awesome, color: AppColors.primary, size: 14),
         SizedBox(width: 8),
         Text('RiseUp AI is in this conversation',
-            style: TextStyle(fontSize: 12, color: AppColors.primary, fontWeight: FontWeight.w500)),
+            style: TextStyle(fontSize: 12, color: AppColors.primary,
+                fontWeight: FontWeight.w500)),
       ]),
     );
   }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Quota ribbon — subtle banner showing free messages remaining
+// Quota ribbon
 // ════════════════════════════════════════════════════════════════════════════
 class _QuotaRibbon extends StatefulWidget {
   final bool isPremium, inWindow;
@@ -1051,9 +958,7 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
   @override
   void initState() {
     super.initState();
-    if (widget.inWindow && widget.windowExpires != null) {
-      _startTimer();
-    }
+    if (widget.inWindow && widget.windowExpires != null) _startTimer();
   }
 
   void _startTimer() {
@@ -1063,14 +968,14 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
 
   void _updateExpiry() {
     if (!mounted) return;
-    final exp = DateTime.tryParse(widget.windowExpires ?? '');
+    final exp  = DateTime.tryParse(widget.windowExpires ?? '');
     if (exp == null) return;
     final diff = exp.difference(DateTime.now());
     if (diff.isNegative) { setState(() => _expiry = ''); return; }
     final h = diff.inHours;
     final m = (diff.inMinutes % 60).toString().padLeft(2, '0');
     final s = (diff.inSeconds % 60).toString().padLeft(2, '0');
-    setState(() => _expiry = h > 0 ? '${h}h ${m}m' : '${m}:${s}');
+    setState(() => _expiry = h > 0 ? '${h}h ${m}m' : '$m:$s');
   }
 
   @override
@@ -1082,21 +987,15 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
     final remaining = widget.freeTotal - widget.freeUsed;
 
     if (widget.inWindow) {
-      return _ribbon(
-        Icons.lock_open_rounded, AppColors.success,
-        'AI unlocked${_expiry.isNotEmpty ? ' · $_expiry left' : ''}',
-        Colors.transparent,
-      );
+      return _ribbon(Icons.lock_open_rounded, AppColors.success,
+          'AI unlocked${_expiry.isNotEmpty ? ' · $_expiry left' : ''}',
+          Colors.transparent);
     }
-
     if (remaining > 0) {
-      return _ribbon(
-        Icons.chat_bubble_outline_rounded, AppColors.primary,
-        '$remaining free AI message${remaining == 1 ? '' : 's'} remaining',
-        AppColors.primary.withOpacity(0.06),
-      );
+      return _ribbon(Icons.chat_bubble_outline_rounded, AppColors.primary,
+          '$remaining free AI message${remaining == 1 ? '' : 's'} remaining',
+          AppColors.primary.withOpacity(0.06));
     }
-
     return const SizedBox.shrink();
   }
 
@@ -1111,10 +1010,9 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
         Text(label, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w500)),
         const Spacer(),
         GestureDetector(
-          onTap: () => context.go('/premium'),
-          child: const Text('Go Premium',
-              style: TextStyle(fontSize: 11, color: AppColors.primary,
-                  fontWeight: FontWeight.w600)),
+          onTap: () => GoRouter.of(context).go('/premium'),
+          child: const Text('Go Premium', style: TextStyle(
+              fontSize: 11, color: AppColors.primary, fontWeight: FontWeight.w600)),
         ),
       ]),
     );
@@ -1122,49 +1020,39 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// AD GATE BOTTOM SHEET
+// AD GATE SHEET
 // ════════════════════════════════════════════════════════════════════════════
 class _AdGateSheet extends StatelessWidget {
   final int freeUsed, adsToday, maxAds, windowHours;
-
-  const _AdGateSheet({
-    required this.freeUsed, required this.adsToday,
-    required this.maxAds,  required this.windowHours,
-  });
+  const _AdGateSheet({required this.freeUsed, required this.adsToday,
+      required this.maxAds, required this.windowHours});
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bg     = isDark ? AppColors.bgCard : Colors.white;
-    final text   = isDark ? Colors.white : Colors.black87;
-    final sub    = isDark ? Colors.white60 : Colors.black54;
+    final isDark    = Theme.of(context).brightness == Brightness.dark;
+    final bg        = isDark ? AppColors.bgCard : Colors.white;
+    final text      = isDark ? Colors.white : Colors.black87;
+    final sub       = isDark ? Colors.white60 : Colors.black54;
     final remaining = maxAds - adsToday;
 
     return Container(
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-      ),
+      decoration: BoxDecoration(color: bg,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28))),
       padding: EdgeInsets.fromLTRB(
           24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
-        // Handle
         Container(width: 40, height: 4,
-            decoration: BoxDecoration(color: isDark ? Colors.white24 : Colors.black12,
+            decoration: BoxDecoration(
+                color: isDark ? Colors.white24 : Colors.black12,
                 borderRadius: BorderRadius.circular(2))),
         const SizedBox(height: 24),
-
-        // Icon
-        Container(
-          width: 72, height: 72,
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]),
-            shape: BoxShape.circle,
-          ),
-          child: const Center(child: Text('🤖', style: TextStyle(fontSize: 36))),
-        ),
+        Container(width: 72, height: 72,
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]),
+              shape: BoxShape.circle,
+            ),
+            child: const Center(child: Text('🤖', style: TextStyle(fontSize: 36)))),
         const SizedBox(height: 16),
-
         Text('Unlock AI Messages', style: TextStyle(
             fontSize: 20, fontWeight: FontWeight.w800, color: text)),
         const SizedBox(height: 8),
@@ -1175,22 +1063,16 @@ class _AdGateSheet extends StatelessWidget {
           textAlign: TextAlign.center,
         ),
         const SizedBox(height: 8),
-        Text(
-          '$remaining unlock${remaining == 1 ? '' : 's'} remaining today',
-          style: TextStyle(fontSize: 12, color: sub),
-        ),
+        Text('$remaining unlock${remaining == 1 ? '' : 's'} remaining today',
+            style: TextStyle(fontSize: 12, color: sub)),
         const SizedBox(height: 24),
-
-        // Watch ad button
-        SizedBox(
-          width: double.infinity,
+        SizedBox(width: double.infinity,
           child: ElevatedButton.icon(
             onPressed: () => Navigator.pop(context, true),
             icon: const Icon(Icons.play_circle_fill_rounded, size: 20),
             label: Text('Watch Ad — Unlock ${windowHours}h Free'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
+              backgroundColor: AppColors.primary, foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(vertical: 16),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
@@ -1198,10 +1080,7 @@ class _AdGateSheet extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 12),
-
-        // Premium upsell
-        SizedBox(
-          width: double.infinity,
+        SizedBox(width: double.infinity,
           child: OutlinedButton.icon(
             onPressed: () { Navigator.pop(context, false); context.go('/premium'); },
             icon: const Icon(Icons.workspace_premium_rounded, size: 18),
@@ -1216,7 +1095,6 @@ class _AdGateSheet extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 12),
-
         TextButton(
           onPressed: () => Navigator.pop(context, false),
           child: Text('Not now', style: TextStyle(color: sub, fontSize: 13)),
@@ -1227,12 +1105,11 @@ class _AdGateSheet extends StatelessWidget {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// DAILY LIMIT BOTTOM SHEET  (with midnight countdown)
+// DAILY LIMIT SHEET
 // ════════════════════════════════════════════════════════════════════════════
 class _DailyLimitSheet extends StatefulWidget {
   final VoidCallback onUpgrade;
   const _DailyLimitSheet({required this.onUpgrade});
-
   @override
   State<_DailyLimitSheet> createState() => _DailyLimitSheetState();
 }
@@ -1242,11 +1119,7 @@ class _DailyLimitSheetState extends State<_DailyLimitSheet> {
   String  _countdown = '--:--:--';
 
   @override
-  void initState() {
-    super.initState();
-    _update();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _update());
-  }
+  void initState() { super.initState(); _update(); _timer = Timer.periodic(const Duration(seconds: 1), (_) => _update()); }
 
   void _update() {
     if (!mounted) return;
@@ -1270,61 +1143,47 @@ class _DailyLimitSheetState extends State<_DailyLimitSheet> {
     final sub    = isDark ? Colors.white60 : Colors.black54;
 
     return Container(
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-      ),
+      decoration: BoxDecoration(color: bg,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28))),
       padding: EdgeInsets.fromLTRB(
           24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
         Container(width: 40, height: 4,
-            decoration: BoxDecoration(color: isDark ? Colors.white24 : Colors.black12,
+            decoration: BoxDecoration(
+                color: isDark ? Colors.white24 : Colors.black12,
                 borderRadius: BorderRadius.circular(2))),
         const SizedBox(height: 24),
-
         const Text('⏰', style: TextStyle(fontSize: 52)),
         const SizedBox(height: 12),
-
-        Text("Daily Limit Reached",
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: text)),
+        Text('Daily Limit Reached', style: TextStyle(
+            fontSize: 20, fontWeight: FontWeight.w800, color: text)),
         const SizedBox(height: 8),
         Text(
-          "You've used all your free AI unlocks for today.\n"
-          "Your limit resets at midnight UTC.",
+          "You've used all your free AI unlocks for today.\nYour limit resets at midnight UTC.",
           style: TextStyle(fontSize: 14, color: sub, height: 1.5),
           textAlign: TextAlign.center,
         ),
         const SizedBox(height: 24),
-
-        // Countdown
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
           decoration: BoxDecoration(
-            color: AppColors.primary.withOpacity(0.08),
-            borderRadius: BorderRadius.circular(16),
-          ),
+              color: AppColors.primary.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(16)),
           child: Column(children: [
             Text('Resets in', style: TextStyle(fontSize: 12, color: sub)),
             const SizedBox(height: 6),
-            Text(_countdown,
-                style: TextStyle(
-                  fontSize: 32, fontWeight: FontWeight.w800,
-                  color: text, fontFamily: 'monospace',
-                  letterSpacing: 2,
-                )),
+            Text(_countdown, style: TextStyle(fontSize: 32, fontWeight: FontWeight.w800,
+                color: text, fontFamily: 'monospace', letterSpacing: 2)),
           ]),
         ),
         const SizedBox(height: 24),
-
-        SizedBox(
-          width: double.infinity,
+        SizedBox(width: double.infinity,
           child: ElevatedButton.icon(
             onPressed: widget.onUpgrade,
             icon: const Icon(Icons.workspace_premium_rounded, size: 20),
             label: const Text('Upgrade — Unlimited AI Forever'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.gold,
-              foregroundColor: Colors.black87,
+              backgroundColor: AppColors.gold, foregroundColor: Colors.black87,
               padding: const EdgeInsets.symmetric(vertical: 16),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
@@ -1332,7 +1191,6 @@ class _DailyLimitSheetState extends State<_DailyLimitSheet> {
           ),
         ),
         const SizedBox(height: 12),
-
         TextButton(
           onPressed: () => Navigator.pop(context),
           child: Text('Come back later', style: TextStyle(color: sub, fontSize: 13)),
