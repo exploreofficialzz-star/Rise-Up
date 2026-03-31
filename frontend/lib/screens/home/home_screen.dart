@@ -125,12 +125,13 @@ class _HomeScreenState extends State<HomeScreen>
   int _aiUsedToday      = 0;
   int _adsWatchedToday  = 0;
   DateTime? _adLockoutUntil;
-  DateTime? _quotaDate;
 
   static const int      _dailyFreeLimit    = 3;
   static const int      _maxAdsPerDay      = 5;
   static const Duration _adLockoutDuration = Duration(hours: 4);
-  static const String   _kQuotaKey         = 'home_ai_quota_v1';
+  // FIX: Unified key shared with conversation_screen so both screens
+  // count against the same daily quota — prevents double 3-free allowance.
+  static const String   _kQuotaKey         = 'riseup_ai_quota_v1';
 
   // FIX: Profile is cached so it appears instantly on every open.
   static const String _kProfileCacheKey = 'riseup_profile_cache_v1';
@@ -216,29 +217,31 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   // ── AI Quota persistence ──────────────────────────────────────────────────
+  // FIX: Switched from pipe-delimited string to JSON so home_screen and
+  // conversation_screen share the SAME quota data from the SAME key.
+  // Reading 'used' from JSON is instant (SharedPreferences is memory-cached
+  // after first load), so there's no flash of "3 left" on widget rebuild.
   Future<void> _loadAiQuota() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final raw   = prefs.getString(_kQuotaKey);
       if (raw == null) return;
-      final parts = raw.split('|');
-      if (parts.length < 5) return;
-      final savedDate = DateTime.tryParse(parts[0]);
-      final today = DateTime.now();
-      if (savedDate == null ||
-          savedDate.year != today.year ||
-          savedDate.month != today.month ||
-          savedDate.day != today.day) {
+      final Map<String, dynamic> saved =
+          Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      final today = DateTime.now().toIso8601String().substring(0, 10);
+      if (saved['date'] != today) {
+        // New day — reset and save (keeps key with today's date, zero counts)
         await _saveAiQuota();
         return;
       }
       if (mounted) {
         setState(() {
-          _aiUsedToday     = int.tryParse(parts[1]) ?? 0;
-          _adsWatchedToday = int.tryParse(parts[2]) ?? 0;
-          final lockStr    = parts[3];
-          _adLockoutUntil  = lockStr == 'null' ? null : DateTime.tryParse(lockStr);
-          _quotaDate       = savedDate;
+          _aiUsedToday     = saved['used'] as int?    ?? 0;
+          _adsWatchedToday = saved['ads']  as int?    ?? 0;
+          final lockStr    = saved['lockout'] as String?;
+          _adLockoutUntil  = lockStr == null
+              ? null
+              : DateTime.tryParse(lockStr);
         });
       }
     } catch (_) {}
@@ -246,11 +249,14 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> _saveAiQuota() async {
     try {
-      final prefs   = await SharedPreferences.getInstance();
-      final today   = DateTime.now();
-      final lockStr = _adLockoutUntil?.toIso8601String() ?? 'null';
-      await prefs.setString(_kQuotaKey,
-          '${today.toIso8601String().substring(0, 10)}|$_aiUsedToday|$_adsWatchedToday|$lockStr|v1');
+      final prefs = await SharedPreferences.getInstance();
+      final today = DateTime.now().toIso8601String().substring(0, 10);
+      await prefs.setString(_kQuotaKey, jsonEncode({
+        'date':    today,
+        'used':    _aiUsedToday,
+        'ads':     _adsWatchedToday,
+        'lockout': _adLockoutUntil?.toIso8601String(),
+      }));
     } catch (_) {}
   }
 
@@ -568,6 +574,7 @@ class _HomeScreenState extends State<HomeScreen>
     ));
 
     try {
+      // Step 1: Get AI response via the main chat endpoint
       final res = await api.chat(
         message:
             'A community member posted: "${post.content}"\n\n'
@@ -578,19 +585,24 @@ class _HomeScreenState extends State<HomeScreen>
       );
 
       final aiText = res['content']?.toString().trim() ?? '';
-      if (aiText.isEmpty) throw Exception('Empty AI response');
+      if (aiText.isEmpty) throw Exception('empty_ai_response');
 
-      // FIX: Pass isAI + isPinned so backend stores it correctly and
-      // comments_screen can separate it from regular comments.
-      await api.addComment(post.id, '🤖 RiseUp AI: $aiText',
-          isAI: true, isPinned: true);
+      // Step 2: Post as a pinned comment.
+      // Backend accepts is_ai/is_pinned and gracefully ignores them
+      // if the DB columns don't exist yet (see posts.py v3.0 fix).
+      await api.addComment(
+        post.id,
+        '🤖 RiseUp AI: $aiText',
+        isAI: true,
+        isPinned: true,
+      );
       if (mounted) setState(() => post.comments++);
 
       ScaffoldMessenger.of(context).hideCurrentSnackBar();
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: const Text('✅ RiseUp AI responded in the comments!'),
+        content: const Text('✅ RiseUp AI insight pinned in comments!'),
         backgroundColor: AppColors.success,
         duration: const Duration(seconds: 3),
         action: SnackBarAction(
@@ -601,12 +613,16 @@ class _HomeScreenState extends State<HomeScreen>
               '&author=${Uri.encodeComponent(post.name)}'),
         ),
       ));
-    } catch (_) {
+    } catch (e) {
       ScaffoldMessenger.of(context).hideCurrentSnackBar();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('AI response failed. Please try again!'),
-        backgroundColor: AppColors.error, duration: Duration(seconds: 2),
+      final msg = e.toString().contains('empty_ai_response')
+          ? 'AI had no response. Please try again.'
+          : 'AI response failed. Please try again!';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(msg),
+        backgroundColor: AppColors.error,
+        duration: const Duration(seconds: 2),
       ));
     }
   }
