@@ -1,17 +1,12 @@
 """
-routers/messages.py — RiseUp Messaging System (Production v4)
+routers/messages.py — RiseUp Messaging System (Production v5)
 
-Changelog v4:
-  • Added POST /presence  — heartbeat endpoint (sets is_online, last_seen)
-  • Added DELETE /presence — offline endpoint
-  • get_conversations: is_online now computed dynamically from last_seen
-    (< 2 min ago = online) so stale booleans never cause ghost "online" dots
-  • get_messages: profile join switched to explicit FK alias to survive
-    any Supabase FK naming scheme
-  • AI messages (sender_id=NULL, sender_type='ai') returned with a stable
-    synthetic profile so the frontend can render them without crashing
-  • All DB steps wrapped individually so one table miss doesn't kill the
-    whole request — returns empty-but-valid shapes instead of 500
+v5 fixes:
+  • send_ai_message: ai_service.mentor_chat() wrapped in try/except with
+    automatic fallback to ai_service.chat() — eliminates "Connection issue"
+    when mentor_chat is unavailable or throws.
+  • get_conversations: is_online computed dynamically from last_seen.
+  • All original v4 improvements retained.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,15 +22,12 @@ from utils.auth import get_current_user
 router = APIRouter(prefix="/messages", tags=["Messages"])
 logger = logging.getLogger(__name__)
 
-# ── Freemium constants ────────────────────────────────────────────────
 FREE_MSGS_PER_WINDOW   = 3
 WINDOW_HOURS           = 4
 MAX_AD_UNLOCKS_PER_DAY = 5
-ONLINE_THRESHOLD_SECS  = 120   # 2 minutes
-# ─────────────────────────────────────────────────────────────────────
+ONLINE_THRESHOLD_SECS  = 120
 
 
-# ── Request models ────────────────────────────────────────────────────
 class MessageSend(BaseModel):
     content: str
     media_url: Optional[str] = None
@@ -46,13 +38,11 @@ class AiMessageRequest(BaseModel):
     ad_unlocked: bool = False
 
 
-# ── DB helper ────────────────────────────────────────────────────────
 def _db():
     return supabase_service.db
 
 
 def _is_online_from_last_seen(last_seen_str: Optional[str], now: datetime) -> bool:
-    """Derive live online status from last_seen timestamp."""
     if not last_seen_str:
         return False
     try:
@@ -65,17 +55,10 @@ def _is_online_from_last_seen(last_seen_str: Optional[str], now: datetime) -> bo
         return False
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# PRESENCE
-# ═══════════════════════════════════════════════════════════════════════
+# ── PRESENCE ─────────────────────────────────────────────────────────────────
 
 @router.post("/presence")
 async def update_presence(user: dict = Depends(get_current_user)):
-    """
-    Heartbeat — call every 30 s from the client while the app is active.
-    Sets is_online=true and last_seen=now() on the profile row.
-    Non-fatal: always returns 200 so a failed update doesn't crash the UI.
-    """
     try:
         _db().table("profiles").update({
             "is_online": True,
@@ -88,10 +71,6 @@ async def update_presence(user: dict = Depends(get_current_user)):
 
 @router.delete("/presence")
 async def clear_presence(user: dict = Depends(get_current_user)):
-    """
-    Offline signal — call when the app goes to background or closes.
-    Non-fatal: always returns 200.
-    """
     try:
         _db().table("profiles").update({
             "is_online": False,
@@ -102,23 +81,16 @@ async def clear_presence(user: dict = Depends(get_current_user)):
     return {"online": False}
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# CONVERSATIONS
-# ═══════════════════════════════════════════════════════════════════════
+# ── CONVERSATIONS ─────────────────────────────────────────────────────────────
 
 @router.get("/conversations")
 async def get_conversations(user: dict = Depends(get_current_user)):
-    """
-    Return all DM conversations for the current user, sorted by latest.
-    is_online is computed dynamically from last_seen so it is always accurate.
-    """
     try:
         db  = _db()
         now = datetime.now(timezone.utc)
 
-        # Step 1: conversation IDs the user belongs to
         try:
-            member_res = (
+            member_res  = (
                 db.table("conversation_members")
                 .select("conversation_id")
                 .eq("user_id", user["id"])
@@ -134,7 +106,6 @@ async def get_conversations(user: dict = Depends(get_current_user)):
 
         conv_ids = [r["conversation_id"] for r in member_rows]
 
-        # Step 2: conversations + members + their profiles (including last_seen)
         try:
             convos_res = (
                 db.table("conversations")
@@ -152,23 +123,19 @@ async def get_conversations(user: dict = Depends(get_current_user)):
             logger.error(f"get_conversations fetch failed: {e}")
             return {"conversations": []}
 
-        # Step 3: enrich with last message + unread count
         enriched = []
         for c in convos:
-            members = c.get("conversation_members") or []
-            other   = next(
+            members       = c.get("conversation_members") or []
+            other         = next(
                 (m for m in members if m.get("user_id") != user["id"]), None
             )
-
-            # Build other_user with live is_online
             other_profile = None
             if other and other.get("profiles"):
-                other_profile = dict(other["profiles"])
-                other_profile["is_online"] = _is_online_from_last_seen(
+                other_profile               = dict(other["profiles"])
+                other_profile["is_online"]  = _is_online_from_last_seen(
                     other_profile.get("last_seen"), now
                 )
 
-            # Last message
             try:
                 msgs_res = (
                     db.table("messages")
@@ -182,7 +149,6 @@ async def get_conversations(user: dict = Depends(get_current_user)):
             except Exception:
                 last_msg = None
 
-            # Unread count (messages from others that are unread)
             try:
                 unread_res = (
                     db.table("messages")
@@ -218,8 +184,7 @@ async def get_or_create_conversation(
     user: dict = Depends(get_current_user),
 ):
     try:
-        db = _db()
-
+        db       = _db()
         my_res   = (
             db.table("conversation_members")
             .select("conversation_id")
@@ -229,7 +194,7 @@ async def get_or_create_conversation(
         my_ids   = [r["conversation_id"] for r in (my_res.data or [])]
 
         if my_ids:
-            their_res = (
+            their_res  = (
                 db.table("conversation_members")
                 .select("conversation_id")
                 .eq("user_id", other_user_id)
@@ -250,7 +215,6 @@ async def get_or_create_conversation(
                 if existing_res.data:
                     return {"conversation_id": existing_res.data[0]["id"]}
 
-        # Create new
         convo_res = db.table("conversations").insert({
             "type":       "direct",
             "user_id":    user["id"],
@@ -276,9 +240,7 @@ async def get_or_create_conversation(
         raise HTTPException(500, f"Could not open conversation: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# MESSAGES
-# ═══════════════════════════════════════════════════════════════════════
+# ── MESSAGES ──────────────────────────────────────────────────────────────────
 
 @router.get("/conversations/{conversation_id}/messages")
 async def get_messages(
@@ -291,7 +253,6 @@ async def get_messages(
         db = _db()
         _assert_member(db, conversation_id, user["id"])
 
-        # Use explicit FK alias so the join works regardless of FK constraint name
         q = (
             db.table("messages")
             .select(
@@ -308,7 +269,6 @@ async def get_messages(
 
         msgs_raw = q.execute().data or []
 
-        # Inject a synthetic AI profile where sender_id is NULL
         msgs = []
         for m in msgs_raw:
             row = dict(m)
@@ -321,7 +281,6 @@ async def get_messages(
                 }
             msgs.append(row)
 
-        # Mark incoming messages as read
         try:
             db.table("messages") \
                 .update({"is_read": True}) \
@@ -363,7 +322,6 @@ async def send_message(
 
         msg = db.table("messages").insert(data).execute().data[0]
 
-        # Bump conversation timestamp
         try:
             db.table("conversations") \
                 .update({"updated_at": datetime.now(timezone.utc).isoformat()}) \
@@ -372,9 +330,8 @@ async def send_message(
         except Exception:
             pass
 
-        # Notify other members
         try:
-            members = (
+            members      = (
                 db.table("conversation_members")
                 .select("user_id")
                 .eq("conversation_id", conversation_id)
@@ -382,7 +339,7 @@ async def send_message(
                 .execute()
                 .data or []
             )
-            profile_row = (
+            profile_row  = (
                 db.table("profiles")
                 .select("full_name")
                 .eq("id", user["id"])
@@ -390,8 +347,7 @@ async def send_message(
                 .execute()
                 .data
             )
-            sender_name = (profile_row or {}).get("full_name") or "Someone"
-
+            sender_name  = (profile_row or {}).get("full_name") or "Someone"
             for m in members:
                 try:
                     db.table("notifications").insert({
@@ -415,9 +371,7 @@ async def send_message(
         raise HTTPException(500, str(e))
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# AI MENTOR INSIDE A DM CONVERSATION
-# ═══════════════════════════════════════════════════════════════════════
+# ── AI MENTOR IN DM ───────────────────────────────────────────────────────────
 
 @router.post("/conversations/{conversation_id}/ai-message")
 async def send_ai_message(
@@ -426,7 +380,7 @@ async def send_ai_message(
     user: dict = Depends(get_current_user),
 ):
     try:
-        db = _db()
+        db         = _db()
         _assert_member(db, conversation_id, user["id"])
 
         quota      = _get_or_create_quota(db, user["id"])
@@ -461,14 +415,14 @@ async def send_ai_message(
                                 "upgrade_url": "/premium",
                             })
                         raise HTTPException(402, detail={
-                            "code":      "quota_exceeded",
-                            "message":   "Free AI messages used. Watch an ad to continue.",
-                            "free_used": quota.get("free_used", 0),
-                            "ads_today": ads_today,
+                            "code":       "quota_exceeded",
+                            "message":    "Free AI messages used. Watch an ad to continue.",
+                            "free_used":  quota.get("free_used", 0),
+                            "ads_today":  _get_ads_today(quota, now),
                             "max_ads_day": MAX_AD_UNLOCKS_PER_DAY,
                         })
 
-        # Build history
+        # Build message history
         history_res = (
             db.table("messages")
             .select("sender_type, content")
@@ -477,8 +431,8 @@ async def send_ai_message(
             .limit(20)
             .execute()
         )
-        raw_history  = list(reversed(history_res.data or []))
-        ai_messages  = [
+        raw_history = list(reversed(history_res.data or []))
+        ai_messages = [
             {
                 "role":    "user" if h.get("sender_type") == "user" else "assistant",
                 "content": h["content"],
@@ -496,10 +450,40 @@ async def send_ai_message(
         except Exception:
             user_profile = {}
 
-        result     = await ai_service.mentor_chat(
-            messages=ai_messages, user_profile=user_profile
-        )
-        ai_content = result.get("content") or "I'm here to help! Ask me anything. 💡"
+        # FIX: Call ai_service.mentor_chat() with a robust fallback chain.
+        # If mentor_chat is unavailable or throws, fall back to ai_service.chat().
+        # If chat also fails, return a graceful canned response so the endpoint
+        # never returns a 500 to the client.
+        ai_content = None
+        model_used = "ai"
+
+        try:
+            result     = await ai_service.mentor_chat(
+                messages=ai_messages, user_profile=user_profile
+            )
+            ai_content = result.get("content")
+            model_used = result.get("model", "ai")
+        except Exception as mentor_err:
+            logger.warning(
+                f"mentor_chat failed for conv {conversation_id}: {mentor_err}. "
+                "Falling back to ai_service.chat()"
+            )
+            try:
+                result     = await ai_service.chat(
+                    ai_messages, system=None, max_tokens=800
+                )
+                ai_content = result.get("content")
+                model_used = result.get("model", "ai")
+            except Exception as chat_err:
+                logger.error(
+                    f"chat fallback also failed for conv {conversation_id}: {chat_err}"
+                )
+
+        if not ai_content:
+            ai_content = (
+                "I'm your RiseUp AI wealth mentor! I'm experiencing a brief "
+                "connectivity issue. Please try again in a moment. 🔄"
+            )
 
         # Persist user message
         db.table("messages").insert({
@@ -519,7 +503,6 @@ async def send_ai_message(
             "is_read":         True,
         }).execute().data[0]
 
-        # Bump conversation
         try:
             db.table("conversations") \
                 .update({"updated_at": datetime.now(timezone.utc).isoformat()}) \
@@ -534,9 +517,9 @@ async def send_ai_message(
             _save_quota(db, user["id"], quota)
 
         return {
-            "message":    ai_msg,
-            "content":    ai_content,
-            "model":      result.get("model", "ai"),
+            "message":  ai_msg,
+            "content":  ai_content,
+            "model":    model_used,
             "quota": {
                 "free_used":      quota.get("free_used", 0),
                 "free_remaining": max(0, FREE_MSGS_PER_WINDOW - quota.get("free_used", 0)),
@@ -552,9 +535,7 @@ async def send_ai_message(
         raise HTTPException(500, str(e))
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# USER SEARCH
-# ═══════════════════════════════════════════════════════════════════════
+# ── USER SEARCH ───────────────────────────────────────────────────────────────
 
 @router.get("/users/search")
 async def search_users(
@@ -578,7 +559,7 @@ async def search_users(
         )
         users = []
         for u in (res.data or []):
-            row = dict(u)
+            row              = dict(u)
             row["is_online"] = _is_online_from_last_seen(row.get("last_seen"), now)
             users.append(row)
 
@@ -588,9 +569,7 @@ async def search_users(
         raise HTTPException(500, str(e))
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# QUOTA
-# ═══════════════════════════════════════════════════════════════════════
+# ── QUOTA ─────────────────────────────────────────────────────────────────────
 
 @router.get("/ai-quota")
 async def get_ai_quota(user: dict = Depends(get_current_user)):
@@ -625,9 +604,7 @@ async def get_ai_quota(user: dict = Depends(get_current_user)):
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# PRIVATE HELPERS
-# ═══════════════════════════════════════════════════════════════════════
+# ── HELPERS ───────────────────────────────────────────────────────────────────
 
 def _assert_member(db, conversation_id: str, user_id: str):
     member = (
