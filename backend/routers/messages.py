@@ -10,6 +10,7 @@ v6 fixes:
   • Uses NULL sender_id for AI messages with proper sender_type handling
   • Auto-creates AI system profile if not exists (global compatible)
   • FIX: Added missing user_id column to send_message for DM compatibility
+  • FIX: MessageSend class defined before use to fix NameError
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -34,6 +35,17 @@ ONLINE_THRESHOLD_SECS  = 120
 # Global AI System User - deterministic UUID v5
 AI_USER_ID = str(uuid.uuid5(uuid.NAMESPACE_DNS, "riseup.ai.system"))
 AI_USER_EMAIL = "ai@riseup.system"
+
+
+# FIX: Classes must be defined BEFORE they're used in function signatures
+class MessageSend(BaseModel):
+    content: str
+    media_url: Optional[str] = None
+
+
+class AiMessageRequest(BaseModel):
+    content: str
+    ad_unlocked: bool = False
 
 
 def _db():
