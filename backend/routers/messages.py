@@ -1,12 +1,15 @@
 """
-routers/messages.py — RiseUp Messaging System (Production v5)
+routers/messages.py — RiseUp Messaging System (Production v6)
 
-v5 fixes:
+v6 fixes:
+  • Fixed DM routing: @ai prefix triggers AI in mixed chats, regular text goes to peer
+  • Added invite-ai endpoint for persistent AI participation in DMs
+  • Added ai-status endpoint to check if AI is in conversation
   • send_ai_message: ai_service.mentor_chat() wrapped in try/except with
     automatic fallback to ai_service.chat() — eliminates "Connection issue"
     when mentor_chat is unavailable or throws.
   • get_conversations: is_online computed dynamically from last_seen.
-  • All original v4 improvements retained.
+  • All original v4/v5 improvements retained.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -532,6 +535,93 @@ async def send_ai_message(
         raise
     except Exception as e:
         logger.error(f"send_ai_message {conversation_id}: {e}")
+        raise HTTPException(500, str(e))
+
+
+# ── AI IN DM ─────────────────────────────────────────────────────────────────
+
+@router.post("/conversations/{conversation_id}/invite-ai")
+async def invite_ai_to_conversation(
+    conversation_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """
+    Invite RiseUp AI to join a direct message conversation.
+    Creates a system message and marks the conversation as having AI present.
+    """
+    try:
+        db = _db()
+        _assert_member(db, conversation_id, user["id"])
+        
+        # Check if this is a direct message conversation
+        convo_res = db.table("conversations").select("type").eq("id", conversation_id).single().execute()
+        if not convo_res.data or convo_res.data.get("type") != "direct":
+            raise HTTPException(400, "AI can only be invited to direct message conversations")
+        
+        # Check if AI is already invited
+        existing = db.table("conversation_members").select("*") \
+            .eq("conversation_id", conversation_id) \
+            .eq("user_id", "ai") \
+            .execute().data
+        
+        if existing:
+            return {"ai_joined": True, "conversation_id": conversation_id, "already_present": True}
+        
+        # Add AI as a special member
+        db.table("conversation_members").insert({
+            "conversation_id": conversation_id,
+            "user_id": "ai",
+            "joined_at": datetime.now(timezone.utc).isoformat(),
+        }).execute()
+        
+        # Add system message about AI joining
+        db.table("messages").insert({
+            "conversation_id": conversation_id,
+            "sender_id": None,
+            "sender_type": "system",
+            "content": "RiseUp AI has been invited to this conversation. Use @ai to ask questions.",
+            "is_read": True,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }).execute()
+        
+        # Update conversation timestamp
+        db.table("conversations") \
+            .update({"updated_at": datetime.now(timezone.utc).isoformat()}) \
+            .eq("id", conversation_id) \
+            .execute()
+        
+        return {"ai_joined": True, "conversation_id": conversation_id}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"invite_ai_to_conversation {conversation_id}: {e}")
+        raise HTTPException(500, str(e))
+
+
+@router.get("/conversations/{conversation_id}/ai-status")
+async def get_ai_status(
+    conversation_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """
+    Check if AI has been invited to this conversation.
+    """
+    try:
+        db = _db()
+        _assert_member(db, conversation_id, user["id"])
+        
+        ai_member = db.table("conversation_members").select("*") \
+            .eq("conversation_id", conversation_id) \
+            .eq("user_id", "ai") \
+            .execute().data
+        
+        return {"ai_joined": bool(ai_member), "conversation_id": conversation_id}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"get_ai_status {conversation_id}: {e}")
         raise HTTPException(500, str(e))
 
 
