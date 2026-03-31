@@ -8,6 +8,7 @@
 //  3. Back navigation works via context.pop() (caller uses context.push).
 //  4. DM vs AI message routing fixed: uses @ai prefix to trigger AI in mixed chats.
 //  5. Invite AI now calls backend endpoint to persist AI participation.
+//  6. FIX: Invite AI button working - proper async handling with sync wrapper.
 
 import 'dart:async';
 import 'dart:convert';
@@ -520,24 +521,33 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // AI join in peer DM
+  // AI join in peer DM - FIX: Sync wrapper for GestureDetector
   // ─────────────────────────────────────────────────────────────────────────
-  Future<void> _inviteAI() async {
+  void _inviteAI() {
     if (widget.userId.isEmpty || widget.userId == 'ai') return;
     
+    HapticFeedback.lightImpact();
+    
+    // Call async method but don't block UI - fire and forget with error handling
+    _doInviteAI();
+  }
+
+  Future<void> _doInviteAI() async {
     try {
       await api.inviteAIToConversation(widget.userId);
-      setState(() {
-        _aiJoined = true;
-        _msgs.add(_Msg(
-          content: '🤖 **RiseUp AI has joined the conversation!**\n\n'
-                   'Hey! I\'m here to help with wealth questions, strategies or '
-                   'anything you need. Just ask! 💡\n\n'
-                   'Tip: Use "@ai your question" to ask me anything.',
-          sender: 'RiseUp AI', avatar: '🤖', isMe: false, isAI: true,
-        ));
-      });
-      _scrollDown();
+      if (mounted) {
+        setState(() {
+          _aiJoined = true;
+          _msgs.add(_Msg(
+            content: '🤖 **RiseUp AI has joined the conversation!**\n\n'
+                     'Hey! I\'m here to help with wealth questions, strategies or '
+                     'anything you need. Just ask! 💡\n\n'
+                     'Tip: Use "@ai your question" to ask me anything.',
+            sender: 'RiseUp AI', avatar: '🤖', isMe: false, isAI: true,
+          ));
+        });
+        _scrollDown();
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -847,7 +857,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           Padding(
             padding: const EdgeInsets.only(right: 6, top: 8, bottom: 8),
             child: GestureDetector(
-              onTap: () { HapticFeedback.lightImpact(); _inviteAI(); },
+              onTap: _inviteAI,  // FIX: Calls sync wrapper method
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
