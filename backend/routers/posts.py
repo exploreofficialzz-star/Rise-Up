@@ -12,6 +12,12 @@ Fix log:
           error logging so the real failure reason appears in Render logs.
   v3.2 — create_post / get_feed: profile now always returns avatar_url so
           Flutter PostCard and CreatePostScreen can display real avatars.
+  v3.3 — _ensure_bucket: removed file_size_limit from create_bucket options.
+          Supabase was returning 400 "Payload too large" on the bucket
+          creation call itself because the plan's storage limit is lower than
+          500 MB — this silently swallowed the create call and left the bucket
+          non-existent, so every subsequent upload got "Bucket not found".
+          File-size enforcement is handled at the endpoint level (unchanged).
 """
 import logging
 import uuid
@@ -907,28 +913,32 @@ async def delete_status(status_id: str, user: dict = Depends(get_current_user)):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FIX v3.1: upload_status_media
+# _ensure_bucket
 #
-# ROOT CAUSE OF 500:
-#   The 'status-media' Supabase Storage bucket did not exist.
-#   The old code called sb.storage.from_(bucket).upload() directly —
-#   Supabase returned "Bucket not found", the except block re-raised it as
-#   HTTPException(500), and Flutter showed "Upload failed".
+# FIX v3.3: Removed file_size_limit from create_bucket options.
+#
+# ROOT CAUSE OF ORIGINAL 500:
+#   Supabase's Management API was returning 400 "Payload too large" when we
+#   passed file_size_limit=524288000 (500 MB) because the project's storage
+#   plan limit is lower than 500 MB. The create_bucket call silently failed
+#   (we only logged a warning), so the bucket was never created, and every
+#   subsequent upload got "Bucket not found" → 500.
 #
 # FIX:
-#   1. Check if bucket exists via get_bucket(). If it throws, create it.
-#   2. Bucket is created as PUBLIC so get_public_url() returns a usable URL.
-#   3. All errors are now logged with logger.error() so Render shows the real
-#      failure reason instead of a bare exception string.
-#   4. Also handles the 'post-media' bucket for create_post uploads —
-#      both screens use this same endpoint, both buckets are auto-created.
+#   Create the bucket without file_size_limit. File size is already enforced
+#   at the endpoint level (see size_limit check below), so there is no
+#   security or UX regression from removing it here.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _ensure_bucket(sb, bucket_name: str) -> None:
     """
     Create a public Supabase Storage bucket if it doesn't already exist.
-    Swallows 'already exists' errors so it's safe to call on every request.
+    Safe to call on every request — swallows 'already exists' errors.
     Uses service-role client so no RLS blocks the creation.
+
+    NOTE: Do NOT pass file_size_limit here. Supabase rejects bucket creation
+    with that field if the value exceeds the project plan's storage limit.
+    Endpoint-level size checks handle the 500 MB / 50 MB enforcement instead.
     """
     try:
         sb.storage.get_bucket(bucket_name)
@@ -937,12 +947,10 @@ def _ensure_bucket(sb, bucket_name: str) -> None:
         try:
             sb.storage.create_bucket(
                 bucket_name,
-                options={"public": True, "file_size_limit": 524288000},  # 500 MB
+                options={"public": True},  # FIX: removed file_size_limit
             )
             logger.info(f"Created Supabase Storage bucket: {bucket_name}")
         except Exception as create_err:
-            # Log but don't raise — if the bucket actually exists and get_bucket
-            # just failed transiently, the upload will succeed anyway.
             err_str = str(create_err).lower()
             if "already exists" not in err_str and "duplicate" not in err_str:
                 logger.warning(f"Could not create bucket '{bucket_name}': {create_err}")
@@ -969,7 +977,7 @@ async def upload_status_media(
     if ct == "image/jpg":
         ct = "image/jpeg"
 
-    # FIX: If content_type is missing or blank, infer from filename extension
+    # If content_type is missing or blank, infer from filename extension
     if not ct or ct == "application/octet-stream":
         fname = (file.filename or "").lower()
         ext_guess = fname.rsplit(".", 1)[-1] if "." in fname else ""
@@ -1015,7 +1023,7 @@ async def upload_status_media(
         bucket   = "status-media"
         filename = f"{user['id']}/{uuid.uuid4()}.{ext}"
 
-        # ── CRITICAL FIX: ensure bucket exists before uploading ──────────────
+        # Ensure bucket exists before uploading (creates it if missing)
         _ensure_bucket(sb, bucket)
 
         # Upload file bytes
@@ -1052,7 +1060,6 @@ async def upload_status_media(
     except HTTPException:
         raise
     except Exception as e:
-        # Log the real error so it shows up in Render logs
         logger.error(
             f"upload_status_media FAILED: user={user.get('id')} "
             f"file={file.filename} ct={ct} size={len(contents)} "
