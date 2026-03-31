@@ -1036,8 +1036,28 @@ class ApiService {
   /// Silently swallows errors — best-effort, non-blocking.
   Future<void> setOffline() async {
     try {
-      await _dio.post('/messages/presence/offline', data: {});
+      await _dio.delete('/messages/presence', data: {});
     } catch (_) {}
+  }
+
+  /// Invite AI to join a DM conversation.
+  /// Returns {ai_joined: true} on success.
+  Future<Map<String, dynamic>> inviteAIToConversation(String conversationId) async {
+    try {
+      final r = await _dio.post(
+          '/messages/conversations/$conversationId/invite-ai', data: {});
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Check if AI has been invited to this conversation.
+  /// Returns {ai_joined: bool}
+  Future<Map<String, dynamic>> checkAIInConversation(String conversationId) async {
+    try {
+      final r = await _dio.get(
+          '/messages/conversations/$conversationId/ai-status');
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
   }
 
   // ── Groups ────────────────────────────────────────────────────────────────
