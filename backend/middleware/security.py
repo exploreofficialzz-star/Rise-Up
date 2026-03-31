@@ -1,8 +1,14 @@
 """
 RiseUp Security Middleware
 - Security headers on every response
-- Request size limits
+- Request size limits (per-route, not global)
 - Basic bot / abuse detection
+
+FIX v2: Replaced single MAX_BODY_SIZE (512 KB) with per-route limits.
+  Upload routes (/upload-media, /avatar) → 500 MB
+  All other POST/PUT/PATCH                → 512 KB
+  The old 512 KB global limit was blocking every image and video upload
+  with a 413 before the request even reached the FastAPI router.
 """
 import logging
 import time
@@ -12,8 +18,12 @@ from starlette.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
-# Max body size: 512 KB (prevents giant AI prompt abuse)
-MAX_BODY_SIZE = 512 * 1024
+# ── Body size limits ────────────────────────────────────────────────────────
+MAX_BODY_SIZE_DEFAULT = 512 * 1024          # 512 KB  — general API calls
+MAX_BODY_SIZE_UPLOAD  = 500 * 1024 * 1024  # 500 MB  — media upload routes
+
+# Any path segment that indicates a file upload endpoint
+_UPLOAD_PATH_SEGMENTS = ("/upload-media", "/upload_media", "/avatar")
 
 # Paths that are completely public (no auth, no rate limit counting)
 PUBLIC_PATHS = {"/", "/health", "/docs", "/openapi.json"}
@@ -35,20 +45,30 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             logger.warning(f"Blocked suspicious path: {path} from {request.client}")
             return JSONResponse({"detail": "Not found"}, status_code=404)
 
-        # Check body size for mutation requests
+        # ── Per-route body size check ───────────────────────────────────────
+        # Upload routes are allowed up to 500 MB.
+        # Everything else stays at the original 512 KB limit.
         if request.method in ("POST", "PUT", "PATCH"):
             content_length = request.headers.get("content-length")
-            if content_length and int(content_length) > MAX_BODY_SIZE:
-                return JSONResponse(
-                    {"detail": "Request body too large"},
-                    status_code=413
-                )
+            if content_length:
+                is_upload = any(seg in path for seg in _UPLOAD_PATH_SEGMENTS)
+                limit = MAX_BODY_SIZE_UPLOAD if is_upload else MAX_BODY_SIZE_DEFAULT
+                if int(content_length) > limit:
+                    label = "500 MB" if is_upload else "512 KB"
+                    logger.warning(
+                        f"Body too large: {int(content_length)} bytes on {path} "
+                        f"(limit {label})"
+                    )
+                    return JSONResponse(
+                        {"detail": f"Request body too large. Maximum: {label}"},
+                        status_code=413,
+                    )
 
         start = time.time()
         response: Response = await call_next(request)
         duration = time.time() - start
 
-        # ── Security Headers ──────────────────────────────────
+        # ── Security Headers ───────────────────────────────────────────────
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-XSS-Protection"] = "1; mode=block"
