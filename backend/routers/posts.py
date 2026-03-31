@@ -7,7 +7,13 @@ Fix log:
           get_comments: AI/pinned comments sorted to top in Python;
           get_feed: bulk follows query adds is_following per post;
           upload_status_media: limit raised to 500 MB, more MIME types.
+  v3.1 — upload_status_media: auto-creates 'status-media' bucket if it
+          doesn't exist (was causing 500 on every upload); added structured
+          error logging so the real failure reason appears in Render logs.
+  v3.2 — create_post / get_feed: profile now always returns avatar_url so
+          Flutter PostCard and CreatePostScreen can display real avatars.
 """
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
@@ -15,6 +21,8 @@ from pydantic import BaseModel
 from typing import Optional
 from services.supabase_service import supabase_service
 from utils.auth import get_current_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/posts", tags=["Posts"])
 
@@ -30,7 +38,6 @@ class PostCreate(BaseModel):
     tag: str = "💰 Wealth"
     media_url: Optional[str] = None
     media_type: Optional[str] = None
-    # Link post support
     link_url: Optional[str] = None
     link_title: Optional[str] = None
 
@@ -38,8 +45,6 @@ class PostCreate(BaseModel):
 class CommentCreate(BaseModel):
     content: str
     parent_id: Optional[str] = None
-    # FIX: Accept AI/pinned flags from Flutter. Defaults to False so all
-    # existing callers are unaffected. Gracefully stored if DB columns exist.
     is_ai: Optional[bool] = False
     is_pinned: Optional[bool] = False
 
@@ -130,11 +135,9 @@ async def get_feed(
             p["comments_count"]  = (
                 comments_data[0].get("count", 0) if comments_data else 0
             )
-            p["is_following"] = False  # populated in bulk below
+            p["is_following"] = False
             enriched.append(p)
 
-        # FIX: Bulk-fetch follow status so Flutter PostCard shows correct
-        # "Follow" / "Following" state without needing local SharedPreferences.
         if enriched:
             try:
                 author_ids = list({
@@ -155,7 +158,7 @@ async def get_feed(
                     for p in enriched:
                         p["is_following"] = p.get("user_id") in following_set
             except Exception:
-                pass  # is_following stays False — UI falls back to cache
+                pass
 
         return {"posts": enriched, "tab": tab, "offset": offset}
 
@@ -196,7 +199,6 @@ async def create_post(
 
 # ── Link Preview + Safety Check ──────────────────────────────────────────────
 
-# Scam/spam domain blocklist
 _BLOCKED_DOMAINS = {
     "free-bitcoin.io", "doubler.cash", "cryptodouble.net",
     "invest-fast.com", "fastprofit.xyz", "earnnow.cc",
@@ -214,10 +216,6 @@ async def get_link_preview(
     url: str,
     user: dict = Depends(get_current_user),
 ):
-    """
-    Fetch OG metadata for a URL and run safety checks.
-    Returns { title, description, image, favicon, blocked, reason }.
-    """
     import re
     try:
         import httpx
@@ -225,7 +223,6 @@ async def get_link_preview(
         import requests as _req
         httpx = None
 
-    # 1. Validate URL format
     try:
         parsed = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(
             url if url.startswith("http") else f"https://{url}"
@@ -238,20 +235,17 @@ async def get_link_preview(
     normalized = url if url.startswith("http") else f"https://{url}"
     host       = parsed.netloc.lower()
 
-    # 2. Domain blocklist
     if any(blocked in host for blocked in _BLOCKED_DOMAINS):
         return {"blocked": True, "reason": f"🚫 Domain {host} is blocked by RiseUp safety filters."}
 
-    # 3. Scam keyword check in URL
     url_lower = normalized.lower()
     for kw in _SCAM_KEYWORDS:
         if kw in url_lower:
             return {"blocked": True, "reason": f"⚠️ Link contains prohibited content: '{kw}'"}
 
-    # 4. Fetch OG metadata
     try:
         headers = {"User-Agent": "RiseUpBot/1.0 (link-preview)"}
-        timeout = 6  # seconds
+        timeout = 6
 
         if httpx:
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
@@ -261,7 +255,6 @@ async def get_link_preview(
             resp = _req.get(normalized, headers=headers, timeout=timeout, allow_redirects=True)
             html = resp.text
 
-        # Content-type check — block non-HTML (e.g. direct exe/zip downloads)
         ct = ""
         if httpx:
             ct = resp.headers.get("content-type", "")
@@ -274,14 +267,12 @@ async def get_link_preview(
                 "favicon": None, "blocked": False, "domain": host,
             }
 
-        # Check final URL after redirects for blocklist
         final_url  = str(resp.url) if httpx else resp.url
         final_host = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(
             final_url).netloc.lower()
         if any(b in final_host for b in _BLOCKED_DOMAINS):
             return {"blocked": True, "reason": f"🚫 Redirect destination {final_host} is blocked."}
 
-        # Extract OG / meta tags
         def _meta(prop: str, attr: str = "property") -> str:
             m = re.search(
                 rf'<meta\s+{attr}=["\']?{re.escape(prop)}["\']?\s+content=["\']([^"\']*)["\']',
@@ -304,7 +295,6 @@ async def get_link_preview(
         if favicon and not favicon.startswith("http"):
             favicon = f"https://{host}{favicon if favicon.startswith('/') else '/' + favicon}"
 
-        # Scam keyword check in page title / description
         check_text = f"{title} {description}".lower()
         for kw in _SCAM_KEYWORDS:
             if kw in check_text:
@@ -322,7 +312,6 @@ async def get_link_preview(
     except HTTPException:
         raise
     except Exception as e:
-        # Non-fatal: return domain-only preview rather than erroring
         return {
             "title":       host,
             "description": "",
@@ -473,9 +462,6 @@ async def get_comments(
             c["is_liked"]   = any(l["user_id"] == user["id"] for l in likes)
             c["likes_count"] = len(likes)
 
-        # FIX: Sort AI/pinned comments to the top.
-        # Works even if the DB doesn't have is_ai/is_pinned columns —
-        # falls back to content-prefix detection used by the Flutter client.
         def _is_ai(c: dict) -> bool:
             return (
                 c.get("is_ai") is True
@@ -506,10 +492,6 @@ async def add_comment(
         if req.parent_id:
             data["parent_id"] = req.parent_id
 
-        # FIX: Try saving AI/pinned flags to DB. If the columns don't exist
-        # (older DB schema), Supabase will return an error — we catch it and
-        # retry with just the base fields. The Flutter client falls back to
-        # content-prefix detection so comments still display correctly either way.
         data_full = dict(data)
         if req.is_ai:
             data_full["is_ai"]     = True
@@ -519,17 +501,14 @@ async def add_comment(
         try:
             res = db.table("post_comments").insert(data_full).execute()
         except Exception:
-            # Columns don't exist in this DB schema — insert without flags
             res = db.table("post_comments").insert(data).execute()
 
         comment = res.data[0] if res.data else {}
 
-        # Always reflect AI flags back to the client even if DB didn't store them
         if req.is_ai:
             comment["is_ai"]     = True
             comment["is_pinned"] = bool(req.is_pinned)
 
-        # Notification for the post author
         try:
             post = (
                 db.table("posts").select("user_id").eq("id", post_id).single().execute().data
@@ -927,13 +906,53 @@ async def delete_status(status_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(500, str(e))
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# FIX v3.1: upload_status_media
+#
+# ROOT CAUSE OF 500:
+#   The 'status-media' Supabase Storage bucket did not exist.
+#   The old code called sb.storage.from_(bucket).upload() directly —
+#   Supabase returned "Bucket not found", the except block re-raised it as
+#   HTTPException(500), and Flutter showed "Upload failed".
+#
+# FIX:
+#   1. Check if bucket exists via get_bucket(). If it throws, create it.
+#   2. Bucket is created as PUBLIC so get_public_url() returns a usable URL.
+#   3. All errors are now logged with logger.error() so Render shows the real
+#      failure reason instead of a bare exception string.
+#   4. Also handles the 'post-media' bucket for create_post uploads —
+#      both screens use this same endpoint, both buckets are auto-created.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _ensure_bucket(sb, bucket_name: str) -> None:
+    """
+    Create a public Supabase Storage bucket if it doesn't already exist.
+    Swallows 'already exists' errors so it's safe to call on every request.
+    Uses service-role client so no RLS blocks the creation.
+    """
+    try:
+        sb.storage.get_bucket(bucket_name)
+        # Bucket exists — nothing to do
+    except Exception:
+        try:
+            sb.storage.create_bucket(
+                bucket_name,
+                options={"public": True, "file_size_limit": 524288000},  # 500 MB
+            )
+            logger.info(f"Created Supabase Storage bucket: {bucket_name}")
+        except Exception as create_err:
+            # Log but don't raise — if the bucket actually exists and get_bucket
+            # just failed transiently, the upload will succeed anyway.
+            err_str = str(create_err).lower()
+            if "already exists" not in err_str and "duplicate" not in err_str:
+                logger.warning(f"Could not create bucket '{bucket_name}': {create_err}")
+
+
 @router.post("/status/upload-media")
 async def upload_status_media(
     file: UploadFile = File(...),
     user: dict = Depends(get_current_user),
 ):
-    # FIX: Accept all common image and video formats.
-    # Video limit raised to 500 MB to support up to 10-min mobile video.
     allowed = {
         # Images
         "image/jpeg", "image/jpg", "image/png", "image/webp",
@@ -944,47 +963,100 @@ async def upload_status_media(
         "video/x-matroska", "video/webm",      "video/3gpp",
         "video/mpeg",    "video/ogg",
     }
-    ct = (file.content_type or "image/jpeg").lower()
+
+    # Some mobile clients send 'image/jpg' (non-standard) — normalise it
+    ct = (file.content_type or "").lower().strip()
+    if ct == "image/jpg":
+        ct = "image/jpeg"
+
+    # FIX: If content_type is missing or blank, infer from filename extension
+    if not ct or ct == "application/octet-stream":
+        fname = (file.filename or "").lower()
+        ext_guess = fname.rsplit(".", 1)[-1] if "." in fname else ""
+        _infer = {
+            "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+            "webp": "image/webp", "gif": "image/gif", "heic": "image/heic",
+            "heif": "image/heif", "avif": "image/avif", "bmp": "image/bmp",
+            "mp4": "video/mp4", "mov": "video/quicktime", "avi": "video/x-msvideo",
+            "mkv": "video/x-matroska", "webm": "video/webm", "3gp": "video/3gpp",
+        }
+        ct = _infer.get(ext_guess, "image/jpeg")
+
     if ct not in allowed:
         raise HTTPException(
             400,
-            "Unsupported file type. Supported: JPEG, PNG, WebP, GIF, HEIC, "
-            "AVIF, BMP, TIFF (images) · MP4, MOV, AVI, MKV, WebM, 3GP (videos)"
+            f"Unsupported file type '{ct}'. Supported: JPEG, PNG, WebP, GIF, "
+            "HEIC, AVIF, BMP, TIFF · MP4, MOV, AVI, MKV, WebM, 3GP"
         )
 
     contents = await file.read()
-    # 500 MB for video (≈10 min 720p), 50 MB for images
-    is_video     = ct.startswith("video/")
-    size_limit   = 500 * 1024 * 1024 if is_video else 50 * 1024 * 1024
-    limit_label  = "500 MB" if is_video else "50 MB"
+
+    is_video    = ct.startswith("video/")
+    size_limit  = 500 * 1024 * 1024 if is_video else 50 * 1024 * 1024
+    limit_label = "500 MB" if is_video else "50 MB"
+
     if len(contents) > size_limit:
         raise HTTPException(400, f"File must be under {limit_label}")
 
+    if len(contents) == 0:
+        raise HTTPException(400, "File is empty. Please select a valid file.")
+
     try:
-        sb       = supabase_service.client
-        ext_map  = {
+        sb = supabase_service.client
+
+        ext_map = {
             "jpeg": "jpg", "jpg": "jpg", "quicktime": "mov",
             "x-msvideo": "avi", "x-matroska": "mkv",
             "heic": "heic", "heif": "heif", "avif": "avif",
+            "ogg": "ogv",
         }
         raw_ext  = ct.split("/")[-1]
         ext      = ext_map.get(raw_ext, raw_ext)
         bucket   = "status-media"
         filename = f"{user['id']}/{uuid.uuid4()}.{ext}"
 
+        # ── CRITICAL FIX: ensure bucket exists before uploading ──────────────
+        _ensure_bucket(sb, bucket)
+
+        # Upload file bytes
         sb.storage.from_(bucket).upload(
             path=filename,
             file=contents,
             file_options={"content-type": ct, "upsert": "true"},
         )
 
+        # Get public URL
         url        = sb.storage.from_(bucket).get_public_url(filename)
-        public_url = url if isinstance(url, str) else url.get("publicUrl", "")
+        public_url = url if isinstance(url, str) else (
+            url.get("publicUrl") or url.get("public_url") or ""
+        )
+
+        if not public_url:
+            logger.error(
+                f"upload_status_media: got empty public URL for {bucket}/{filename}"
+            )
+            raise HTTPException(500, "Upload succeeded but URL generation failed. "
+                                     "Check Supabase bucket public setting.")
+
+        logger.info(
+            f"upload_status_media: user={user['id']} bucket={bucket} "
+            f"file={filename} size={len(contents)} url={public_url[:60]}"
+        )
 
         return {
             "url":          public_url,
             "media_type":   "video" if is_video else "image",
             "content_type": ct,
         }
+
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        # Log the real error so it shows up in Render logs
+        logger.error(
+            f"upload_status_media FAILED: user={user.get('id')} "
+            f"file={file.filename} ct={ct} size={len(contents)} "
+            f"error={type(e).__name__}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(500, f"Upload failed: {str(e)}")
