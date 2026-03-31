@@ -67,9 +67,6 @@ class ApiService {
   ApiService._internal() {
     _dio = Dio(BaseOptions(
       baseUrl: kApiBaseUrl,
-      // FIX: Reduced from 30s → 12s connect, 60s → 25s receive.
-      // On mobile, a server that won't respond in 12s won't respond at all.
-      // Faster timeouts = faster error feedback = less perceived "hang".
       connectTimeout: const Duration(seconds: 12),
       receiveTimeout: const Duration(seconds: 25),
       headers: {'Content-Type': 'application/json'},
@@ -524,8 +521,6 @@ class ApiService {
   }
 
   // ── Link preview + spam check ─────────────────────────────────────────────
-  // Returns { title, description, image, favicon, blocked, reason }
-  // Blocked = true if the backend safety filter catches scam/spam content.
   Future<Map<String, dynamic>> getLinkPreview(String url) async {
     try {
       final r = await _dio.get('/posts/link-preview',
@@ -654,8 +649,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  // FIX: Added isAI + isPinned so AI comments from home feed and comments
-  // screen are stored correctly and can be separated on read.
   Future<Map<String, dynamic>> addComment(String postId, String content,
       {String? parentId, bool isAI = false, bool isPinned = false}) async {
     try {
@@ -1024,6 +1017,27 @@ class ApiService {
       final r = await _dio.get('/messages/ai-quota');
       return r.data as Map<String, dynamic>;
     } catch (e) { throw _handleError(e); }
+  }
+
+  // FIX: Added updatePresence and setOffline — called by MessagesScreen
+  // to maintain real-time online status via the backend presence system.
+
+  /// Ping the server to mark this user as online.
+  /// Called immediately on screen open + every 30 s via a Timer.
+  /// Silently swallows errors so a flaky connection never breaks the UI.
+  Future<void> updatePresence() async {
+    try {
+      await _dio.post('/messages/presence', data: {});
+    } catch (_) {}
+  }
+
+  /// Mark this user as offline.
+  /// Called on dispose() and when the app is backgrounded/paused.
+  /// Silently swallows errors — best-effort, non-blocking.
+  Future<void> setOffline() async {
+    try {
+      await _dio.post('/messages/presence/offline', data: {});
+    } catch (_) {}
   }
 
   // ── Groups ────────────────────────────────────────────────────────────────
