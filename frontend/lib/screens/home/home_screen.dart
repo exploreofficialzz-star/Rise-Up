@@ -216,21 +216,21 @@ class _PostCardSkeleton extends StatelessWidget {
         const _Shimmer(height: 180, radius: 12),
         const SizedBox(height: 14),
         // ── action row
-        Row(children: [
-          const _Shimmer(width: 55, height: 18, radius: 9),
-          const SizedBox(width: 18),
-          const _Shimmer(width: 55, height: 18, radius: 9),
-          const SizedBox(width: 18),
-          const _Shimmer(width: 55, height: 18, radius: 9),
-          const Spacer(),
-          const _Shimmer(width: 22, height: 22, radius: 11),
+        Row(children: const [
+          _Shimmer(width: 55, height: 18, radius: 9),
+          SizedBox(width: 18),
+          _Shimmer(width: 55, height: 18, radius: 9),
+          SizedBox(width: 18),
+          _Shimmer(width: 55, height: 18, radius: 9),
+          Spacer(),
+          _Shimmer(width: 22, height: 22, radius: 11),
         ]),
         const SizedBox(height: 12),
         // ── AI button row
-        Row(children: [
-          const Expanded(child: _Shimmer(height: 36, radius: 10)),
-          const SizedBox(width: 8),
-          const Expanded(child: _Shimmer(height: 36, radius: 10)),
+        const Row(children: [
+          Expanded(child: _Shimmer(height: 36, radius: 10)),
+          SizedBox(width: 8),
+          Expanded(child: _Shimmer(height: 36, radius: 10)),
         ]),
       ]),
     );
@@ -238,8 +238,9 @@ class _PostCardSkeleton extends StatelessWidget {
 }
 
 /// Stories row skeleton (5 circles).
+// FIX: added super.key so AnimatedSwitcher can use key: const ValueKey(...)
 class _StoriesSkeleton extends StatelessWidget {
-  const _StoriesSkeleton({required this.isDark});
+  const _StoriesSkeleton({super.key, required this.isDark});
   final bool isDark;
 
   @override
@@ -252,9 +253,9 @@ class _StoriesSkeleton extends StatelessWidget {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         itemCount: 5,
-        itemBuilder: (_, __) => Padding(
-          padding: const EdgeInsets.only(right: 14),
-          child: Column(children: const [
+        itemBuilder: (_, __) => const Padding(
+          padding: EdgeInsets.only(right: 14),
+          child: Column(children: [
             _Shimmer(width: 58, height: 58, circle: true),
             SizedBox(height: 5),
             _Shimmer(width: 42, height: 10, radius: 5),
@@ -843,6 +844,7 @@ class _HomeScreenState extends State<HomeScreen>
             AnimatedSwitcher(
               duration: const Duration(milliseconds: 300),
               child: !_statusLoaded
+                  // FIX: _StoriesSkeleton now accepts super.key
                   ? _StoriesSkeleton(isDark: isDark, key: const ValueKey('story_skeleton'))
                   : SizedBox(
                       key: const ValueKey('story_real'),
@@ -1761,7 +1763,7 @@ class _FullScreenVideoPageState extends State<_FullScreenVideoPage> {
       ),
       body: Center(
         child: _hasError
-            ? Column(mainAxisAlignment: MainAxisAlignment.center, children: const [
+            ? const Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                 Icon(Icons.error_outline_rounded,
                     color: Colors.white54, size: 64),
                 SizedBox(height: 16),
@@ -1773,7 +1775,7 @@ class _FullScreenVideoPageState extends State<_FullScreenVideoPage> {
               ])
             : _ready && _chewieCtrl != null
                 ? Chewie(controller: _chewieCtrl!)
-                : Column(mainAxisAlignment: MainAxisAlignment.center, children: const [
+                : const Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                     CircularProgressIndicator(
                         color: AppColors.primary, strokeWidth: 2),
                     SizedBox(height: 16),
