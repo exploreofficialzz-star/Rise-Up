@@ -6,6 +6,13 @@
 //  4. Content moderation notice for all media posts
 //  5. Media preview with remove button
 //  6. 500-char limit with char counter
+//
+// FIX v2:
+//  • User header now loads real profile (avatar_url + full_name) from
+//    /progress/profile on initState instead of showing hardcoded 👤 / "You"
+//  • Avatar renders as NetworkImage when url starts with http, falls back
+//    to gradient + initial letter when no avatar is set
+//  • Profile load is non-blocking — screen appears instantly, avatar fades in
 
 import 'dart:async';
 import 'dart:typed_data';
@@ -22,10 +29,8 @@ import '../../services/api_service.dart';
 // Spam / scam domain list — enforced client-side before submission
 // ─────────────────────────────────────────────────────────────────────────────
 const _kBlockedDomains = <String>{
-  // Known crypto scam patterns
   'free-bitcoin.io', 'doubler.cash', 'cryptodouble.net',
   'invest-fast.com', 'fastprofit.xyz', 'earnnow.cc',
-  // Phishing domains pattern keywords — matched via contains check below
 };
 const _kScamKeywords = <String>[
   'double your', 'triple your', '1000% return', 'guaranteed profit',
@@ -99,7 +104,7 @@ class _CreatePostScreenState extends State<CreatePostScreen>
   XFile?    _mediaFile;
   Uint8List? _mediaBytes;
   String?   _mediaUrl;
-  String    _mediaType = 'image'; // 'image' | 'video'
+  String    _mediaType = 'image';
 
   // ── Hashtags ──────────────────────────────────────────────────────────────
   final Set<String> _hashtags = {};
@@ -108,6 +113,12 @@ class _CreatePostScreenState extends State<CreatePostScreen>
   _LinkPreview? _linkPreview;
   String?       _linkError;
   Timer?        _linkDebounce;
+
+  // ── FIX: Real user profile ────────────────────────────────────────────────
+  // Loaded asynchronously in initState so the screen opens instantly while
+  // the avatar fetches in the background.
+  String  _userName      = 'You';
+  String? _userAvatarUrl; // null = not loaded yet; empty = no avatar set
 
   static const _tags = [
     '💰 Wealth',     '📈 Investing',    '💼 Business',
@@ -120,6 +131,7 @@ class _CreatePostScreenState extends State<CreatePostScreen>
   void initState() {
     super.initState();
     _contentCtrl.addListener(_onTextChanged);
+    _loadProfile(); // FIX: load real profile on open
   }
 
   @override
@@ -134,12 +146,30 @@ class _CreatePostScreenState extends State<CreatePostScreen>
     super.dispose();
   }
 
+  // ── FIX: Load real profile (name + avatar) ────────────────────────────────
+  Future<void> _loadProfile() async {
+    try {
+      final data = await api.getProfile();
+      if (!mounted) return;
+      final profile = data['profile'] as Map? ?? data;
+      final name    = profile['full_name']?.toString()
+          ?? profile['name']?.toString()
+          ?? '';
+      final avatar  = profile['avatar_url']?.toString() ?? '';
+      setState(() {
+        if (name.isNotEmpty) _userName = name;
+        _userAvatarUrl = avatar; // empty string = no avatar, show initial
+      });
+    } catch (_) {
+      // Non-fatal: keep defaults ('You', no avatar)
+    }
+  }
+
   // ── Text listener: auto-detect hashtags ──────────────────────────────────
   void _onTextChanged() {
     final text = _contentCtrl.text;
     setState(() {
       _charCount = text.length;
-      // Extract #hashtags typed inline
       final matches = RegExp(r'#(\w+)').allMatches(text);
       for (final m in matches) {
         final tag = m.group(1)!.toLowerCase();
@@ -165,8 +195,6 @@ class _CreatePostScreenState extends State<CreatePostScreen>
       final picker = ImagePicker();
       XFile? file;
       if (isVideo) {
-        // Gallery: no hard duration cap at pick time (backend enforces 10 min)
-        // Camera: cap at 10 min
         file = await picker.pickVideo(
           source: source,
           maxDuration: source == ImageSource.camera
@@ -204,12 +232,9 @@ class _CreatePostScreenState extends State<CreatePostScreen>
   Future<void> _uploadMedia(XFile file,
       {required Uint8List bytes, required bool isVideo}) async {
     try {
-      // Detect actual MIME type from file name/extension
       final name    = file.name.toLowerCase();
       final extRaw  = name.contains('.') ? name.split('.').last : '';
       final mime    = _mimeFromExt(extRaw, isVideo: isVideo);
-      final subtype = mime.split('/').last;
-      final type    = mime.split('/').first;
 
       Map<String, dynamic> res;
       if (file.path.isNotEmpty) {
@@ -244,7 +269,6 @@ class _CreatePostScreenState extends State<CreatePostScreen>
     }
   }
 
-  // ── MIME detection ────────────────────────────────────────────────────────
   String _mimeFromExt(String ext, {required bool isVideo}) {
     const imgMap = {
       'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
@@ -286,7 +310,6 @@ class _CreatePostScreenState extends State<CreatePostScreen>
   Future<void> _validateLink(String rawUrl) async {
     final url = rawUrl.startsWith('http') ? rawUrl : 'https://$rawUrl';
 
-    // 1. Format check
     Uri? uri;
     try { uri = Uri.parse(url); } catch (_) {}
     if (uri == null || !uri.hasAuthority || uri.host.isEmpty) {
@@ -294,7 +317,6 @@ class _CreatePostScreenState extends State<CreatePostScreen>
       return;
     }
 
-    // 2. Spam domain check
     if (_isDomainBlocked(url)) {
       if (mounted) {
         setState(() => _linkError =
@@ -303,7 +325,6 @@ class _CreatePostScreenState extends State<CreatePostScreen>
       return;
     }
 
-    // 3. Scam keyword check in the URL itself
     if (_hasScamContent(url)) {
       if (mounted) {
         setState(() => _linkError =
@@ -312,7 +333,6 @@ class _CreatePostScreenState extends State<CreatePostScreen>
       return;
     }
 
-    // 4. Fetch preview from backend
     if (mounted) setState(() => _linkChecking = true);
     try {
       final data = await api.getLinkPreview(url);
@@ -338,7 +358,6 @@ class _CreatePostScreenState extends State<CreatePostScreen>
         });
       }
     } catch (_) {
-      // Backend preview failed — still allow posting but show domain only
       if (mounted) {
         setState(() {
           _linkChecking = false;
@@ -359,14 +378,12 @@ class _CreatePostScreenState extends State<CreatePostScreen>
     if (content.isEmpty && _mediaUrl == null && _linkPreview == null) return;
     if (_loading || _uploading) return;
 
-    // Scam content check on text
     if (_hasScamContent(content)) {
       _showError('⚠️ Your post appears to contain content that violates '
           'RiseUp community guidelines. Please review and edit.');
       return;
     }
 
-    // Link blocked check
     if (_showLinkInput && _linkError != null) {
       _showError('Please remove the blocked link before posting.');
       return;
@@ -375,16 +392,13 @@ class _CreatePostScreenState extends State<CreatePostScreen>
     setState(() => _loading = true);
 
     try {
-      // Build hashtag string (deduplicated, sorted, appended to content)
       final allTags = <String>{};
       allTags.addAll(_hashtags);
-      // Re-extract inline tags in case user edited after auto-detect
       RegExp(r'#(\w+)').allMatches(content).forEach((m) {
         final t = m.group(1)!.toLowerCase();
         if (t.length > 1) allTags.add(t);
       });
 
-      // Build final content: text + any hashtags not already inline
       final inlineTagSet = RegExp(r'#(\w+)').allMatches(content)
           .map((m) => m.group(1)!.toLowerCase())
           .toSet();
@@ -393,7 +407,6 @@ class _CreatePostScreenState extends State<CreatePostScreen>
           ? content
           : '$content\n\n${extraTags.map((t) => '#$t').join(' ')}';
 
-      // Link URL to include
       final linkUrl = (_showLinkInput && _linkPreview != null)
           ? _linkPreview!.url : null;
 
@@ -408,7 +421,6 @@ class _CreatePostScreenState extends State<CreatePostScreen>
 
       if (mounted) {
         HapticFeedback.mediumImpact();
-        // Show moderation notice for media posts
         final msg = _mediaUrl != null
             ? 'Post submitted for review! 🔍 Media posts are checked to keep the community safe.'
             : 'Post shared! 🚀';
@@ -505,20 +517,19 @@ class _CreatePostScreenState extends State<CreatePostScreen>
             padding: const EdgeInsets.all(16),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
 
-              // ── User header ───────────────────────────────────────────────
+              // ── FIX: Real user header ──────────────────────────────────────
+              // Shows actual avatar from profile.avatar_url (NetworkImage when
+              // URL is set, gradient + initial when not). Fades in when loaded.
               Row(children: [
-                Container(
-                  width: 44, height: 44,
-                  decoration: const BoxDecoration(
-                    gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Center(child: Text('👤', style: TextStyle(fontSize: 22))),
-                ),
+                _buildAvatar(isDark),
                 const SizedBox(width: 10),
                 Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text('You', style: TextStyle(
-                      fontSize: 14, fontWeight: FontWeight.w700, color: textColor)),
+                  Text(
+                    _userName,
+                    style: TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w700,
+                        color: textColor),
+                  ),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                     decoration: BoxDecoration(
@@ -627,8 +638,6 @@ class _CreatePostScreenState extends State<CreatePostScreen>
                     ),
                 ]),
                 const SizedBox(height: 12),
-
-                // ── Moderation notice for media ────────────────────────────
                 Container(
                   padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
@@ -839,7 +848,6 @@ class _CreatePostScreenState extends State<CreatePostScreen>
           padding: EdgeInsets.fromLTRB(
               12, 8, 12, MediaQuery.of(context).padding.bottom + 8),
           child: Row(children: [
-            // Image
             _ToolbarBtn(
               icon: Iconsax.image,
               active: _mediaType == 'image' && _mediaBytes != null,
@@ -847,7 +855,6 @@ class _CreatePostScreenState extends State<CreatePostScreen>
               onTap: () => _showMediaPicker(isVideo: false),
             ),
             const SizedBox(width: 8),
-            // Video
             _ToolbarBtn(
               icon: Iconsax.video,
               active: _mediaType == 'video' && _mediaBytes != null,
@@ -855,7 +862,6 @@ class _CreatePostScreenState extends State<CreatePostScreen>
               onTap: () => _showMediaPicker(isVideo: true),
             ),
             const SizedBox(width: 8),
-            // Link
             _ToolbarBtn(
               icon: Icons.link_rounded,
               active: _showLinkInput,
@@ -876,7 +882,6 @@ class _CreatePostScreenState extends State<CreatePostScreen>
               },
             ),
             const SizedBox(width: 8),
-            // Polls (placeholder)
             _ToolbarBtn(
               icon: Iconsax.chart_2,
               active: false,
@@ -887,7 +892,6 @@ class _CreatePostScreenState extends State<CreatePostScreen>
                       duration: Duration(seconds: 1))),
             ),
             const Spacer(),
-            // Char counter
             Text(
               '${_maxChars - _charCount}',
               style: TextStyle(
@@ -903,6 +907,60 @@ class _CreatePostScreenState extends State<CreatePostScreen>
       ]),
     );
   }
+
+  // ── FIX: Avatar widget ────────────────────────────────────────────────────
+  // Renders real avatar URL as NetworkImage.
+  // Falls back to gradient + first letter of name when:
+  //   • _userAvatarUrl is null (still loading) → shows shimmer gradient
+  //   • _userAvatarUrl is empty (no avatar set) → shows initial
+  //   • NetworkImage fails to load (errorBuilder) → shows initial
+  Widget _buildAvatar(bool isDark) {
+    const size = 44.0;
+    final hasUrl = _userAvatarUrl != null && _userAvatarUrl!.startsWith('http');
+    final initial = _userName.isNotEmpty
+        ? _userName.trim()[0].toUpperCase()
+        : 'Y';
+
+    return Container(
+      width: size, height: size,
+      decoration: BoxDecoration(
+        gradient: hasUrl
+            ? null
+            : const LinearGradient(
+                colors: [AppColors.primary, AppColors.accent]),
+        shape: BoxShape.circle,
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: hasUrl
+          ? Image.network(
+              _userAvatarUrl!,
+              width: size, height: size,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => _avatarInitial(initial),
+              loadingBuilder: (_, child, progress) {
+                if (progress == null) return child;
+                return _avatarInitial(initial);
+              },
+            )
+          : _avatarInitial(initial),
+    ).animate(
+      // Fade in when avatar loads (only when we get a real URL)
+      effects: _userAvatarUrl != null
+          ? [const FadeEffect(duration: Duration(milliseconds: 300))]
+          : [],
+    );
+  }
+
+  Widget _avatarInitial(String initial) => Center(
+    child: Text(
+      initial,
+      style: const TextStyle(
+        fontSize: 20,
+        color: Colors.white,
+        fontWeight: FontWeight.w700,
+      ),
+    ),
+  );
 
   void _showMediaPicker({required bool isVideo}) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -1016,7 +1074,7 @@ class _CreatePostScreenState extends State<CreatePostScreen>
               const Icon(Icons.verified_rounded,
                   color: AppColors.success, size: 14),
               const SizedBox(width: 4),
-              Text('Link verified', style: const TextStyle(
+              const Text('Link verified', style: TextStyle(
                   fontSize: 10, color: AppColors.success,
                   fontWeight: FontWeight.w600)),
             ]),
