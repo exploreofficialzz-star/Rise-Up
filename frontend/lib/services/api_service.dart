@@ -56,23 +56,50 @@ Map<String, String> _mimeFromPath(String filePath) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ApiService — singleton, Dio-based, JWT + refresh token aware
+//
+// FIX: Timeout values increased:
+//   connectTimeout 12 s → 30 s  (Render free-tier cold starts can take 20+ s)
+//   receiveTimeout 25 s → 90 s  (large video responses need more time)
+//   sendTimeout    (new) 120 s  (video uploads up to 500 MB over mobile)
 // ─────────────────────────────────────────────────────────────────────────────
 class ApiService {
   static final ApiService _instance = ApiService._internal();
   factory ApiService() => _instance;
 
   late final Dio _dio;
+
+  // Separate Dio instance for file uploads — longer timeouts, no body limit conflict
+  late final Dio _uploadDio;
+
   bool _isRefreshing = false;
 
   ApiService._internal() {
+    // ── Standard Dio (API calls) ──────────────────────────────────────────
     _dio = Dio(BaseOptions(
       baseUrl: kApiBaseUrl,
-      connectTimeout: const Duration(seconds: 12),
-      receiveTimeout: const Duration(seconds: 25),
+      connectTimeout: const Duration(seconds: 30),   // FIX: was 12 s
+      receiveTimeout: const Duration(seconds: 90),   // FIX: was 25 s
+      sendTimeout:    const Duration(seconds: 120),  // FIX: added — needed for uploads
       headers: {'Content-Type': 'application/json'},
     ));
 
-    _dio.interceptors.add(InterceptorsWrapper(
+    // ── Upload Dio (media uploads only) ───────────────────────────────────
+    // Videos up to 500 MB over mobile need generous timeouts.
+    // sendTimeout drives how long Dio waits while streaming the request body.
+    _uploadDio = Dio(BaseOptions(
+      baseUrl: kApiBaseUrl,
+      connectTimeout: const Duration(seconds: 30),
+      receiveTimeout: const Duration(seconds: 60),
+      sendTimeout:    const Duration(minutes: 10),   // 10 min — 500 MB video on 3G
+      headers: {'Content-Type': 'multipart/form-data'},
+    ));
+
+    _addAuthInterceptor(_dio);
+    _addAuthInterceptor(_uploadDio);
+  }
+
+  void _addAuthInterceptor(Dio dio) {
+    dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) async {
         final token = await storageService.read(key: 'access_token');
         if (token != null) {
@@ -91,7 +118,7 @@ class ApiService {
             final token = await storageService.read(key: 'access_token');
             error.requestOptions.headers['Authorization'] = 'Bearer $token';
             try {
-              final retry = await _dio.fetch(error.requestOptions);
+              final retry = await dio.fetch(error.requestOptions);
               return handler.resolve(retry);
             } catch (_) {
               return handler.next(error);
@@ -487,7 +514,8 @@ class ApiService {
         ),
       });
 
-      final res = await _dio.post(
+      // Use _uploadDio for all file uploads
+      final res = await _uploadDio.post(
         '/progress/avatar',
         data: formData,
         options: Options(headers: {'Content-Type': 'multipart/form-data'}),
@@ -511,7 +539,7 @@ class ApiService {
               parts[0], parts.length > 1 ? parts[1] : 'jpeg'),
         ),
       });
-      final res = await _dio.post(
+      final res = await _uploadDio.post(
         '/progress/avatar',
         data: formData,
         options: Options(headers: {'Content-Type': 'multipart/form-data'}),
@@ -529,7 +557,9 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  // ── Post Media Upload ─────────────────────────────────────────────────────
+  // ── Post / Status Media Upload ────────────────────────────────────────────
+  // FIX: Both methods now use _uploadDio (10-min sendTimeout).
+  // Videos up to 500 MB would silently abort at 12 s on _dio.
 
   Future<Map<String, dynamic>> uploadPostMedia(String filePath) async {
     try {
@@ -548,7 +578,8 @@ class ApiService {
         ),
       });
 
-      final res = await _dio.post(
+      // Use _uploadDio — has 10-min sendTimeout for large videos
+      final res = await _uploadDio.post(
         '/posts/status/upload-media',
         data: formData,
         options: Options(headers: {'Content-Type': 'multipart/form-data'}),
@@ -572,7 +603,7 @@ class ApiService {
               parts[0], parts.length > 1 ? parts[1] : 'jpeg'),
         ),
       });
-      final res = await _dio.post(
+      final res = await _uploadDio.post(
         '/posts/status/upload-media',
         data: formData,
         options: Options(headers: {'Content-Type': 'multipart/form-data'}),
@@ -704,6 +735,36 @@ class ApiService {
           data: {'share_type': shareType, 'platform': platform});
       return res.data as Map<String, dynamic>;
     } catch (_) { return {}; }
+  }
+
+  // ── Status ────────────────────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> getStatusFeed() async {
+    try {
+      final r = await _dio.get('/posts/status/feed');
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  Future<Map<String, dynamic>> createStatus(Map<String, dynamic> data) async {
+    try {
+      final r = await _dio.post('/posts/status', data: data);
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  Future<Map<String, dynamic>> viewStatus(String statusId) async {
+    try {
+      final r = await _dio.post('/posts/status/$statusId/view', data: {});
+      return r.data as Map<String, dynamic>;
+    } catch (_) { return {'viewed': true}; }
+  }
+
+  Future<Map<String, dynamic>> deleteStatus(String statusId) async {
+    try {
+      final r = await _dio.delete('/posts/status/$statusId');
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
   }
 
   // ── Streaks ───────────────────────────────────────────────────────────────
@@ -1019,29 +1080,14 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  // FIX: Added updatePresence and setOffline — called by MessagesScreen
-  // to maintain real-time online status via the backend presence system.
-
-  /// Ping the server to mark this user as online.
-  /// Called immediately on screen open + every 30 s via a Timer.
-  /// Silently swallows errors so a flaky connection never breaks the UI.
   Future<void> updatePresence() async {
-    try {
-      await _dio.post('/messages/presence', data: {});
-    } catch (_) {}
+    try { await _dio.post('/messages/presence', data: {}); } catch (_) {}
   }
 
-  /// Mark this user as offline.
-  /// Called on dispose() and when the app is backgrounded/paused.
-  /// Silently swallows errors — best-effort, non-blocking.
   Future<void> setOffline() async {
-    try {
-      await _dio.delete('/messages/presence', data: {});
-    } catch (_) {}
+    try { await _dio.delete('/messages/presence', data: {}); } catch (_) {}
   }
 
-  /// Invite AI to join a DM conversation.
-  /// Returns {ai_joined: true} on success.
   Future<Map<String, dynamic>> inviteAIToConversation(String conversationId) async {
     try {
       final r = await _dio.post(
@@ -1050,8 +1096,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Check if AI has been invited to this conversation.
-  /// Returns {ai_joined: bool}
   Future<Map<String, dynamic>> checkAIInConversation(String conversationId) async {
     try {
       final r = await _dio.get(
