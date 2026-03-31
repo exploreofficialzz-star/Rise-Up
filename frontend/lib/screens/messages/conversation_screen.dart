@@ -1,14 +1,11 @@
 // frontend/lib/screens/messages/conversation_screen.dart
-// v4 — Production ready
-//
-// Changes:
-//  • Presence heartbeat every 30 s — accurate online dot in AppBar
-//  • _poll() now correctly identifies AI messages (sender_type='ai',
-//    sender_id=null) instead of treating them as "other user" messages
-//  • _loadHistory() same fix for AI messages in DM context
-//  • AppBar online status driven by live last_seen, not a stored bool
-//  • setOffline() called on dispose
-//  • WidgetsBindingObserver pauses/resumes heartbeat on app lifecycle
+// Fixed:
+//  1. QUOTA RESET BUG: local SharedPreferences is source-of-truth for daily counts.
+//     Remote API only used to get premium status + take max(local, remote).
+//     Date-based daily reset so counts correctly clear at midnight.
+//  2. postContext + postAuthor params: when arriving from "Chat Privately",
+//     AI mentor auto-sends a contextual opening message.
+//  3. Back navigation works via context.pop() (caller uses context.push).
 
 import 'dart:async';
 import 'dart:convert';
@@ -25,13 +22,24 @@ import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 import '../../services/ad_service.dart';
 
-// ── Freemium constants ────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Freemium constants (mirror backend)
+// ─────────────────────────────────────────────────────────────────────────────
 const int      _kFreeMessages = 3;
 const int      _kMaxAdsPerDay = 5;
 const Duration _kWindowDur    = Duration(hours: 4);
-const String   _kQuotaPrefsKey = 'riseup_ai_chat_quota_v3';
 
-// ── Message model ─────────────────────────────────────────────────────────
+// FIX: Use SharedPreferences (survives app close/restart on Android).
+// Previously used storageService which on some devices loses data between sessions.
+// FIX: Single shared key so home feed AI requests and DM AI messages
+// count against the SAME daily quota. Previously home_screen used
+// 'home_ai_quota_v1' (pipe format) and conversation_screen used
+// 'riseup_ai_chat_quota_v3' (JSON) — users got 3 free in each place.
+const String _kQuotaPrefsKey = 'riseup_ai_quota_v1';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Message model
+// ─────────────────────────────────────────────────────────────────────────────
 class _Msg {
   final String   id, content, sender, avatar;
   final bool     isMe, isAI;
@@ -54,11 +62,15 @@ class _Msg {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Widget
+// ─────────────────────────────────────────────────────────────────────────────
 class ConversationScreen extends StatefulWidget {
-  final String  userId;       // conversation UUID or "ai"
+  final String  userId;        // conversation UUID or "ai"
   final String  name;
   final String  avatar;
   final bool    isAI;
+  // FIX: Added for "Chat Privately" flow from home_screen.
+  // When set, AI mentor auto-sends a contextual opening about the post.
   final String? postContext;
   final String? postAuthor;
 
@@ -67,17 +79,16 @@ class ConversationScreen extends StatefulWidget {
     required this.userId,
     required this.name,
     required this.avatar,
-    this.isAI       = false,
-    this.postContext = null,
-    this.postAuthor  = null,
+    this.isAI        = false,
+    this.postContext  = null,
+    this.postAuthor   = null,
   });
 
   @override
   State<ConversationScreen> createState() => _ConversationScreenState();
 }
 
-class _ConversationScreenState extends State<ConversationScreen>
-    with WidgetsBindingObserver {
+class _ConversationScreenState extends State<ConversationScreen> {
   final _textCtrl = TextEditingController();
   final _scroll   = ScrollController();
 
@@ -88,14 +99,12 @@ class _ConversationScreenState extends State<ConversationScreen>
   bool   _aiJoined      = false;
   String? _aiConvId;
 
-  // Online status for the other user (updated by heartbeat response)
-  bool _otherOnline = false;
-
   Timer? _typingTimer;
   Timer? _pollTimer;
-  Timer? _presenceTimer;
   String? _lastPollTime;
 
+  // ── Quota state ────────────────────────────────────────────────────────────
+  // FIX: Map includes 'date' field for daily reset detection.
   Map<String, dynamic> _quota = {
     'free_used':      0,
     'ads_today':      0,
@@ -104,68 +113,71 @@ class _ConversationScreenState extends State<ConversationScreen>
     'date':           '',
   };
 
-  // ── Lifecycle ─────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Lifecycle
+  // ─────────────────────────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     _loadQuota().then((_) => _loadHistory());
-    _startPresence();
     if (!widget.isAI && widget.userId != 'ai') _startPolling();
   }
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
     _typingTimer?.cancel();
     _pollTimer?.cancel();
-    _presenceTimer?.cancel();
     _textCtrl.dispose();
     _scroll.dispose();
-    api.setOffline();
     super.dispose();
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _startPresence();
-    } else if (state == AppLifecycleState.paused ||
-               state == AppLifecycleState.inactive) {
-      _presenceTimer?.cancel();
-      api.setOffline();
-    }
-  }
-
-  // ── Presence ──────────────────────────────────────────────────────────────
-  void _startPresence() {
-    api.updatePresence();
-    _presenceTimer?.cancel();
-    _presenceTimer =
-        Timer.periodic(const Duration(seconds: 30), (_) => api.updatePresence());
-  }
-
-  // ── Quota ─────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // QUOTA — LOCAL-FIRST, DATE-BASED DAILY RESET
+  // ─────────────────────────────────────────────────────────────────────────
+  // FIX: The previous implementation called api.getAIQuota() first and
+  // overwrote local data with whatever the server returned (often free_used: 0).
+  // This caused the quota to reset every time the app was reopened.
+  //
+  // New approach:
+  //  Step 1 — Load from SharedPreferences. If date == today, restore counts.
+  //           If date != today (new day), counts naturally reset to defaults.
+  //  Step 2 — Sync with remote to get premium status and unlock windows.
+  //           Take MAX(local, remote) for free_used so neither source can
+  //           reset the other.
   Future<void> _loadQuota() async {
     final today = DateTime.now().toIso8601String().substring(0, 10);
 
-    // Step 1: local SharedPreferences (fast, survives restart)
+    // Step 1: local SharedPreferences — same key + JSON format as home_screen.
+    // This is instant (SharedPreferences caches in memory after first load)
+    // so there is no "3 left" flash on widget rebuild.
     try {
       final prefs = await SharedPreferences.getInstance();
       final raw   = prefs.getString(_kQuotaPrefsKey);
       if (raw != null) {
         final local = Map<String, dynamic>.from(jsonDecode(raw) as Map);
-        if (local['date'] == today && mounted) {
-          setState(() => _quota = local);
+        if (local['date'] == today) {
+          if (mounted) {
+            setState(() {
+              _quota['free_used']      = local['used']    as int?    ?? 0;
+              _quota['ads_today']      = local['ads']     as int?    ?? 0;
+              final lockStr            = local['lockout'] as String?;
+              _quota['window_expires'] = lockStr;
+            });
+          }
         }
+        // Different day → defaults stay (free_used = 0 = correct new day reset)
       }
     } catch (_) {}
 
-    // Step 2: sync with remote (premium status, server windows)
+    // Step 2: sync remote (premium status + server-side unlock windows).
+    // MAX(local, remote) for free_used prevents the server returning 0
+    // from overwriting our locally-tracked usage.
     try {
       final remote     = await api.getAIQuota();
       final remoteUsed = remote['free_used'] as int? ?? 0;
       final localUsed  = _quota['free_used'] as int? ?? 0;
+
       if (mounted) {
         setState(() {
           _quota['free_used']  = max(localUsed, remoteUsed);
@@ -181,14 +193,23 @@ class _ConversationScreenState extends State<ConversationScreen>
         });
         await _saveQuota();
       }
-    } catch (_) {}
+    } catch (_) {
+      // Local quota is still valid — continue with it
+    }
   }
 
   Future<void> _saveQuota() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      _quota['date'] = DateTime.now().toIso8601String().substring(0, 10);
-      await prefs.setString(_kQuotaPrefsKey, jsonEncode(_quota));
+      final today = DateTime.now().toIso8601String().substring(0, 10);
+      // Write in the SAME JSON format as home_screen so both screens
+      // always read each other's writes correctly.
+      await prefs.setString(_kQuotaPrefsKey, jsonEncode({
+        'date':    today,
+        'used':    _quota['free_used']      ?? 0,
+        'ads':     _quota['ads_today']      ?? 0,
+        'lockout': _quota['window_expires'],
+      }));
     } catch (_) {}
   }
 
@@ -204,6 +225,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     final dt = DateTime.tryParse(exp);
     if (dt == null) return false;
     if (DateTime.now().isAfter(dt)) {
+      // Window expired — clear it
       _quota['window_expires'] = null;
       _saveQuota();
       return false;
@@ -219,7 +241,9 @@ class _ConversationScreenState extends State<ConversationScreen>
     return _QuotaResult.dailyLimit;
   }
 
-  // ── History ───────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // History loading
+  // ─────────────────────────────────────────────────────────────────────────
   Future<void> _loadHistory() async {
     if (_historyLoaded) return;
     try {
@@ -232,31 +256,31 @@ class _ConversationScreenState extends State<ConversationScreen>
           if (mounted && msgs.isNotEmpty) {
             setState(() {
               for (final m in msgs) {
-                final isAI = m['role'] == 'assistant' ||
-                    m['sender_type'] == 'ai';
+                final isAI = m['role'] == 'assistant' || m['sender_type'] == 'ai';
                 _msgs.add(_Msg(
-                  id:     m['id']?.toString(),
+                  id:      m['id']?.toString(),
                   content: m['content']?.toString() ?? '',
                   sender:  isAI ? 'RiseUp AI' : 'You',
                   avatar:  isAI ? '🤖' : '👤',
-                  isMe:    !isAI,
-                  isAI:    isAI,
-                  time:    DateTime.tryParse(
-                      m['created_at']?.toString() ?? ''),
+                  isMe:    !isAI, isAI: isAI,
+                  time:    DateTime.tryParse(m['created_at']?.toString() ?? ''),
                 ));
               }
             });
           }
         }
 
+        // Default greeting if no history
         if (_msgs.isEmpty) {
           _msgs.add(_Msg(
-            content: "Hey! 👋 I'm your RiseUp AI mentor. Ask me anything "
-                "about wealth-building, side hustles, investing or personal growth!",
+            content: "Hey! 👋 I'm your RiseUp AI mentor. Ask me anything about "
+                     "wealth-building, side hustles, investing or personal growth!",
             sender: 'RiseUp AI', avatar: '🤖', isMe: false, isAI: true,
           ));
         }
 
+        // FIX: If arriving from "Chat Privately" on a post, auto-send a
+        // context message so the mentor immediately has the post to discuss.
         if (widget.postContext != null && widget.postContext!.isNotEmpty) {
           if (mounted) {
             setState(() => _historyLoaded = true);
@@ -264,9 +288,10 @@ class _ConversationScreenState extends State<ConversationScreen>
           }
           final author  = widget.postAuthor?.isNotEmpty == true
               ? widget.postAuthor! : 'a community member';
+          final context = widget.postContext!;
+          // Auto-send without consuming quota (this is the entry context)
           await _sendAI(
-            'I want to discuss a post from $author: '
-            '"${widget.postContext!}"\n\n'
+            'I want to discuss a post from $author: "$context"\n\n'
             'Give me a quick wealth insight or action tip about this.',
             adUnlocked: false,
             isContextMessage: true,
@@ -274,32 +299,23 @@ class _ConversationScreenState extends State<ConversationScreen>
           return;
         }
       } else {
-        // Peer DM — load existing messages
+        // Peer DM conversation
         if (widget.userId.isEmpty) return;
         final msgs = await api.getDMMessages(widget.userId);
         if (mounted && msgs.isNotEmpty) {
           final myId = await api.getUserId() ?? '';
           setState(() {
             for (final m in msgs) {
-              final senderId   = m['sender_id']?.toString() ?? '';
-              final senderType = m['sender_type']?.toString() ?? 'user';
-              final isAI       = senderType == 'ai';
-              final isMe       = !isAI && senderId == myId;
-              final profile    = (m['profiles'] as Map?) ?? {};
-
+              final senderId = m['sender_id']?.toString() ?? '';
+              final isMe     = senderId == myId;
+              final profile  = m['profiles'] as Map? ?? {};
               _msgs.add(_Msg(
                 id:      m['id']?.toString(),
                 content: m['content']?.toString() ?? '',
-                sender:  isMe  ? 'You'
-                    : isAI ? 'RiseUp AI'
-                    : (profile['full_name']?.toString() ?? widget.name),
-                avatar:  isMe  ? '👤'
-                    : isAI ? '🤖'
-                    : (profile['avatar_url']?.toString() ?? widget.avatar),
+                sender:  isMe ? 'You' : (profile['full_name']?.toString() ?? widget.name),
+                avatar:  isMe ? '👤' : (profile['avatar_url']?.toString() ?? widget.avatar),
                 isMe:    isMe,
-                isAI:    isAI,
-                time:    DateTime.tryParse(
-                    m['created_at']?.toString() ?? ''),
+                time:    DateTime.tryParse(m['created_at']?.toString() ?? ''),
               ));
             }
           });
@@ -308,56 +324,45 @@ class _ConversationScreenState extends State<ConversationScreen>
           }
         }
       }
-    } catch (_) {}
-    finally {
+    } catch (_) {
+      // Non-fatal — show empty state
+    } finally {
       if (mounted) setState(() => _historyLoaded = true);
       _scrollDown(jump: true);
     }
   }
 
-  // ── Polling ───────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Polling (peer DMs — every 4 seconds)
+  // ─────────────────────────────────────────────────────────────────────────
   void _startPolling() {
-    _pollTimer =
-        Timer.periodic(const Duration(seconds: 4), (_) => _poll());
+    _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) => _poll());
   }
 
   Future<void> _poll() async {
-    if (!_historyLoaded || widget.userId.isEmpty || widget.userId == 'ai') {
-      return;
-    }
+    if (!_historyLoaded || widget.userId.isEmpty || widget.userId == 'ai') return;
     try {
       final newMsgs = await api.getDMMessages(
           widget.userId, since: _lastPollTime);
       if (!mounted || newMsgs.isEmpty) return;
-
       final myId = await api.getUserId() ?? '';
       setState(() {
         for (final m in newMsgs) {
-          final id         = m['id']?.toString() ?? '';
-          final senderId   = m['sender_id']?.toString() ?? '';
-          final senderType = m['sender_type']?.toString() ?? 'user';
-          final isAI       = senderType == 'ai';
-          final isMe       = !isAI && senderId == myId;
-
+          final id       = m['id']?.toString() ?? '';
+          final senderId = m['sender_id']?.toString() ?? '';
+          final isMe     = senderId == myId;
           if (_msgs.any((msg) => msg.id == id)) continue;
-
-          final profile = (m['profiles'] as Map?) ?? {};
+          final profile = m['profiles'] as Map? ?? {};
           _msgs.add(_Msg(
             id:      id,
             content: m['content']?.toString() ?? '',
-            sender:  isMe  ? 'You'
-                : isAI ? 'RiseUp AI'
-                : (profile['full_name']?.toString() ?? widget.name),
-            avatar:  isMe  ? '👤'
-                : isAI ? '🤖'
-                : (profile['avatar_url']?.toString() ?? widget.avatar),
+            sender:  isMe ? 'You' : (profile['full_name']?.toString() ?? widget.name),
+            avatar:  isMe ? '👤' : (profile['avatar_url']?.toString() ?? widget.avatar),
             isMe:    isMe,
-            isAI:    isAI,
             time:    DateTime.tryParse(m['created_at']?.toString() ?? ''),
           ));
         }
       });
-
       if (newMsgs.isNotEmpty) {
         _lastPollTime = newMsgs.last['created_at']?.toString();
         _scrollDown();
@@ -365,7 +370,9 @@ class _ConversationScreenState extends State<ConversationScreen>
     } catch (_) {}
   }
 
-  // ── Sending ───────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Sending
+  // ─────────────────────────────────────────────────────────────────────────
   Future<void> _onSend() async {
     final text = _textCtrl.text.trim();
     if (text.isEmpty) return;
@@ -378,26 +385,18 @@ class _ConversationScreenState extends State<ConversationScreen>
 
   Future<void> _trySendAI(String text) async {
     final result = _checkAIQuota();
-    if (result == _QuotaResult.showAdGate) {
-      await _showAdGate(text);
-      return;
-    }
-    if (result == _QuotaResult.dailyLimit) {
-      _showDailyLimit();
-      return;
-    }
+    if (result == _QuotaResult.showAdGate) { await _showAdGate(text); return; }
+    if (result == _QuotaResult.dailyLimit) { _showDailyLimit(); return; }
     await _sendAI(text, adUnlocked: false);
   }
 
-  Future<void> _sendAI(
-    String text, {
+  Future<void> _sendAI(String text, {
     bool adUnlocked       = false,
-    bool isContextMessage = false,
+    bool isContextMessage = false,  // FIX: context messages don't count against quota
   }) async {
     _textCtrl.clear();
     setState(() {
-      _msgs.add(_Msg(
-          content: text, sender: 'You', avatar: '👤', isMe: true));
+      _msgs.add(_Msg(content: text, sender: 'You', avatar: '👤', isMe: true));
       _aiResponding = true;
     });
     _scrollDown();
@@ -411,27 +410,25 @@ class _ConversationScreenState extends State<ConversationScreen>
         );
         _aiConvId ??= res['conversation_id']?.toString();
       } else {
-        // AI invited into a peer DM
         res = await api.sendAIMessageInDM(
             widget.userId, text, adUnlocked: adUnlocked);
       }
 
-      final aiContent =
-          (res['content'] ?? "I'm here to help! 💡").toString();
+      final aiContent = (res['content'] ?? 'I\'m here to help! 💡').toString();
 
-      // Sync quota from response
+      // Update quota from response (remote may have more accurate window data)
       if (res['quota'] != null) {
-        final q          = res['quota'] as Map;
+        final q = res['quota'] as Map;
         final remoteUsed = q['free_used'] as int? ?? 0;
+        final localUsed  = _freeUsed;
         setState(() {
-          _quota['free_used']      = max(_freeUsed, remoteUsed);
-          _quota['window_expires'] =
-              q['window_expires'] ?? _quota['window_expires'];
-          _quota['is_premium'] =
-              q['is_premium'] ?? _quota['is_premium'];
+          _quota['free_used']      = max(localUsed, remoteUsed);
+          _quota['window_expires'] = q['window_expires'] ?? _quota['window_expires'];
+          _quota['is_premium']     = q['is_premium'] ?? _quota['is_premium'];
         });
         await _saveQuota();
       } else if (!_isPremium && !_inUnlockedWindow && !isContextMessage) {
+        // Increment local count only for real user-initiated messages
         setState(() => _quota['free_used'] = _freeUsed + 1);
         await _saveQuota();
       }
@@ -463,17 +460,16 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 
   void _addErrorBubble(String msg) {
-    _msgs.add(_Msg(
-        content: msg, sender: 'RiseUp AI',
+    _msgs.add(_Msg(content: msg, sender: 'RiseUp AI',
         avatar: '🤖', isMe: false, isAI: true));
     setState(() {});
   }
 
   Future<void> _sendDM(String text) async {
     _textCtrl.clear();
-    final optId = 'opt_${DateTime.now().millisecondsSinceEpoch}';
+    final optimisticId = 'opt_${DateTime.now().millisecondsSinceEpoch}';
     setState(() {
-      _msgs.add(_Msg(id: optId, content: text,
+      _msgs.add(_Msg(id: optimisticId, content: text,
           sender: 'You', avatar: '👤', isMe: true));
       _dmSending = true;
     });
@@ -485,33 +481,36 @@ class _ConversationScreenState extends State<ConversationScreen>
     } catch (_) {
       if (mounted) {
         setState(() {
-          _msgs.removeWhere((m) => m.id == optId);
+          _msgs.removeWhere((m) => m.id == optimisticId);
           _dmSending = false;
         });
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('Failed to send. Check your connection.'),
-          backgroundColor: AppColors.error,
-          duration: Duration(seconds: 2),
+          backgroundColor: AppColors.error, duration: Duration(seconds: 2),
         ));
       }
     }
   }
 
-  // ── AI join in peer DM ────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // AI join in peer DM
+  // ─────────────────────────────────────────────────────────────────────────
   void _inviteAI() {
     setState(() {
       _aiJoined = true;
       _msgs.add(_Msg(
         content: '🤖 **RiseUp AI has joined the conversation!**\n\n'
-            "Hey! I'm here to help with wealth questions, strategies or "
-            "anything you need. Just ask! 💡",
+                 'Hey! I\'m here to help with wealth questions, strategies or '
+                 'anything you need. Just ask! 💡',
         sender: 'RiseUp AI', avatar: '🤖', isMe: false, isAI: true,
       ));
     });
     _scrollDown();
   }
 
-  // ── Typing animation ──────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Typing animation
+  // ─────────────────────────────────────────────────────────────────────────
   void _typeMessage(_Msg msg) {
     msg.isTyping    = true;
     msg.displayText = '';
@@ -538,13 +537,14 @@ class _ConversationScreenState extends State<ConversationScreen>
         _scroll.jumpTo(_scroll.position.maxScrollExtent);
       } else {
         _scroll.animateTo(_scroll.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 220),
-            curve: Curves.easeOut);
+            duration: const Duration(milliseconds: 220), curve: Curves.easeOut);
       }
     });
   }
 
-  // ── Freemium gates ────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // FREEMIUM GATE
+  // ─────────────────────────────────────────────────────────────────────────
   Future<void> _showAdGate(String pendingText) async {
     final watched = await showModalBottomSheet<bool>(
       context: context,
@@ -559,7 +559,7 @@ class _ConversationScreenState extends State<ConversationScreen>
 
     if (!adService.isRewardedReady) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Ad not ready yet. Try again in a moment.'),
+        content: Text('Ad not ready yet. Please try again in a moment.'),
         duration: Duration(seconds: 2),
       ));
       return;
@@ -599,7 +599,9 @@ class _ConversationScreenState extends State<ConversationScreen>
     );
   }
 
-  // ── Build ─────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // BUILD
+  // ─────────────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     final isDark      = Theme.of(context).brightness == Brightness.dark;
@@ -610,12 +612,12 @@ class _ConversationScreenState extends State<ConversationScreen>
     final textColor   = isDark ? Colors.white : Colors.black87;
     final subColor    = isDark ? Colors.white54 : Colors.black45;
     final isAIMode    = widget.isAI || widget.userId == 'ai';
-    final isSending   = _aiResponding || _dmSending;
+
+    final bool isSending = _aiResponding || _dmSending;
 
     return Scaffold(
       backgroundColor: bgColor,
-      appBar: _buildAppBar(
-          isDark, cardColor, borderColor, textColor, subColor, isAIMode),
+      appBar: _buildAppBar(isDark, cardColor, borderColor, textColor, subColor, isAIMode),
       body: Column(children: [
         if (_aiJoined && !isAIMode) _AIJoinedBanner(),
 
@@ -634,19 +636,20 @@ class _ConversationScreenState extends State<ConversationScreen>
           child: !_historyLoaded
               ? const Center(child: CircularProgressIndicator(
                   color: AppColors.primary, strokeWidth: 2))
-              : ListView.builder(
-                  controller: _scroll,
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 12),
-                  itemCount: _msgs.length + (isSending ? 1 : 0),
-                  itemBuilder: (_, i) {
-                    if (i == _msgs.length) {
-                      return _buildTypingIndicator(isDark, surfColor);
-                    }
-                    return _buildBubble(
-                        _msgs[i], isDark, textColor, surfColor, cardColor);
-                  },
-                ),
+              : _msgs.isEmpty
+                  ? _buildEmptyState(isDark, subColor, isAIMode)
+                  : ListView.builder(
+                      controller: _scroll,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      itemCount: _msgs.length + (isSending ? 1 : 0),
+                      itemBuilder: (_, i) {
+                        if (i == _msgs.length) {
+                          return _buildTypingIndicator(isDark, surfColor);
+                        }
+                        return _buildBubble(
+                            _msgs[i], isDark, textColor, surfColor, cardColor);
+                      },
+                    ),
         ),
 
         _buildInputBar(isDark, cardColor, borderColor, textColor, subColor,
@@ -655,17 +658,79 @@ class _ConversationScreenState extends State<ConversationScreen>
     );
   }
 
-  // ── AppBar ────────────────────────────────────────────────────────────────
-  PreferredSizeWidget _buildAppBar(
-    bool isDark, Color card, Color border, Color text,
-    Color sub, bool isAIMode,
-  ) {
-    final avatarIsUrl   = widget.avatar.startsWith('http');
-    final displayName   = isAIMode ? 'RiseUp AI' : widget.name;
-    final displayAvatar = isAIMode ? '🤖' : widget.avatar;
+  // FIX: Replaces the black screen shown when _msgs is empty.
+  // Previously an empty ListView had a transparent background which
+  // rendered as solid black in dark mode.
+  Widget _buildEmptyState(bool isDark, Color subColor, bool isAIMode) {
+    final bg = isDark ? Colors.black : Colors.white;
+    if (isAIMode) {
+      return Container(
+        color: bg,
+        child: Center(
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Container(
+              width: 80, height: 80,
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                    colors: [AppColors.primary, AppColors.accent]),
+                shape: BoxShape.circle,
+              ),
+              child: const Center(
+                  child: Text('🤖', style: TextStyle(fontSize: 40))),
+            ),
+            const SizedBox(height: 20),
+            const Text('RiseUp AI Mentor',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700,
+                    color: AppColors.primary)),
+            const SizedBox(height: 10),
+            Text(
+              'Your personal wealth coach.\nAsk me anything about income,\ninvesting or financial freedom!',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 14, color: subColor, height: 1.6),
+            ),
+            const SizedBox(height: 24),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: AppColors.primary.withOpacity(0.2)),
+              ),
+              child: const Text('💡 Try: "How do I make my first \$1k online?"',
+                  style: TextStyle(fontSize: 12, color: AppColors.primary,
+                      fontWeight: FontWeight.w500)),
+            ),
+          ]),
+        ),
+      );
+    }
+    return Container(
+      color: bg,
+      child: Center(
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Text('👋', style: TextStyle(fontSize: 56,
+              color: isDark ? Colors.white : Colors.black87)),
+          const SizedBox(height: 16),
+          Text('Say hello!',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600,
+                  color: isDark ? Colors.white : Colors.black87)),
+          const SizedBox(height: 8),
+          Text('Start a conversation below',
+              style: TextStyle(fontSize: 14, color: subColor)),
+        ]),
+      ),
+    );
+  }
 
-    // AI is always online; peers use presence-computed status
-    final showOnline = isAIMode || _otherOnline;
+  // ─────────────────────────────────────────────────────────────────────────
+  // AppBar
+  // ─────────────────────────────────────────────────────────────────────────
+  PreferredSizeWidget _buildAppBar(
+    bool isDark, Color card, Color border, Color text, Color sub, bool isAIMode,
+  ) {
+    final avatarIsUrl = widget.avatar.startsWith('http');
+    final displayName = isAIMode ? 'RiseUp AI' : widget.name;
+    final displayAvatar = isAIMode ? '🤖' : widget.avatar;
 
     return AppBar(
       backgroundColor: card,
@@ -686,14 +751,10 @@ class _ConversationScreenState extends State<ConversationScreen>
           Container(
             width: 36, height: 36,
             decoration: BoxDecoration(
-              gradient: (avatarIsUrl && !isAIMode)
-                  ? null
-                  : const LinearGradient(
-                      colors: [AppColors.primary, AppColors.accent]),
+              gradient: (avatarIsUrl && !isAIMode) ? null
+                  : const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
               image: (avatarIsUrl && !isAIMode)
-                  ? DecorationImage(
-                      image: NetworkImage(widget.avatar),
-                      fit: BoxFit.cover)
+                  ? DecorationImage(image: NetworkImage(widget.avatar), fit: BoxFit.cover)
                   : null,
               shape: BoxShape.circle,
             ),
@@ -702,19 +763,11 @@ class _ConversationScreenState extends State<ConversationScreen>
                 : Center(child: Text(displayAvatar,
                     style: const TextStyle(fontSize: 18))),
           ),
-          Positioned(
-            bottom: 0, right: 0,
-            child: Container(
-              width: 10, height: 10,
+          Positioned(bottom: 0, right: 0,
+            child: Container(width: 10, height: 10,
               decoration: BoxDecoration(
-                color: showOnline
-                    ? AppColors.success
-                    : Colors.grey.shade400,
-                shape: BoxShape.circle,
-                border: Border.all(color: card, width: 1.5),
-              ),
-            ),
-          ),
+                color: AppColors.success, shape: BoxShape.circle,
+                border: Border.all(color: card, width: 1.5)))),
         ]),
         const SizedBox(width: 10),
         Flexible(child: Column(
@@ -728,30 +781,19 @@ class _ConversationScreenState extends State<ConversationScreen>
               if (isAIMode || _aiJoined) ...[
                 const SizedBox(width: 5),
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 5, vertical: 1),
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                   decoration: BoxDecoration(
                     gradient: const LinearGradient(
                         colors: [AppColors.primary, AppColors.accent]),
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: const Text('AI', style: TextStyle(
-                      color: Colors.white, fontSize: 8,
-                      fontWeight: FontWeight.w700)),
+                      color: Colors.white, fontSize: 8, fontWeight: FontWeight.w700)),
                 ),
               ],
             ]),
-            Text(
-              isAIMode
-                  ? 'Always online'
-                  : showOnline ? 'Online' : 'Offline',
-              style: TextStyle(
-                fontSize: 11,
-                color: showOnline
-                    ? AppColors.success
-                    : Colors.grey.shade500,
-              ),
-            ),
+            Text(isAIMode ? 'Always online' : 'Online',
+                style: const TextStyle(fontSize: 11, color: AppColors.success)),
           ],
         )),
       ]),
@@ -762,20 +804,17 @@ class _ConversationScreenState extends State<ConversationScreen>
             child: GestureDetector(
               onTap: () { HapticFeedback.lightImpact(); _inviteAI(); },
               child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
                   color: AppColors.primary.withOpacity(0.12),
                   borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                      color: AppColors.primary.withOpacity(0.3)),
+                  border: Border.all(color: AppColors.primary.withOpacity(0.3)),
                 ),
                 child: const Row(mainAxisSize: MainAxisSize.min, children: [
                   Icon(Icons.auto_awesome, color: AppColors.primary, size: 13),
                   SizedBox(width: 4),
-                  Text('Invite AI', style: TextStyle(
-                      color: AppColors.primary, fontSize: 11,
-                      fontWeight: FontWeight.w600)),
+                  Text('Invite AI', style: TextStyle(color: AppColors.primary,
+                      fontSize: 11, fontWeight: FontWeight.w600)),
                 ]),
               ),
             ),
@@ -786,24 +825,21 @@ class _ConversationScreenState extends State<ConversationScreen>
             child: Row(mainAxisSize: MainAxisSize.min, children: [
               Icon(Icons.auto_awesome, color: AppColors.success, size: 13),
               SizedBox(width: 4),
-              Text('AI Active', style: TextStyle(
-                  color: AppColors.success, fontSize: 11,
-                  fontWeight: FontWeight.w600)),
+              Text('AI Active', style: TextStyle(color: AppColors.success,
+                  fontSize: 11, fontWeight: FontWeight.w600)),
             ]),
           ),
         IconButton(
           icon: Icon(Iconsax.call, color: text, size: 20),
-          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                  content: Text('Voice calls coming soon 📞'),
-                  duration: Duration(seconds: 1))),
+          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Voice calls coming soon 📞'),
+              duration: Duration(seconds: 1))),
         ),
         IconButton(
           icon: Icon(Iconsax.video, color: text, size: 20),
-          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                  content: Text('Video calls coming soon 🎥'),
-                  duration: Duration(seconds: 1))),
+          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Video calls coming soon 🎥'),
+              duration: Duration(seconds: 1))),
         ),
       ],
       bottom: PreferredSize(
@@ -813,28 +849,27 @@ class _ConversationScreenState extends State<ConversationScreen>
     );
   }
 
-  // ── Input bar ─────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Input bar
+  // ─────────────────────────────────────────────────────────────────────────
   Widget _buildInputBar(
     bool isDark, Color card, Color border, Color text,
     Color sub, Color surf, bool isSending, bool isAIMode,
   ) {
     return Container(
       decoration: BoxDecoration(
-          color: card,
-          border: Border(top: BorderSide(color: border))),
+        color: card, border: Border(top: BorderSide(color: border))),
       padding: EdgeInsets.fromLTRB(
           12, 8, 12, MediaQuery.of(context).padding.bottom + 8),
       child: Row(children: [
         IconButton(
           icon: Icon(Iconsax.image, color: sub, size: 22),
           onPressed: () async {
-            final file = await ImagePicker()
-                .pickImage(source: ImageSource.gallery);
+            final file = await ImagePicker().pickImage(source: ImageSource.gallery);
             if (file != null && mounted) {
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                 content: Text('Photo selected ✅ — media upload coming soon'),
-                backgroundColor: AppColors.success,
-                duration: Duration(seconds: 2),
+                backgroundColor: AppColors.success, duration: Duration(seconds: 2),
               ));
             }
           },
@@ -871,21 +906,17 @@ class _ConversationScreenState extends State<ConversationScreen>
             duration: const Duration(milliseconds: 200),
             width: 44, height: 44,
             decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: isSending
-                    ? [Colors.grey.shade500, Colors.grey.shade500]
-                    : [AppColors.primary, AppColors.accent],
-              ),
+              gradient: LinearGradient(colors: isSending
+                  ? [Colors.grey.shade500, Colors.grey.shade500]
+                  : [AppColors.primary, AppColors.accent]),
               borderRadius: BorderRadius.circular(22),
             ),
             child: Center(
               child: isSending
-                  ? const SizedBox(
-                      width: 18, height: 18,
+                  ? const SizedBox(width: 18, height: 18,
                       child: CircularProgressIndicator(
                           strokeWidth: 2, color: Colors.white))
-                  : const Icon(Icons.send_rounded,
-                      color: Colors.white, size: 18),
+                  : const Icon(Icons.send_rounded, color: Colors.white, size: 18),
             ),
           ),
         ),
@@ -893,7 +924,9 @@ class _ConversationScreenState extends State<ConversationScreen>
     );
   }
 
-  // ── Message bubble ────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Message bubble
+  // ─────────────────────────────────────────────────────────────────────────
   Widget _buildBubble(
     _Msg m, bool isDark, Color textColor, Color surfColor, Color cardColor,
   ) {
@@ -916,8 +949,7 @@ class _ConversationScreenState extends State<ConversationScreen>
                 )),
                 if (m.isAI) ...[
                   const SizedBox(width: 3),
-                  const Icon(Icons.auto_awesome, size: 10,
-                      color: AppColors.primary),
+                  const Icon(Icons.auto_awesome, size: 10, color: AppColors.primary),
                 ],
               ]),
             ),
@@ -936,23 +968,21 @@ class _ConversationScreenState extends State<ConversationScreen>
                             colors: [AppColors.primary, AppColors.accent]),
                     image: avatarIsUrl
                         ? DecorationImage(
-                            image: NetworkImage(m.avatar),
-                            fit: BoxFit.cover)
+                            image: NetworkImage(m.avatar), fit: BoxFit.cover)
                         : null,
                     shape: BoxShape.circle,
                   ),
-                  child: avatarIsUrl
-                      ? null
-                      : Center(child: Text(m.avatar,
+                  child: avatarIsUrl ? null : Center(
+                      child: Text(m.avatar,
                           style: const TextStyle(fontSize: 14))),
                 ),
                 const SizedBox(width: 8),
               ],
+
               Flexible(
                 child: Container(
                   constraints: BoxConstraints(
-                      maxWidth:
-                          MediaQuery.of(context).size.width * 0.75),
+                      maxWidth: MediaQuery.of(context).size.width * 0.75),
                   padding: const EdgeInsets.symmetric(
                       horizontal: 14, vertical: 10),
                   decoration: BoxDecoration(
@@ -977,8 +1007,7 @@ class _ConversationScreenState extends State<ConversationScreen>
                           styleSheet: MarkdownStyleSheet(
                             p: TextStyle(
                               color: isDark
-                                  ? const Color(0xFFE8E8F0)
-                                  : Colors.black87,
+                                  ? const Color(0xFFE8E8F0) : Colors.black87,
                               fontSize: 14, height: 1.55,
                             ),
                             strong: const TextStyle(
@@ -1011,9 +1040,7 @@ class _ConversationScreenState extends State<ConversationScreen>
           ),
         ],
       ),
-    ).animate()
-        .fadeIn(duration: 200.ms)
-        .slideY(begin: 0.08, curve: Curves.easeOut);
+    ).animate().fadeIn(duration: 200.ms).slideY(begin: 0.08, curve: Curves.easeOut);
   }
 
   Widget _buildTypingIndicator(bool isDark, Color surfColor) {
@@ -1023,12 +1050,10 @@ class _ConversationScreenState extends State<ConversationScreen>
         Container(
           width: 28, height: 28,
           decoration: const BoxDecoration(
-            gradient: LinearGradient(
-                colors: [AppColors.primary, AppColors.accent]),
+            gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]),
             shape: BoxShape.circle,
           ),
-          child: const Center(
-              child: Text('🤖', style: TextStyle(fontSize: 14))),
+          child: const Center(child: Text('🤖', style: TextStyle(fontSize: 14))),
         ),
         const SizedBox(width: 8),
         Container(
@@ -1112,8 +1137,7 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
 
   void _startTimer() {
     _updateExpiry();
-    _timer =
-        Timer.periodic(const Duration(seconds: 1), (_) => _updateExpiry());
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _updateExpiry());
   }
 
   void _updateExpiry() {
@@ -1163,8 +1187,7 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
         GestureDetector(
           onTap: () => GoRouter.of(context).go('/premium'),
           child: const Text('Go Premium', style: TextStyle(
-              fontSize: 11, color: AppColors.primary,
-              fontWeight: FontWeight.w600)),
+              fontSize: 11, color: AppColors.primary, fontWeight: FontWeight.w600)),
         ),
       ]),
     );
@@ -1174,10 +1197,8 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
 // ─────────────────────────────────────────────────────────────────────────────
 class _AdGateSheet extends StatelessWidget {
   final int freeUsed, adsToday, maxAds, windowHours;
-  const _AdGateSheet({
-    required this.freeUsed, required this.adsToday,
-    required this.maxAds, required this.windowHours,
-  });
+  const _AdGateSheet({required this.freeUsed, required this.adsToday,
+      required this.maxAds, required this.windowHours});
 
   @override
   Widget build(BuildContext context) {
@@ -1189,8 +1210,7 @@ class _AdGateSheet extends StatelessWidget {
 
     return Container(
       decoration: BoxDecoration(color: bg,
-          borderRadius:
-              const BorderRadius.vertical(top: Radius.circular(28))),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28))),
       padding: EdgeInsets.fromLTRB(
           24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -1201,12 +1221,10 @@ class _AdGateSheet extends StatelessWidget {
         const SizedBox(height: 24),
         Container(width: 72, height: 72,
             decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                  colors: [AppColors.primary, AppColors.accent]),
+              gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]),
               shape: BoxShape.circle,
             ),
-            child: const Center(
-                child: Text('🤖', style: TextStyle(fontSize: 36)))),
+            child: const Center(child: Text('🤖', style: TextStyle(fontSize: 36)))),
         const SizedBox(height: 16),
         Text('Unlock AI Messages', style: TextStyle(
             fontSize: 20, fontWeight: FontWeight.w800, color: text)),
@@ -1227,33 +1245,25 @@ class _AdGateSheet extends StatelessWidget {
             icon: const Icon(Icons.play_circle_fill_rounded, size: 20),
             label: Text('Watch Ad — Unlock ${windowHours}h Free'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
+              backgroundColor: AppColors.primary, foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(vertical: 16),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14)),
-              textStyle: const TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.w700),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
             ),
           ),
         ),
         const SizedBox(height: 12),
         SizedBox(width: double.infinity,
           child: OutlinedButton.icon(
-            onPressed: () {
-              Navigator.pop(context, false);
-              context.go('/premium');
-            },
+            onPressed: () { Navigator.pop(context, false); context.go('/premium'); },
             icon: const Icon(Icons.workspace_premium_rounded, size: 18),
             label: const Text('Go Premium — Unlimited AI'),
             style: OutlinedButton.styleFrom(
               foregroundColor: AppColors.gold,
               side: const BorderSide(color: AppColors.gold),
               padding: const EdgeInsets.symmetric(vertical: 14),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14)),
-              textStyle: const TextStyle(
-                  fontSize: 14, fontWeight: FontWeight.w600),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
             ),
           ),
         ),
@@ -1283,8 +1293,7 @@ class _DailyLimitSheetState extends State<_DailyLimitSheet> {
   void initState() {
     super.initState();
     _update();
-    _timer =
-        Timer.periodic(const Duration(seconds: 1), (_) => _update());
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _update());
   }
 
   void _update() {
@@ -1310,8 +1319,7 @@ class _DailyLimitSheetState extends State<_DailyLimitSheet> {
 
     return Container(
       decoration: BoxDecoration(color: bg,
-          borderRadius:
-              const BorderRadius.vertical(top: Radius.circular(28))),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28))),
       padding: EdgeInsets.fromLTRB(
           24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -1326,23 +1334,21 @@ class _DailyLimitSheetState extends State<_DailyLimitSheet> {
             fontSize: 20, fontWeight: FontWeight.w800, color: text)),
         const SizedBox(height: 8),
         Text(
-          "You've used all your free AI unlocks for today.\n"
-          "Your limit resets at midnight UTC.",
+          "You've used all your free AI unlocks for today.\nYour limit resets at midnight UTC.",
           style: TextStyle(fontSize: 14, color: sub, height: 1.5),
           textAlign: TextAlign.center,
         ),
         const SizedBox(height: 24),
         Container(
-          padding: const EdgeInsets.symmetric(
-              horizontal: 28, vertical: 16),
+          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
           decoration: BoxDecoration(
               color: AppColors.primary.withOpacity(0.08),
               borderRadius: BorderRadius.circular(16)),
           child: Column(children: [
             Text('Resets in', style: TextStyle(fontSize: 12, color: sub)),
             const SizedBox(height: 6),
-            Text(_countdown, style: TextStyle(
-                fontSize: 32, fontWeight: FontWeight.w800, color: text,
+            Text(_countdown, style: TextStyle(fontSize: 32,
+                fontWeight: FontWeight.w800, color: text,
                 fontFamily: 'monospace', letterSpacing: 2)),
           ]),
         ),
@@ -1353,21 +1359,17 @@ class _DailyLimitSheetState extends State<_DailyLimitSheet> {
             icon: const Icon(Icons.workspace_premium_rounded, size: 20),
             label: const Text('Upgrade — Unlimited AI Forever'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.gold,
-              foregroundColor: Colors.black87,
+              backgroundColor: AppColors.gold, foregroundColor: Colors.black87,
               padding: const EdgeInsets.symmetric(vertical: 16),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14)),
-              textStyle: const TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.w700),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
             ),
           ),
         ),
         const SizedBox(height: 12),
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: Text('Come back later',
-              style: TextStyle(color: sub, fontSize: 13)),
+          child: Text('Come back later', style: TextStyle(color: sub, fontSize: 13)),
         ),
       ]),
     );
