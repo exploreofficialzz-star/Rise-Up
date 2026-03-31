@@ -3,8 +3,10 @@ RiseUp Backend — Main Application (DEBUG VERSION)
 """
 import sys
 import traceback
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -19,7 +21,34 @@ app = FastAPI(
     redoc_url=None,
 )
 
-# ── Rate limiting (basic setup) ─────────────────────────
+# ── Body Size Limit Middleware ──────────────────────────────────────────────
+# FIX: Must be added BEFORE SecurityMiddleware so it wraps the whole stack.
+# Starlette middleware executes in reverse-add order (last added = outermost).
+# This allows 500 MB for /upload-media routes and 5 MB for everything else,
+# preventing SecurityMiddleware or Render's proxy from returning 413 on videos.
+
+_UPLOAD_PATHS = ("/upload-media", "/upload_media")
+_MAX_UPLOAD    = 500 * 1024 * 1024   # 500 MB  — videos up to ~15 min
+_MAX_DEFAULT   =   5 * 1024 * 1024   #   5 MB  — all other endpoints
+
+class BodySizeLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        cl = request.headers.get("content-length")
+        if cl:
+            size = int(cl)
+            is_upload = any(p in request.url.path for p in _UPLOAD_PATHS)
+            limit = _MAX_UPLOAD if is_upload else _MAX_DEFAULT
+            if size > limit:
+                label = "500 MB" if is_upload else "5 MB"
+                return JSONResponse(
+                    {"detail": f"Request body too large. Maximum allowed: {label}."},
+                    status_code=413,
+                )
+        return await call_next(request)
+
+app.add_middleware(BodySizeLimitMiddleware)
+
+# ── Rate limiting (basic setup) ─────────────────────────────────────────────
 try:
     from middleware.rate_limit import limiter, rate_limit_exceeded_handler
     app.state.limiter = limiter
@@ -29,7 +58,7 @@ except Exception as e:
     print(f"❌ Rate limiting failed: {e}")
     traceback.print_exc()
 
-# ── CORS ───────────────────────────────────────────────
+# ── CORS ────────────────────────────────────────────────────────────────────
 try:
     from middleware.security import SecurityMiddleware
     app.add_middleware(
@@ -45,7 +74,7 @@ except Exception as e:
     print(f"❌ Middleware failed: {e}")
     traceback.print_exc()
 
-# ── Router Loading with Detailed Error Output ─────────
+# ── Router Loading with Detailed Error Output ──────────────────────────────
 print("\n" + "="*60)
 print("LOADING ROUTERS")
 print("="*60)
@@ -106,7 +135,7 @@ print("="*60)
 print(f"✅ Loaded: {len(loaded_routers)} routers")
 for r in loaded_routers:
     print(f"   - {r}")
-    
+
 if failed_routers:
     print(f"\n❌ Failed: {len(failed_routers)} routers")
     for name, error in failed_routers:
@@ -114,7 +143,7 @@ if failed_routers:
 
 print("="*60 + "\n")
 
-# ── Basic Endpoints ────────────────────────────────────
+# ── Basic Endpoints ────────────────────────────────────────────────────────
 
 @app.get("/")
 async def root():
