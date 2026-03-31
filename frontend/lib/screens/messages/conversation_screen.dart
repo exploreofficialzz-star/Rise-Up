@@ -6,6 +6,8 @@
 //  2. postContext + postAuthor params: when arriving from "Chat Privately",
 //     AI mentor auto-sends a contextual opening message.
 //  3. Back navigation works via context.pop() (caller uses context.push).
+//  4. DM vs AI message routing fixed: uses @ai prefix to trigger AI in mixed chats.
+//  5. Invite AI now calls backend endpoint to persist AI participation.
 
 import 'dart:async';
 import 'dart:convert';
@@ -323,6 +325,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
             _lastPollTime = msgs.last['created_at']?.toString();
           }
         }
+        // Check if AI is already in this conversation
+        _checkAIJoined();
       }
     } catch (_) {
       // Non-fatal — show empty state
@@ -330,6 +334,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (mounted) setState(() => _historyLoaded = true);
       _scrollDown(jump: true);
     }
+  }
+
+  // Check if AI has been invited to this DM
+  Future<void> _checkAIJoined() async {
+    try {
+      final result = await api.checkAIInConversation(widget.userId);
+      if (mounted && result['ai_joined'] == true) {
+        setState(() => _aiJoined = true);
+      }
+    } catch (_) {}
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -376,9 +390,22 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Future<void> _onSend() async {
     final text = _textCtrl.text.trim();
     if (text.isEmpty) return;
-    if (widget.isAI || widget.userId == 'ai' || _aiJoined) {
+    
+    // FIX: Route messages correctly based on context and prefix
+    if (widget.isAI || widget.userId == 'ai') {
+      // Pure AI conversation mode
       await _trySendAI(text);
+    } else if (_aiJoined && text.startsWith('@ai ')) {
+      // DM with AI present - @ai prefix triggers AI response
+      final aiText = text.substring(4).trim();
+      if (aiText.isNotEmpty) {
+        // First send the @ai message as regular DM for visibility
+        await _sendDM(text);
+        // Then get AI response
+        await _trySendAI(aiText);
+      }
     } else {
+      // Regular user-to-user DM
       await _sendDM(text);
     }
   }
@@ -495,17 +522,30 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // ─────────────────────────────────────────────────────────────────────────
   // AI join in peer DM
   // ─────────────────────────────────────────────────────────────────────────
-  void _inviteAI() {
-    setState(() {
-      _aiJoined = true;
-      _msgs.add(_Msg(
-        content: '🤖 **RiseUp AI has joined the conversation!**\n\n'
-                 'Hey! I\'m here to help with wealth questions, strategies or '
-                 'anything you need. Just ask! 💡',
-        sender: 'RiseUp AI', avatar: '🤖', isMe: false, isAI: true,
-      ));
-    });
-    _scrollDown();
+  Future<void> _inviteAI() async {
+    if (widget.userId.isEmpty || widget.userId == 'ai') return;
+    
+    try {
+      await api.inviteAIToConversation(widget.userId);
+      setState(() {
+        _aiJoined = true;
+        _msgs.add(_Msg(
+          content: '🤖 **RiseUp AI has joined the conversation!**\n\n'
+                   'Hey! I\'m here to help with wealth questions, strategies or '
+                   'anything you need. Just ask! 💡\n\n'
+                   'Tip: Use "@ai your question" to ask me anything.',
+          sender: 'RiseUp AI', avatar: '🤖', isMe: false, isAI: true,
+        ));
+      });
+      _scrollDown();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Could not invite AI. Try again.'),
+          backgroundColor: AppColors.error, duration: Duration(seconds: 2),
+        ));
+      }
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -717,6 +757,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
           const SizedBox(height: 8),
           Text('Start a conversation below',
               style: TextStyle(fontSize: 14, color: subColor)),
+          if (_aiJoined) ...[
+            const SizedBox(height: 16),
+            Text('Use "@ai your message" to ask AI',
+                style: TextStyle(fontSize: 12, color: AppColors.primary)),
+          ],
         ]),
       ),
     );
@@ -882,9 +927,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
             textCapitalization: TextCapitalization.sentences,
             enabled: !isSending,
             decoration: InputDecoration(
-              hintText: isAIMode || _aiJoined
+              hintText: isAIMode 
                   ? 'Ask your wealth mentor...'
-                  : 'Message ${widget.name}...',
+                  : _aiJoined 
+                      ? 'Message @ai or ${widget.name}...'
+                      : 'Message ${widget.name}...',
               hintStyle: TextStyle(color: sub, fontSize: 13),
               filled: true, fillColor: surf,
               border: OutlineInputBorder(
