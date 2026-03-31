@@ -6,10 +6,10 @@ v6 fixes:
   • Added invite-ai endpoint for persistent AI participation in DMs
   • Added ai-status endpoint to check if AI is in conversation
   • send_ai_message: ai_service.mentor_chat() wrapped in try/except with
-    automatic fallback to ai_service.chat() — eliminates "Connection issue"
-    when mentor_chat is unavailable or throws.
-  • get_conversations: is_online computed dynamically from last_seen.
-  • All original v4/v5 improvements retained.
+    automatic fallback to ai_service.chat()
+  • Uses NULL sender_id for AI messages with proper sender_type handling
+  • Auto-creates AI system profile if not exists (global compatible)
+  • FIX: Added missing user_id column to send_message for DM compatibility
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime, timezone, timedelta
 import logging
+import uuid
 
 from services.supabase_service import supabase_service
 from services.ai_service import ai_service
@@ -30,19 +31,39 @@ WINDOW_HOURS           = 4
 MAX_AD_UNLOCKS_PER_DAY = 5
 ONLINE_THRESHOLD_SECS  = 120
 
-
-class MessageSend(BaseModel):
-    content: str
-    media_url: Optional[str] = None
-
-
-class AiMessageRequest(BaseModel):
-    content: str
-    ad_unlocked: bool = False
+# Global AI System User - deterministic UUID v5
+AI_USER_ID = str(uuid.uuid5(uuid.NAMESPACE_DNS, "riseup.ai.system"))
+AI_USER_EMAIL = "ai@riseup.system"
 
 
 def _db():
     return supabase_service.db
+
+
+def _ensure_ai_user_exists(db):
+    """Ensure the AI system user exists in profiles. Idempotent, safe to call multiple times."""
+    try:
+        # Check if AI user exists
+        existing = db.table("profiles").select("id").eq("id", AI_USER_ID).execute().data
+        if existing:
+            return
+        
+        # Create AI user if not exists
+        db.table("profiles").insert({
+            "id": AI_USER_ID,
+            "email": AI_USER_EMAIL,
+            "full_name": "RiseUp AI",
+            "username": "riseup_ai",
+            "avatar_url": None,
+            "is_online": True,
+            "last_seen": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).execute()
+        logger.info(f"Created AI system user: {AI_USER_ID}")
+    except Exception as e:
+        # Log but don't fail - might be race condition or already exists
+        logger.warning(f"AI user creation check failed (may already exist): {e}")
 
 
 def _is_online_from_last_seen(last_seen_str: Optional[str], now: datetime) -> bool:
@@ -275,9 +296,10 @@ async def get_messages(
         msgs = []
         for m in msgs_raw:
             row = dict(m)
-            if row.get("sender_type") == "ai" and not row.get("profiles"):
+            # Handle AI messages - check by sender_id or sender_type
+            if row.get("sender_id") == AI_USER_ID or row.get("sender_type") in ["ai", "system"]:
                 row["profiles"] = {
-                    "id":         None,
+                    "id":         AI_USER_ID,
                     "full_name":  "RiseUp AI",
                     "avatar_url": None,
                     "is_ai":      True,
@@ -313,9 +335,11 @@ async def send_message(
         db = _db()
         _assert_member(db, conversation_id, user["id"])
 
+        # FIX: Added user_id column which is required by schema
         data: dict = {
             "conversation_id": conversation_id,
             "sender_id":       user["id"],
+            "user_id":         user["id"],  # FIX: Required by messages table schema
             "content":         req.content,
             "is_read":         False,
             "sender_type":     "user",
@@ -352,6 +376,9 @@ async def send_message(
             )
             sender_name  = (profile_row or {}).get("full_name") or "Someone"
             for m in members:
+                # Skip AI user for notifications
+                if m["user_id"] == AI_USER_ID:
+                    continue
                 try:
                     db.table("notifications").insert({
                         "user_id": m["user_id"],
@@ -385,6 +412,9 @@ async def send_ai_message(
     try:
         db         = _db()
         _assert_member(db, conversation_id, user["id"])
+
+        # Ensure AI user exists (idempotent)
+        _ensure_ai_user_exists(db)
 
         quota      = _get_or_create_quota(db, user["id"])
         is_premium = _is_premium(db, user["id"])
@@ -453,10 +483,7 @@ async def send_ai_message(
         except Exception:
             user_profile = {}
 
-        # FIX: Call ai_service.mentor_chat() with a robust fallback chain.
-        # If mentor_chat is unavailable or throws, fall back to ai_service.chat().
-        # If chat also fails, return a graceful canned response so the endpoint
-        # never returns a 500 to the client.
+        # Call AI service with fallback
         ai_content = None
         model_used = "ai"
 
@@ -492,15 +519,17 @@ async def send_ai_message(
         db.table("messages").insert({
             "conversation_id": conversation_id,
             "sender_id":       user["id"],
+            "user_id":         user["id"],  # FIX: Added user_id for consistency
             "content":         req.content,
             "sender_type":     "user",
             "is_read":         True,
         }).execute()
 
-        # Persist AI message
+        # Persist AI message with valid sender_id
         ai_msg = db.table("messages").insert({
             "conversation_id": conversation_id,
-            "sender_id":       None,
+            "sender_id":       AI_USER_ID,
+            "user_id":         AI_USER_ID,  # FIX: Added user_id for AI message
             "content":         ai_content,
             "sender_type":     "ai",
             "is_read":         True,
@@ -553,6 +582,9 @@ async def invite_ai_to_conversation(
         db = _db()
         _assert_member(db, conversation_id, user["id"])
         
+        # Ensure AI user exists
+        _ensure_ai_user_exists(db)
+        
         # Check if this is a direct message conversation
         convo_res = db.table("conversations").select("type").eq("id", conversation_id).single().execute()
         if not convo_res.data or convo_res.data.get("type") != "direct":
@@ -561,23 +593,24 @@ async def invite_ai_to_conversation(
         # Check if AI is already invited
         existing = db.table("conversation_members").select("*") \
             .eq("conversation_id", conversation_id) \
-            .eq("user_id", "ai") \
+            .eq("user_id", AI_USER_ID) \
             .execute().data
         
         if existing:
             return {"ai_joined": True, "conversation_id": conversation_id, "already_present": True}
         
-        # Add AI as a special member
+        # Add AI as a member
         db.table("conversation_members").insert({
             "conversation_id": conversation_id,
-            "user_id": "ai",
+            "user_id": AI_USER_ID,
             "joined_at": datetime.now(timezone.utc).isoformat(),
         }).execute()
         
         # Add system message about AI joining
         db.table("messages").insert({
             "conversation_id": conversation_id,
-            "sender_id": None,
+            "sender_id": AI_USER_ID,
+            "user_id": AI_USER_ID,  # FIX: Added user_id
             "sender_type": "system",
             "content": "RiseUp AI has been invited to this conversation. Use @ai to ask questions.",
             "is_read": True,
@@ -613,7 +646,7 @@ async def get_ai_status(
         
         ai_member = db.table("conversation_members").select("*") \
             .eq("conversation_id", conversation_id) \
-            .eq("user_id", "ai") \
+            .eq("user_id", AI_USER_ID) \
             .execute().data
         
         return {"ai_joined": bool(ai_member), "conversation_id": conversation_id}
@@ -644,6 +677,7 @@ async def search_users(
             .select("id, full_name, username, avatar_url, stage, last_seen, is_online")
             .ilike("full_name", f"%{q}%")
             .neq("id", user["id"])
+            .neq("id", AI_USER_ID)  # Exclude AI user from search
             .limit(limit)
             .execute()
         )
