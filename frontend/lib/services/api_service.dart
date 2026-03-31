@@ -523,6 +523,17 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
+  // ── Link preview + spam check ─────────────────────────────────────────────
+  // Returns { title, description, image, favicon, blocked, reason }
+  // Blocked = true if the backend safety filter catches scam/spam content.
+  Future<Map<String, dynamic>> getLinkPreview(String url) async {
+    try {
+      final r = await _dio.get('/posts/link-preview',
+          queryParameters: {'url': url});
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
   // ── Post Media Upload ─────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> uploadPostMedia(String filePath) async {
@@ -592,13 +603,17 @@ class ApiService {
     required String tag,
     String? mediaUrl,
     String? mediaType,
+    String? linkUrl,
+    String? linkTitle,
   }) async {
     try {
       final r = await _dio.post('/posts', data: {
         'content': content,
         'tag': tag,
-        if (mediaUrl != null && mediaUrl.isNotEmpty) 'media_url': mediaUrl,
-        if (mediaType != null && mediaType.isNotEmpty) 'media_type': mediaType,
+        if (mediaUrl  != null && mediaUrl.isNotEmpty)  'media_url':   mediaUrl,
+        if (mediaType != null && mediaType.isNotEmpty) 'media_type':  mediaType,
+        if (linkUrl   != null && linkUrl.isNotEmpty)   'link_url':    linkUrl,
+        if (linkTitle != null && linkTitle.isNotEmpty) 'link_title':  linkTitle,
       });
       return r.data as Map<String, dynamic>;
     } catch (e) { throw _handleError(e); }
@@ -1009,18 +1024,6 @@ class ApiService {
       final r = await _dio.get('/messages/ai-quota');
       return r.data as Map<String, dynamic>;
     } catch (e) { throw _handleError(e); }
-  }
-
-  /// Marks the current user as online. Call this on app resume / screen open.
-  /// Fire-and-forget — errors are silently swallowed so presence never blocks UI.
-  Future<void> updatePresence() async {
-    try { await _dio.post('/messages/presence', data: {}); } catch (_) {}
-  }
-
-  /// Marks the current user as offline. Call this on app pause / sign-out.
-  /// Fire-and-forget — errors are silently swallowed so presence never blocks UI.
-  Future<void> setOffline() async {
-    try { await _dio.delete('/messages/presence'); } catch (_) {}
   }
 
   // ── Groups ────────────────────────────────────────────────────────────────
