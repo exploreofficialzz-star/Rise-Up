@@ -13,11 +13,8 @@ Fix log:
   v3.2 — create_post / get_feed: profile now always returns avatar_url so
           Flutter PostCard and CreatePostScreen can display real avatars.
   v3.3 — _ensure_bucket: removed file_size_limit from create_bucket options.
-          Supabase was returning 400 "Payload too large" on the bucket
-          creation call itself because the plan's storage limit is lower than
-          500 MB — this silently swallowed the create call and left the bucket
-          non-existent, so every subsequent upload got "Bucket not found".
-          File-size enforcement is handled at the endpoint level (unchanged).
+  v3.4 — Added PostUpdate model + PATCH /{post_id} endpoint so Flutter can
+          edit post content/tag/link fields for own posts.
 """
 import logging
 import uuid
@@ -37,13 +34,21 @@ def _db():
     return supabase_service.db
 
 
-# ── Models ──────────────────────────────────────────────────────────────────
+# ── Models ───────────────────────────────────────────────────────────────────
 
 class PostCreate(BaseModel):
     content: str
     tag: str = "💰 Wealth"
     media_url: Optional[str] = None
     media_type: Optional[str] = None
+    link_url: Optional[str] = None
+    link_title: Optional[str] = None
+
+
+class PostUpdate(BaseModel):
+    """Partial update — only supplied fields are written to the DB."""
+    content: Optional[str] = None
+    tag: Optional[str] = None
     link_url: Optional[str] = None
     link_title: Optional[str] = None
 
@@ -135,10 +140,10 @@ async def get_feed(
             likes         = p.get("post_likes") or []
             saves         = p.get("post_saves") or []
             comments_data = p.get("post_comments") or []
-            p["is_liked"]        = any(l["user_id"] == user["id"] for l in likes)
-            p["is_saved"]        = any(s["user_id"] == user["id"] for s in saves)
-            p["likes_count"]     = len(likes)
-            p["comments_count"]  = (
+            p["is_liked"]       = any(l["user_id"] == user["id"] for l in likes)
+            p["is_saved"]       = any(s["user_id"] == user["id"] for s in saves)
+            p["likes_count"]    = len(likes)
+            p["comments_count"] = (
                 comments_data[0].get("count", 0) if comments_data else 0
             )
             p["is_following"] = False
@@ -172,7 +177,7 @@ async def get_feed(
         raise HTTPException(500, f"Failed to load feed: {e}")
 
 
-# ── Create Post ──────────────────────────────────────────────────────────────
+# ── Create Post ───────────────────────────────────────────────────────────────
 
 @router.post("")
 async def create_post(
@@ -203,7 +208,7 @@ async def create_post(
         raise HTTPException(500, f"Failed to create post: {e}")
 
 
-# ── Link Preview + Safety Check ──────────────────────────────────────────────
+# ── Link Preview + Safety Check ───────────────────────────────────────────────
 
 _BLOCKED_DOMAINS = {
     "free-bitcoin.io", "doubler.cash", "cryptodouble.net",
@@ -216,6 +221,7 @@ _SCAM_KEYWORDS = [
     "wire transfer", "western union", "investment signal",
     "whatsapp investment", "dm for profit", "click here to earn",
 ]
+
 
 @router.get("/link-preview")
 async def get_link_preview(
@@ -261,11 +267,7 @@ async def get_link_preview(
             resp = _req.get(normalized, headers=headers, timeout=timeout, allow_redirects=True)
             html = resp.text
 
-        ct = ""
-        if httpx:
-            ct = resp.headers.get("content-type", "")
-        else:
-            ct = resp.headers.get("content-type", "")
+        ct = resp.headers.get("content-type", "")
 
         if "text/html" not in ct and "application/xhtml" not in ct:
             return {
@@ -297,14 +299,15 @@ async def get_link_preview(
             r'<link[^>]+rel=["\']?(?:shortcut )?icon["\']?[^>]+href=["\']([^"\']+)["\']',
             html, re.IGNORECASE,
         )
-        favicon = favicon_tag.group(1) if favicon_tag else f"https://www.google.com/s2/favicons?domain={host}"
+        favicon = favicon_tag.group(1) if favicon_tag else \
+                  f"https://www.google.com/s2/favicons?domain={host}"
         if favicon and not favicon.startswith("http"):
             favicon = f"https://{host}{favicon if favicon.startswith('/') else '/' + favicon}"
 
         check_text = f"{title} {description}".lower()
         for kw in _SCAM_KEYWORDS:
             if kw in check_text:
-                return {"blocked": True, "reason": f"⚠️ Page content appears to promote prohibited activity."}
+                return {"blocked": True, "reason": "⚠️ Page content appears to promote prohibited activity."}
 
         return {
             "title":       title or host,
@@ -317,7 +320,7 @@ async def get_link_preview(
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         return {
             "title":       host,
             "description": "",
@@ -328,7 +331,7 @@ async def get_link_preview(
         }
 
 
-# ── Get Single Post ──────────────────────────────────────────────────────────
+# ── Get Single Post ───────────────────────────────────────────────────────────
 
 @router.get("/{post_id}")
 async def get_post(post_id: str, user: dict = Depends(get_current_user)):
@@ -364,7 +367,55 @@ async def get_post(post_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(500, str(e))
 
 
-# ── Like / Unlike ────────────────────────────────────────────────────────────
+# ── Update Post (v3.4) ────────────────────────────────────────────────────────
+
+@router.patch("/{post_id}")
+async def update_post(
+    post_id: str,
+    req: PostUpdate,
+    user: dict = Depends(get_current_user),
+):
+    """Partial edit of own post — only provided fields are updated."""
+    try:
+        db   = _db()
+        post = (
+            db.table("posts")
+            .select("user_id")
+            .eq("id", post_id)
+            .single()
+            .execute()
+            .data
+        )
+        if not post or post["user_id"] != user["id"]:
+            raise HTTPException(403, "Not your post")
+
+        update_data: dict = {}
+        if req.content is not None:
+            update_data["content"]    = req.content
+        if req.tag is not None:
+            update_data["tag"]        = req.tag
+        if req.link_url is not None:
+            update_data["link_url"]   = req.link_url
+        if req.link_title is not None:
+            update_data["link_title"] = req.link_title
+
+        if not update_data:
+            raise HTTPException(400, "No fields to update")
+
+        res = (
+            db.table("posts")
+            .update(update_data)
+            .eq("id", post_id)
+            .execute()
+        )
+        return {"post": res.data[0] if res.data else {}, "message": "Post updated"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+# ── Like / Unlike ─────────────────────────────────────────────────────────────
 
 @router.post("/{post_id}/like")
 async def toggle_like(post_id: str, user: dict = Depends(get_current_user)):
@@ -379,25 +430,30 @@ async def toggle_like(post_id: str, user: dict = Depends(get_current_user)):
             .data
         )
         if existing:
-            db.table("post_likes").delete().eq("post_id", post_id).eq("user_id", user["id"]).execute()
+            db.table("post_likes").delete() \
+              .eq("post_id", post_id).eq("user_id", user["id"]).execute()
             try:
                 db.rpc("decrement_post_likes", {"pid": post_id}).execute()
             except Exception:
                 pass
             return {"liked": False, "message": "Unliked"}
         else:
-            db.table("post_likes").insert({"post_id": post_id, "user_id": user["id"]}).execute()
+            db.table("post_likes").insert(
+                {"post_id": post_id, "user_id": user["id"]}
+            ).execute()
             try:
                 db.rpc("increment_post_likes", {"pid": post_id}).execute()
             except Exception:
                 pass
             try:
                 post = (
-                    db.table("posts").select("user_id").eq("id", post_id).single().execute().data
+                    db.table("posts").select("user_id")
+                    .eq("id", post_id).single().execute().data
                 )
                 if post and post["user_id"] != user["id"]:
                     profile = (
-                        db.table("profiles").select("full_name").eq("id", user["id"]).single().execute().data
+                        db.table("profiles").select("full_name")
+                        .eq("id", user["id"]).single().execute().data
                     )
                     db.table("notifications").insert({
                         "user_id": post["user_id"],
@@ -413,7 +469,7 @@ async def toggle_like(post_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(500, str(e))
 
 
-# ── Save / Unsave ────────────────────────────────────────────────────────────
+# ── Save / Unsave ─────────────────────────────────────────────────────────────
 
 @router.post("/{post_id}/save")
 async def toggle_save(post_id: str, user: dict = Depends(get_current_user)):
@@ -428,16 +484,19 @@ async def toggle_save(post_id: str, user: dict = Depends(get_current_user)):
             .data
         )
         if existing:
-            db.table("post_saves").delete().eq("post_id", post_id).eq("user_id", user["id"]).execute()
+            db.table("post_saves").delete() \
+              .eq("post_id", post_id).eq("user_id", user["id"]).execute()
             return {"saved": False}
         else:
-            db.table("post_saves").insert({"post_id": post_id, "user_id": user["id"]}).execute()
+            db.table("post_saves").insert(
+                {"post_id": post_id, "user_id": user["id"]}
+            ).execute()
             return {"saved": True}
     except Exception as e:
         raise HTTPException(500, str(e))
 
 
-# ── Comments ─────────────────────────────────────────────────────────────────
+# ── Comments ──────────────────────────────────────────────────────────────────
 
 @router.get("/{post_id}/comments")
 async def get_comments(
@@ -464,8 +523,8 @@ async def get_comments(
         )
         comments = res.data or []
         for c in comments:
-            likes           = c.get("comment_likes") or []
-            c["is_liked"]   = any(l["user_id"] == user["id"] for l in likes)
+            likes            = c.get("comment_likes") or []
+            c["is_liked"]    = any(l["user_id"] == user["id"] for l in likes)
             c["likes_count"] = len(likes)
 
         def _is_ai(c: dict) -> bool:
@@ -476,7 +535,6 @@ async def get_comments(
             )
 
         comments.sort(key=lambda c: (0 if _is_ai(c) else 1, c.get("created_at", "")))
-
         return {"comments": comments}
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -517,11 +575,13 @@ async def add_comment(
 
         try:
             post = (
-                db.table("posts").select("user_id").eq("id", post_id).single().execute().data
+                db.table("posts").select("user_id")
+                .eq("id", post_id).single().execute().data
             )
             if post and post["user_id"] != user["id"] and not req.is_ai:
                 profile = (
-                    db.table("profiles").select("full_name").eq("id", user["id"]).single().execute().data
+                    db.table("profiles").select("full_name")
+                    .eq("id", user["id"]).single().execute().data
                 )
                 db.table("notifications").insert({
                     "user_id": post["user_id"],
@@ -551,16 +611,19 @@ async def like_comment(comment_id: str, user: dict = Depends(get_current_user)):
             .data
         )
         if existing:
-            db.table("comment_likes").delete().eq("comment_id", comment_id).eq("user_id", user["id"]).execute()
+            db.table("comment_likes").delete() \
+              .eq("comment_id", comment_id).eq("user_id", user["id"]).execute()
             return {"liked": False}
         else:
-            db.table("comment_likes").insert({"comment_id": comment_id, "user_id": user["id"]}).execute()
+            db.table("comment_likes").insert(
+                {"comment_id": comment_id, "user_id": user["id"]}
+            ).execute()
             return {"liked": True}
     except Exception as e:
         raise HTTPException(500, str(e))
 
 
-# ── Share ────────────────────────────────────────────────────────────────────
+# ── Share ─────────────────────────────────────────────────────────────────────
 
 @router.post("/{post_id}/share")
 async def share_post(post_id: str, user: dict = Depends(get_current_user)):
@@ -575,14 +638,15 @@ async def share_post(post_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(500, str(e))
 
 
-# ── Delete Post ──────────────────────────────────────────────────────────────
+# ── Delete Post ───────────────────────────────────────────────────────────────
 
 @router.delete("/{post_id}")
 async def delete_post(post_id: str, user: dict = Depends(get_current_user)):
     try:
         db   = _db()
         post = (
-            db.table("posts").select("user_id").eq("id", post_id).single().execute().data
+            db.table("posts").select("user_id")
+            .eq("id", post_id).single().execute().data
         )
         if not post or post["user_id"] != user["id"]:
             raise HTTPException(403, "Not your post")
@@ -594,7 +658,7 @@ async def delete_post(post_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(500, str(e))
 
 
-# ── Follow / Unfollow ────────────────────────────────────────────────────────
+# ── Follow / Unfollow ─────────────────────────────────────────────────────────
 
 @router.post("/users/{target_id}/follow")
 async def toggle_follow(target_id: str, user: dict = Depends(get_current_user)):
@@ -612,16 +676,18 @@ async def toggle_follow(target_id: str, user: dict = Depends(get_current_user)):
             .data
         )
         if existing:
-            db.table("follows").delete().eq("follower_id", user["id"]).eq("following_id", target_id).execute()
+            db.table("follows").delete() \
+              .eq("follower_id", user["id"]).eq("following_id", target_id).execute()
             return {"following": False}
         else:
             db.table("follows").insert({
-                "follower_id": user["id"],
+                "follower_id":  user["id"],
                 "following_id": target_id,
             }).execute()
             try:
                 profile = (
-                    db.table("profiles").select("full_name").eq("id", user["id"]).single().execute().data
+                    db.table("profiles").select("full_name")
+                    .eq("id", user["id"]).single().execute().data
                 )
                 db.table("notifications").insert({
                     "user_id": target_id,
@@ -639,26 +705,30 @@ async def toggle_follow(target_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(500, str(e))
 
 
-# ── User Profile ─────────────────────────────────────────────────────────────
+# ── User Profile ──────────────────────────────────────────────────────────────
 
 @router.get("/users/{user_id}/profile")
 async def get_user_profile(user_id: str, user: dict = Depends(get_current_user)):
     try:
         db      = _db()
         profile = (
-            db.table("profiles").select("*").eq("id", user_id).single().execute().data
+            db.table("profiles").select("*")
+            .eq("id", user_id).single().execute().data
         )
         if not profile:
             raise HTTPException(404, "User not found")
 
-        posts_count = (
-            db.table("posts").select("id", count="exact").eq("user_id", user_id).execute().count or 0
+        posts_count  = (
+            db.table("posts").select("id", count="exact")
+            .eq("user_id", user_id).execute().count or 0
         )
-        followers   = (
-            db.table("follows").select("id", count="exact").eq("following_id", user_id).execute().count or 0
+        followers    = (
+            db.table("follows").select("id", count="exact")
+            .eq("following_id", user_id).execute().count or 0
         )
-        following   = (
-            db.table("follows").select("id", count="exact").eq("follower_id", user_id).execute().count or 0
+        following    = (
+            db.table("follows").select("id", count="exact")
+            .eq("follower_id", user_id).execute().count or 0
         )
         is_following = bool(
             db.table("follows")
@@ -699,8 +769,8 @@ async def get_user_posts(
         )
         posts = res.data or []
         for p in posts:
-            likes           = p.get("post_likes") or []
-            p["is_liked"]   = any(l["user_id"] == user["id"] for l in likes)
+            likes            = p.get("post_likes") or []
+            p["is_liked"]    = any(l["user_id"] == user["id"] for l in likes)
             p["likes_count"] = len(likes)
         return {"posts": posts}
     except Exception as e:
@@ -742,11 +812,11 @@ async def get_user_liked_posts(
         )
         posts = posts_res.data or []
         for p in posts:
-            saves           = p.get("post_saves") or []
-            likes           = p.get("post_likes") or []
-            p["is_liked"]   = True
+            saves            = p.get("post_saves") or []
+            likes            = p.get("post_likes") or []
+            p["is_liked"]    = True
             p["likes_count"] = len(likes)
-            p["is_saved"]   = any(s["user_id"] == user["id"] for s in saves)
+            p["is_saved"]    = any(s["user_id"] == user["id"] for s in saves)
         return {"posts": posts}
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -803,7 +873,7 @@ async def get_status_feed(user: dict = Depends(get_current_user)):
         db  = _db()
         now = datetime.now(timezone.utc).isoformat()
 
-        follows    = (
+        follows      = (
             db.table("follows")
             .select("following_id")
             .eq("follower_id", user_id)
@@ -904,50 +974,30 @@ async def view_status(status_id: str, user: dict = Depends(get_current_user)):
 async def delete_status(status_id: str, user: dict = Depends(get_current_user)):
     try:
         db = _db()
-        db.table("user_status").update({"is_active": False}).eq(
-            "id", status_id
-        ).eq("user_id", user["id"]).execute()
+        db.table("user_status").update({"is_active": False}) \
+          .eq("id", status_id).eq("user_id", user["id"]).execute()
         return {"deleted": True}
     except Exception as e:
         raise HTTPException(500, str(e))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# _ensure_bucket
+# ── _ensure_bucket ────────────────────────────────────────────────────────────
 #
 # FIX v3.3: Removed file_size_limit from create_bucket options.
-#
-# ROOT CAUSE OF ORIGINAL 500:
-#   Supabase's Management API was returning 400 "Payload too large" when we
-#   passed file_size_limit=524288000 (500 MB) because the project's storage
-#   plan limit is lower than 500 MB. The create_bucket call silently failed
-#   (we only logged a warning), so the bucket was never created, and every
-#   subsequent upload got "Bucket not found" → 500.
-#
-# FIX:
-#   Create the bucket without file_size_limit. File size is already enforced
-#   at the endpoint level (see size_limit check below), so there is no
-#   security or UX regression from removing it here.
-# ─────────────────────────────────────────────────────────────────────────────
+# File-size enforcement is handled at the endpoint level instead.
 
 def _ensure_bucket(sb, bucket_name: str) -> None:
     """
     Create a public Supabase Storage bucket if it doesn't already exist.
     Safe to call on every request — swallows 'already exists' errors.
-    Uses service-role client so no RLS blocks the creation.
-
-    NOTE: Do NOT pass file_size_limit here. Supabase rejects bucket creation
-    with that field if the value exceeds the project plan's storage limit.
-    Endpoint-level size checks handle the 500 MB / 50 MB enforcement instead.
     """
     try:
         sb.storage.get_bucket(bucket_name)
-        # Bucket exists — nothing to do
     except Exception:
         try:
             sb.storage.create_bucket(
                 bucket_name,
-                options={"public": True},  # FIX: removed file_size_limit
+                options={"public": True},
             )
             logger.info(f"Created Supabase Storage bucket: {bucket_name}")
         except Exception as create_err:
@@ -967,26 +1017,25 @@ async def upload_status_media(
         "image/gif",  "image/heic", "image/heif", "image/avif",
         "image/bmp",  "image/tiff",
         # Videos
-        "video/mp4",     "video/quicktime",    "video/x-msvideo",
-        "video/x-matroska", "video/webm",      "video/3gpp",
-        "video/mpeg",    "video/ogg",
+        "video/mp4",        "video/quicktime",   "video/x-msvideo",
+        "video/x-matroska", "video/webm",        "video/3gpp",
+        "video/mpeg",       "video/ogg",
     }
 
-    # Some mobile clients send 'image/jpg' (non-standard) — normalise it
     ct = (file.content_type or "").lower().strip()
     if ct == "image/jpg":
         ct = "image/jpeg"
 
-    # If content_type is missing or blank, infer from filename extension
     if not ct or ct == "application/octet-stream":
-        fname = (file.filename or "").lower()
+        fname     = (file.filename or "").lower()
         ext_guess = fname.rsplit(".", 1)[-1] if "." in fname else ""
         _infer = {
-            "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
-            "webp": "image/webp", "gif": "image/gif", "heic": "image/heic",
-            "heif": "image/heif", "avif": "image/avif", "bmp": "image/bmp",
-            "mp4": "video/mp4", "mov": "video/quicktime", "avi": "video/x-msvideo",
-            "mkv": "video/x-matroska", "webm": "video/webm", "3gp": "video/3gpp",
+            "jpg":  "image/jpeg",  "jpeg": "image/jpeg",  "png":  "image/png",
+            "webp": "image/webp",  "gif":  "image/gif",   "heic": "image/heic",
+            "heif": "image/heif",  "avif": "image/avif",  "bmp":  "image/bmp",
+            "mp4":  "video/mp4",   "mov":  "video/quicktime",
+            "avi":  "video/x-msvideo", "mkv": "video/x-matroska",
+            "webm": "video/webm",  "3gp":  "video/3gpp",
         }
         ct = _infer.get(ext_guess, "image/jpeg")
 
@@ -1016,24 +1065,21 @@ async def upload_status_media(
             "jpeg": "jpg", "jpg": "jpg", "quicktime": "mov",
             "x-msvideo": "avi", "x-matroska": "mkv",
             "heic": "heic", "heif": "heif", "avif": "avif",
-            "ogg": "ogv",
+            "ogg":  "ogv",
         }
         raw_ext  = ct.split("/")[-1]
         ext      = ext_map.get(raw_ext, raw_ext)
         bucket   = "status-media"
         filename = f"{user['id']}/{uuid.uuid4()}.{ext}"
 
-        # Ensure bucket exists before uploading (creates it if missing)
         _ensure_bucket(sb, bucket)
 
-        # Upload file bytes
         sb.storage.from_(bucket).upload(
             path=filename,
             file=contents,
             file_options={"content-type": ct, "upsert": "true"},
         )
 
-        # Get public URL
         url        = sb.storage.from_(bucket).get_public_url(filename)
         public_url = url if isinstance(url, str) else (
             url.get("publicUrl") or url.get("public_url") or ""
