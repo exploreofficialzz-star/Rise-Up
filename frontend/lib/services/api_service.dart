@@ -56,41 +56,30 @@ Map<String, String> _mimeFromPath(String filePath) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ApiService — singleton, Dio-based, JWT + refresh token aware
-//
-// FIX: Timeout values increased:
-//   connectTimeout 12 s → 30 s  (Render free-tier cold starts can take 20+ s)
-//   receiveTimeout 25 s → 90 s  (large video responses need more time)
-//   sendTimeout    (new) 120 s  (video uploads up to 500 MB over mobile)
 // ─────────────────────────────────────────────────────────────────────────────
 class ApiService {
   static final ApiService _instance = ApiService._internal();
   factory ApiService() => _instance;
 
   late final Dio _dio;
-
-  // Separate Dio instance for file uploads — longer timeouts, no body limit conflict
   late final Dio _uploadDio;
 
   bool _isRefreshing = false;
 
   ApiService._internal() {
-    // ── Standard Dio (API calls) ──────────────────────────────────────────
     _dio = Dio(BaseOptions(
-      baseUrl: kApiBaseUrl,
-      connectTimeout: const Duration(seconds: 30),   // FIX: was 12 s
-      receiveTimeout: const Duration(seconds: 90),   // FIX: was 25 s
-      sendTimeout:    const Duration(seconds: 120),  // FIX: added — needed for uploads
+      baseUrl:        kApiBaseUrl,
+      connectTimeout: const Duration(seconds: 30),
+      receiveTimeout: const Duration(seconds: 90),
+      sendTimeout:    const Duration(seconds: 120),
       headers: {'Content-Type': 'application/json'},
     ));
 
-    // ── Upload Dio (media uploads only) ───────────────────────────────────
-    // Videos up to 500 MB over mobile need generous timeouts.
-    // sendTimeout drives how long Dio waits while streaming the request body.
     _uploadDio = Dio(BaseOptions(
-      baseUrl: kApiBaseUrl,
+      baseUrl:        kApiBaseUrl,
       connectTimeout: const Duration(seconds: 30),
       receiveTimeout: const Duration(seconds: 60),
-      sendTimeout:    const Duration(minutes: 10),   // 10 min — 500 MB video on 3G
+      sendTimeout:    const Duration(minutes: 10),
       headers: {'Content-Type': 'multipart/form-data'},
     ));
 
@@ -149,7 +138,7 @@ class ApiService {
   ApiException _handleError(dynamic e) {
     if (e is DioException) {
       final data = e.response?.data;
-      final msg =
+      final msg  =
           (data is Map ? data['detail'] ?? data['message'] : null) ??
               e.message ??
               'Something went wrong';
@@ -170,7 +159,8 @@ class ApiService {
   Future<dynamic> post(String path, Map<String, dynamic> data,
       {Map<String, dynamic>? queryParams}) async {
     try {
-      final res = await _dio.post(path, data: data, queryParameters: queryParams);
+      final res = await _dio.post(path,
+          data: data, queryParameters: queryParams);
       return res.data;
     } catch (e) { throw _handleError(e); }
   }
@@ -178,7 +168,8 @@ class ApiService {
   Future<dynamic> patch(String path, Map<String, dynamic> data,
       {Map<String, dynamic>? queryParams}) async {
     try {
-      final res = await _dio.patch(path, data: data, queryParameters: queryParams);
+      final res = await _dio.patch(path,
+          data: data, queryParameters: queryParams);
       return res.data;
     } catch (e) { throw _handleError(e); }
   }
@@ -186,7 +177,8 @@ class ApiService {
   Future<dynamic> put(String path, Map<String, dynamic> data,
       {Map<String, dynamic>? queryParams}) async {
     try {
-      final res = await _dio.put(path, data: data, queryParameters: queryParams);
+      final res = await _dio.put(path,
+          data: data, queryParameters: queryParams);
       return res.data;
     } catch (e) { throw _handleError(e); }
   }
@@ -334,7 +326,7 @@ class ApiService {
       {String? status, double? earnings}) async {
     try {
       final res = await _dio.patch('/tasks/$taskId', data: {
-        if (status != null) 'status': status,
+        if (status   != null) 'status': status,
         if (earnings != null) 'actual_earnings': earnings,
       });
       return res.data as Map<String, dynamic>;
@@ -380,9 +372,9 @@ class ApiService {
   }) async {
     try {
       final res = await _dio.patch('/skills/progress', data: {
-        'enrollment_id': enrollmentId,
+        'enrollment_id':    enrollmentId,
         'progress_percent': progressPercent,
-        'current_lesson': currentLesson,
+        'current_lesson':   currentLesson,
         if (earnings != null) 'earnings_from_skill': earnings,
       });
       return res.data as Map<String, dynamic>;
@@ -418,8 +410,8 @@ class ApiService {
   }) async {
     try {
       final res = await _dio.post('/payments/ad-unlock', data: {
-        'feature_key': featureKey,
-        'ad_unit_id': adUnitId,
+        'feature_key':    featureKey,
+        'ad_unit_id':     adUnitId,
         'duration_hours': hours,
       });
       return res.data as Map<String, dynamic>;
@@ -487,9 +479,9 @@ class ApiService {
   }) async {
     try {
       final res = await _dio.post('/progress/log-earning', data: {
-        'amount': amount,
+        'amount':      amount,
         'source_type': sourceType,
-        if (sourceId != null) 'source_id': sourceId,
+        if (sourceId    != null) 'source_id':   sourceId,
         if (description != null) 'description': description,
         'currency': currency,
       });
@@ -509,12 +501,11 @@ class ApiService {
       final formData = FormData.fromMap({
         'file': await MultipartFile.fromFile(
           filePath,
-          filename: 'avatar.$ext',
+          filename:    'avatar.$ext',
           contentType: DioMediaType(mimeType, subtype),
         ),
       });
 
-      // Use _uploadDio for all file uploads
       final res = await _uploadDio.post(
         '/progress/avatar',
         data: formData,
@@ -530,11 +521,11 @@ class ApiService {
     String mimeType = 'image/jpeg',
   }) async {
     try {
-      final parts = mimeType.split('/');
+      final parts    = mimeType.split('/');
       final formData = FormData.fromMap({
         'file': MultipartFile.fromBytes(
           bytes,
-          filename: filename,
+          filename:    filename,
           contentType: DioMediaType(
               parts[0], parts.length > 1 ? parts[1] : 'jpeg'),
         ),
@@ -548,7 +539,8 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  // ── Link preview + spam check ─────────────────────────────────────────────
+  // ── Link Preview ─────────────────────────────────────────────────────────
+
   Future<Map<String, dynamic>> getLinkPreview(String url) async {
     try {
       final r = await _dio.get('/posts/link-preview',
@@ -558,8 +550,6 @@ class ApiService {
   }
 
   // ── Post / Status Media Upload ────────────────────────────────────────────
-  // FIX: Both methods now use _uploadDio (10-min sendTimeout).
-  // Videos up to 500 MB would silently abort at 12 s on _dio.
 
   Future<Map<String, dynamic>> uploadPostMedia(String filePath) async {
     try {
@@ -573,12 +563,11 @@ class ApiService {
       final formData = FormData.fromMap({
         'file': await MultipartFile.fromFile(
           filePath,
-          filename: fileName,
+          filename:    fileName,
           contentType: DioMediaType(mimeType, subtype),
         ),
       });
 
-      // Use _uploadDio — has 10-min sendTimeout for large videos
       final res = await _uploadDio.post(
         '/posts/status/upload-media',
         data: formData,
@@ -594,11 +583,11 @@ class ApiService {
     required String mimeType,
   }) async {
     try {
-      final parts = mimeType.split('/');
+      final parts    = mimeType.split('/');
       final formData = FormData.fromMap({
         'file': MultipartFile.fromBytes(
           bytes,
-          filename: filename,
+          filename:    filename,
           contentType: DioMediaType(
               parts[0], parts.length > 1 ? parts[1] : 'jpeg'),
         ),
@@ -635,12 +624,33 @@ class ApiService {
     try {
       final r = await _dio.post('/posts', data: {
         'content': content,
-        'tag': tag,
-        if (mediaUrl  != null && mediaUrl.isNotEmpty)  'media_url':   mediaUrl,
-        if (mediaType != null && mediaType.isNotEmpty) 'media_type':  mediaType,
-        if (linkUrl   != null && linkUrl.isNotEmpty)   'link_url':    linkUrl,
-        if (linkTitle != null && linkTitle.isNotEmpty) 'link_title':  linkTitle,
+        'tag':     tag,
+        if (mediaUrl  != null && mediaUrl.isNotEmpty)  'media_url':  mediaUrl,
+        if (mediaType != null && mediaType.isNotEmpty) 'media_type': mediaType,
+        if (linkUrl   != null && linkUrl.isNotEmpty)   'link_url':   linkUrl,
+        if (linkTitle != null && linkTitle.isNotEmpty) 'link_title': linkTitle,
       });
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// v3.4 — Edit own post content / tag / link fields.
+  /// Only non-null fields are sent to the backend (partial update).
+  Future<Map<String, dynamic>> updatePost(
+    String postId, {
+    String? content,
+    String? tag,
+    String? linkUrl,
+    String? linkTitle,
+  }) async {
+    try {
+      final body = <String, dynamic>{};
+      if (content   != null) body['content']    = content;
+      if (tag       != null) body['tag']         = tag;
+      if (linkUrl   != null) body['link_url']    = linkUrl;
+      if (linkTitle != null) body['link_title']  = linkTitle;
+
+      final r = await _dio.patch('/posts/$postId', data: body);
       return r.data as Map<String, dynamic>;
     } catch (e) { throw _handleError(e); }
   }
@@ -684,10 +694,10 @@ class ApiService {
       {String? parentId, bool isAI = false, bool isPinned = false}) async {
     try {
       final r = await _dio.post('/posts/$postId/comments', data: {
-        'content':   content,
-        if (parentId != null) 'parent_id': parentId,
-        if (isAI)    'is_ai':     true,
-        if (isPinned) 'is_pinned': true,
+        'content': content,
+        if (parentId  != null) 'parent_id': parentId,
+        if (isAI)              'is_ai':     true,
+        if (isPinned)          'is_pinned': true,
       });
       return r.data as Map<String, dynamic>;
     } catch (e) { throw _handleError(e); }
@@ -725,7 +735,7 @@ class ApiService {
     try {
       final r = await _dio.get('/posts/users/$userId/liked');
       return r.data as Map<String, dynamic>;
-    } catch (e) { return {'posts': []}; }
+    } catch (_) { return {'posts': []}; }
   }
 
   Future<Map<String, dynamic>> logShare(
@@ -839,7 +849,7 @@ class ApiService {
       {String? month, String? category}) async {
     try {
       final res = await _dio.get('/expenses/', queryParameters: {
-        if (month != null) 'month': month,
+        if (month    != null) 'month':    month,
         if (category != null) 'category': category,
       });
       return res.data as Map<String, dynamic>;
@@ -965,7 +975,7 @@ class ApiService {
     return post('/agent/run', {
       'task': task, 'budget': budget, 'hours_per_day': hoursPerDay,
       'currency': currency,
-      if (context != null) 'context': context,
+      if (context    != null) 'context':     context,
       if (workflowId != null) 'workflow_id': workflowId,
     });
   }
@@ -974,7 +984,7 @@ class ApiService {
       {String? sessionId, String? workflowId}) async {
     return post('/agent/chat', {
       'message': message,
-      if (sessionId != null) 'session_id': sessionId,
+      if (sessionId  != null) 'session_id':  sessionId,
       if (workflowId != null) 'workflow_id': workflowId,
     });
   }
@@ -1088,7 +1098,8 @@ class ApiService {
     try { await _dio.delete('/messages/presence', data: {}); } catch (_) {}
   }
 
-  Future<Map<String, dynamic>> inviteAIToConversation(String conversationId) async {
+  Future<Map<String, dynamic>> inviteAIToConversation(
+      String conversationId) async {
     try {
       final r = await _dio.post(
           '/messages/conversations/$conversationId/invite-ai', data: {});
@@ -1096,7 +1107,8 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  Future<Map<String, dynamic>> checkAIInConversation(String conversationId) async {
+  Future<Map<String, dynamic>> checkAIInConversation(
+      String conversationId) async {
     try {
       final r = await _dio.get(
           '/messages/conversations/$conversationId/ai-status');
@@ -1182,8 +1194,10 @@ class ApiService {
   }) async {
     try {
       final res = await _dio.post('/memory/event', data: {
-        'event_type': eventType, 'title': title, 'amount_usd': amountUsd,
-        if (platform != null) 'platform': platform,
+        'event_type': eventType,
+        'title':      title,
+        'amount_usd': amountUsd,
+        if (platform  != null) 'platform':   platform,
         if (skillUsed != null) 'skill_used': skillUsed,
         'outcome': outcome ?? 'success',
       });
@@ -1325,8 +1339,8 @@ class ApiService {
     try {
       final res = await _dio.post('/challenges/create', data: {
         'challenge_type': type,
-        if (customGoal != null) 'custom_goal': customGoal,
-        if (targetUsd != null) 'custom_target_usd': targetUsd,
+        if (customGoal != null) 'custom_goal':       customGoal,
+        if (targetUsd  != null) 'custom_target_usd': targetUsd,
       });
       return res.data as Map<String, dynamic>;
     } catch (e) { throw _handleError(e); }
@@ -1337,8 +1351,9 @@ class ApiService {
       {double amountUsd = 0, String? note}) async {
     try {
       final res = await _dio.post('/challenges/check-in', data: {
-        'challenge_id': challengeId, 'action_taken': action,
-        'amount_earned_usd': amountUsd,
+        'challenge_id':       challengeId,
+        'action_taken':       action,
+        'amount_earned_usd':  amountUsd,
         if (note != null) 'note': note,
       });
       return res.data as Map<String, dynamic>;
