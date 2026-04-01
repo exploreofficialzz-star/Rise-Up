@@ -1,19 +1,27 @@
 // frontend/lib/screens/home/home_screen.dart
-// v3.0 — Full production rewrite
+// v4.0 — Production fixes
 //
-// NEW in this version:
-//  1. Skeleton shimmer on every load — stories row + feed cards animate in
-//     before real data arrives, no blank white flash ever
-//  2. Videos: tap play button → _FullScreenVideoPage (Chewie)
-//     — timeline scrubber, seek forward/back, duration label, full controls
-//  3. Images: tap → _ImageViewerPage (photo_view)
-//     — pinch-to-zoom, double-tap zoom, swipe-to-dismiss
-//  4. Hashtags in post text are parsed and tappable → /explore?q=%23tag
-//  5. Link preview cards in posts — tappable, opens url_launcher
-//  6. Ask RiseUp AI button — no emoji, ad indicator via icon only
-//  7. Status viewer: video plays inline with progress bar, images are
-//     tappable for full-screen, links open in browser
-//  8. All sizing via MediaQuery — correct on every screen size
+// FIXED in v4.0:
+//  1. Video thumbnails — _VideoThumbnail is now stateful; initialises
+//     VideoPlayerController, seeks to frame 0, pauses, and renders the
+//     real first frame so users see actual video content in the feed.
+//  2. Status navigation — invisible left/right nav strips are always
+//     present for ALL media types (image, video, text). They are layered
+//     below the header and link-card in the Stack so those elements remain
+//     fully tappable. Uses HitTestBehavior.opaque on 30% side strips so
+//     only the centre 40% reaches the video player for play/pause.
+//  3. Link redirects — both the post link card and the status link card
+//     no longer gate on canLaunchUrl (which silently returns false on
+//     Android without query-intent declarations). They call launchUrl
+//     directly with externalApplication → inAppWebView fallback.
+//  4. Delete & Edit — the 3-dots menu shows Edit and Delete when the
+//     viewing user is the post author. Edit pre-fills current text.
+//     Delete asks for confirmation. Both call the correct API endpoints.
+//  5. Ask RiseUp AI endpoint — _postAIComment now passes mode: 'mentor'
+//     (valid value for /ai/chat) instead of the broken 'community'.
+//     Response key 'content' is correct for ChatResponse.
+//  6. PostModel.content is now mutable so in-place edits are reflected
+//     without refetching the feed.
 
 import 'dart:convert';
 import 'package:flutter/gestures.dart';
@@ -38,15 +46,15 @@ import 'create_status_screen.dart';
 // Sound Service
 // ══════════════════════════════════════════════════════════════════════════════
 class SoundService {
-  static void like()     {}
-  static void comment()  {}
-  static void share()    {}
-  static void save()     {}
-  static void follow()   {}
-  static void post()     {}
-  static void success()  {}
-  static void tap()      {}
-  static void refresh()  {}
+  static void like()    {}
+  static void comment() {}
+  static void share()   {}
+  static void save()    {}
+  static void follow()  {}
+  static void post()    {}
+  static void success() {}
+  static void tap()     {}
+  static void refresh() {}
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -65,10 +73,11 @@ class StageInfo {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Post Model  (added linkUrl + linkTitle)
+// Post Model  — content is non-final to allow in-place edits
 // ══════════════════════════════════════════════════════════════════════════════
 class PostModel {
-  final String id, name, username, time, avatar, avatarUrl, tag, content;
+  final String id, name, username, time, avatar, avatarUrl, tag;
+  String content; // FIX v4.0: non-final so edit updates are reflected instantly
   final String? mediaUrl, mediaType, linkUrl, linkTitle;
   int likes, comments, shares;
   final bool verified, isPremiumPost;
@@ -142,10 +151,8 @@ class PostModel {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Skeleton / Shimmer  —  renders while real data is loading
+// Skeleton / Shimmer
 // ══════════════════════════════════════════════════════════════════════════════
-
-/// Single shimmer placeholder box.  Use [circle] = true for avatars.
 class _Shimmer extends StatelessWidget {
   const _Shimmer({
     this.width,
@@ -153,7 +160,6 @@ class _Shimmer extends StatelessWidget {
     this.radius = 8,
     this.circle  = false,
   });
-
   final double? width;
   final double  height;
   final double  radius;
@@ -179,7 +185,6 @@ class _Shimmer extends StatelessWidget {
   }
 }
 
-/// Full skeleton for one post card while feed is loading.
 class _PostCardSkeleton extends StatelessWidget {
   const _PostCardSkeleton({required this.isDark});
   final bool isDark;
@@ -191,7 +196,6 @@ class _PostCardSkeleton extends StatelessWidget {
       color: cardColor,
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // ── avatar + name row
         Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
           const _Shimmer(width: 44, height: 44, circle: true),
           const SizedBox(width: 10),
@@ -205,17 +209,14 @@ class _PostCardSkeleton extends StatelessWidget {
           const _Shimmer(width: 66, height: 26, radius: 13),
         ]),
         const SizedBox(height: 14),
-        // ── content lines
         const _Shimmer(height: 13),
         const SizedBox(height: 6),
         const _Shimmer(height: 13),
         const SizedBox(height: 6),
         _Shimmer(width: MediaQuery.of(context).size.width * 0.55, height: 13),
         const SizedBox(height: 12),
-        // ── media placeholder
         const _Shimmer(height: 180, radius: 12),
         const SizedBox(height: 14),
-        // ── action row
         Row(children: const [
           _Shimmer(width: 55, height: 18, radius: 9),
           SizedBox(width: 18),
@@ -226,7 +227,6 @@ class _PostCardSkeleton extends StatelessWidget {
           _Shimmer(width: 22, height: 22, radius: 11),
         ]),
         const SizedBox(height: 12),
-        // ── AI button row
         const Row(children: [
           Expanded(child: _Shimmer(height: 36, radius: 10)),
           SizedBox(width: 8),
@@ -237,8 +237,6 @@ class _PostCardSkeleton extends StatelessWidget {
   }
 }
 
-/// Stories row skeleton (5 circles).
-// FIX: added super.key so AnimatedSwitcher can use key: const ValueKey(...)
 class _StoriesSkeleton extends StatelessWidget {
   const _StoriesSkeleton({super.key, required this.isDark});
   final bool isDark;
@@ -283,9 +281,8 @@ class _HomeScreenState extends State<HomeScreen>
   DateTime? _lastPausedAt;
   static const Duration _refreshThreshold = Duration(minutes: 5);
 
-  // ── AI Quota ───────────────────────────────────────────────────────────────
-  int      _aiUsedToday     = 0;
-  int      _adsWatchedToday = 0;
+  int       _aiUsedToday     = 0;
+  int       _adsWatchedToday = 0;
   DateTime? _adLockoutUntil;
 
   static const int      _dailyFreeLimit    = 3;
@@ -294,7 +291,6 @@ class _HomeScreenState extends State<HomeScreen>
   static const String   _kQuotaKey         = 'riseup_ai_quota_v1';
   static const String   _kProfileCacheKey  = 'riseup_profile_cache_v1';
 
-  // ── Feed ───────────────────────────────────────────────────────────────────
   List<dynamic> _statusUsers  = [];
   bool          _statusLoaded = false;
 
@@ -345,7 +341,7 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _onAppResumed() {
-    final now    = DateTime.now();
+    final now     = DateTime.now();
     final wasAway = _lastPausedAt == null ||
         now.difference(_lastPausedAt!) >= _refreshThreshold;
     if (!wasAway || !mounted) return;
@@ -360,7 +356,8 @@ class _HomeScreenState extends State<HomeScreen>
       final prefs = await SharedPreferences.getInstance();
       final raw   = prefs.getString(_kQuotaKey);
       if (raw == null) return;
-      final Map<String, dynamic> saved = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      final Map<String, dynamic> saved =
+          Map<String, dynamic>.from(jsonDecode(raw) as Map);
       final today = DateTime.now().toIso8601String().substring(0, 10);
       if (saved['date'] != today) { await _saveAiQuota(); return; }
       if (mounted) setState(() {
@@ -397,7 +394,10 @@ class _HomeScreenState extends State<HomeScreen>
   Future<void> _persistFollowState() async {
     try {
       final prefs    = await SharedPreferences.getInstance();
-      final followed = _followState.entries.where((e) => e.value).map((e) => e.key).toList();
+      final followed = _followState.entries
+          .where((e) => e.value)
+          .map((e) => e.key)
+          .toList();
       await prefs.setStringList(_kFollowedKey, followed);
     } catch (_) {}
   }
@@ -408,7 +408,8 @@ class _HomeScreenState extends State<HomeScreen>
       final prefs  = await SharedPreferences.getInstance();
       final cached = prefs.getString(_kProfileCacheKey);
       if (cached != null && mounted) {
-        setState(() => _profile = Map<String, dynamic>.from(jsonDecode(cached) as Map));
+        setState(() => _profile =
+            Map<String, dynamic>.from(jsonDecode(cached) as Map));
       }
     } catch (_) {}
     try {
@@ -471,7 +472,7 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  bool get _isPremium  => (_profile['subscription_tier'] ?? 'free') == 'premium';
+  bool get _isPremium   => (_profile['subscription_tier'] ?? 'free') == 'premium';
   int  get _aiRemaining => (_dailyFreeLimit - _aiUsedToday).clamp(0, _dailyFreeLimit);
   bool get _isAdLocked {
     if (_adLockoutUntil == null) return false;
@@ -485,16 +486,25 @@ class _HomeScreenState extends State<HomeScreen>
     HapticFeedback.mediumImpact();
     SoundService.follow();
     final wasFollowing = _followState[userId] ?? false;
-    setState(() { _followState[userId] = !wasFollowing; _syncFollowOnPosts(userId, !wasFollowing); });
+    setState(() {
+      _followState[userId] = !wasFollowing;
+      _syncFollowOnPosts(userId, !wasFollowing);
+    });
     try {
       final res         = await api.toggleFollow(userId);
       final serverValue = res['following'] == true;
       if (mounted) {
-        setState(() { _followState[userId] = serverValue; _syncFollowOnPosts(userId, serverValue); });
+        setState(() {
+          _followState[userId] = serverValue;
+          _syncFollowOnPosts(userId, serverValue);
+        });
         await _persistFollowState();
       }
     } catch (_) {
-      if (mounted) setState(() { _followState[userId] = wasFollowing; _syncFollowOnPosts(userId, wasFollowing); });
+      if (mounted) setState(() {
+        _followState[userId] = wasFollowing;
+        _syncFollowOnPosts(userId, wasFollowing);
+      });
     }
   }
 
@@ -519,30 +529,40 @@ class _HomeScreenState extends State<HomeScreen>
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => SafeArea(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Container(width: 36, height: 4,
-              margin: const EdgeInsets.only(top: 12, bottom: 4),
-              decoration: BoxDecoration(color: Colors.grey.withOpacity(0.3),
-                  borderRadius: BorderRadius.circular(2))),
+          Container(
+            width: 36, height: 4,
+            margin: const EdgeInsets.only(top: 12, bottom: 4),
+            decoration: BoxDecoration(
+                color: Colors.grey.withOpacity(0.3),
+                borderRadius: BorderRadius.circular(2)),
+          ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-            child: Text('Share Post', style: TextStyle(fontSize: 15,
-                fontWeight: FontWeight.w700,
-                color: isDark ? Colors.white : Colors.black87)),
+            child: Text('Share Post',
+                style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: isDark ? Colors.white : Colors.black87)),
           ),
           ListTile(
-            leading: Container(width: 40, height: 40,
-                decoration: BoxDecoration(
-                    color: AppColors.primary.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(10)),
-                child: const Icon(Icons.link_rounded,
-                    color: AppColors.primary, size: 20)),
-            title: Text('Copy post link', style: TextStyle(fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: isDark ? Colors.white : Colors.black87)),
+            leading: Container(
+              width: 40, height: 40,
+              decoration: BoxDecoration(
+                  color: AppColors.primary.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(10)),
+              child: const Icon(Icons.link_rounded, color: AppColors.primary, size: 20),
+            ),
+            title: Text('Copy post link',
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: isDark ? Colors.white : Colors.black87)),
             subtitle: Text('riseup.app/post/${post.id}',
-                style: TextStyle(fontSize: 11,
+                style: TextStyle(
+                    fontSize: 11,
                     color: isDark ? Colors.white38 : Colors.black38),
-                maxLines: 1, overflow: TextOverflow.ellipsis),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
             onTap: () {
               Navigator.pop(ctx);
               Clipboard.setData(
@@ -550,29 +570,37 @@ class _HomeScreenState extends State<HomeScreen>
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                 content: Text('Post link copied to clipboard'),
                 backgroundColor: AppColors.success,
-                duration: Duration(seconds: 2)));
+                duration: Duration(seconds: 2),
+              ));
             },
           ),
           ListTile(
-            leading: Container(width: 40, height: 40,
-                decoration: BoxDecoration(color: Colors.blue.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(10)),
-                child: const Icon(Icons.copy_rounded,
-                    color: Colors.blue, size: 20)),
-            title: Text('Copy post text', style: TextStyle(fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: isDark ? Colors.white : Colors.black87)),
+            leading: Container(
+              width: 40, height: 40,
+              decoration: BoxDecoration(
+                  color: Colors.blue.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(10)),
+              child: const Icon(Icons.copy_rounded, color: Colors.blue, size: 20),
+            ),
+            title: Text('Copy post text',
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: isDark ? Colors.white : Colors.black87)),
             subtitle: Text(post.content,
-                style: TextStyle(fontSize: 11,
+                style: TextStyle(
+                    fontSize: 11,
                     color: isDark ? Colors.white38 : Colors.black38),
-                maxLines: 1, overflow: TextOverflow.ellipsis),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
             onTap: () {
               Navigator.pop(ctx);
               Clipboard.setData(ClipboardData(text: post.content));
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                 content: Text('Post text copied'),
                 backgroundColor: AppColors.success,
-                duration: Duration(seconds: 2)));
+                duration: Duration(seconds: 2),
+              ));
             },
           ),
           const SizedBox(height: 12),
@@ -613,7 +641,8 @@ class _HomeScreenState extends State<HomeScreen>
       onDismissed: () {
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('Watch the full ad to unlock AI responses.'),
-          duration: Duration(seconds: 2)));
+          duration: Duration(seconds: 2),
+        ));
       },
     );
   }
@@ -633,12 +662,16 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
+  // FIX v4.0: mode changed from 'community' (invalid) → 'mentor' (correct for /ai/chat).
+  // Response key 'content' is correct for ChatResponse schema.
   Future<void> _postAIComment(PostModel post) async {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Row(children: const [
-        SizedBox(width: 18, height: 18,
-            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
+        SizedBox(
+          width: 18, height: 18,
+          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+        ),
         SizedBox(width: 12),
         Text('RiseUp AI is thinking...'),
       ]),
@@ -651,7 +684,7 @@ class _HomeScreenState extends State<HomeScreen>
             'A community member posted: "${post.content}"\n\n'
             'Give a short, actionable wealth-building insight or advice '
             'for this post (2-3 sentences). Be direct and helpful.',
-        mode: 'community',
+        mode: 'mentor', // FIX: was 'community' which is not a valid mode
       );
       final aiText = res['content']?.toString().trim() ?? '';
       if (aiText.isEmpty) throw Exception('empty_ai_response');
@@ -667,7 +700,8 @@ class _HomeScreenState extends State<HomeScreen>
           label: 'View',
           textColor: Colors.white,
           onPressed: () => context.push(
-              '/comments/${post.id}?content=${Uri.encodeComponent(post.content)}'
+              '/comments/${post.id}'
+              '?content=${Uri.encodeComponent(post.content)}'
               '&author=${Uri.encodeComponent(post.name)}'),
         ),
       ));
@@ -678,9 +712,10 @@ class _HomeScreenState extends State<HomeScreen>
           ? 'AI had no response. Please try again.'
           : 'AI response failed. Please try again.';
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(msg),
-          backgroundColor: AppColors.error,
-          duration: const Duration(seconds: 2)));
+        content: Text(msg),
+        backgroundColor: AppColors.error,
+        duration: const Duration(seconds: 2),
+      ));
     }
   }
 
@@ -691,9 +726,11 @@ class _HomeScreenState extends State<HomeScreen>
           builder: (_) => AlertDialog(
             backgroundColor: isDark ? AppColors.bgCard : Colors.white,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            title: Text('Watch a short ad?', style: TextStyle(
-                fontWeight: FontWeight.w700, fontSize: 18,
-                color: isDark ? Colors.white : Colors.black87)),
+            title: Text('Watch a short ad?',
+                style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 18,
+                    color: isDark ? Colors.white : Colors.black87)),
             content: Text(
               'You have used your $_dailyFreeLimit free AI responses today.\n\n'
               'Watch a 30-second ad to unlock more, or upgrade to '
@@ -706,7 +743,8 @@ class _HomeScreenState extends State<HomeScreen>
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context, false),
-                child: const Text('Not now', style: TextStyle(color: AppColors.textMuted)),
+                child: const Text('Not now',
+                    style: TextStyle(color: AppColors.textMuted)),
               ),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
@@ -714,7 +752,8 @@ class _HomeScreenState extends State<HomeScreen>
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(10))),
                 onPressed: () => Navigator.pop(context, true),
-                child: const Text('Watch Ad', style: TextStyle(color: Colors.white)),
+                child: const Text('Watch Ad',
+                    style: TextStyle(color: Colors.white)),
               ),
             ],
           ),
@@ -803,8 +842,11 @@ class _HomeScreenState extends State<HomeScreen>
             stops: [0.0, 0.4, 1.0],
           ).createShader(bounds),
           child: const Text('RiseUp',
-              style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900,
-                  color: Colors.white, letterSpacing: -0.5)),
+              style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w900,
+                  color: Colors.white,
+                  letterSpacing: -0.5)),
         ),
         centerTitle: true,
         actions: [
@@ -817,8 +859,10 @@ class _HomeScreenState extends State<HomeScreen>
                 borderRadius: BorderRadius.circular(20),
               ),
               child: Text('$_aiRemaining left',
-                  style: const TextStyle(color: AppColors.primary,
-                      fontSize: 11, fontWeight: FontWeight.w600)),
+                  style: const TextStyle(
+                      color: AppColors.primary,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600)),
             ),
           IconButton(
             icon: Icon(Iconsax.search_normal, color: iconColor, size: 20),
@@ -844,7 +888,6 @@ class _HomeScreenState extends State<HomeScreen>
             AnimatedSwitcher(
               duration: const Duration(milliseconds: 300),
               child: !_statusLoaded
-                  // FIX: _StoriesSkeleton now accepts super.key
                   ? _StoriesSkeleton(isDark: isDark, key: const ValueKey('story_skeleton'))
                   : SizedBox(
                       key: const ValueKey('story_real'),
@@ -858,12 +901,13 @@ class _HomeScreenState extends State<HomeScreen>
                           if (i == 0) {
                             return _StoryAddButton(
                               isDark: isDark,
-                              onTap: () => Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                          builder: (_) =>
-                                              const CreateStatusScreen()))
-                                  .then((_) => _loadStatus()),
+                              onTap: () =>
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                        builder: (_) =>
+                                            const CreateStatusScreen()),
+                                  ).then((_) => _loadStatus()),
                             );
                           }
                           final user =
@@ -907,19 +951,17 @@ class _HomeScreenState extends State<HomeScreen>
           child: TabBarView(
             controller: _tabCtrl,
             children: _tabs.map((tab) {
-              final posts            = _feeds[tab]!;
-              final isLoading        = _loading[tab] == true;
-              final alreadyAnimated  = _animatedUpTo[tab] ?? 0;
+              final posts           = _feeds[tab]!;
+              final isLoading       = _loading[tab] == true;
+              final alreadyAnimated = _animatedUpTo[tab] ?? 0;
 
-              // Show skeleton while first page is loading
               if (isLoading && posts.isEmpty) {
                 return ListView.separated(
                   physics: const NeverScrollableScrollPhysics(),
                   itemCount: 3,
                   separatorBuilder: (_, __) =>
                       Divider(height: 8, thickness: 8, color: borderColor),
-                  itemBuilder: (_, __) =>
-                      _PostCardSkeleton(isDark: isDark),
+                  itemBuilder: (_, __) => _PostCardSkeleton(isDark: isDark),
                 );
               }
 
@@ -936,7 +978,8 @@ class _HomeScreenState extends State<HomeScreen>
                       GestureDetector(
                         onTap: () => _loadFeed(tab, refresh: true),
                         child: Text('Refresh',
-                            style: TextStyle(color: AppColors.primary,
+                            style: TextStyle(
+                                color: AppColors.primary,
                                 fontWeight: FontWeight.w600)),
                       ),
                     ],
@@ -954,8 +997,7 @@ class _HomeScreenState extends State<HomeScreen>
                   separatorBuilder: (_, __) =>
                       Divider(height: 8, thickness: 8, color: borderColor),
                   itemBuilder: (_, i) {
-                    final totalContent =
-                        adManager.feedItemCount(posts.length);
+                    final totalContent = adManager.feedItemCount(posts.length);
 
                     if (i == totalContent) {
                       return Padding(
@@ -978,8 +1020,10 @@ class _HomeScreenState extends State<HomeScreen>
                         aspectRatio: MediaQuery.of(context).size.width /
                             (MediaQuery.of(context).size.width * 0.28 + 48),
                         child: FeedAdCard(
-                          isDark: isDark, cardColor: cardColor,
-                          borderColor: borderColor, textColor: textColor,
+                          isDark: isDark,
+                          cardColor: cardColor,
+                          borderColor: borderColor,
+                          textColor: textColor,
                           subColor: subColor,
                         ),
                       );
@@ -1002,11 +1046,19 @@ class _HomeScreenState extends State<HomeScreen>
                       subColor: subColor,
                       onAskAI:       (p) => _handleAiRequest(p, isPrivate: false),
                       onPrivateChat: (p) => _handleAiRequest(p, isPrivate: true),
-                      isPremium:    _isPremium,
-                      aiRemaining:  _aiRemaining,
-                      needsAd:      _aiRemaining <= 0 && !_isPremium,
+                      isPremium:     _isPremium,
+                      aiRemaining:   _aiRemaining,
+                      needsAd:       _aiRemaining <= 0 && !_isPremium,
                       currentUserId: _profile['id']?.toString() ?? '',
-                      isFollowing:  following,
+                      isFollowing:   following,
+                      // FIX v4.0: remove deleted post from all feed tabs
+                      onPostDeleted: (postId) {
+                        setState(() {
+                          for (final t in _tabs) {
+                            _feeds[t]!.removeWhere((p) => p.id == postId);
+                          }
+                        });
+                      },
                       onLike: (p) async {
                         HapticFeedback.mediumImpact();
                         SoundService.like();
@@ -1085,6 +1137,7 @@ class PostCard extends StatefulWidget {
   final Function(String) onFollow;
   final int aiRemaining;
   final String currentUserId;
+  final Function(String)? onPostDeleted; // FIX v4.0: callback to remove deleted post from feed
 
   const PostCard({
     super.key,
@@ -1106,6 +1159,7 @@ class PostCard extends StatefulWidget {
     required this.isFollowing,
     this.needsAd = false,
     this.currentUserId = '',
+    this.onPostDeleted,
   });
 
   @override
@@ -1123,10 +1177,160 @@ class _PostCardState extends State<PostCard> {
       widget.post.userId.isNotEmpty &&
       widget.post.userId == widget.currentUserId;
 
+  // FIX v4.0: Edit own post via PATCH /posts/{id}
+  void _handleEditPost() {
+    final p       = widget.post;
+    final textCtrl = TextEditingController(text: p.content);
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: widget.isDark ? AppColors.bgCard : Colors.white,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) {
+        return Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(ctx).viewInsets.bottom,
+            left: 20, right: 20, top: 16,
+          ),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Container(
+              width: 36, height: 4,
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                  color: Colors.grey.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(2)),
+            ),
+            Text('Edit Post',
+                style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: widget.isDark ? Colors.white : Colors.black87)),
+            const SizedBox(height: 16),
+            TextField(
+              controller: textCtrl,
+              maxLines: 5,
+              style: TextStyle(
+                  color: widget.isDark ? Colors.white : Colors.black87),
+              decoration: InputDecoration(
+                hintText: "What's on your mind?",
+                hintStyle: TextStyle(color: widget.subColor),
+                filled: true,
+                fillColor: widget.isDark
+                    ? AppColors.bgSurface
+                    : Colors.grey.shade100,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide.none,
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                    padding: const EdgeInsets.symmetric(vertical: 14)),
+                onPressed: () async {
+                  final newContent = textCtrl.text.trim();
+                  if (newContent.isEmpty || newContent == p.content) {
+                    Navigator.pop(ctx);
+                    return;
+                  }
+                  Navigator.pop(ctx);
+                  try {
+                    await api.updatePost(p.id, content: newContent);
+                    if (mounted) {
+                      setState(() => p.content = newContent);
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('Post updated'),
+                        backgroundColor: AppColors.success,
+                        duration: Duration(seconds: 2),
+                      ));
+                    }
+                  } catch (_) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('Failed to update post. Please try again.'),
+                        backgroundColor: AppColors.error,
+                        duration: Duration(seconds: 2),
+                      ));
+                    }
+                  }
+                },
+                child: const Text('Save Changes',
+                    style: TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.w700)),
+              ),
+            ),
+            const SizedBox(height: 20),
+          ]),
+        );
+      },
+    );
+  }
+
+  // FIX v4.0: Delete own post via DELETE /posts/{id}
+  void _handleDeletePost() {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: widget.isDark ? AppColors.bgCard : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text('Delete Post?',
+            style: TextStyle(
+                color: widget.isDark ? Colors.white : Colors.black87)),
+        content: Text('This action cannot be undone.',
+            style: TextStyle(
+                color: widget.isDark ? Colors.white60 : Colors.black54)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel',
+                style: TextStyle(color: AppColors.textMuted)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.error,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10))),
+            onPressed: () async {
+              Navigator.pop(context);
+              try {
+                await api.deletePost(widget.post.id);
+                widget.onPostDeleted?.call(widget.post.id);
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('Post deleted'),
+                    backgroundColor: AppColors.success,
+                    duration: Duration(seconds: 2),
+                  ));
+                }
+              } catch (_) {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('Failed to delete post. Please try again.'),
+                    backgroundColor: AppColors.error,
+                    duration: Duration(seconds: 2),
+                  ));
+                }
+              }
+            },
+            child: const Text('Delete',
+                style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final p   = widget.post;
-    final sw  = MediaQuery.of(context).size.width;
+    final p  = widget.post;
+    final sw = MediaQuery.of(context).size.width;
 
     return Container(
       color: widget.cardColor,
@@ -1165,7 +1369,8 @@ class _PostCardState extends State<PostCard> {
                     child: GestureDetector(
                       onTap: () => context.push('/user-profile/${p.userId}'),
                       child: Text(p.name,
-                          style: TextStyle(fontSize: 14,
+                          style: TextStyle(
+                              fontSize: 14,
                               fontWeight: FontWeight.w700,
                               color: widget.textColor),
                           maxLines: 1,
@@ -1186,7 +1391,8 @@ class _PostCardState extends State<PostCard> {
                           color: AppColors.gold.withOpacity(0.2),
                           borderRadius: BorderRadius.circular(4)),
                       child: const Text('PRO',
-                          style: TextStyle(fontSize: 8,
+                          style: TextStyle(
+                              fontSize: 8,
                               color: AppColors.gold,
                               fontWeight: FontWeight.w700)),
                     ),
@@ -1196,14 +1402,15 @@ class _PostCardState extends State<PostCard> {
                   Flexible(
                     child: Text('${p.username} · ${p.time}',
                         style: TextStyle(fontSize: 12, color: widget.subColor),
-                        maxLines: 1, overflow: TextOverflow.ellipsis),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis),
                   ),
                 ]),
               ])),
 
               const SizedBox(width: 6),
 
-              // Follow button
+              // Follow button (only for other users' posts)
               if (p.userId.isNotEmpty && !_isOwnPost)
                 GestureDetector(
                   onTap: () => widget.onFollow(p.userId),
@@ -1225,13 +1432,15 @@ class _PostCardState extends State<PostCard> {
                     ),
                     child: Row(mainAxisSize: MainAxisSize.min, children: [
                       if (widget.isFollowing) ...[
-                        Icon(Icons.check_rounded, size: 11,
+                        Icon(Icons.check_rounded,
+                            size: 11,
                             color: widget.subColor.withOpacity(0.8)),
                         const SizedBox(width: 3),
                       ],
                       Text(widget.isFollowing ? 'Following' : 'Follow',
                           style: TextStyle(
-                            fontWeight: FontWeight.w600, fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 11,
                             color: widget.isFollowing
                                 ? widget.subColor.withOpacity(0.8)
                                 : AppColors.primary,
@@ -1245,56 +1454,65 @@ class _PostCardState extends State<PostCard> {
               // Tag badge
               Flexible(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 7, vertical: 3),
                   decoration: BoxDecoration(
                       color: AppColors.primary.withOpacity(0.1),
                       borderRadius: BorderRadius.circular(20)),
                   child: Text(p.tag,
-                      style: const TextStyle(fontSize: 10,
+                      style: const TextStyle(
+                          fontSize: 10,
                           color: AppColors.primary,
                           fontWeight: FontWeight.w600),
-                      maxLines: 1, overflow: TextOverflow.ellipsis),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
                 ),
               ),
 
               const SizedBox(width: 4),
               GestureDetector(
                 onTap: _showPostOptions,
-                child: Icon(Icons.more_horiz, color: widget.subColor, size: 20),
+                child: Icon(Icons.more_horiz,
+                    color: widget.subColor, size: 20),
               ),
             ]),
 
             const SizedBox(height: 12),
 
-            // ── Content with tappable hashtags ────────────────────────────────
-            _HashtagText(text: p.content, textColor: widget.isDark
-                ? const Color(0xFFE8E8F0) : Colors.black87),
+            // ── Content with tappable hashtags ────────────────────────────
+            _HashtagText(
+              text: p.content,
+              textColor: widget.isDark
+                  ? const Color(0xFFE8E8F0)
+                  : Colors.black87,
+            ),
 
-            // ── Media (image / video) ─────────────────────────────────────────
+            // ── Media (image / video) ─────────────────────────────────────
             if (p.mediaUrl != null && p.mediaUrl!.isNotEmpty) ...[
               const SizedBox(height: 10),
               _PostMedia(
-                  url: p.mediaUrl!,
-                  mediaType: p.mediaType ?? 'image',
-                  isDark: widget.isDark,
-                  screenWidth: sw),
+                url: p.mediaUrl!,
+                mediaType: p.mediaType ?? 'image',
+                isDark: widget.isDark,
+                screenWidth: sw,
+              ),
             ],
 
-            // ── Link preview card ─────────────────────────────────────────────
+            // ── Link preview card ─────────────────────────────────────────
             if (p.linkUrl != null && p.linkUrl!.isNotEmpty) ...[
               const SizedBox(height: 10),
               _PostLinkCard(
-                url:      p.linkUrl!,
-                title:    p.linkTitle,
-                isDark:   widget.isDark,
-                subColor: widget.subColor,
+                url:       p.linkUrl!,
+                title:     p.linkTitle,
+                isDark:    widget.isDark,
+                subColor:  widget.subColor,
                 textColor: widget.textColor,
               ),
             ],
 
             const SizedBox(height: 14),
 
-            // ── Actions ───────────────────────────────────────────────────────
+            // ── Actions ───────────────────────────────────────────────────
             Row(children: [
               _ActionBtn(
                 icon: p.isLiked
@@ -1305,11 +1523,17 @@ class _PostCardState extends State<PostCard> {
                 onTap: () => widget.onLike(p),
               ),
               const SizedBox(width: 18),
-              _ActionBtn(icon: Iconsax.message, label: _fmt(p.comments),
-                  color: widget.subColor, onTap: () => widget.onComment(p)),
+              _ActionBtn(
+                  icon: Iconsax.message,
+                  label: _fmt(p.comments),
+                  color: widget.subColor,
+                  onTap: () => widget.onComment(p)),
               const SizedBox(width: 18),
-              _ActionBtn(icon: Iconsax.send_1, label: _fmt(p.shares),
-                  color: widget.subColor, onTap: () => widget.onShare(p)),
+              _ActionBtn(
+                  icon: Iconsax.send_1,
+                  label: _fmt(p.shares),
+                  color: widget.subColor,
+                  onTap: () => widget.onShare(p)),
               const Spacer(),
               GestureDetector(
                 onTap: () => widget.onSave(p),
@@ -1334,7 +1558,6 @@ class _PostCardState extends State<PostCard> {
                 : Colors.grey.shade50,
           ),
           child: Row(children: [
-            // Ask RiseUp AI
             Expanded(
               child: GestureDetector(
                 onTap: () => widget.onAskAI(p),
@@ -1364,13 +1587,13 @@ class _PostCardState extends State<PostCard> {
                     const SizedBox(width: 6),
                     const Flexible(
                       child: Text('Ask RiseUp AI',
-                          style: TextStyle(fontSize: 12,
+                          style: TextStyle(
+                              fontSize: 12,
                               color: AppColors.primary,
                               fontWeight: FontWeight.w600),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis),
                     ),
-                    // Show small ad icon instead of emoji when ad is needed
                     if (widget.needsAd) ...[
                       const SizedBox(width: 4),
                       Icon(Icons.ondemand_video_rounded,
@@ -1382,7 +1605,6 @@ class _PostCardState extends State<PostCard> {
               ),
             ),
             const SizedBox(width: 8),
-            // Chat Privately
             Expanded(
               child: GestureDetector(
                 onTap: () => widget.onPrivateChat(p),
@@ -1399,11 +1621,11 @@ class _PostCardState extends State<PostCard> {
                   child: const Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                    Icon(Iconsax.lock_1,
-                        color: AppColors.accent, size: 14),
+                    Icon(Iconsax.lock_1, color: AppColors.accent, size: 14),
                     SizedBox(width: 6),
                     Text('Chat Privately',
-                        style: TextStyle(fontSize: 12,
+                        style: TextStyle(
+                            fontSize: 12,
                             color: AppColors.accent,
                             fontWeight: FontWeight.w600)),
                   ]),
@@ -1416,8 +1638,10 @@ class _PostCardState extends State<PostCard> {
     );
   }
 
+  // FIX v4.0: Edit + Delete shown when viewing own post
   void _showPostOptions() {
-    final p = widget.post;
+    final p     = widget.post;
+    final isOwn = _isOwnPost;
     showModalBottomSheet(
       context: context,
       backgroundColor: widget.isDark ? AppColors.bgCard : Colors.white,
@@ -1425,31 +1649,64 @@ class _PostCardState extends State<PostCard> {
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => SafeArea(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(width: 36, height: 4,
-            margin: const EdgeInsets.only(top: 12, bottom: 8),
-            decoration: BoxDecoration(
-                color: Colors.grey.withOpacity(0.3),
-                borderRadius: BorderRadius.circular(2))),
+        Container(
+          width: 36, height: 4,
+          margin: const EdgeInsets.only(top: 12, bottom: 8),
+          decoration: BoxDecoration(
+              color: Colors.grey.withOpacity(0.3),
+              borderRadius: BorderRadius.circular(2)),
+        ),
+        // Own-post actions
+        if (isOwn) ...[
+          ListTile(
+            leading: const Icon(Iconsax.edit, color: AppColors.primary),
+            title: Text('Edit post',
+                style: TextStyle(
+                    color: widget.isDark ? Colors.white : Colors.black87,
+                    fontWeight: FontWeight.w600)),
+            onTap: () { Navigator.pop(ctx); _handleEditPost(); },
+          ),
+          ListTile(
+            leading: const Icon(Iconsax.trash, color: AppColors.error),
+            title: const Text('Delete post',
+                style: TextStyle(
+                    color: AppColors.error,
+                    fontWeight: FontWeight.w600)),
+            onTap: () { Navigator.pop(ctx); _handleDeletePost(); },
+          ),
+          Divider(color: widget.borderColor, height: 1),
+        ],
+        // Common actions
         ListTile(
-            leading: const Icon(Iconsax.flag),
-            title: const Text('Report post'),
-            onTap: () => Navigator.pop(ctx)),
+          leading: Icon(Iconsax.copy,
+              color: widget.isDark ? Colors.white70 : Colors.black54),
+          title: Text('Copy text',
+              style: TextStyle(
+                  color: widget.isDark ? Colors.white : Colors.black87)),
+          onTap: () {
+            Clipboard.setData(ClipboardData(text: p.content));
+            Navigator.pop(ctx);
+            ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Copied to clipboard')));
+          },
+        ),
         ListTile(
-            leading: const Icon(Iconsax.copy),
-            title: const Text('Copy text'),
-            onTap: () {
-              Clipboard.setData(ClipboardData(text: p.content));
-              Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Copied to clipboard')));
-            }),
-        ListTile(
-            leading: const Icon(Iconsax.share),
-            title: const Text('Share to...'),
-            onTap: () {
-              Navigator.pop(ctx);
-              widget.onShare(p);
-            }),
+          leading: Icon(Iconsax.share,
+              color: widget.isDark ? Colors.white70 : Colors.black54),
+          title: Text('Share to...',
+              style: TextStyle(
+                  color: widget.isDark ? Colors.white : Colors.black87)),
+          onTap: () { Navigator.pop(ctx); widget.onShare(p); },
+        ),
+        if (!isOwn)
+          ListTile(
+            leading: Icon(Iconsax.flag,
+                color: widget.isDark ? Colors.white70 : Colors.black54),
+            title: Text('Report post',
+                style: TextStyle(
+                    color: widget.isDark ? Colors.white : Colors.black87)),
+            onTap: () => Navigator.pop(ctx),
+          ),
         const SizedBox(height: 20),
       ])),
     );
@@ -1457,7 +1714,7 @@ class _PostCardState extends State<PostCard> {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Hashtag Text  —  parses #tags and makes them tappable
+// Hashtag Text
 // ══════════════════════════════════════════════════════════════════════════════
 class _HashtagText extends StatefulWidget {
   final String text;
@@ -1478,7 +1735,6 @@ class _HashtagTextState extends State<_HashtagText> {
   }
 
   List<InlineSpan> _buildSpans() {
-    // Dispose old recognizers before rebuilding
     for (final r in _recognizers) r.dispose();
     _recognizers.clear();
 
@@ -1534,7 +1790,7 @@ class _HashtagTextState extends State<_HashtagText> {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Post Media  —  image or video in feed card
+// Post Media
 // ══════════════════════════════════════════════════════════════════════════════
 class _PostMedia extends StatelessWidget {
   final String url, mediaType;
@@ -1605,11 +1861,45 @@ class _ImageThumbnail extends StatelessWidget {
   }
 }
 
-/// Video placeholder with play overlay → opens full-screen Chewie player.
-class _VideoThumbnail extends StatelessWidget {
+// FIX v4.0: Stateful — initialises VideoPlayerController, seeks to frame 0,
+// pauses, and renders the real first frame so the feed shows actual content.
+class _VideoThumbnail extends StatefulWidget {
   final String url;
   final bool   isDark;
   const _VideoThumbnail({required this.url, required this.isDark});
+
+  @override
+  State<_VideoThumbnail> createState() => _VideoThumbnailState();
+}
+
+class _VideoThumbnailState extends State<_VideoThumbnail> {
+  VideoPlayerController? _ctrl;
+  bool _thumbReady = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initThumb();
+  }
+
+  Future<void> _initThumb() async {
+    try {
+      final ctrl = VideoPlayerController.networkUrl(Uri.parse(widget.url));
+      await ctrl.initialize();
+      await ctrl.seekTo(Duration.zero);
+      await ctrl.pause();
+      if (!mounted) { ctrl.dispose(); return; }
+      setState(() { _ctrl = ctrl; _thumbReady = true; });
+    } catch (_) {
+      // Silently fall back to placeholder — network/codec errors are normal
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl?.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1618,17 +1908,29 @@ class _VideoThumbnail extends StatelessWidget {
         context,
         MaterialPageRoute(
           fullscreenDialog: true,
-          builder: (_) => _FullScreenVideoPage(url: url),
+          builder: (_) => _FullScreenVideoPage(url: widget.url),
         ),
       ),
       child: Stack(children: [
-        _MediaPlaceholder(
-          isDark: isDark,
-          height: 220,
-          child: const Icon(Icons.movie_creation_outlined,
-              size: 48, color: Colors.white12),
-        ),
-        // Play button
+        // ── Real first-frame thumbnail ───────────────────────────────────
+        if (_thumbReady && _ctrl != null)
+          AspectRatio(
+            aspectRatio: _ctrl!.value.aspectRatio > 0
+                ? _ctrl!.value.aspectRatio
+                : 16 / 9,
+            child: VideoPlayer(_ctrl!),
+          )
+        else
+          _MediaPlaceholder(
+            isDark: widget.isDark,
+            height: 220,
+            child: SizedBox(
+              width: 28, height: 28,
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: Colors.white38),
+            ),
+          ),
+        // ── Play button overlay ──────────────────────────────────────────
         Positioned.fill(
           child: Center(
             child: Container(
@@ -1644,7 +1946,7 @@ class _VideoThumbnail extends StatelessWidget {
             ),
           ),
         ),
-        // "Tap to play" label
+        // ── "Tap to play" label ──────────────────────────────────────────
         Positioned(
           bottom: 10, right: 10,
           child: Container(
@@ -1658,7 +1960,9 @@ class _VideoThumbnail extends StatelessWidget {
                   color: Colors.white, size: 12),
               SizedBox(width: 4),
               Text('Tap to play',
-                  style: TextStyle(color: Colors.white, fontSize: 11,
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
                       fontWeight: FontWeight.w500)),
             ]),
           ),
@@ -1684,7 +1988,7 @@ class _MediaPlaceholder extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Full-Screen Video Page  —  Chewie with all controls
+// Full-Screen Video Page
 // ══════════════════════════════════════════════════════════════════════════════
 class _FullScreenVideoPage extends StatefulWidget {
   final String url;
@@ -1701,10 +2005,7 @@ class _FullScreenVideoPageState extends State<_FullScreenVideoPage> {
   bool _hasError = false;
 
   @override
-  void initState() {
-    super.initState();
-    _init();
-  }
+  void initState() { super.initState(); _init(); }
 
   Future<void> _init() async {
     try {
@@ -1758,7 +2059,9 @@ class _FullScreenVideoPageState extends State<_FullScreenVideoPage> {
         elevation: 0,
         iconTheme: const IconThemeData(color: Colors.white),
         title: const Text('Video',
-            style: TextStyle(color: Colors.white, fontSize: 16,
+            style: TextStyle(
+                color: Colors.white,
+                fontSize: 16,
                 fontWeight: FontWeight.w600)),
       ),
       body: Center(
@@ -1788,7 +2091,7 @@ class _FullScreenVideoPageState extends State<_FullScreenVideoPage> {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Image Viewer Page  —  photo_view with pinch-to-zoom + swipe-to-close
+// Image Viewer Page
 // ══════════════════════════════════════════════════════════════════════════════
 class _ImageViewerPage extends StatelessWidget {
   final String url;
@@ -1843,7 +2146,10 @@ class _ImageViewerPage extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Post Link Card  —  tappable link preview, opens url_launcher
+// Post Link Card
+// FIX v4.0: removed canLaunchUrl gate — it silently returns false on Android
+// without proper query-intent declarations in AndroidManifest.xml.
+// Now calls launchUrl directly with externalApplication → inAppWebView fallback.
 // ══════════════════════════════════════════════════════════════════════════════
 class _PostLinkCard extends StatelessWidget {
   final String  url;
@@ -1863,10 +2169,19 @@ class _PostLinkCard extends StatelessWidget {
     try { return Uri.parse(url).host; } catch (_) { return url; }
   }
 
-  Future<void> _open() async {
+  Future<void> _open(BuildContext context) async {
     final uri = Uri.parse(url.startsWith('http') ? url : 'https://$url');
-    if (await canLaunchUrl(uri)) {
+    try {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      try {
+        await launchUrl(uri, mode: LaunchMode.inAppWebView);
+      } catch (_) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Could not open link'),
+          duration: Duration(seconds: 2),
+        ));
+      }
     }
   }
 
@@ -1874,7 +2189,7 @@ class _PostLinkCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final surfColor = isDark ? AppColors.bgSurface : Colors.grey.shade100;
     return GestureDetector(
-      onTap: _open,
+      onTap: () => _open(context),
       child: Container(
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
@@ -1895,13 +2210,20 @@ class _PostLinkCard extends StatelessWidget {
           ),
           const SizedBox(width: 10),
           Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
               if (title != null && title!.isNotEmpty)
-                Text(title!, maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 13,
-                        fontWeight: FontWeight.w700, color: textColor)),
-              Text(_domain, maxLines: 1, overflow: TextOverflow.ellipsis,
+                Text(title!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: textColor)),
+              Text(_domain,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontSize: 11, color: subColor)),
             ]),
           ),
@@ -1932,8 +2254,8 @@ class _ActionBtn extends StatelessWidget {
     child: Row(children: [
       Icon(icon, color: color, size: 20),
       const SizedBox(width: 5),
-      Text(label, style: TextStyle(color: color, fontSize: 13,
-          fontWeight: FontWeight.w500)),
+      Text(label, style: TextStyle(
+          color: color, fontSize: 13, fontWeight: FontWeight.w500)),
     ]),
   );
 }
@@ -1973,21 +2295,22 @@ class _AppDrawer extends StatelessWidget {
                       color: AppColors.primary.withOpacity(0.12),
                       shape: BoxShape.circle),
                   child: ClipOval(
-                      child: avatarUrl.isNotEmpty
-                          ? Image.network(avatarUrl, fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) => Center(
-                                  child: Text(
-                                      name.isNotEmpty ? name[0].toUpperCase() : 'U',
-                                      style: const TextStyle(
-                                          color: AppColors.primary,
-                                          fontSize: 20,
-                                          fontWeight: FontWeight.w800))))
-                          : Center(child: Text(
-                              name.isNotEmpty ? name[0].toUpperCase() : 'U',
-                              style: const TextStyle(
-                                  color: AppColors.primary,
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.w800)))),
+                    child: avatarUrl.isNotEmpty
+                        ? Image.network(avatarUrl, fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => Center(
+                                child: Text(
+                                    name.isNotEmpty ? name[0].toUpperCase() : 'U',
+                                    style: const TextStyle(
+                                        color: AppColors.primary,
+                                        fontSize: 20,
+                                        fontWeight: FontWeight.w800))))
+                        : Center(child: Text(
+                            name.isNotEmpty ? name[0].toUpperCase() : 'U',
+                            style: const TextStyle(
+                                color: AppColors.primary,
+                                fontSize: 20,
+                                fontWeight: FontWeight.w800))),
+                  ),
                 ),
               ),
               const SizedBox(width: 12),
@@ -1995,19 +2318,24 @@ class _AppDrawer extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                 Text(name,
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700,
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
                         color: isDark ? Colors.white : Colors.black87),
-                    maxLines: 1, overflow: TextOverflow.ellipsis),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
                 const SizedBox(height: 3),
                 Row(children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 7, vertical: 2),
                     decoration: BoxDecoration(
                         color: (stageInfo['color'] as Color).withOpacity(0.15),
                         borderRadius: BorderRadius.circular(8)),
                     child: Text(
                         '${stageInfo['emoji']} ${stageInfo['label']}',
-                        style: TextStyle(fontSize: 10,
+                        style: TextStyle(
+                            fontSize: 10,
                             color: stageInfo['color'] as Color,
                             fontWeight: FontWeight.w600)),
                   ),
@@ -2020,7 +2348,8 @@ class _AppDrawer extends StatelessWidget {
                           color: AppColors.gold.withOpacity(0.15),
                           borderRadius: BorderRadius.circular(8)),
                       child: const Text('PRO',
-                          style: TextStyle(fontSize: 10,
+                          style: TextStyle(
+                              fontSize: 10,
                               color: AppColors.gold,
                               fontWeight: FontWeight.w700)),
                     ),
@@ -2037,35 +2366,35 @@ class _AppDrawer extends StatelessWidget {
               padding: const EdgeInsets.symmetric(vertical: 4),
               children: [
             _DSection('INCOME TOOLS', sub),
-            _DItem(Iconsax.chart,              'Dashboard',          'Earnings, stats & tasks',             isDark, onTap: () { Navigator.pop(context); context.go('/dashboard'); }),
-            _DItem(Icons.auto_awesome_rounded, 'Agentic AI',         'Execute ANY income task',             isDark, badge: 'HEAVY', badgeColor: AppColors.accent, onTap: () { Navigator.pop(context); context.push('/agent'); }),
-            _DItem(Iconsax.flash,              'Workflow Engine',    'AI-powered income execution',         isDark, badge: 'NEW', badgeColor: AppColors.success, onTap: () { Navigator.pop(context); context.push('/workflow'); }),
-            _DItem(Iconsax.chart_3,            'Market Pulse',       'What pays right now',                 isDark, badge: 'LIVE', badgeColor: const Color(0xFFFF6B35), onTap: () { Navigator.pop(context); context.push('/pulse'); }),
-            _DItem(Icons.emoji_events_rounded, 'Challenges',         '30-day income sprints',               isDark, onTap: () { Navigator.pop(context); context.push('/challenges'); }),
-            _DItem(Iconsax.briefcase,          'Client CRM',         'Track prospects & clients',           isDark, onTap: () { Navigator.pop(context); context.push('/crm'); }),
-            _DItem(Iconsax.document_text,      'Contracts & Invoices','Pro contract generation',            isDark, onTap: () { Navigator.pop(context); context.push('/contracts'); }),
-            _DItem(Icons.psychology_rounded,   'Income Memory',      'Your income DNA',                     isDark, onTap: () { Navigator.pop(context); context.push('/memory'); }),
-            _DItem(Iconsax.gallery,            'My Portfolio',       'Shareable project showcase',          isDark, onTap: () { Navigator.pop(context); context.push('/portfolio'); }),
-            _DItem(Iconsax.task_square,        'My Tasks',           'Daily income tasks',                  isDark, onTap: () { Navigator.pop(context); context.go('/tasks'); }),
-            _DItem(Iconsax.map_1,              'Wealth Roadmap',     '3-stage wealth plan',                 isDark, onTap: () { Navigator.pop(context); context.go('/roadmap'); }),
-            _DItem(Iconsax.book,               'Skills',             'Earn-while-learning',                 isDark, onTap: () { Navigator.pop(context); context.go('/skills'); }),
+            _DItem(Iconsax.chart,              'Dashboard',           'Earnings, stats & tasks',              isDark, onTap: () { Navigator.pop(context); context.go('/dashboard'); }),
+            _DItem(Icons.auto_awesome_rounded, 'Agentic AI',          'Execute ANY income task',              isDark, badge: 'HEAVY', badgeColor: AppColors.accent, onTap: () { Navigator.pop(context); context.push('/agent'); }),
+            _DItem(Iconsax.flash,              'Workflow Engine',     'AI-powered income execution',          isDark, badge: 'NEW', badgeColor: AppColors.success, onTap: () { Navigator.pop(context); context.push('/workflow'); }),
+            _DItem(Iconsax.chart_3,            'Market Pulse',        'What pays right now',                  isDark, badge: 'LIVE', badgeColor: const Color(0xFFFF6B35), onTap: () { Navigator.pop(context); context.push('/pulse'); }),
+            _DItem(Icons.emoji_events_rounded, 'Challenges',          '30-day income sprints',                isDark, onTap: () { Navigator.pop(context); context.push('/challenges'); }),
+            _DItem(Iconsax.briefcase,          'Client CRM',          'Track prospects & clients',            isDark, onTap: () { Navigator.pop(context); context.push('/crm'); }),
+            _DItem(Iconsax.document_text,      'Contracts & Invoices','Pro contract generation',              isDark, onTap: () { Navigator.pop(context); context.push('/contracts'); }),
+            _DItem(Icons.psychology_rounded,   'Income Memory',       'Your income DNA',                      isDark, onTap: () { Navigator.pop(context); context.push('/memory'); }),
+            _DItem(Iconsax.gallery,            'My Portfolio',        'Shareable project showcase',           isDark, onTap: () { Navigator.pop(context); context.push('/portfolio'); }),
+            _DItem(Iconsax.task_square,        'My Tasks',            'Daily income tasks',                   isDark, onTap: () { Navigator.pop(context); context.go('/tasks'); }),
+            _DItem(Iconsax.map_1,              'Wealth Roadmap',      '3-stage wealth plan',                  isDark, onTap: () { Navigator.pop(context); context.go('/roadmap'); }),
+            _DItem(Iconsax.book,               'Skills',              'Earn-while-learning',                  isDark, onTap: () { Navigator.pop(context); context.go('/skills'); }),
             Divider(color: border, height: 1),
             _DSection('SOCIAL', sub),
-            _DItem(Iconsax.people,             'Collaboration',      'Build bigger goals together',         isDark, badge: 'NEW', badgeColor: AppColors.primary, onTap: () { Navigator.pop(context); context.push('/collaboration'); }),
-            _DItem(Iconsax.message,            'Messages',           'DMs & group chats',                   isDark, onTap: () { Navigator.pop(context); context.go('/messages'); }),
-            _DItem(Icons.radio_button_checked_rounded, 'Go Live',   'Stream to your community',            isDark, onTap: () { Navigator.pop(context); context.go('/live'); }),
-            _DItem(Iconsax.people,             'Groups',             'Wealth-building groups',              isDark, onTap: () { Navigator.pop(context); context.go('/groups'); }),
+            _DItem(Iconsax.people,                    'Collaboration', 'Build bigger goals together',         isDark, badge: 'NEW', badgeColor: AppColors.primary, onTap: () { Navigator.pop(context); context.push('/collaboration'); }),
+            _DItem(Iconsax.message,                   'Messages',      'DMs & group chats',                   isDark, onTap: () { Navigator.pop(context); context.go('/messages'); }),
+            _DItem(Icons.radio_button_checked_rounded,'Go Live',       'Stream to your community',            isDark, onTap: () { Navigator.pop(context); context.go('/live'); }),
+            _DItem(Iconsax.people,                    'Groups',        'Wealth-building groups',              isDark, onTap: () { Navigator.pop(context); context.go('/groups'); }),
             Divider(color: border, height: 1),
             _DSection('FINANCE', sub),
-            _DItem(Iconsax.money_recive,       'Earnings',           'Income tracker',                      isDark, onTap: () { Navigator.pop(context); context.go('/earnings'); }),
-            _DItem(Iconsax.chart_2,            'Analytics',          'Growth stats',                        isDark, onTap: () { Navigator.pop(context); context.go('/analytics'); }),
-            _DItem(Iconsax.wallet_minus,       'Expenses',           'Budget tracking',                     isDark, onTap: () { Navigator.pop(context); context.go('/expenses'); }),
-            _DItem(Iconsax.flag,               'Goals',              'Set & track targets',                 isDark, onTap: () { Navigator.pop(context); context.go('/goals'); }),
+            _DItem(Iconsax.money_recive, 'Earnings',   'Income tracker',   isDark, onTap: () { Navigator.pop(context); context.go('/earnings'); }),
+            _DItem(Iconsax.chart_2,      'Analytics',  'Growth stats',      isDark, onTap: () { Navigator.pop(context); context.go('/analytics'); }),
+            _DItem(Iconsax.wallet_minus, 'Expenses',   'Budget tracking',   isDark, onTap: () { Navigator.pop(context); context.go('/expenses'); }),
+            _DItem(Iconsax.flag,         'Goals',      'Set & track targets',isDark, onTap: () { Navigator.pop(context); context.go('/goals'); }),
             Divider(color: border, height: 1),
             _DSection('ACCOUNT', sub),
-            _DItem(Iconsax.award,              'Achievements',       'Badges & milestones',                 isDark, onTap: () { Navigator.pop(context); context.go('/achievements'); }),
-            _DItem(Iconsax.user_tag,           'Referrals',          'Invite & earn',                       isDark, onTap: () { Navigator.pop(context); context.go('/referrals'); }),
-            _DItem(Iconsax.setting_2,          'Settings',           'Account preferences',                 isDark, onTap: () { Navigator.pop(context); context.go('/settings'); }),
+            _DItem(Iconsax.award,      'Achievements', 'Badges & milestones',   isDark, onTap: () { Navigator.pop(context); context.go('/achievements'); }),
+            _DItem(Iconsax.user_tag,   'Referrals',    'Invite & earn',          isDark, onTap: () { Navigator.pop(context); context.go('/referrals'); }),
+            _DItem(Iconsax.setting_2,  'Settings',     'Account preferences',    isDark, onTap: () { Navigator.pop(context); context.go('/settings'); }),
           ])),
 
           if (!isPremium)
@@ -2078,7 +2407,8 @@ class _AppDrawer extends StatelessWidget {
                   decoration: BoxDecoration(
                     color: AppColors.primary.withOpacity(isDark ? 0.12 : 0.07),
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: AppColors.primary.withOpacity(0.25)),
+                    border: Border.all(
+                        color: AppColors.primary.withOpacity(0.25)),
                   ),
                   child: Row(children: [
                     const SizedBox(width: 2),
@@ -2089,7 +2419,8 @@ class _AppDrawer extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                       const Text('Upgrade to Premium',
-                          style: TextStyle(fontSize: 13,
+                          style: TextStyle(
+                              fontSize: 13,
                               fontWeight: FontWeight.w700,
                               color: AppColors.primary)),
                       Text('Unlimited AI + all features',
@@ -2115,8 +2446,11 @@ class _DSection extends StatelessWidget {
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.fromLTRB(18, 12, 18, 4),
     child: Text(label,
-        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
-            color: color, letterSpacing: 1.1)),
+        style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+            color: color,
+            letterSpacing: 1.1)),
   );
 }
 
@@ -2141,19 +2475,27 @@ class _DItem extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
           child: Row(children: [
-            Container(width: 36, height: 36,
-                decoration: BoxDecoration(
-                    color: isDark ? AppColors.bgSurface : Colors.grey.shade100,
-                    borderRadius: BorderRadius.circular(9)),
-                child: Icon(icon, size: 17,
-                    color: isDark ? Colors.white.withOpacity(0.7) : Colors.black54)),
+            Container(
+              width: 36, height: 36,
+              decoration: BoxDecoration(
+                  color: isDark
+                      ? AppColors.bgSurface
+                      : Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(9)),
+              child: Icon(icon, size: 17,
+                  color: isDark
+                      ? Colors.white.withOpacity(0.7)
+                      : Colors.black54),
+            ),
             const SizedBox(width: 13),
             Expanded(child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
               Row(children: [
-                Text(label, style: TextStyle(fontSize: 13,
-                    fontWeight: FontWeight.w600, color: textC)),
+                Text(label, style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: textC)),
                 if (badge != null) ...[
                   const SizedBox(width: 6),
                   Container(
@@ -2163,7 +2505,8 @@ class _DItem extends StatelessWidget {
                         color: (badgeColor ?? AppColors.primary).withOpacity(0.15),
                         borderRadius: BorderRadius.circular(5)),
                     child: Text(badge!,
-                        style: TextStyle(fontSize: 9,
+                        style: TextStyle(
+                            fontSize: 9,
                             color: badgeColor ?? AppColors.primary,
                             fontWeight: FontWeight.w700)),
                   ),
@@ -2172,8 +2515,9 @@ class _DItem extends StatelessWidget {
               Text(sub, style: TextStyle(fontSize: 11, color: subC)),
             ])),
             Icon(Icons.chevron_right_rounded, size: 15,
-                color: isDark ? Colors.white.withOpacity(0.24)
-                              : Colors.black.withOpacity(0.26)),
+                color: isDark
+                    ? Colors.white.withOpacity(0.24)
+                    : Colors.black.withOpacity(0.26)),
           ]),
         ),
       ),
@@ -2195,18 +2539,24 @@ class _StoryAddButton extends StatelessWidget {
     child: GestureDetector(
       onTap: onTap,
       child: Column(children: [
-        Container(width: 58, height: 58,
-            decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: isDark ? AppColors.bgSurface : Colors.grey.shade200,
-                border: Border.all(
-                    color: AppColors.primary.withOpacity(0.4), width: 1.5)),
-            child: const Center(
-                child: Icon(Icons.add, color: AppColors.primary, size: 24))),
+        Container(
+          width: 58, height: 58,
+          decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: isDark ? AppColors.bgSurface : Colors.grey.shade200,
+              border: Border.all(
+                  color: AppColors.primary.withOpacity(0.4), width: 1.5)),
+          child: const Center(
+              child: Icon(Icons.add, color: AppColors.primary, size: 24)),
+        ),
         const SizedBox(height: 5),
-        Text('You', style: TextStyle(fontSize: 11,
-            color: isDark ? Colors.white.withOpacity(0.6) : Colors.black54,
-            fontWeight: FontWeight.w600)),
+        Text('You',
+            style: TextStyle(
+                fontSize: 11,
+                color: isDark
+                    ? Colors.white.withOpacity(0.6)
+                    : Colors.black54,
+                fontWeight: FontWeight.w600)),
       ]),
     ),
   );
@@ -2233,44 +2583,62 @@ class _StoryItem extends StatelessWidget {
         onTap: onTap,
         child: Column(children: [
           Stack(children: [
-            Container(width: 58, height: 58,
+            Container(
+              width: 58, height: 58,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                gradient: hasUnseen ? const LinearGradient(
-                    colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight) : null,
-                color: hasUnseen ? null
-                    : (isDark ? AppColors.bgSurface : Colors.grey.shade300)),
+                gradient: hasUnseen
+                    ? const LinearGradient(
+                        colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight)
+                    : null,
+                color: hasUnseen
+                    ? null
+                    : (isDark ? AppColors.bgSurface : Colors.grey.shade300),
+              ),
               child: Padding(
                 padding: const EdgeInsets.all(2.5),
                 child: Container(
-                  decoration: BoxDecoration(shape: BoxShape.circle,
+                  decoration: BoxDecoration(
+                      shape: BoxShape.circle,
                       color: isDark ? Colors.black : Colors.white),
                   child: ClipOval(
-                      child: avatar != null && avatar.isNotEmpty
-                          ? Image.network(avatar, fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) => _initials(name))
-                          : _initials(name)),
-                ))),
+                    child: avatar != null && avatar.isNotEmpty
+                        ? Image.network(avatar, fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => _initials(name))
+                        : _initials(name),
+                  ),
+                ),
+              ),
+            ),
             if (isOnline)
-              Positioned(bottom: 1, right: 1,
-                  child: Container(width: 13, height: 13,
-                      decoration: BoxDecoration(
-                          color: AppColors.success,
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                              color: isDark ? Colors.black : Colors.white,
-                              width: 2)))),
+              Positioned(
+                bottom: 1, right: 1,
+                child: Container(
+                  width: 13, height: 13,
+                  decoration: BoxDecoration(
+                      color: AppColors.success,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                          color: isDark ? Colors.black : Colors.white,
+                          width: 2)),
+                ),
+              ),
           ]),
           const SizedBox(height: 5),
-          SizedBox(width: 62,
+          SizedBox(
+            width: 62,
             child: Text(shortName,
-                textAlign: TextAlign.center, maxLines: 1,
+                textAlign: TextAlign.center,
+                maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 11,
-                    color: isDark ? Colors.white.withOpacity(0.6)
-                                  : Colors.black54))),
+                style: TextStyle(
+                    fontSize: 11,
+                    color: isDark
+                        ? Colors.white.withOpacity(0.6)
+                        : Colors.black54)),
+          ),
         ]),
       ),
     );
@@ -2278,13 +2646,22 @@ class _StoryItem extends StatelessWidget {
 
   Widget _initials(String name) => Container(
     color: AppColors.primary.withOpacity(0.15),
-    child: Center(child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
-        style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800,
+    child: Center(child: Text(
+        name.isNotEmpty ? name[0].toUpperCase() : '?',
+        style: const TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
             color: AppColors.primary))));
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Status View Sheet  —  upgraded with video, image zoom, link cards
+// Status View Sheet
+//
+// FIX v4.0: Navigation strips are now always present for ALL media types.
+// They are positioned as left/right 30% strips (opaque), ordered in the Stack
+// BEFORE the header and link card so those elements sit on top and remain
+// tappable. The centre 40% reaches the video player for play/pause.
+// Link card now calls launchUrl directly with externalApplication fallback.
 // ══════════════════════════════════════════════════════════════════════════════
 class _StatusViewSheet extends StatefulWidget {
   final Map<String, dynamic> user;
@@ -2318,7 +2695,9 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
   }
 
   void _prev() {
-    if (_currentIndex > 0) setState(() { _currentIndex--; _markViewed(); });
+    if (_currentIndex > 0) {
+      setState(() { _currentIndex--; _markViewed(); });
+    }
   }
 
   @override
@@ -2342,16 +2721,18 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
     Color bgColor = AppColors.primary;
     try { bgColor = Color(int.parse(bg.replaceFirst('#', '0xFF'))); } catch (_) {}
 
-    final h = MediaQuery.of(context).size.height;
+    final h  = MediaQuery.of(context).size.height;
+    final sw = MediaQuery.of(context).size.width;
 
     return Container(
       height: h * 0.85,
       decoration: BoxDecoration(
           color: media != null ? Colors.black : bgColor,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(20))),
+          borderRadius:
+              const BorderRadius.vertical(top: Radius.circular(20))),
       child: Stack(children: [
 
-        // ── Background media ───────────────────────────────────────────────
+        // ── 1. Background media ───────────────────────────────────────────
         if (media != null && mType == 'image')
           Positioned.fill(
             child: GestureDetector(
@@ -2387,15 +2768,18 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
                 padding: const EdgeInsets.all(32),
                 child: Text(text,
                     textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.white,
-                        fontSize: 22, fontWeight: FontWeight.w600,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 22,
+                        fontWeight: FontWeight.w600,
                         height: 1.5)),
               ),
             ),
           ),
 
-        // ── Progress bar ───────────────────────────────────────────────────
-        Positioned(top: 12, left: 12, right: 12,
+        // ── 2. Progress bar ───────────────────────────────────────────────
+        Positioned(
+          top: 12, left: 12, right: 12,
           child: Row(
             children: List.generate(items.length, (i) => Expanded(
               child: Container(
@@ -2411,48 +2795,65 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
           ),
         ),
 
-        // ── Header ────────────────────────────────────────────────────────
-        Positioned(top: 24, left: 16, right: 16,
-          child: Row(children: [
-            Container(width: 36, height: 36,
-                decoration: BoxDecoration(shape: BoxShape.circle,
-                    color: Colors.white.withOpacity(0.24)),
-                child: ClipOval(
-                    child: avatar != null && avatar.isNotEmpty
-                        ? Image.network(avatar, fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => Center(
-                                child: Text(
-                                    name.isNotEmpty ? name[0].toUpperCase() : '?',
-                                    style: const TextStyle(color: Colors.white,
-                                        fontWeight: FontWeight.w800))))
-                        : Center(child: Text(
-                            name.isNotEmpty ? name[0].toUpperCase() : '?',
-                            style: const TextStyle(color: Colors.white,
-                                fontWeight: FontWeight.w800))))),
-            const SizedBox(width: 8),
-            Expanded(child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-              Text(name, style: const TextStyle(color: Colors.white,
-                  fontWeight: FontWeight.w700, fontSize: 13)),
-              Text(items.length == 1 ? '1 status' : '${items.length} statuses',
-                  style: TextStyle(color: Colors.white.withOpacity(0.6),
-                      fontSize: 11)),
-            ])),
-            IconButton(
-                icon: const Icon(Icons.close_rounded, color: Colors.white),
-                onPressed: () => Navigator.pop(context)),
-          ]),
+        // ── 3. Caption text overlay (image/video with text) ───────────────
+        if (media != null && text.isNotEmpty)
+          Positioned(
+            bottom: link != null ? 150 : 90,
+            left: 0, right: 0,
+            child: Container(
+              color: Colors.black.withOpacity(0.5),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 20, vertical: 12),
+              child: Text(text,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
+                      height: 1.5)),
+            ),
+          ),
+
+        // ── 4. Left / right navigation strips (always present) ────────────
+        // FIX v4.0: Removed `if (mType != 'video')` — strips now work for
+        // all media types. They are opaque 30% side strips; the centre 40%
+        // remains open so the video player can receive play/pause taps.
+        // Being listed before header & link-card in the Stack means those
+        // widgets render on top and their gestures take priority.
+        Positioned(
+          top: 0, bottom: 0, left: 0,
+          width: sw * 0.3,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _prev,
+            child: const ColoredBox(color: Colors.transparent),
+          ),
+        ),
+        Positioned(
+          top: 0, bottom: 0, right: 0,
+          width: sw * 0.3,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _next,
+            child: const ColoredBox(color: Colors.transparent),
+          ),
         ),
 
-        // ── Link card at bottom ───────────────────────────────────────────
+        // ── 5. Link card at bottom ────────────────────────────────────────
+        // FIX v4.0: Direct launchUrl — no canLaunchUrl gate
         if (link != null)
-          Positioned(bottom: 80, left: 16, right: 16,
+          Positioned(
+            bottom: 80, left: 16, right: 16,
             child: GestureDetector(
               onTap: () async {
-                final uri = Uri.parse(link.startsWith('http') ? link : 'https://$link');
-                if (await canLaunchUrl(uri)) {
+                final uri = Uri.parse(
+                    link.startsWith('http') ? link : 'https://$link');
+                try {
                   await launchUrl(uri, mode: LaunchMode.externalApplication);
+                } catch (_) {
+                  try {
+                    await launchUrl(uri, mode: LaunchMode.inAppWebView);
+                  } catch (_) {}
                 }
               },
               child: Container(
@@ -2460,22 +2861,29 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
                 decoration: BoxDecoration(
                     color: Colors.black.withOpacity(0.7),
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.white.withOpacity(0.3))),
+                    border: Border.all(
+                        color: Colors.white.withOpacity(0.3))),
                 child: Row(children: [
-                  const Icon(Icons.link_rounded, color: Colors.white, size: 18),
+                  const Icon(Icons.link_rounded,
+                      color: Colors.white, size: 18),
                   const SizedBox(width: 8),
                   Expanded(child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                     if (linkTitle != null && linkTitle.isNotEmpty)
                       Text(linkTitle,
-                          style: const TextStyle(color: Colors.white,
-                              fontSize: 13, fontWeight: FontWeight.w600),
-                          maxLines: 1, overflow: TextOverflow.ellipsis),
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis),
                     Text(link,
-                        style: TextStyle(color: Colors.white.withOpacity(0.6),
+                        style: TextStyle(
+                            color: Colors.white.withOpacity(0.6),
                             fontSize: 11),
-                        maxLines: 1, overflow: TextOverflow.ellipsis),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis),
                   ])),
                   const SizedBox(width: 6),
                   const Icon(Icons.open_in_new_rounded,
@@ -2485,32 +2893,54 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
             ),
           ),
 
-        // ── Tap zones for prev / next ─────────────────────────────────────
-        // Only handle tap on non-video statuses (video has its own gesture)
-        if (mType != 'video')
-          Positioned.fill(
-            child: Row(children: [
-              Expanded(child: GestureDetector(
-                  behavior: HitTestBehavior.translucent,
-                  onTap: _prev)),
-              Expanded(child: GestureDetector(
-                  behavior: HitTestBehavior.translucent,
-                  onTap: _next)),
-            ]),
-          ),
-
-        // ── Caption text overlay (for image / video statuses) ─────────────
-        if (media != null && text.isNotEmpty)
-          Positioned(bottom: link != null ? 150 : 90, left: 0, right: 0,
-            child: Container(
-              color: Colors.black.withOpacity(0.5),
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-              child: Text(text,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white,
-                      fontSize: 15, fontWeight: FontWeight.w500, height: 1.5)),
+        // ── 6. Header (name, avatar, close) ──────────────────────────────
+        Positioned(
+          top: 24, left: 16, right: 16,
+          child: Row(children: [
+            Container(
+              width: 36, height: 36,
+              decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.white.withOpacity(0.24)),
+              child: ClipOval(
+                child: avatar != null && avatar.isNotEmpty
+                    ? Image.network(avatar, fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => Center(
+                            child: Text(
+                                name.isNotEmpty
+                                    ? name[0].toUpperCase()
+                                    : '?',
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w800))))
+                    : Center(child: Text(
+                        name.isNotEmpty ? name[0].toUpperCase() : '?',
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w800))),
+              ),
             ),
-          ),
+            const SizedBox(width: 8),
+            Expanded(child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+              Text(name,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13)),
+              Text(items.length == 1
+                      ? '1 status'
+                      : '${items.length} statuses',
+                  style: TextStyle(
+                      color: Colors.white.withOpacity(0.6),
+                      fontSize: 11)),
+            ])),
+            IconButton(
+                icon: const Icon(Icons.close_rounded, color: Colors.white),
+                onPressed: () => Navigator.pop(context)),
+          ]),
+        ),
       ]),
     );
   }
@@ -2553,13 +2983,15 @@ class _StatusVideoPlayerState extends State<_StatusVideoPlayer> {
   Widget build(BuildContext context) {
     if (_hasError) {
       return const Center(
-          child: Icon(Icons.error_outline, color: Colors.white54, size: 48));
+          child: Icon(Icons.error_outline,
+              color: Colors.white54, size: 48));
     }
     if (!_ready || _ctrl == null) {
       return const Center(
           child: CircularProgressIndicator(
               color: AppColors.primary, strokeWidth: 2));
     }
+    // GestureDetector only covers centre 40% (side strips are handled above)
     return GestureDetector(
       onTap: () {
         if (_ctrl!.value.isPlaying) {
