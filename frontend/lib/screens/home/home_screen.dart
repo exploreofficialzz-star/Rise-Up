@@ -1,22 +1,19 @@
 // frontend/lib/screens/home/home_screen.dart
-// v5.0 — Facebook-grade performance + all fixes
+// v5.1 — Video artifact fixes
 //
-// KEY CHANGES vs v4.0:
-//  1. Cache-first render — cached feed JSON restores in ~50 ms before any
-//     network call. User sees real content instantly after splash.
-//  2. AutomaticKeepAliveClientMixin on _FeedTabView — switching tabs never
-//     destroys the widget tree or loses scroll position.
-//  3. 70 % prefetch — ScrollController triggers next-page load before the
-//     user reaches the bottom.
-//  4. CachedNetworkImage — all network images use disk + memory cache.
-//     Going back never re-downloads an image.
-//  5. Aspect ratios — Video 16:9 → actual ratio when loaded. Image 4:3
-//     cover. Link card fixed 68 px. Text post: no media container.
-//     Status viewer: full-bleed 9:16 on every screen size.
-//  6. Skeleton at scroll bottom — shimmer while paginating on slow network.
-//  7. AI error surface — actual backend error shown (429, 503, message).
-//  8. Background refresh — network calls start AFTER cache paint; zero
-//     blocking before first frame.
+// KEY CHANGES vs v5.0:
+//  1. _VideoThumbnailState: removed VideoPlayerController-based thumbnail
+//     entirely. On Android, using VideoPlayer to grab a first-frame causes
+//     SurfaceTexture YUV artifacts (green/yellow lines) before color
+//     conversion completes. Replaced with a clean static placeholder —
+//     full video still plays in _FullScreenVideoPage on tap.
+//  2. _FullScreenVideoPage: removed explicit `aspectRatio` from
+//     ChewieController. Passing vp.value.aspectRatio for a portrait (9:16)
+//     video caused Chewie to render into a wrongly-sized surface, producing
+//     the same artifacts. Chewie auto-detects correctly without it.
+//  3. _StatusVideoPlayer: deferred ctrl.play() to addPostFrameCallback so
+//     the SurfaceTexture is fully bound to the Flutter texture registry
+//     before playback starts, eliminating the initial frame artifact.
 
 import 'dart:convert';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -196,7 +193,6 @@ class _PostCardSkeleton extends StatelessWidget {
         const SizedBox(height: 6),
         _Shimmer(width: w * 0.55, height: 13),
         const SizedBox(height: 12),
-        // 16:9 media placeholder
         AspectRatio(aspectRatio: 16 / 9, child: _Shimmer(height: double.infinity, radius: 12)),
         const SizedBox(height: 14),
         Row(children: const [
@@ -272,7 +268,7 @@ class _HomeScreenState extends State<HomeScreen>
   // ── Prefs keys ────────────────────────────────────────────────────────────
   static const _kQuotaKey        = 'riseup_ai_quota_v1';
   static const _kProfileCacheKey = 'riseup_profile_cache_v1';
-  static const _kFeedCacheKey    = 'riseup_feed_for_you_v2';  // raw JSON
+  static const _kFeedCacheKey    = 'riseup_feed_for_you_v2';
   static const _kFollowedKey     = 'riseup_followed_users';
 
   // ── Feed state ────────────────────────────────────────────────────────────
@@ -301,11 +297,7 @@ class _HomeScreenState extends State<HomeScreen>
       final tab = _tabs[_tabCtrl.index];
       if (_feeds[tab]!.isEmpty) _loadFeed(tab);
     });
-
-    // Phase 1 — instant: restore everything from cache (no network)
     _restoreAllFromCache();
-
-    // Phase 2 — background: refresh from network after first frame
     WidgetsBinding.instance.addPostFrameCallback((_) => _refreshAll());
   }
 
@@ -327,19 +319,14 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  // ── Phase 1: restore from cache (fast, synchronous-ish) ──────────────────
   Future<void> _restoreAllFromCache() async {
     final prefs = await SharedPreferences.getInstance();
-
-    // Profile
     try {
       final raw = prefs.getString(_kProfileCacheKey);
       if (raw != null && mounted) {
         setState(() => _profile = Map<String, dynamic>.from(jsonDecode(raw) as Map));
       }
     } catch (_) {}
-
-    // Feed (for_you only)
     try {
       final raw = prefs.getString(_kFeedCacheKey);
       if (raw != null) {
@@ -347,13 +334,9 @@ class _HomeScreenState extends State<HomeScreen>
         final posts   = rawList
             .map((p) => PostModel.fromApi(Map<String, dynamic>.from(p as Map)))
             .toList();
-        if (posts.isNotEmpty && mounted) {
-          setState(() => _feeds['for_you'] = posts);
-        }
+        if (posts.isNotEmpty && mounted) setState(() => _feeds['for_you'] = posts);
       }
     } catch (_) {}
-
-    // Quota
     try {
       final raw = prefs.getString(_kQuotaKey);
       if (raw != null) {
@@ -369,15 +352,12 @@ class _HomeScreenState extends State<HomeScreen>
         }
       }
     } catch (_) {}
-
-    // Follow state
     try {
       final followed = prefs.getStringList(_kFollowedKey) ?? [];
       if (mounted) setState(() { for (final uid in followed) _followState[uid] = true; });
     } catch (_) {}
   }
 
-  // ── Phase 2: refresh from network in background ───────────────────────────
   Future<void> _refreshAll() async {
     await Future.wait([
       _loadProfile(),
@@ -386,7 +366,6 @@ class _HomeScreenState extends State<HomeScreen>
     ]);
   }
 
-  // ── Save quota ────────────────────────────────────────────────────────────
   Future<void> _saveAiQuota() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -399,7 +378,6 @@ class _HomeScreenState extends State<HomeScreen>
     } catch (_) {}
   }
 
-  // ── Profile ───────────────────────────────────────────────────────────────
   Future<void> _loadProfile() async {
     try {
       final data    = await api.getProfile();
@@ -412,7 +390,6 @@ class _HomeScreenState extends State<HomeScreen>
     } catch (_) {}
   }
 
-  // ── Status / Stories ──────────────────────────────────────────────────────
   Future<void> _loadStatus() async {
     try {
       final data = await api.get('/posts/status/feed');
@@ -425,42 +402,25 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  // ── Feed ──────────────────────────────────────────────────────────────────
   Future<void> _loadFeed(String tab, {bool refresh = false}) async {
     if (_loading[tab] == true) return;
-    if (refresh) {
-      _offsets[tab] = 0;
-      _hasMore[tab] = true;
-    }
+    if (refresh) { _offsets[tab] = 0; _hasMore[tab] = true; }
     if (!(_hasMore[tab] ?? true)) return;
-
     if (mounted) setState(() => _loading[tab] = true);
-
     try {
       final data     = await api.getFeed(tab: tab, limit: 20, offset: _offsets[tab]!);
       final rawPosts = (data['posts'] as List?) ?? [];
-
-      // Cache first page of for_you after refresh
-      if (tab == 'for_you' && (_offsets[tab] == 0 || refresh)) {
-        _cacheFeedRaw(rawPosts);
-      }
-
+      if (tab == 'for_you' && (_offsets[tab] == 0 || refresh)) _cacheFeedRaw(rawPosts);
       final posts = rawPosts
           .map((p) => PostModel.fromApi(p as Map<String, dynamic>))
           .toList();
-
       if (mounted) setState(() {
-        // Merge follow state
         for (final post in posts) {
           if (post.userId.isNotEmpty && _followState[post.userId] == null) {
             _followState[post.userId] = post.isFollowing;
           }
         }
-        if (refresh) {
-          _feeds[tab]  = posts;
-        } else {
-          _feeds[tab]  = [..._feeds[tab]!, ...posts];
-        }
+        _feeds[tab]  = refresh ? posts : [..._feeds[tab]!, ...posts];
         _offsets[tab] = (_offsets[tab] ?? 0) + posts.length;
         _hasMore[tab] = posts.length == 20;
         _loading[tab] = false;
@@ -485,7 +445,6 @@ class _HomeScreenState extends State<HomeScreen>
     } catch (_) {}
   }
 
-  // ── Computed ──────────────────────────────────────────────────────────────
   bool get _isPremium   => (_profile['subscription_tier'] ?? 'free') == 'premium';
   int  get _aiRemaining => (_dailyFreeLimit - _aiUsedToday).clamp(0, _dailyFreeLimit);
   bool get _isAdLocked {
@@ -494,7 +453,6 @@ class _HomeScreenState extends State<HomeScreen>
     return true;
   }
 
-  // ── Follow ────────────────────────────────────────────────────────────────
   Future<void> _handleFollow(String userId) async {
     if (userId.isEmpty) return;
     HapticFeedback.mediumImpact();
@@ -519,7 +477,6 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  // ── Share ─────────────────────────────────────────────────────────────────
   void _handleShare(PostModel post) {
     HapticFeedback.mediumImpact();
     SoundService.share();
@@ -568,7 +525,6 @@ class _HomeScreenState extends State<HomeScreen>
     });
   }
 
-  // ── AI ────────────────────────────────────────────────────────────────────
   Future<void> _handleAiRequest(PostModel post, {required bool isPrivate}) async {
     SoundService.tap();
     if (_isPremium) { await _executeAiAction(post, isPrivate: isPrivate); return; }
@@ -615,10 +571,8 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  // v5.0 AI FIX: surfaces actual backend error, handles 429, uses mode:'mentor'
   Future<void> _postAIComment(PostModel post) async {
     if (!mounted) return;
-
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Row(children: const [
         SizedBox(width: 18, height: 18,
@@ -629,22 +583,18 @@ class _HomeScreenState extends State<HomeScreen>
       backgroundColor: AppColors.primary,
       duration: const Duration(seconds: 120),
     ));
-
     try {
       final res = await api.chat(
         message:
             'A RiseUp community member posted: "${post.content}"\n\n'
             'Give a short (2-3 sentence) actionable wealth-building insight '
             'or advice directly related to this post. Be specific and helpful.',
-        mode: 'mentor', // valid mode in ai_agent.py
+        mode: 'mentor',
       );
-
       final aiText = (res['content'] as String?)?.trim() ?? '';
       if (aiText.isEmpty) throw const ApiException('AI returned an empty response');
-
       await api.addComment(post.id, 'RiseUp AI: $aiText', isAI: true, isPinned: true);
       if (mounted) setState(() => post.comments++);
-
       ScaffoldMessenger.of(context).hideCurrentSnackBar();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -652,15 +602,13 @@ class _HomeScreenState extends State<HomeScreen>
         backgroundColor: AppColors.success,
         duration: const Duration(seconds: 3),
         action: SnackBarAction(
-          label: 'View',
-          textColor: Colors.white,
+          label: 'View', textColor: Colors.white,
           onPressed: () => context.push(
               '/comments/${post.id}'
               '?content=${Uri.encodeComponent(post.content)}'
               '&author=${Uri.encodeComponent(post.name)}'),
         ),
       ));
-
     } on ApiException catch (e) {
       ScaffoldMessenger.of(context).hideCurrentSnackBar();
       if (!mounted) return;
@@ -668,11 +616,8 @@ class _HomeScreenState extends State<HomeScreen>
           ? 'AI rate limit reached — please wait a moment and try again.'
           : (e.statusCode == 503 || e.statusCode == 500)
               ? 'AI service temporarily unavailable. Try again shortly.'
-              : e.message.isNotEmpty
-                  ? e.message
-                  : 'AI request failed. Please try again.';
+              : e.message.isNotEmpty ? e.message : 'AI request failed. Please try again.';
       _snack(msg, AppColors.error, duration: const Duration(seconds: 4));
-
     } catch (e) {
       ScaffoldMessenger.of(context).hideCurrentSnackBar();
       if (!mounted) return;
@@ -681,7 +626,6 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  // ── Dialogs ───────────────────────────────────────────────────────────────
   Future<bool> _showAdPrompt() async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return await showDialog<bool>(
@@ -738,7 +682,6 @@ class _HomeScreenState extends State<HomeScreen>
         ));
   }
 
-  // ── Status viewer ─────────────────────────────────────────────────────────
   void _viewStatus(Map<String, dynamic> user) {
     if ((user['items'] as List? ?? []).isEmpty) return;
     showModalBottomSheet(
@@ -749,7 +692,6 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  // ── Snack helper ──────────────────────────────────────────────────────────
   void _snack(String msg, Color bg, {Duration duration = const Duration(seconds: 2)}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -775,8 +717,7 @@ class _HomeScreenState extends State<HomeScreen>
       drawer: _AppDrawer(profile: _profile, isDark: isDark),
       appBar: AppBar(
         backgroundColor: cardColor,
-        elevation: 0,
-        surfaceTintColor: Colors.transparent,
+        elevation: 0, surfaceTintColor: Colors.transparent,
         titleSpacing: 0,
         leading: IconButton(
           icon: Icon(Icons.menu_rounded, color: iconColor, size: 24),
@@ -859,7 +800,6 @@ class _HomeScreenState extends State<HomeScreen>
           ]),
         ),
 
-        // ── Feed — each tab uses AutomaticKeepAliveClientMixin ────────────
         Expanded(
           child: TabBarView(
             controller: _tabCtrl,
@@ -925,7 +865,7 @@ class _HomeScreenState extends State<HomeScreen>
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Feed Tab View — AutomaticKeepAliveClientMixin keeps scroll + state alive
+// Feed Tab View
 // ══════════════════════════════════════════════════════════════════════════════
 class _FeedTabView extends StatefulWidget {
   final String tab;
@@ -981,25 +921,16 @@ class _FeedTabViewState extends State<_FeedTabView>
   bool get wantKeepAlive => true;
 
   @override
-  void initState() {
-    super.initState();
-    _scrollCtrl.addListener(_onScroll);
-  }
+  void initState() { super.initState(); _scrollCtrl.addListener(_onScroll); }
 
   @override
-  void dispose() {
-    _scrollCtrl.dispose();
-    super.dispose();
-  }
+  void dispose() { _scrollCtrl.dispose(); super.dispose(); }
 
   void _onScroll() {
     if (!_scrollCtrl.hasClients) return;
     final pos = _scrollCtrl.position;
-    // Trigger prefetch at 70 % of the list
     if (pos.pixels >= pos.maxScrollExtent * 0.7 &&
-        !_prefetching &&
-        !widget.isLoading &&
-        widget.hasMore) {
+        !_prefetching && !widget.isLoading && widget.hasMore) {
       _prefetching = true;
       widget.onLoadMore();
       Future.delayed(const Duration(seconds: 3), () { if (mounted) _prefetching = false; });
@@ -1008,14 +939,12 @@ class _FeedTabViewState extends State<_FeedTabView>
 
   @override
   Widget build(BuildContext context) {
-    super.build(context); // REQUIRED for AutomaticKeepAliveClientMixin
+    super.build(context);
+    final posts    = widget.posts;
+    final isDark   = widget.isDark;
+    final subColor = widget.subColor;
+    final border   = widget.borderColor;
 
-    final posts     = widget.posts;
-    final isDark    = widget.isDark;
-    final subColor  = widget.subColor;
-    final border    = widget.borderColor;
-
-    // Show skeleton on first load (no cache yet)
     if (widget.isLoading && posts.isEmpty) {
       return ListView.separated(
         physics: const NeverScrollableScrollPhysics(),
@@ -1038,7 +967,6 @@ class _FeedTabViewState extends State<_FeedTabView>
       ]));
     }
 
-    // Total slot count: posts + ads + bottom loader
     final totalSlots = adManager.feedItemCount(posts.length) + 1;
 
     return RefreshIndicator(
@@ -1046,59 +974,37 @@ class _FeedTabViewState extends State<_FeedTabView>
       color: AppColors.primary,
       child: ListView.separated(
         controller: _scrollCtrl,
-        cacheExtent: 1500, // pre-render 1500 px off-screen
+        cacheExtent: 1500,
         padding: EdgeInsets.zero,
         itemCount: totalSlots,
         separatorBuilder: (_, __) => Divider(height: 8, thickness: 8, color: border),
         itemBuilder: (_, i) {
-          // Bottom loader slot
           if (i == totalSlots - 1) {
-            if (widget.isLoading) {
-              return _PostCardSkeleton(isDark: isDark);
-            }
+            if (widget.isLoading) return _PostCardSkeleton(isDark: isDark);
             if (!widget.hasMore) {
-              return Padding(
-                padding: const EdgeInsets.all(20),
-                child: Center(child: Text("You're all caught up ✓",
-                    style: TextStyle(color: subColor, fontSize: 13))),
-              );
+              return Padding(padding: const EdgeInsets.all(20),
+                  child: Center(child: Text("You're all caught up ✓",
+                      style: TextStyle(color: subColor, fontSize: 13))));
             }
             return const SizedBox(height: 40);
           }
-
-          // Ad slot
           if (adManager.shouldShowFeedAd(i)) {
-            return FeedAdCard(
-              isDark: isDark, cardColor: widget.cardColor,
-              borderColor: border, textColor: widget.textColor, subColor: subColor,
-            );
+            return FeedAdCard(isDark: isDark, cardColor: widget.cardColor,
+                borderColor: border, textColor: widget.textColor, subColor: subColor);
           }
-
           final postIndex = adManager.realPostIndex(i);
           if (postIndex >= posts.length) return const SizedBox.shrink();
-
           final post      = posts[postIndex];
           final following = widget.followState[post.userId] ?? post.isFollowing;
-
           return PostCard(
-            post: post,
-            isDark: isDark,
-            cardColor: widget.cardColor,
-            borderColor: border,
-            textColor: widget.textColor,
-            subColor: subColor,
-            onAskAI:       widget.onAskAI,
-            onPrivateChat: widget.onPrivateChat,
-            onLike:        widget.onLike,
-            onSave:        widget.onSave,
-            onComment:     widget.onComment,
-            onShare:       widget.onShare,
-            onFollow:      widget.onFollow,
-            onPostDeleted: widget.onPostDeleted,
-            isPremium:     widget.isPremium,
-            aiRemaining:   widget.aiRemaining,
-            needsAd:       widget.needsAd,
-            isFollowing:   following,
+            post: post, isDark: isDark, cardColor: widget.cardColor,
+            borderColor: border, textColor: widget.textColor, subColor: subColor,
+            onAskAI: widget.onAskAI, onPrivateChat: widget.onPrivateChat,
+            onLike: widget.onLike, onSave: widget.onSave,
+            onComment: widget.onComment, onShare: widget.onShare,
+            onFollow: widget.onFollow, onPostDeleted: widget.onPostDeleted,
+            isPremium: widget.isPremium, aiRemaining: widget.aiRemaining,
+            needsAd: widget.needsAd, isFollowing: following,
             currentUserId: widget.currentUserId,
           ).animate().fadeIn(
             delay: Duration(milliseconds: (postIndex % 5) * 20),
@@ -1171,8 +1077,7 @@ class _PostCardState extends State<PostCard> {
             left: 20, right: 20, top: 16),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Container(width: 36, height: 4, margin: const EdgeInsets.only(bottom: 16),
-              decoration: BoxDecoration(color: Colors.grey.withOpacity(0.3),
-                  borderRadius: BorderRadius.circular(2))),
+              decoration: BoxDecoration(color: Colors.grey.withOpacity(0.3), borderRadius: BorderRadius.circular(2))),
           Text('Edit Post', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700,
               color: widget.isDark ? Colors.white : Colors.black87)),
           const SizedBox(height: 16),
@@ -1180,8 +1085,7 @@ class _PostCardState extends State<PostCard> {
             controller: ctrl, maxLines: 5,
             style: TextStyle(color: widget.isDark ? Colors.white : Colors.black87),
             decoration: InputDecoration(
-              hintText: "What's on your mind?",
-              hintStyle: TextStyle(color: widget.subColor),
+              hintText: "What's on your mind?", hintStyle: TextStyle(color: widget.subColor),
               filled: true,
               fillColor: widget.isDark ? AppColors.bgSurface : Colors.grey.shade100,
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
@@ -1225,10 +1129,7 @@ class _PostCardState extends State<PostCard> {
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
           onPressed: () async {
             Navigator.pop(context);
-            try {
-              await api.deletePost(widget.post.id);
-              widget.onPostDeleted(widget.post.id);
-            } catch (_) {}
+            try { await api.deletePost(widget.post.id); widget.onPostDeleted(widget.post.id); } catch (_) {}
           },
           child: const Text('Delete', style: TextStyle(color: Colors.white)),
         ),
@@ -1248,8 +1149,7 @@ class _PostCardState extends State<PostCard> {
         if (_isOwnPost) ...[
           ListTile(
             leading: const Icon(Iconsax.edit, color: AppColors.primary),
-            title: Text('Edit post', style: TextStyle(
-                color: widget.isDark ? Colors.white : Colors.black87, fontWeight: FontWeight.w600)),
+            title: Text('Edit post', style: TextStyle(color: widget.isDark ? Colors.white : Colors.black87, fontWeight: FontWeight.w600)),
             onTap: () { Navigator.pop(ctx); _handleEdit(); },
           ),
           ListTile(
@@ -1314,10 +1214,8 @@ class _PostCardState extends State<PostCard> {
                   if (p.isPremiumPost) ...[
                     const SizedBox(width: 4),
                     Container(padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                        decoration: BoxDecoration(color: AppColors.gold.withOpacity(0.2),
-                            borderRadius: BorderRadius.circular(4)),
-                        child: const Text('PRO', style: TextStyle(fontSize: 8, color: AppColors.gold,
-                            fontWeight: FontWeight.w700))),
+                        decoration: BoxDecoration(color: AppColors.gold.withOpacity(0.2), borderRadius: BorderRadius.circular(4)),
+                        child: const Text('PRO', style: TextStyle(fontSize: 8, color: AppColors.gold, fontWeight: FontWeight.w700))),
                   ],
                 ]),
                 Text('${p.username} · ${p.time}',
@@ -1325,7 +1223,6 @@ class _PostCardState extends State<PostCard> {
                     maxLines: 1, overflow: TextOverflow.ellipsis),
               ])),
               const SizedBox(width: 6),
-              // Follow button (only other users)
               if (p.userId.isNotEmpty && !_isOwnPost)
                 GestureDetector(
                   onTap: () => widget.onFollow(p.userId),
@@ -1335,8 +1232,7 @@ class _PostCardState extends State<PostCard> {
                     decoration: BoxDecoration(
                       color: widget.isFollowing ? widget.subColor.withOpacity(0.12) : AppColors.primary.withOpacity(0.1),
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                          color: widget.isFollowing ? widget.subColor.withOpacity(0.3) : AppColors.primary.withOpacity(0.4)),
+                      border: Border.all(color: widget.isFollowing ? widget.subColor.withOpacity(0.3) : AppColors.primary.withOpacity(0.4)),
                     ),
                     child: Row(mainAxisSize: MainAxisSize.min, children: [
                       if (widget.isFollowing) ...[
@@ -1350,13 +1246,11 @@ class _PostCardState extends State<PostCard> {
                   ),
                 ),
               const SizedBox(width: 4),
-              // Tag
               Flexible(child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(20)),
-                child: Text(p.tag, style: const TextStyle(fontSize: 10, color: AppColors.primary,
-                    fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
+                decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.1), borderRadius: BorderRadius.circular(20)),
+                child: Text(p.tag, style: const TextStyle(fontSize: 10, color: AppColors.primary, fontWeight: FontWeight.w600),
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
               )),
               const SizedBox(width: 4),
               GestureDetector(onTap: _showOptions,
@@ -1365,18 +1259,15 @@ class _PostCardState extends State<PostCard> {
 
             const SizedBox(height: 12),
 
-            // ── Content ────────────────────────────────────────────────────
             _HashtagText(text: p.content,
                 textColor: widget.isDark ? const Color(0xFFE8E8F0) : Colors.black87),
 
-            // ── Media ──────────────────────────────────────────────────────
             if (p.mediaUrl != null && p.mediaUrl!.isNotEmpty) ...[
               const SizedBox(height: 10),
               _PostMedia(url: p.mediaUrl!, mediaType: p.mediaType ?? 'image',
                   isDark: widget.isDark, screenWidth: sw),
             ],
 
-            // ── Link card ──────────────────────────────────────────────────
             if (p.linkUrl != null && p.linkUrl!.isNotEmpty) ...[
               const SizedBox(height: 10),
               _PostLinkCard(url: p.linkUrl!, title: p.linkTitle,
@@ -1385,7 +1276,6 @@ class _PostCardState extends State<PostCard> {
 
             const SizedBox(height: 14),
 
-            // ── Actions ────────────────────────────────────────────────────
             Row(children: [
               _ActionBtn(
                 icon:  p.isLiked ? Icons.favorite_rounded : Icons.favorite_border_rounded,
@@ -1410,7 +1300,6 @@ class _PostCardState extends State<PostCard> {
           ]),
         ),
 
-        // ── AI buttons ─────────────────────────────────────────────────────
         Container(
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
           decoration: BoxDecoration(
@@ -1457,8 +1346,7 @@ class _PostCardState extends State<PostCard> {
                 child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
                   Icon(Iconsax.lock_1, color: AppColors.accent, size: 14),
                   SizedBox(width: 6),
-                  Text('Chat Privately', style: TextStyle(fontSize: 12, color: AppColors.accent,
-                      fontWeight: FontWeight.w600)),
+                  Text('Chat Privately', style: TextStyle(fontSize: 12, color: AppColors.accent, fontWeight: FontWeight.w600)),
                 ]),
               ),
             )),
@@ -1470,7 +1358,7 @@ class _PostCardState extends State<PostCard> {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Cached Avatar Helper
+// Cached Avatar
 // ══════════════════════════════════════════════════════════════════════════════
 class _CachedAvatar extends StatelessWidget {
   final String url, fallback;
@@ -1478,23 +1366,18 @@ class _CachedAvatar extends StatelessWidget {
   const _CachedAvatar({required this.url, required this.fallback, required this.size});
 
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: size, height: size,
-      decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.12), shape: BoxShape.circle),
-      child: ClipOval(
-        child: url.isNotEmpty
-            ? CachedNetworkImage(
-                imageUrl: url, fit: BoxFit.cover, width: size, height: size,
-                placeholder: (_, __) => Container(color: AppColors.primary.withOpacity(0.1),
-                    child: Center(child: Text(fallback, style: const TextStyle(fontSize: 20)))),
-                errorWidget: (_, __, ___) => Center(child: Text(fallback,
-                    style: const TextStyle(fontSize: 20))),
-              )
-            : Center(child: Text(fallback, style: const TextStyle(fontSize: 20))),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Container(
+    width: size, height: size,
+    decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.12), shape: BoxShape.circle),
+    child: ClipOval(
+      child: url.isNotEmpty
+          ? CachedNetworkImage(imageUrl: url, fit: BoxFit.cover, width: size, height: size,
+              placeholder: (_, __) => Container(color: AppColors.primary.withOpacity(0.1),
+                  child: Center(child: Text(fallback, style: const TextStyle(fontSize: 20)))),
+              errorWidget: (_, __, ___) => Center(child: Text(fallback, style: const TextStyle(fontSize: 20))))
+          : Center(child: Text(fallback, style: const TextStyle(fontSize: 20))),
+    ),
+  );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1520,7 +1403,6 @@ class _HashtagTextState extends State<_HashtagText> {
     final spans = <InlineSpan>[];
     final regex = RegExp(r'(#\w+)');
     int lastEnd = 0;
-
     for (final m in regex.allMatches(widget.text)) {
       if (m.start > lastEnd) {
         spans.add(TextSpan(text: widget.text.substring(lastEnd, m.start),
@@ -1547,13 +1429,14 @@ class _HashtagTextState extends State<_HashtagText> {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Post Media — correct aspect ratios for all screen sizes
+// Post Media
 // ══════════════════════════════════════════════════════════════════════════════
 class _PostMedia extends StatelessWidget {
   final String url, mediaType;
   final bool   isDark;
   final double screenWidth;
-  const _PostMedia({required this.url, required this.mediaType, required this.isDark, required this.screenWidth});
+  const _PostMedia({required this.url, required this.mediaType,
+      required this.isDark, required this.screenWidth});
 
   @override
   Widget build(BuildContext context) => ClipRRect(
@@ -1564,108 +1447,103 @@ class _PostMedia extends StatelessWidget {
   );
 }
 
-// Image: 4:3 AspectRatio with CachedNetworkImage + BoxFit.cover
-// Works correctly on every screen size — no clipping, no overflow.
 class _ImageThumbnail extends StatelessWidget {
   final String url;
   final bool   isDark;
   const _ImageThumbnail({required this.url, required this.isDark});
 
   @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: () => Navigator.push(context,
-          MaterialPageRoute(fullscreenDialog: true, builder: (_) => _ImageViewerPage(url: url))),
-      child: AspectRatio(
-        aspectRatio: 4 / 3, // clean, predictable ratio for all screens
-        child: Hero(
-          tag: 'img_$url',
-          child: CachedNetworkImage(
-            imageUrl: url, fit: BoxFit.cover, width: double.infinity,
-            placeholder: (_, __) => Container(
-              color: isDark ? Colors.grey.shade900 : Colors.grey.shade200,
-              child: const Center(child: _Shimmer(height: double.infinity)),
-            ),
-            errorWidget: (_, __, ___) => Container(
-              color: isDark ? Colors.grey.shade900 : Colors.grey.shade200,
-              child: const Center(child: Icon(Icons.broken_image_rounded, color: Colors.white54, size: 36)),
-            ),
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: () => Navigator.push(context,
+        MaterialPageRoute(fullscreenDialog: true, builder: (_) => _ImageViewerPage(url: url))),
+    child: AspectRatio(
+      aspectRatio: 4 / 3,
+      child: Hero(
+        tag: 'img_$url',
+        child: CachedNetworkImage(
+          imageUrl: url, fit: BoxFit.cover, width: double.infinity,
+          placeholder: (_, __) => Container(
+            color: isDark ? Colors.grey.shade900 : Colors.grey.shade200,
+            child: const Center(child: _Shimmer(height: double.infinity)),
+          ),
+          errorWidget: (_, __, ___) => Container(
+            color: isDark ? Colors.grey.shade900 : Colors.grey.shade200,
+            child: const Center(child: Icon(Icons.broken_image_rounded, color: Colors.white54, size: 36)),
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
 }
 
-// Video: 16:9 placeholder → transitions to real ratio when controller loads.
-class _VideoThumbnail extends StatefulWidget {
+// ── v5.1 FIX: Removed VideoPlayerController-based thumbnail.
+// Creating a VideoPlayerController just to grab a first frame causes Android
+// SurfaceTexture YUV artifacts (green/yellow lines). The decoder hasn't
+// finished color-space conversion before the VideoPlayer widget renders.
+// Replaced with a clean static placeholder — full video plays in
+// _FullScreenVideoPage on tap, which is where playback belongs anyway.
+class _VideoThumbnail extends StatelessWidget {
   final String url;
   final bool   isDark;
   const _VideoThumbnail({required this.url, required this.isDark});
-  @override
-  State<_VideoThumbnail> createState() => _VideoThumbnailState();
-}
-
-class _VideoThumbnailState extends State<_VideoThumbnail> {
-  VideoPlayerController? _ctrl;
-  bool _thumbReady = false;
-
-  @override
-  void initState() { super.initState(); _initThumb(); }
-
-  Future<void> _initThumb() async {
-    try {
-      final ctrl = VideoPlayerController.networkUrl(Uri.parse(widget.url));
-      await ctrl.initialize();
-      await ctrl.seekTo(Duration.zero);
-      await ctrl.pause();
-      if (!mounted) { ctrl.dispose(); return; }
-      setState(() { _ctrl = ctrl; _thumbReady = true; });
-    } catch (_) {} // Silently fall back to placeholder
-  }
-
-  @override
-  void dispose() { _ctrl?.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
-    final ratio = (_thumbReady && _ctrl != null && _ctrl!.value.aspectRatio > 0)
-        ? _ctrl!.value.aspectRatio.clamp(0.5, 2.0)
-        : 16 / 9;
-
     return GestureDetector(
       onTap: () => Navigator.push(context,
-          MaterialPageRoute(fullscreenDialog: true, builder: (_) => _FullScreenVideoPage(url: widget.url))),
+          MaterialPageRoute(fullscreenDialog: true, builder: (_) => _FullScreenVideoPage(url: url))),
       child: AspectRatio(
-        aspectRatio: ratio,
-        child: Stack(children: [
-          // First-frame or placeholder
-          if (_thumbReady && _ctrl != null)
-            Positioned.fill(child: VideoPlayer(_ctrl!))
-          else
+        aspectRatio: 16 / 9,
+        child: Container(
+          color: isDark ? Colors.grey.shade900 : Colors.grey.shade200,
+          child: Stack(alignment: Alignment.center, children: [
+            // Clean placeholder gradient
             Positioned.fill(child: Container(
-              color: widget.isDark ? Colors.grey.shade900 : Colors.grey.shade200,
-              child: const Center(child: SizedBox(width: 28, height: 28,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white38))),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft, end: Alignment.bottomRight,
+                  colors: isDark
+                      ? [const Color(0xFF1A1A2E), const Color(0xFF16213E)]
+                      : [Colors.grey.shade200, Colors.grey.shade300],
+                ),
+              ),
             )),
-          // Play overlay
-          Positioned.fill(child: Center(child: Container(
-            width: 56, height: 56,
-            decoration: BoxDecoration(color: Colors.black.withOpacity(0.6), shape: BoxShape.circle,
-                border: Border.all(color: Colors.white.withOpacity(0.6), width: 2)),
-            child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 36),
-          ))),
-          // Tap to play label
-          Positioned(bottom: 10, right: 10, child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), borderRadius: BorderRadius.circular(8)),
-            child: const Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(Icons.play_circle_outline_rounded, color: Colors.white, size: 12),
-              SizedBox(width: 4),
-              Text('Tap to play', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w500)),
-            ]),
-          )),
-        ]),
+            // Play button
+            Container(
+              width: 56, height: 56,
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.6),
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white.withOpacity(0.6), width: 2),
+              ),
+              child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 36),
+            ),
+            // "Tap to play" label
+            Positioned(bottom: 10, right: 10, child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.7),
+                  borderRadius: BorderRadius.circular(8)),
+              child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.play_circle_outline_rounded, color: Colors.white, size: 12),
+                SizedBox(width: 4),
+                Text('Tap to play', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w500)),
+              ]),
+            )),
+            // Video icon top-left
+            Positioned(top: 10, left: 10, child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+              decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.5),
+                  borderRadius: BorderRadius.circular(6)),
+              child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.videocam_rounded, color: Colors.white, size: 12),
+                SizedBox(width: 3),
+                Text('Video', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600)),
+              ]),
+            )),
+          ]),
+        ),
       ),
     );
   }
@@ -1673,6 +1551,10 @@ class _VideoThumbnailState extends State<_VideoThumbnail> {
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Full-Screen Video (Chewie)
+// v5.1 FIX: removed explicit aspectRatio from ChewieController.
+// Passing vp.value.aspectRatio for portrait (9:16) videos caused Chewie to
+// render into a wrongly-sized surface → same SurfaceTexture artifacts.
+// Chewie auto-detects aspect ratio correctly when not forced.
 // ══════════════════════════════════════════════════════════════════════════════
 class _FullScreenVideoPage extends StatefulWidget {
   final String url;
@@ -1694,19 +1576,28 @@ class _FullScreenVideoPageState extends State<_FullScreenVideoPage> {
       final vp = VideoPlayerController.networkUrl(Uri.parse(widget.url));
       await vp.initialize();
       final ch = ChewieController(
-        videoPlayerController: vp, autoPlay: true, looping: false,
-        allowFullScreen: true, allowMuting: true, showControls: true,
-        aspectRatio: vp.value.aspectRatio,
+        videoPlayerController: vp,
+        autoPlay:        true,
+        looping:         false,
+        allowFullScreen: true,
+        allowMuting:     true,
+        showControls:    true,
+        // v5.1: aspectRatio intentionally omitted — let Chewie auto-detect.
+        // Forcing vp.value.aspectRatio caused portrait video artifacts.
         materialProgressColors: ChewieProgressColors(
-          playedColor: AppColors.primary, handleColor: AppColors.primary,
+          playedColor:    AppColors.primary,
+          handleColor:    AppColors.primary,
           backgroundColor: Colors.grey.shade800,
-          bufferedColor: AppColors.primary.withOpacity(0.3),
+          bufferedColor:  AppColors.primary.withOpacity(0.3),
         ),
-        placeholder: const Center(child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2)),
+        placeholder: const Center(child: CircularProgressIndicator(
+            color: AppColors.primary, strokeWidth: 2)),
       );
       if (!mounted) { vp.dispose(); ch.dispose(); return; }
       setState(() { _vp = vp; _chewie = ch; _ready = true; });
-    } catch (_) { if (mounted) setState(() => _err = true); }
+    } catch (_) {
+      if (mounted) setState(() => _err = true);
+    }
   }
 
   @override
@@ -1715,9 +1606,11 @@ class _FullScreenVideoPageState extends State<_FullScreenVideoPage> {
   @override
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: Colors.black,
-    appBar: AppBar(backgroundColor: Colors.black, elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white),
-        title: const Text('Video', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600))),
+    appBar: AppBar(
+      backgroundColor: Colors.black, elevation: 0,
+      iconTheme: const IconThemeData(color: Colors.white),
+      title: const Text('Video', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+    ),
     body: Center(child: _err
         ? const Column(mainAxisAlignment: MainAxisAlignment.center, children: [
             Icon(Icons.error_outline_rounded, color: Colors.white54, size: 64),
@@ -1731,7 +1624,7 @@ class _FullScreenVideoPageState extends State<_FullScreenVideoPage> {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Image Viewer (photo_view)
+// Image Viewer
 // ══════════════════════════════════════════════════════════════════════════════
 class _ImageViewerPage extends StatelessWidget {
   final String url;
@@ -1765,7 +1658,7 @@ class _ImageViewerPage extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Post Link Card — fixed 68 px height, direct launchUrl (no canLaunchUrl gate)
+// Post Link Card
 // ══════════════════════════════════════════════════════════════════════════════
 class _PostLinkCard extends StatelessWidget {
   final String url;
@@ -1818,10 +1711,7 @@ class _PostLinkCard extends StatelessWidget {
 // Action Button
 // ══════════════════════════════════════════════════════════════════════════════
 class _ActionBtn extends StatelessWidget {
-  final IconData icon;
-  final String   label;
-  final Color    color;
-  final VoidCallback onTap;
+  final IconData icon; final String label; final Color color; final VoidCallback onTap;
   const _ActionBtn({required this.icon, required this.label, required this.color, required this.onTap});
 
   @override
@@ -1880,8 +1770,7 @@ class _AppDrawer extends StatelessWidget {
                 if (isPremium) ...[
                   const SizedBox(width: 6),
                   Container(padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                      decoration: BoxDecoration(color: AppColors.gold.withOpacity(0.15),
-                          borderRadius: BorderRadius.circular(8)),
+                      decoration: BoxDecoration(color: AppColors.gold.withOpacity(0.15), borderRadius: BorderRadius.circular(8)),
                       child: const Text('PRO', style: TextStyle(fontSize: 10, color: AppColors.gold, fontWeight: FontWeight.w700))),
                 ],
               ]),
@@ -1913,9 +1802,9 @@ class _AppDrawer extends StatelessWidget {
           _DItem(Iconsax.people,                     'Groups',        'Wealth-building groups',      isDark, onTap: () { Navigator.pop(context); context.go('/groups'); }),
           Divider(color: border, height: 1),
           _DSection('FINANCE', sub),
-          _DItem(Iconsax.money_recive, 'Earnings',  'Income tracker',    isDark, onTap: () { Navigator.pop(context); context.go('/earnings'); }),
-          _DItem(Iconsax.chart_2,      'Analytics', 'Growth stats',       isDark, onTap: () { Navigator.pop(context); context.go('/analytics'); }),
-          _DItem(Iconsax.wallet_minus, 'Expenses',  'Budget tracking',    isDark, onTap: () { Navigator.pop(context); context.go('/expenses'); }),
+          _DItem(Iconsax.money_recive, 'Earnings',  'Income tracker',     isDark, onTap: () { Navigator.pop(context); context.go('/earnings'); }),
+          _DItem(Iconsax.chart_2,      'Analytics', 'Growth stats',        isDark, onTap: () { Navigator.pop(context); context.go('/analytics'); }),
+          _DItem(Iconsax.wallet_minus, 'Expenses',  'Budget tracking',     isDark, onTap: () { Navigator.pop(context); context.go('/expenses'); }),
           _DItem(Iconsax.flag,         'Goals',     'Set & track targets', isDark, onTap: () { Navigator.pop(context); context.go('/goals'); }),
           Divider(color: border, height: 1),
           _DSection('ACCOUNT', sub),
@@ -2077,7 +1966,7 @@ class _StoryItem extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Status View Sheet — full-bleed 9:16, correct nav strips, link redirect fixed
+// Status View Sheet
 // ══════════════════════════════════════════════════════════════════════════════
 class _StatusViewSheet extends StatefulWidget {
   final Map<String, dynamic> user;
@@ -2120,7 +2009,6 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
     if (items.isEmpty) return const SizedBox.shrink();
 
     final sz    = MediaQuery.of(context).size;
-    // Full-bleed 9:16 panel — respects every screen size
     final h     = sz.height * 0.92;
     final sw    = sz.width;
 
@@ -2172,7 +2060,7 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
             ),
           ))))),
 
-        // 3 — Caption overlay (image/video with text)
+        // 3 — Caption overlay
         if (media != null && text.isNotEmpty)
           Positioned(bottom: link != null ? 150 : 90, left: 0, right: 0,
             child: Container(color: Colors.black.withOpacity(0.5),
@@ -2180,9 +2068,7 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
               child: Text(text, textAlign: TextAlign.center,
                   style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500, height: 1.5)))),
 
-        // 4 — Navigation strips (always present, all media types)
-        //     Left 30% → prev, Right 30% → next
-        //     Listed before header & link-card so those stay on top
+        // 4 — Navigation strips
         Positioned(top: 0, bottom: 0, left: 0, width: sw * 0.3,
           child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: _prev,
               child: const ColoredBox(color: Colors.transparent))),
@@ -2214,7 +2100,7 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
               ),
             )),
 
-        // 6 — Header (on top of everything)
+        // 6 — Header
         Positioned(top: 24, left: 16, right: 16,
           child: Row(children: [
             _CachedAvatar(url: avatar, fallback: name.isNotEmpty ? name[0].toUpperCase() : '?', size: 36),
@@ -2233,7 +2119,11 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
   }
 }
 
-// ── Inline status video player ────────────────────────────────────────────────
+// ── Inline status video player
+// v5.1 FIX: deferred ctrl.play() to addPostFrameCallback so the SurfaceTexture
+// is fully registered with the Flutter texture registry before playback starts.
+// Calling play() immediately after initialize() caused the initial frame to
+// render with raw YUV data → green/yellow artifact lines on Android.
 class _StatusVideoPlayer extends StatefulWidget {
   final String url;
   const _StatusVideoPlayer({super.key, required this.url});
@@ -2253,10 +2143,18 @@ class _StatusVideoPlayerState extends State<_StatusVideoPlayer> {
       final ctrl = VideoPlayerController.networkUrl(Uri.parse(widget.url));
       await ctrl.initialize();
       await ctrl.setLooping(true);
-      await ctrl.play();
       if (!mounted) { ctrl.dispose(); return; }
       setState(() { _ctrl = ctrl; _ready = true; });
-    } catch (_) { if (mounted) setState(() => _err = true); }
+      // v5.1 FIX: defer play() until after the VideoPlayer widget has been
+      // rendered and its SurfaceTexture is fully bound. This prevents the
+      // green/yellow artifact that appears when play() is called before the
+      // texture registry completes the binding on Android.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _ctrl != null) _ctrl!.play();
+      });
+    } catch (_) {
+      if (mounted) setState(() => _err = true);
+    }
   }
 
   @override
@@ -2268,10 +2166,8 @@ class _StatusVideoPlayerState extends State<_StatusVideoPlayer> {
     if (!_ready || _ctrl == null) return const Center(child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2));
 
     return GestureDetector(
-      // Centre 40 % tap → play/pause; side 30 % handled by nav strips above
       onTap: () { _ctrl!.value.isPlaying ? _ctrl!.pause() : _ctrl!.play(); setState(() {}); },
       child: Stack(alignment: Alignment.center, children: [
-        // Full-bleed, correct aspect ratio
         SizedBox.expand(child: FittedBox(fit: BoxFit.cover,
             child: SizedBox(width: _ctrl!.value.size.width, height: _ctrl!.value.size.height,
                 child: VideoPlayer(_ctrl!)))),
