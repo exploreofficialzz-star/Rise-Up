@@ -1,18 +1,18 @@
 // frontend/lib/screens/messages/conversation_screen.dart
-// Production v8 — fully working, all features wired
+// Production v9 — Full fix
 //
-// Architecture:
-//  • AI-only mode  (isAI=true / userId='ai'):
-//      - Sends via api.chat(), which returns {content, conversation_id}
-//      - Saves conversation_id to SharedPreferences so history survives restarts
-//      - Loads history on next open via api.getDMMessages(_aiConvId)
-//  • Peer-DM mode  (userId = conversation UUID):
-//      - Sends via api.sendDMMessage(convId, text)
-//      - History via api.getDMMessages(convId)
-//      - Polls every 4 s for new peer messages
-//      - @ai prefix routes to api.sendAIMessageInDM(convId, text)
-//  • Quota: SharedPreferences-first, date-based daily reset,
-//           MAX(local, remote) reconciliation — shared key with home_screen.
+// Root bugs fixed vs v8:
+//  • AI chat history now loads from the messages system (not the old /ai/chat
+//    system) — history actually persists across restarts.
+//  • AI memory fixed — every send goes through sendAIMessageInDM which passes
+//    the last 20 DB messages as context to the AI model.
+//  • Duplicate DM messages fixed — optimistic message is replaced with the
+//    real DB row (using its real UUID) so the poller never re-adds it.
+//  • Polling is unified for both AI-only and peer-DM modes.
+//  • _lastPollTime is advanced after every send so the poller doesn't
+//    re-fetch messages we already displayed locally.
+//  • getOrCreateAIConversation() is called on every open to guarantee
+//    _aiConvId always points to a valid messages-system conversation.
 
 import 'dart:async';
 import 'dart:convert';
@@ -42,8 +42,8 @@ const Duration _kWindowDur = Duration(hours: 4);
 /// count against the same daily budget.
 const String _kQuotaPrefsKey = 'riseup_ai_quota_v1';
 
-/// Persisted AI conversation ID so history survives restarts.
-const String _kAiConvIdKey = 'riseup_ai_conv_id_v1';
+/// Persisted AI conversation ID (messages-system UUID).
+const String _kAiConvIdKey = 'riseup_ai_conv_id_v2'; // v2 = messages-system
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal message model
@@ -116,10 +116,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
   bool _dmSending = false;
   bool _aiJoined = false;
 
-  /// Conversation UUID used when widget is in AI-only mode.
+  /// Conversation UUID in the messages system.
+  /// • AI-only mode  → obtained from getOrCreateAIConversation()
+  /// • Peer-DM mode  → widget.userId
   String? _aiConvId;
 
-  /// Timestamp of the most recent peer message (for incremental polling).
+  /// ISO timestamp of the newest message we've seen — used for incremental polls.
   String? _lastPollTime;
 
   Timer? _typingTimer;
@@ -136,6 +138,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   bool get _isAIMode => widget.isAI || widget.userId == 'ai';
 
+  /// The active conversation ID to pass to poll / send helpers.
+  String? get _activeConvId => _isAIMode ? _aiConvId : widget.userId;
+
   // ─────────────────────────────────────────────────────────────────────────
   // Lifecycle
   // ─────────────────────────────────────────────────────────────────────────
@@ -148,7 +153,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Future<void> _bootstrap() async {
     await _loadQuota();
     await _loadHistory();
-    if (!_isAIMode) _startPolling();
+    // Poll for both AI and peer-DM modes — same code path now.
+    _startPolling();
   }
 
   @override
@@ -181,13 +187,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
             });
           }
         }
-        // Different day → defaults (free_used=0) are the correct reset.
       }
     } catch (_) {}
 
     // Step 2: sync remote for premium status + server-side window.
-    // MAX(local, remote) for free_used — prevents server zero overwriting
-    // locally-tracked usage.
     try {
       final remote = await api.getAIQuota();
       final remoteUsed = (remote['free_used'] as int?) ?? 0;
@@ -207,9 +210,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         });
         await _saveQuota();
       }
-    } catch (_) {
-      // Local quota is still valid.
-    }
+    } catch (_) {}
   }
 
   Future<void> _saveQuota() async {
@@ -268,7 +269,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         await _loadAIHistory();
       } else {
         await _loadDMHistory();
-        _checkAIJoined(); // fire-and-forget
+        _checkAIJoined();
       }
     } catch (_) {
       // Non-fatal — show empty / greeting state.
@@ -293,53 +294,79 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
   }
 
+  /// FIX: Always use the messages system for AI chat.
+  /// 1. Call getOrCreateAIConversation() to get/create the correct
+  ///    messages-system conversation UUID.
+  /// 2. Load history via getDMMessages() — same as peer DMs.
+  /// 3. AI context is naturally in the DB; backend reads last 20 rows.
   Future<void> _loadAIHistory() async {
-    // Restore previously used AI conversation ID.
     final prefs = await SharedPreferences.getInstance();
-    _aiConvId = prefs.getString(_kAiConvIdKey);
 
-    if (_aiConvId != null) {
-      try {
-        final msgs = await api.getDMMessages(_aiConvId!);
-        if (mounted && msgs.isNotEmpty) {
-          setState(() {
-            for (final m in msgs) {
-              final senderType = m['sender_type']?.toString() ?? '';
-              final isAI = senderType == 'ai' || senderType == 'system';
-              _msgs.add(_Msg(
-                id: m['id']?.toString(),
-                content: m['content']?.toString() ?? '',
-                sender: isAI ? 'RiseUp AI' : 'You',
-                avatar: isAI ? '🤖' : '👤',
-                isMe: !isAI,
-                isAI: isAI,
-                time: DateTime.tryParse(m['created_at']?.toString() ?? ''),
-              ));
-            }
-          });
-          return;
-        }
-      } catch (_) {
-        // Conversation may have been deleted — clear stored ID.
-        _aiConvId = null;
-        await prefs.remove(_kAiConvIdKey);
+    // Always fetch the canonical AI conversation ID from the server.
+    // The endpoint is idempotent — cheap to call on every open.
+    try {
+      final convId = await api.getOrCreateAIConversation();
+      if (convId.isNotEmpty) {
+        _aiConvId = convId;
+        await prefs.setString(_kAiConvIdKey, convId);
       }
+    } catch (_) {
+      // Fallback: use cached ID (works offline or on transient error).
+      _aiConvId ??= prefs.getString(_kAiConvIdKey);
     }
 
-    // No history → default greeting.
-    if (mounted) {
-      setState(() {
-        _msgs.add(_Msg(
-          content:
-              "Hey! 👋 I'm your RiseUp AI mentor. Ask me anything about "
-              "wealth-building, side hustles, investing, or personal growth!",
-          sender: 'RiseUp AI',
-          avatar: '🤖',
-          isMe: false,
-          isAI: true,
-        ));
-      });
+    if (_aiConvId == null || _aiConvId!.isEmpty) {
+      // Can't reach server and no cache — show greeting.
+      _addGreeting();
+      return;
     }
+
+    // Load persisted messages from the messages table.
+    try {
+      final msgs = await api.getDMMessages(_aiConvId!, limit: 50);
+      if (mounted && msgs.isNotEmpty) {
+        setState(() {
+          for (final m in msgs) {
+            final senderType = m['sender_type']?.toString() ?? '';
+            final isAI =
+                senderType == 'ai' || senderType == 'system';
+            _msgs.add(_Msg(
+              id: m['id']?.toString(),
+              content: m['content']?.toString() ?? '',
+              sender: isAI ? 'RiseUp AI' : 'You',
+              avatar: isAI ? '🤖' : '👤',
+              isMe: !isAI,
+              isAI: isAI,
+              time: DateTime.tryParse(
+                  m['created_at']?.toString() ?? ''),
+            ));
+          }
+        });
+        _lastPollTime = msgs.last['created_at']?.toString();
+        return;
+      }
+    } catch (_) {
+      // Network error — fall through to greeting.
+    }
+
+    // No history yet → greeting is already stored in DB by the backend
+    // on conversation creation, but just in case show it locally too.
+    if (_msgs.isEmpty) _addGreeting();
+  }
+
+  void _addGreeting() {
+    if (!mounted) return;
+    setState(() {
+      _msgs.add(_Msg(
+        content:
+            "Hey! 👋 I'm your RiseUp AI mentor. Ask me anything about "
+            "wealth-building, side hustles, investing, or personal growth!",
+        sender: 'RiseUp AI',
+        avatar: '🤖',
+        isMe: false,
+        isAI: true,
+      ));
+    });
   }
 
   Future<void> _loadDMHistory() async {
@@ -351,18 +378,26 @@ class _ConversationScreenState extends State<ConversationScreen> {
     setState(() {
       for (final m in msgs) {
         final senderId = m['sender_id']?.toString() ?? '';
+        final senderType = m['sender_type']?.toString() ?? '';
+        final isAIMsg =
+            senderType == 'ai' || senderType == 'system';
         final isMe = senderId == myId;
         final profile = (m['profiles'] as Map?) ?? {};
         _msgs.add(_Msg(
           id: m['id']?.toString(),
           content: m['content']?.toString() ?? '',
-          sender: isMe
-              ? 'You'
-              : (profile['full_name']?.toString() ?? widget.name),
-          avatar: isMe
-              ? '👤'
-              : (profile['avatar_url']?.toString() ?? widget.avatar),
-          isMe: isMe,
+          sender: isAIMsg
+              ? 'RiseUp AI'
+              : isMe
+                  ? 'You'
+                  : (profile['full_name']?.toString() ?? widget.name),
+          avatar: isAIMsg
+              ? '🤖'
+              : isMe
+                  ? '👤'
+                  : (profile['avatar_url']?.toString() ?? widget.avatar),
+          isMe: isMe && !isAIMsg,
+          isAI: isAIMsg,
           time: DateTime.tryParse(m['created_at']?.toString() ?? ''),
         ));
       }
@@ -383,7 +418,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Polling (peer DMs, every 4 s)
+  // Polling — unified for AI-only and peer-DM modes (every 4 s)
   // ─────────────────────────────────────────────────────────────────────────
   void _startPolling() {
     _pollTimer?.cancel();
@@ -392,40 +427,58 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   Future<void> _poll() async {
-    if (!_historyLoaded || widget.userId.isEmpty) return;
+    if (!_historyLoaded) return;
+    final convId = _activeConvId;
+    if (convId == null || convId.isEmpty) return;
+
     try {
       final newMsgs =
-          await api.getDMMessages(widget.userId, since: _lastPollTime);
+          await api.getDMMessages(convId, since: _lastPollTime);
       if (!mounted || newMsgs.isEmpty) return;
 
       final myId = await api.getUserId() ?? '';
       final existingIds = _msgs.map((m) => m.id).toSet();
 
+      bool added = false;
       setState(() {
         for (final m in newMsgs) {
           final id = m['id']?.toString() ?? '';
           if (id.isEmpty || existingIds.contains(id)) continue;
+
           final senderId = m['sender_id']?.toString() ?? '';
-          final isMe = senderId == myId;
+          final senderType = m['sender_type']?.toString() ?? '';
+          final isAIMsg =
+              senderType == 'ai' || senderType == 'system';
+          final isMe = senderId == myId && !isAIMsg;
           final profile = (m['profiles'] as Map?) ?? {};
+
           _msgs.add(_Msg(
             id: id,
             content: m['content']?.toString() ?? '',
-            sender: isMe
-                ? 'You'
-                : (profile['full_name']?.toString() ?? widget.name),
-            avatar: isMe
-                ? '👤'
-                : (profile['avatar_url']?.toString() ?? widget.avatar),
+            sender: isAIMsg
+                ? 'RiseUp AI'
+                : isMe
+                    ? 'You'
+                    : (profile['full_name']?.toString() ??
+                        widget.name),
+            avatar: isAIMsg
+                ? '🤖'
+                : isMe
+                    ? '👤'
+                    : (profile['avatar_url']?.toString() ??
+                        widget.avatar),
             isMe: isMe,
-            time: DateTime.tryParse(m['created_at']?.toString() ?? ''),
+            isAI: isAIMsg,
+            time: DateTime.tryParse(
+                m['created_at']?.toString() ?? ''),
           ));
           existingIds.add(id);
+          added = true;
         }
       });
 
       _lastPollTime = newMsgs.last['created_at']?.toString();
-      _scrollDown();
+      if (added) _scrollDown();
     } catch (_) {}
   }
 
@@ -439,7 +492,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (_isAIMode) {
       await _trySendAI(text);
     } else if (_aiJoined && text.startsWith('@ai ')) {
-      // DM with AI: send @ai message to AI only (don't echo to peer).
       final aiText = text.substring(4).trim();
       if (aiText.isEmpty) return;
       _textCtrl.clear();
@@ -462,9 +514,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
     await _sendAI(text, adUnlocked: false, viaAIDM: viaAIDM);
   }
 
-  /// Core AI send.
+  /// Core AI send — FIX: always uses sendAIMessageInDM so messages are
+  /// stored in the messages table and the AI receives full DB context.
   ///
-  /// [viaAIDM]         — true when inside a peer DM with AI joined.
+  /// [viaAIDM]          — true when inside a peer DM with AI joined.
   /// [isContextMessage] — true for auto-sent post context (no quota charge).
   Future<void> _sendAI(
     String text, {
@@ -472,10 +525,20 @@ class _ConversationScreenState extends State<ConversationScreen> {
     bool viaAIDM = false,
     bool isContextMessage = false,
   }) async {
+    // Resolve which conversation to use.
+    final convId = viaAIDM ? widget.userId : _aiConvId;
+    if (convId == null || convId.isEmpty) {
+      _addErrorBubble('Connection issue. Please try again! 🔄');
+      return;
+    }
+
     _textCtrl.clear();
 
+    // Add user bubble immediately (optimistic).
+    final optimisticId = 'opt_${DateTime.now().microsecondsSinceEpoch}';
     setState(() {
       _msgs.add(_Msg(
+        id: optimisticId,
         content: text,
         sender: 'You',
         avatar: '👤',
@@ -486,33 +549,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _scrollDown();
 
     try {
-      Map<String, dynamic> res;
-
-      if (viaAIDM && widget.userId.isNotEmpty) {
-        // Route to the DM AI endpoint.
-        res = await api.sendAIMessageInDM(
-          widget.userId,
-          text,
-          adUnlocked: adUnlocked,
-        );
-      } else {
-        // Route to general AI chat endpoint.
-        res = await api.chat(
-          message: text,
-          conversationId: _aiConvId,
-          mode: 'general',
-        );
-        // Persist conversation ID for history on next launch.
-        final returnedId = res['conversation_id']?.toString();
-        if (returnedId != null && returnedId.isNotEmpty) {
-          _aiConvId = returnedId;
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString(_kAiConvIdKey, returnedId);
-        }
-      }
+      final res = await api.sendAIMessageInDM(
+        convId,
+        text,
+        adUnlocked: adUnlocked,
+      );
 
       final aiContent =
           (res['content'] ?? "I'm here to help! 💡").toString();
+
+      // The backend stored both the user message and the AI reply.
+      // Advance poll time so the poller doesn't re-add them.
+      _lastPollTime = DateTime.now().toUtc().toIso8601String();
 
       // Reconcile quota from server response.
       if (res['quota'] != null) {
@@ -526,7 +574,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
               q['is_premium'] ?? _quota['is_premium'];
         });
         await _saveQuota();
-      } else if (!_isPremium && !_inUnlockedWindow && !isContextMessage) {
+      } else if (!_isPremium &&
+          !_inUnlockedWindow &&
+          !isContextMessage) {
         setState(() => _quota['free_used'] = _freeUsed + 1);
         await _saveQuota();
       }
@@ -541,8 +591,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
         isAI: true,
       );
       setState(() {
-        _msgs.add(aiMsg);
         _aiResponding = false;
+        _msgs.add(aiMsg);
       });
       _typeMessage(aiMsg);
     } on ApiException catch (e) {
@@ -562,6 +612,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
   }
 
+  /// FIX: Replace optimistic message with real DB message (real UUID) so
+  /// the poller never re-adds it as a duplicate.
   Future<void> _sendDM(String text) async {
     _textCtrl.clear();
     final optimisticId = 'opt_${DateTime.now().millisecondsSinceEpoch}';
@@ -579,8 +631,31 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _scrollDown();
 
     try {
-      await api.sendDMMessage(widget.userId, text);
-      if (mounted) setState(() => _dmSending = false);
+      final result = await api.sendDMMessage(widget.userId, text);
+
+      // Replace the optimistic bubble with the real DB row.
+      final realId =
+          result['message']?['id']?.toString() ?? optimisticId;
+
+      if (mounted) {
+        setState(() {
+          final idx = _msgs.indexWhere((m) => m.id == optimisticId);
+          if (idx != -1) {
+            final old = _msgs[idx];
+            _msgs[idx] = _Msg(
+              id: realId,
+              content: old.content,
+              sender: old.sender,
+              avatar: old.avatar,
+              isMe: true,
+              time: old.time,
+            );
+          }
+          _dmSending = false;
+        });
+        // Advance poll time so the poller ignores this message.
+        _lastPollTime = DateTime.now().toUtc().toIso8601String();
+      }
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -675,12 +750,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
   void _scrollDown({bool jump = false}) {
     Future.delayed(const Duration(milliseconds: 80), () {
       if (!mounted || !_scroll.hasClients) return;
-      final max = _scroll.position.maxScrollExtent;
+      final maxExt = _scroll.position.maxScrollExtent;
       if (jump) {
-        _scroll.jumpTo(max);
+        _scroll.jumpTo(maxExt);
       } else {
         _scroll.animateTo(
-          max,
+          maxExt,
           duration: const Duration(milliseconds: 220),
           curve: Curves.easeOut,
         );
@@ -691,7 +766,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // ─────────────────────────────────────────────────────────────────────────
   // Freemium gate
   // ─────────────────────────────────────────────────────────────────────────
-  Future<void> _showAdGate(String pendingText, {bool viaAIDM = false}) async {
+  Future<void> _showAdGate(String pendingText,
+      {bool viaAIDM = false}) async {
     final watched = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -725,7 +801,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
         });
         await _saveQuota();
         if (mounted) {
-          await _sendAI(pendingText, adUnlocked: true, viaAIDM: viaAIDM);
+          await _sendAI(pendingText,
+              adUnlocked: true, viaAIDM: viaAIDM);
         }
       },
       onDismissed: () {
@@ -795,7 +872,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       controller: _scroll,
                       padding: const EdgeInsets.symmetric(
                           horizontal: 16, vertical: 12),
-                      itemCount: _msgs.length + (isSending ? 1 : 0),
+                      itemCount:
+                          _msgs.length + (isSending ? 1 : 0),
                       itemBuilder: (_, i) {
                         if (i == _msgs.length) {
                           return _buildTypingIndicator(
@@ -832,7 +910,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
       elevation: 0,
       surfaceTintColor: Colors.transparent,
       leading: IconButton(
-        icon: Icon(Icons.arrow_back_ios_new_rounded, color: text, size: 18),
+        icon:
+            Icon(Icons.arrow_back_ios_new_rounded, color: text, size: 18),
         onPressed: () {
           if (Navigator.of(context).canPop()) {
             context.pop();
@@ -925,8 +1004,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       actions: [
         if (!_isAIMode && !_aiJoined)
           Padding(
-            padding:
-                const EdgeInsets.only(right: 6, top: 8, bottom: 8),
+            padding: const EdgeInsets.only(right: 6, top: 8, bottom: 8),
             child: GestureDetector(
               onTap: _inviteAI,
               child: Container(
@@ -938,7 +1016,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   border: Border.all(
                       color: AppColors.primary.withOpacity(0.3)),
                 ),
-                child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                child:
+                    const Row(mainAxisSize: MainAxisSize.min, children: [
                   Icon(Icons.auto_awesome,
                       color: AppColors.primary, size: 13),
                   SizedBox(width: 4),
@@ -966,15 +1045,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
           ),
         IconButton(
           icon: Icon(Iconsax.call, color: text, size: 20),
-          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
+          onPressed: () =>
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                   content: Text('Voice calls coming soon 📞'),
                   duration: Duration(seconds: 1))),
         ),
         IconButton(
           icon: Icon(Iconsax.video, color: text, size: 20),
-          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
+          onPressed: () =>
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                   content: Text('Video calls coming soon 🎥'),
                   duration: Duration(seconds: 1))),
         ),
@@ -1020,8 +1099,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 .pickImage(source: ImageSource.gallery);
             if (file != null && mounted) {
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                content:
-                    Text('Photo selected ✅ — media upload coming soon'),
+                content: Text(
+                    'Photo selected ✅ — media upload coming soon'),
                 backgroundColor: AppColors.success,
                 duration: Duration(seconds: 2),
               ));
@@ -1104,8 +1183,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         children: [
           if (!m.isMe)
             Padding(
-              padding:
-                  const EdgeInsets.only(bottom: 4, left: 36),
+              padding: const EdgeInsets.only(bottom: 4, left: 36),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
                 Text(
                   m.sender,
@@ -1182,9 +1260,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       ? Text(
                           m.displayText,
                           style: TextStyle(
-                              color: m.isMe
-                                  ? Colors.white
-                                  : textColor,
+                              color: m.isMe ? Colors.white : textColor,
                               fontSize: 14,
                               height: 1.5),
                         )
@@ -1298,8 +1374,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                     shape: BoxShape.circle,
                   ),
                   child: const Center(
-                      child: Text('🤖',
-                          style: TextStyle(fontSize: 40))),
+                      child:
+                          Text('🤖', style: TextStyle(fontSize: 40))),
                 ),
                 const SizedBox(height: 20),
                 const Text('RiseUp AI Mentor',
@@ -1375,7 +1451,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sub-widgets
+// Sub-widgets (unchanged from v8)
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _AIJoinedBanner extends StatelessWidget {
@@ -1383,7 +1459,8 @@ class _AIJoinedBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding:
+          const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       color: AppColors.primary.withOpacity(0.08),
       child: const Row(children: [
         Icon(Icons.auto_awesome, color: AppColors.primary, size: 14),
@@ -1400,7 +1477,6 @@ class _AIJoinedBanner extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 class _QuotaRibbon extends StatefulWidget {
   final bool isPremium, inWindow;
   final int freeUsed, freeTotal, adsToday, maxAds;
@@ -1481,10 +1557,12 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
     return const SizedBox.shrink();
   }
 
-  Widget _ribbon(IconData icon, Color color, String label, Color bg) {
+  Widget _ribbon(
+      IconData icon, Color color, String label, Color bg) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      padding:
+          const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
       color: bg,
       child: Row(children: [
         Icon(icon, size: 13, color: color),
@@ -1508,7 +1586,6 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 class _AdGateSheet extends StatelessWidget {
   final int freeUsed, adsToday, maxAds, windowHours;
 
@@ -1596,7 +1673,8 @@ class _AdGateSheet extends StatelessWidget {
               Navigator.pop(context, false);
               context.go('/premium');
             },
-            icon: const Icon(Icons.workspace_premium_rounded, size: 18),
+            icon:
+                const Icon(Icons.workspace_premium_rounded, size: 18),
             label: const Text('Go Premium — Unlimited AI'),
             style: OutlinedButton.styleFrom(
               foregroundColor: AppColors.gold,
@@ -1620,7 +1698,6 @@ class _AdGateSheet extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 class _DailyLimitSheet extends StatefulWidget {
   final VoidCallback onUpgrade;
 
@@ -1638,7 +1715,8 @@ class _DailyLimitSheetState extends State<_DailyLimitSheet> {
   void initState() {
     super.initState();
     _update();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _update());
+    _timer =
+        Timer.periodic(const Duration(seconds: 1), (_) => _update());
   }
 
   void _update() {
@@ -1703,8 +1781,7 @@ class _DailyLimitSheetState extends State<_DailyLimitSheet> {
               color: AppColors.primary.withOpacity(0.08),
               borderRadius: BorderRadius.circular(16)),
           child: Column(children: [
-            Text('Resets in',
-                style: TextStyle(fontSize: 12, color: sub)),
+            Text('Resets in', style: TextStyle(fontSize: 12, color: sub)),
             const SizedBox(height: 6),
             Text(_countdown,
                 style: TextStyle(
@@ -1720,7 +1797,8 @@ class _DailyLimitSheetState extends State<_DailyLimitSheet> {
           width: double.infinity,
           child: ElevatedButton.icon(
             onPressed: widget.onUpgrade,
-            icon: const Icon(Icons.workspace_premium_rounded, size: 20),
+            icon:
+                const Icon(Icons.workspace_premium_rounded, size: 20),
             label: const Text('Upgrade — Unlimited AI Forever'),
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.gold,
