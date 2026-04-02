@@ -10,3 +10,20 @@
 //
 // DO NOT add methods here. Add them directly to ApiService in api_service.dart.
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// ADD THIS METHOD to api_service.dart
+// Place it right below the existing checkAIInConversation() method
+// inside the ApiService class (around line where Messages section ends).
+// ─────────────────────────────────────────────────────────────────────────────
+
+  /// Gets (or creates) the dedicated user↔AI conversation in the messages
+  /// system. Returns the conversation UUID. Idempotent — safe to call on
+  /// every AI chat screen open.
+  Future<String> getOrCreateAIConversation() async {
+    try {
+      final r = await _dio.get('/messages/ai-conversation');
+      return (r.data['conversation_id'] as String?) ?? '';
+    } catch (e) {
+      throw _handleError(e);
+    }
+  }
