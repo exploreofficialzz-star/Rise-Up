@@ -24,6 +24,7 @@ import 'package:flutter/services.dart';
 import 'package:iconsax/iconsax.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:video_player/video_player.dart';
+import 'package:dio/dio.dart';          // ← ADD THIS LINE
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 
