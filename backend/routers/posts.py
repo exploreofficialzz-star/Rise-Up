@@ -15,12 +15,19 @@ Fix log:
   v3.3 — _ensure_bucket: removed file_size_limit from create_bucket options.
   v3.4 — Added PostUpdate model + PATCH /{post_id} endpoint so Flutter can
           edit post content/tag/link fields for own posts.
+  v3.5 — create_post: content is now Optional (link/media posts need no
+          caption); real DB error is now logged before raising HTTPException
+          so Render shows the actual failure; link_url / link_title insertion
+          uses a safe fallback that retries without those fields if the DB
+          columns don't exist yet (prevents 500 while migration is pending);
+          added _safe_insert() helper used by both create_post and
+          create_status.
 """
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional
 from services.supabase_service import supabase_service
 from utils.auth import get_current_user
@@ -37,47 +44,113 @@ def _db():
 # ── Models ───────────────────────────────────────────────────────────────────
 
 class PostCreate(BaseModel):
-    content: str
-    tag: str = "💰 Wealth"
-    media_url: Optional[str] = None
-    media_type: Optional[str] = None
-    link_url: Optional[str] = None
-    link_title: Optional[str] = None
+    # v3.5: content is now Optional — link-only or media-only posts are valid
+    content:     Optional[str] = ""
+    tag:         str           = "💰 Wealth"
+    media_url:   Optional[str] = None
+    media_type:  Optional[str] = None
+    link_url:    Optional[str] = None
+    link_title:  Optional[str] = None
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def coerce_none_to_empty(cls, v):
+        return v if v is not None else ""
 
 
 class PostUpdate(BaseModel):
     """Partial update — only supplied fields are written to the DB."""
-    content: Optional[str] = None
-    tag: Optional[str] = None
-    link_url: Optional[str] = None
+    content:    Optional[str] = None
+    tag:        Optional[str] = None
+    link_url:   Optional[str] = None
     link_title: Optional[str] = None
 
 
 class CommentCreate(BaseModel):
-    content: str
-    parent_id: Optional[str] = None
-    is_ai: Optional[bool] = False
+    content:   str
+    parent_id: Optional[str]  = None
+    is_ai:     Optional[bool] = False
     is_pinned: Optional[bool] = False
 
 
 class StatusCreate(BaseModel):
-    content: Optional[str] = None
-    media_url: Optional[str] = None
-    media_type: Optional[str] = "text"
-    link_url: Optional[str] = None
-    link_title: Optional[str] = None
+    content:          Optional[str] = None
+    media_url:        Optional[str] = None
+    media_type:       Optional[str] = "text"
+    link_url:         Optional[str] = None
+    link_title:       Optional[str] = None
     background_color: Optional[str] = None
-    duration_hours: int = 24
+    duration_hours:   int           = 24
+    overlay_text:     Optional[str] = None
+    trim_start_ms:    Optional[int] = None
+    trim_end_ms:      Optional[int] = None
+
+
+# ── Safe Insert Helper ────────────────────────────────────────────────────────
+
+def _safe_insert(db, table: str, data: dict) -> list:
+    """
+    Try inserting `data` into `table`.  If the DB returns an error that looks
+    like an unknown column (common when a migration hasn't been applied yet),
+    strip the offending keys one-by-one and retry — up to 3 times.
+    Returns res.data on success, raises the last exception on total failure.
+    """
+    _UNKNOWN_COL_HINTS = (
+        "column", "does not exist", "unknown", "no such column",
+        "violates not-null", "null value in column",
+    )
+    attempt = dict(data)
+    # Fields that are safe to drop on schema errors (added in later migrations)
+    _DROPPABLE = ["link_url", "link_title", "overlay_text",
+                  "trim_start_ms", "trim_end_ms"]
+
+    last_exc = None
+    dropped: list[str] = []
+
+    for _ in range(len(_DROPPABLE) + 1):
+        try:
+            res = db.table(table).insert(attempt).execute()
+            if dropped:
+                logger.warning(
+                    f"_safe_insert({table}): succeeded after dropping "
+                    f"{dropped} — run the migration to add these columns."
+                )
+            return res.data
+        except Exception as exc:
+            last_exc = exc
+            err_str  = str(exc).lower()
+            found    = False
+            for hint in _UNKNOWN_COL_HINTS:
+                if hint in err_str:
+                    # Find which droppable key triggered the error and remove it
+                    for key in _DROPPABLE:
+                        if key in err_str and key in attempt:
+                            logger.warning(
+                                f"_safe_insert({table}): column '{key}' missing "
+                                f"in DB, retrying without it. Run migration."
+                            )
+                            del attempt[key]
+                            dropped.append(key)
+                            found = True
+                            break
+                    if not found:
+                        # Can't identify the bad column — bail immediately
+                        break
+                    break  # retry outer loop
+            if not found:
+                break  # non-column error — don't retry
+
+    raise last_exc  # type: ignore[misc]
 
 
 # ── Feed ─────────────────────────────────────────────────────────────────────
 
 @router.get("/feed")
 async def get_feed(
-    tab: str = "for_you",
-    limit: int = 20,
-    offset: int = 0,
-    user: dict = Depends(get_current_user),
+    tab:    str  = "for_you",
+    limit:  int  = 20,
+    offset: int  = 0,
+    user:   dict = Depends(get_current_user),
 ):
     try:
         db = _db()
@@ -174,6 +247,7 @@ async def get_feed(
         return {"posts": enriched, "tab": tab, "offset": offset}
 
     except Exception as e:
+        logger.exception(f"get_feed failed: tab={tab} user={user.get('id')}")
         raise HTTPException(500, f"Failed to load feed: {e}")
 
 
@@ -181,15 +255,23 @@ async def get_feed(
 
 @router.post("")
 async def create_post(
-    req: PostCreate,
+    req:  PostCreate,
     user: dict = Depends(get_current_user),
 ):
+    # v3.5: require at least one piece of real content
+    has_content = bool((req.content or "").strip())
+    has_media   = bool(req.media_url)
+    has_link    = bool(req.link_url)
+
+    if not (has_content or has_media or has_link):
+        raise HTTPException(400, "Post must have text, media, or a link.")
+
     try:
         db   = _db()
-        data = {
+        data: dict = {
             "user_id":      user["id"],
-            "content":      req.content,
-            "tag":          req.tag,
+            "content":      (req.content or "").strip(),
+            "tag":          req.tag or "💰 Wealth",
             "is_visible":   True,
             "likes_count":  0,
             "shares_count": 0,
@@ -202,9 +284,24 @@ async def create_post(
         if req.link_title:
             data["link_title"] = req.link_title
 
-        res = db.table("posts").insert(data).execute()
-        return {"post": res.data[0] if res.data else {}, "message": "Post shared! 🚀"}
+        # v3.5: _safe_insert logs and retries if link_url/link_title columns
+        # don't exist in the DB yet (migration not yet applied).
+        rows = _safe_insert(db, "posts", data)
+
+        return {
+            "post":    rows[0] if rows else {},
+            "message": "Post shared! 🚀",
+        }
+
+    except HTTPException:
+        raise
     except Exception as e:
+        # v3.5: log the REAL error so it appears in Render logs
+        logger.exception(
+            f"create_post FAILED: user={user.get('id')} "
+            f"content_len={len(req.content or '')} "
+            f"has_link={has_link} has_media={has_media}"
+        )
         raise HTTPException(500, f"Failed to create post: {e}")
 
 
@@ -225,7 +322,7 @@ _SCAM_KEYWORDS = [
 
 @router.get("/link-preview")
 async def get_link_preview(
-    url: str,
+    url:  str,
     user: dict = Depends(get_current_user),
 ):
     import re
@@ -364,6 +461,7 @@ async def get_post(post_id: str, user: dict = Depends(get_current_user)):
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception(f"get_post failed: post_id={post_id}")
         raise HTTPException(500, str(e))
 
 
@@ -372,8 +470,8 @@ async def get_post(post_id: str, user: dict = Depends(get_current_user)):
 @router.patch("/{post_id}")
 async def update_post(
     post_id: str,
-    req: PostUpdate,
-    user: dict = Depends(get_current_user),
+    req:     PostUpdate,
+    user:    dict = Depends(get_current_user),
 ):
     """Partial edit of own post — only provided fields are updated."""
     try:
@@ -412,6 +510,7 @@ async def update_post(
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception(f"update_post failed: post_id={post_id}")
         raise HTTPException(500, str(e))
 
 
@@ -501,8 +600,8 @@ async def toggle_save(post_id: str, user: dict = Depends(get_current_user)):
 @router.get("/{post_id}/comments")
 async def get_comments(
     post_id: str,
-    limit: int = 30,
-    user: dict = Depends(get_current_user),
+    limit:   int  = 30,
+    user:    dict = Depends(get_current_user),
 ):
     try:
         db  = _db()
@@ -537,14 +636,15 @@ async def get_comments(
         comments.sort(key=lambda c: (0 if _is_ai(c) else 1, c.get("created_at", "")))
         return {"comments": comments}
     except Exception as e:
+        logger.exception(f"get_comments failed: post_id={post_id}")
         raise HTTPException(500, str(e))
 
 
 @router.post("/{post_id}/comments")
 async def add_comment(
     post_id: str,
-    req: CommentCreate,
-    user: dict = Depends(get_current_user),
+    req:     CommentCreate,
+    user:    dict = Depends(get_current_user),
 ):
     try:
         db   = _db()
@@ -595,6 +695,7 @@ async def add_comment(
 
         return {"comment": comment}
     except Exception as e:
+        logger.exception(f"add_comment failed: post_id={post_id}")
         raise HTTPException(500, str(e))
 
 
@@ -718,15 +819,15 @@ async def get_user_profile(user_id: str, user: dict = Depends(get_current_user))
         if not profile:
             raise HTTPException(404, "User not found")
 
-        posts_count  = (
+        posts_count = (
             db.table("posts").select("id", count="exact")
             .eq("user_id", user_id).execute().count or 0
         )
-        followers    = (
+        followers = (
             db.table("follows").select("id", count="exact")
             .eq("following_id", user_id).execute().count or 0
         )
-        following    = (
+        following = (
             db.table("follows").select("id", count="exact")
             .eq("follower_id", user_id).execute().count or 0
         )
@@ -747,14 +848,15 @@ async def get_user_profile(user_id: str, user: dict = Depends(get_current_user))
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception(f"get_user_profile failed: user_id={user_id}")
         raise HTTPException(500, str(e))
 
 
 @router.get("/users/{user_id}/posts")
 async def get_user_posts(
     user_id: str,
-    limit: int = 20,
-    user: dict = Depends(get_current_user),
+    limit:   int  = 20,
+    user:    dict = Depends(get_current_user),
 ):
     try:
         db  = _db()
@@ -780,8 +882,8 @@ async def get_user_posts(
 @router.get("/users/{user_id}/liked")
 async def get_user_liked_posts(
     user_id: str,
-    limit: int = 20,
-    user: dict = Depends(get_current_user),
+    limit:   int  = 20,
+    user:    dict = Depends(get_current_user),
 ):
     try:
         db    = _db()
@@ -843,7 +945,7 @@ async def create_status(req: StatusCreate, user: dict = Depends(get_current_user
             datetime.now(timezone.utc) + timedelta(hours=req.duration_hours)
         ).isoformat()
 
-        saved = db.table("user_status").insert({
+        data: dict = {
             "user_id":          user_id,
             "content":          req.content,
             "media_url":        req.media_url,
@@ -854,15 +956,28 @@ async def create_status(req: StatusCreate, user: dict = Depends(get_current_user
             "expires_at":       expires,
             "is_active":        True,
             "views_count":      0,
-        }).execute()
+        }
+        # Optional columns added in later migrations — use _safe_insert
+        if req.overlay_text:
+            data["overlay_text"]  = req.overlay_text
+        if req.trim_start_ms is not None:
+            data["trim_start_ms"] = req.trim_start_ms
+        if req.trim_end_ms is not None:
+            data["trim_end_ms"]   = req.trim_end_ms
+
+        rows = _safe_insert(db, "user_status", data)
 
         return {
-            "status":  saved.data[0] if saved.data else {},
+            "status":  rows[0] if rows else {},
             "message": "Status posted!",
         }
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception(
+            f"create_status FAILED: user={user_id} "
+            f"media_type={req.media_type} has_media={bool(req.media_url)}"
+        )
         raise HTTPException(500, str(e))
 
 
@@ -939,6 +1054,7 @@ async def get_status_feed(user: dict = Depends(get_current_user)):
         return {"users": result, "total": len(result)}
 
     except Exception as e:
+        logger.exception(f"get_status_feed failed: user={user_id}")
         raise HTTPException(500, str(e))
 
 
@@ -982,9 +1098,6 @@ async def delete_status(status_id: str, user: dict = Depends(get_current_user)):
 
 
 # ── _ensure_bucket ────────────────────────────────────────────────────────────
-#
-# FIX v3.3: Removed file_size_limit from create_bucket options.
-# File-size enforcement is handled at the endpoint level instead.
 
 def _ensure_bucket(sb, bucket_name: str) -> None:
     """
@@ -1009,11 +1122,11 @@ def _ensure_bucket(sb, bucket_name: str) -> None:
 @router.post("/status/upload-media")
 async def upload_status_media(
     file: UploadFile = File(...),
-    user: dict = Depends(get_current_user),
+    user: dict       = Depends(get_current_user),
 ):
     allowed = {
         # Images
-        "image/jpeg", "image/jpg", "image/png", "image/webp",
+        "image/jpeg", "image/jpg",  "image/png",  "image/webp",
         "image/gif",  "image/heic", "image/heif", "image/avif",
         "image/bmp",  "image/tiff",
         # Videos
@@ -1054,7 +1167,6 @@ async def upload_status_media(
 
     if len(contents) > size_limit:
         raise HTTPException(400, f"File must be under {limit_label}")
-
     if len(contents) == 0:
         raise HTTPException(400, "File is empty. Please select a valid file.")
 
