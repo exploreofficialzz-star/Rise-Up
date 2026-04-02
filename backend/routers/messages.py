@@ -1,13 +1,11 @@
 """
-routers/messages.py — RiseUp Messaging System (Production v7)
+routers/messages.py — RiseUp Messaging System (Production v8)
 
-v7 fixes:
-  • Defensive ai_service import — messages router loads even if ai_service
-    is broken; AI endpoints return 503 gracefully instead of 404.
-  • supabase_service.client used consistently (was .db in some paths).
-  • All 404-causing routes verified present and correctly prefixed.
-  • Removed duplicate user message insert in send_ai_message.
-  • Presence endpoints explicitly handle OPTIONS for CORS pre-flight.
+v8 fixes:
+  • Added GET /ai-conversation — gets or creates the dedicated user↔AI
+    conversation in the messages system so the Flutter AI chat screen
+    always reads/writes from the same table as peer DMs.
+  • All other v7 fixes retained.
 """
 
 import logging
@@ -128,6 +126,96 @@ async def clear_presence(user: dict = Depends(get_current_user)):
     return {"online": False}
 
 
+# ── AI CONVERSATION (dedicated 1:1 with the AI mentor) ────────────────────────
+
+@router.get("/ai-conversation")
+async def get_or_create_ai_conversation(user: dict = Depends(get_current_user)):
+    """
+    Returns the conversation_id for the user's private chat with RiseUp AI.
+    Creates the conversation (and sends the welcome message) on first call.
+    Idempotent — safe to call on every app open.
+    """
+    try:
+        db = _db()
+        _ensure_ai_user_exists(db)
+
+        # ── Find an existing direct conversation shared by user + AI ──────────
+        my_res = (
+            db.table("conversation_members")
+            .select("conversation_id")
+            .eq("user_id", user["id"])
+            .execute()
+        )
+        my_ids = [r["conversation_id"] for r in (my_res.data or [])]
+
+        if my_ids:
+            ai_res = (
+                db.table("conversation_members")
+                .select("conversation_id")
+                .eq("user_id", AI_USER_ID)
+                .in_("conversation_id", my_ids)
+                .execute()
+            )
+            shared_ids = [r["conversation_id"] for r in (ai_res.data or [])]
+
+            if shared_ids:
+                existing = (
+                    db.table("conversations")
+                    .select("id")
+                    .in_("id", shared_ids)
+                    .eq("type", "direct")
+                    .limit(1)
+                    .execute()
+                )
+                if existing.data:
+                    return {"conversation_id": existing.data[0]["id"]}
+
+        # ── Create new conversation ────────────────────────────────────────────
+        convo_res = db.table("conversations").insert({
+            "type":       "direct",
+            "user_id":    user["id"],
+            "created_by": user["id"],
+        }).execute()
+
+        if not convo_res.data:
+            raise HTTPException(500, "Failed to create AI conversation")
+
+        convo_id = convo_res.data[0]["id"]
+
+        # Add both members
+        db.table("conversation_members").insert([
+            {"conversation_id": convo_id, "user_id": user["id"]},
+            {"conversation_id": convo_id, "user_id": AI_USER_ID},
+        ]).execute()
+
+        # Send the initial AI greeting so history is never empty
+        db.table("messages").insert({
+            "conversation_id": convo_id,
+            "sender_id":       AI_USER_ID,
+            "user_id":         AI_USER_ID,
+            "content": (
+                "Hey! 👋 I'm your RiseUp AI mentor. Ask me anything about "
+                "wealth-building, side hustles, investing, or personal growth!"
+            ),
+            "sender_type": "ai",
+            "is_read":     True,
+            "created_at":  datetime.now(timezone.utc).isoformat(),
+        }).execute()
+
+        db.table("conversations").update({
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", convo_id).execute()
+
+        logger.info(f"Created AI conversation {convo_id} for user {user['id']}")
+        return {"conversation_id": convo_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"get_or_create_ai_conversation [{user['id']}]: {e}")
+        raise HTTPException(500, str(e))
+
+
 # ── CONVERSATIONS ─────────────────────────────────────────────────────────────
 
 @router.get("/conversations")
@@ -176,6 +264,12 @@ async def get_conversations(user: dict = Depends(get_current_user)):
             other         = next(
                 (m for m in members if m.get("user_id") != user["id"]), None
             )
+
+            # Skip AI-only conversations (don't show in DM list — they have
+            # their own pinned tile in the UI).
+            if other and other.get("user_id") == AI_USER_ID:
+                continue
+
             other_profile = None
             if other and other.get("profiles"):
                 other_profile              = dict(other["profiles"])
@@ -379,7 +473,7 @@ async def send_message(
         except Exception:
             pass
 
-        # Notify other members
+        # Notify other human members
         try:
             members = (
                 db.table("conversation_members")
@@ -461,7 +555,7 @@ async def send_ai_message(
                     if quota.get("free_used", 0) >= FREE_MSGS_PER_WINDOW:
                         ads_today = _get_ads_today(quota, now)
                         if ads_today >= MAX_AD_UNLOCKS_PER_DAY:
-                            midnight     = (now + timedelta(days=1)).replace(
+                            midnight = (now + timedelta(days=1)).replace(
                                 hour=0, minute=0, second=0, microsecond=0)
                             wait_seconds = int((midnight - now).total_seconds())
                             raise HTTPException(429, detail={
@@ -478,7 +572,7 @@ async def send_ai_message(
                             "max_ads_day": MAX_AD_UNLOCKS_PER_DAY,
                         })
 
-        # Build message history for AI context
+        # Build message history for AI context (last 20 messages from DB)
         history_res = (
             db.table("messages")
             .select("sender_type, content")
@@ -495,6 +589,7 @@ async def send_ai_message(
             }
             for h in raw_history
         ]
+        # Append the new user message to give full context
         ai_messages.append({"role": "user", "content": req.content})
 
         try:
@@ -533,6 +628,8 @@ async def send_ai_message(
             )
 
         # Persist user message then AI reply
+        now_iso = datetime.now(timezone.utc).isoformat()
+
         db.table("messages").insert({
             "conversation_id": conversation_id,
             "sender_id":       user["id"],
@@ -540,6 +637,7 @@ async def send_ai_message(
             "content":         req.content,
             "sender_type":     "user",
             "is_read":         True,
+            "created_at":      now_iso,
         }).execute()
 
         ai_msg = db.table("messages").insert({
