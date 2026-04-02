@@ -634,8 +634,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// v3.4 — Edit own post content / tag / link fields.
-  /// Only non-null fields are sent to the backend (partial update).
   Future<Map<String, dynamic>> updatePost(
     String postId, {
     String? content,
@@ -645,10 +643,10 @@ class ApiService {
   }) async {
     try {
       final body = <String, dynamic>{};
-      if (content   != null) body['content']    = content;
-      if (tag       != null) body['tag']         = tag;
-      if (linkUrl   != null) body['link_url']    = linkUrl;
-      if (linkTitle != null) body['link_title']  = linkTitle;
+      if (content   != null) body['content']   = content;
+      if (tag       != null) body['tag']        = tag;
+      if (linkUrl   != null) body['link_url']   = linkUrl;
+      if (linkTitle != null) body['link_title'] = linkTitle;
 
       final r = await _dio.patch('/posts/$postId', data: body);
       return r.data as Map<String, dynamic>;
@@ -1116,6 +1114,20 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
+  // ── FIX: getOrCreateAIConversation — was dangling outside class in
+  //         api_service_additions.dart; now correctly inside ApiService.
+  /// Gets (or creates) the dedicated user↔AI conversation in the messages
+  /// system. Returns the conversation UUID. Idempotent — safe to call on
+  /// every AI chat screen open.
+  Future<String> getOrCreateAIConversation() async {
+    try {
+      final r = await _dio.get('/messages/ai-conversation');
+      return (r.data['conversation_id'] as String?) ?? '';
+    } catch (e) {
+      throw _handleError(e);
+    }
+  }
+
   // ── Groups ────────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> getGroups() async {
@@ -1351,9 +1363,9 @@ class ApiService {
       {double amountUsd = 0, String? note}) async {
     try {
       final res = await _dio.post('/challenges/check-in', data: {
-        'challenge_id':       challengeId,
-        'action_taken':       action,
-        'amount_earned_usd':  amountUsd,
+        'challenge_id':      challengeId,
+        'action_taken':      action,
+        'amount_earned_usd': amountUsd,
         if (note != null) 'note': note,
       });
       return res.data as Map<String, dynamic>;
@@ -1420,6 +1432,7 @@ class ApiService {
       return res.data as Map<String, dynamic>;
     } catch (e) { throw _handleError(e); }
   }
+
 } // end ApiService
 
 // ─────────────────────────────────────────────────────────────────────────────
