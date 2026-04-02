@@ -37,6 +37,9 @@ dependencies:
   percent_indicator: ^4.2.3
   flutter_markdown: ^0.7.3
 
+  # ── Image Caching — disk + memory, Facebook-grade ───
+  cached_network_image: ^3.4.1
+
   # ── Ads ─────────────────────────────────────────────
   google_mobile_ads: ^5.1.0
 
@@ -62,9 +65,6 @@ dependencies:
 
   # ── Video & Media ───────────────────────────────────
   video_player: ^2.9.1
-  # FIX: chewie 1.8.x uses Color.withValues() which requires Flutter >=3.27.
-  # Pinned to ^1.7.5 to stay compatible with Flutter 3.22.x in CI.
-  # When CI is upgraded to Flutter 3.27+, you can bump this back to ^1.8.x.
   chewie: ^1.7.5
   photo_view: ^0.15.0
   image_cropper: ^8.0.2
@@ -104,7 +104,6 @@ dev_dependencies:
   mocktail: ^1.0.4
   faker: ^2.2.0
 
-# ── App Icons ───────────────────────────────────────
 flutter_launcher_icons:
   android: true
   ios: true
@@ -116,7 +115,6 @@ flutter_launcher_icons:
   web:
     generate: false
 
-# ── Native Splash Screen ─────────────────────────────
 flutter_native_splash:
   color: "#0F0E17"
   image: assets/images/riseup_logo.png
@@ -129,20 +127,12 @@ flutter_native_splash:
 
 flutter:
   uses-material-design: true
-
   assets:
     - assets/images/
     - assets/animations/
     - assets/icons/
     - assets/fonts/
-    # ── Sound directories below are commented out until the folders
-    #    and files actually exist in the repo. Uncomment when ready:
-    # - assets/sounds/
-    # - assets/sounds/ui/
-    # - assets/sounds/effects/
-    # - assets/sounds/notifications/
 
-# ── MSIX (Windows) Configuration ─────────────────────
 msix_config:
   display_name: RiseUp
   publisher_display_name: ChAs Tech Group
