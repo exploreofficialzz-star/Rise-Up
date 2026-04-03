@@ -5,7 +5,10 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.5.2'
+        // REVERTED: 8.5.2 → 8.3.0. In Flutter's plugin management system,
+        // settings.gradle is authoritative for plugin versions. build.gradle
+        // must match settings.gradle exactly to avoid split-brain resolution.
+        classpath 'com.android.tools.build:gradle:8.3.0'
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
         classpath 'com.google.gms:google-services:4.4.1'
     }
