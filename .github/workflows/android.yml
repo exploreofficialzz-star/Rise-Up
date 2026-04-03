@@ -35,19 +35,6 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          # Flutter 3.27.x ships Kotlin 1.9.x inside flutter_tools/gradle,
-          # which is included as a composite build via includeBuild() in
-          # pluginManagement. Composite builds run in an isolated classloader
-          # that no resolutionStrategy or force() in project Gradle files can
-          # reach. The result: the Kotlin compiler used for all subproject
-          # compilation is 1.9.x, which cannot read the 2.1.0 metadata in
-          # modern Flutter plugins (mobile_scanner 5.x, share_plus 10.x, etc.).
-          #
-          # The only fix is a Flutter SDK that ships Kotlin 2.x in its tooling.
-          # Flutter 3.29+ made this switch. We use latest stable to always stay
-          # ahead of this and avoid re-pinning on every Flutter tooling release.
-          # Color.withValues() (the original reason for the 3.27 pin) has been
-          # available in every stable release since 3.27, so no regression there.
           channel: 'stable'
           cache: true
 
@@ -64,7 +51,7 @@ jobs:
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
-          echo "$KEYSTORE_BASE64" | base64 --decode > app/riseup-release.jks
+          echo "$KEYSTORE_BASE64" | base64 --decode > riseup-release.jks
 
       - name: Create key.properties
         working-directory: frontend/android
