@@ -86,7 +86,6 @@ android {
         buildConfig true
     }
 
-    // FIX: Handle duplicate files in Kotlin 2.1.0
     packagingOptions {
         pickFirst '**/libc++_shared.so'
         pickFirst '**/libjsc.so'
@@ -96,24 +95,22 @@ android {
     }
 }
 
-// FIX: Force Kotlin 2.1.0 across all dependencies
+// Force consistent Kotlin stdlib across all runtime dependencies.
+// NOTE: kotlin-gradle-plugin is a buildscript classpath dep — it must NOT be
+// forced here; it is already pinned via ext.kotlin_version in build.gradle.
+// kotlin-android-extensions-runtime was removed in Kotlin 2.0 — do not force it.
 configurations.all {
     resolutionStrategy {
         force "org.jetbrains.kotlin:kotlin-stdlib:2.1.0"
         force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.1.0"
         force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.1.0"
-        force "org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0"
-        force "org.jetbrains.kotlin:kotlin-android-extensions-runtime:2.1.0"
     }
 }
 
-// FIX: Exclude conflicting Kotlin modules
 dependencies {
     implementation 'com.google.firebase:firebase-messaging:24.0.3'
     implementation 'androidx.multidex:multidex:2.0.1'
     implementation 'androidx.core:core-ktx:1.13.1'
-    
-    // Force Kotlin 2.1.0
     implementation(platform("org.jetbrains.kotlin:kotlin-bom:2.1.0"))
 }
 
