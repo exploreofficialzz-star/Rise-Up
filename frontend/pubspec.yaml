@@ -44,7 +44,7 @@ dependencies:
   google_mobile_ads: ^5.1.0
 
   # ── Notifications ───────────────────────────────────
-  flutter_local_notifications: ^17.2.2
+  flutter_local_notifications: ^20.1.0
 
   # ── Connectivity ────────────────────────────────────
   connectivity_plus: ^6.0.3
