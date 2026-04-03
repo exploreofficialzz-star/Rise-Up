@@ -71,7 +71,7 @@ dependencies:
 
   # ── Calendar & Date ─────────────────────────────────
   table_calendar: ^3.1.2
-  syncfusion_flutter_calendar: ^26.2.14
+  syncfusion_flutter_calendar: ^28.1.38
 
   # ── Form & Input ────────────────────────────────────
   flutter_form_builder: ^9.3.0
