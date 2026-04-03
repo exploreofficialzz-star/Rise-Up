@@ -12,7 +12,7 @@ dependencies:
   flutter_localizations:
     sdk: flutter
 
-  # ── State Management ────────────────────────────────
+  # ── State Management  ────────────────────────────────
   flutter_riverpod: ^2.5.1
 
   # ── Navigation ──────────────────────────────────────
