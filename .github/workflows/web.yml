@@ -54,7 +54,6 @@ jobs:
         run: |
           flutter build web \
             --release \
-            --web-renderer canvaskit \
             --no-tree-shake-icons \
             --base-href=/Rise-Up/ \
             --dart-define=API_BASE_URL=$API_BASE_URL \
