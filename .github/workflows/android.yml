@@ -35,7 +35,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.27.4'   # FIX: was unspecified — now pinned to Dart 3.6.x ✅
+          flutter-version: '3.29.2'
           channel: 'stable'
           cache: true
 
