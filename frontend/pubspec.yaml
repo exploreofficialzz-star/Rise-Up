@@ -15,7 +15,7 @@ dependencies:
   # ── State Management ────────────────────────────────
   flutter_riverpod: ^2.5.1
 
-  # ──    Navigation ──────────────────────────────────────
+  # ── Navigation ──────────────────────────────────────
   go_router: ^13.2.0
 
   # ── Networking ──────────────────────────────────────
@@ -37,14 +37,14 @@ dependencies:
   percent_indicator: ^4.2.3
   flutter_markdown: ^0.7.3
 
-  # ── Image Caching — disk + memory, Facebook-grade ───
+  # ── Image Caching ────────────────────────────────────
   cached_network_image: ^3.4.1
 
   # ── Ads ─────────────────────────────────────────────
   google_mobile_ads: ^5.1.0
 
   # ── Notifications ───────────────────────────────────
-  flutter_local_notifications: ^20.1.0
+  flutter_local_notifications: ^18.0.0
 
   # ── Connectivity ────────────────────────────────────
   connectivity_plus: ^6.0.3
