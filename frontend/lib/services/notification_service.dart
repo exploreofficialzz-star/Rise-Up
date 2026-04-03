@@ -27,9 +27,7 @@ class NotificationService {
       iOS: iosSettings,
     );
 
-    await _localNotifications.initialize(
-      initializationSettings: initSettings,
-    );
+    await _localNotifications.initialize(initSettings);
 
     // Create Android notification channel
     const channel = AndroidNotificationChannel(
@@ -67,10 +65,10 @@ class NotificationService {
     const details = NotificationDetails(android: androidDetails, iOS: iosDetails);
 
     await _localNotifications.show(
-      id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
-      title: title,
-      body: body,
-      notificationDetails: details,
+      DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      title,
+      body,
+      details,
       payload: payload,
     );
   }
