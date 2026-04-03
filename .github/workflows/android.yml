@@ -40,15 +40,14 @@ jobs:
           cache: true
 
       # ─── DEFINITIVE KOTLIN FIX ────────────────────────────────────────────
-      # Flutter's composite build (flutter_tools/gradle) hardcodes Kotlin 1.9.x
-      # inside the Flutter SDK itself. No project-level Gradle config, init
-      # script, or resolutionStrategy can override this because the composite
-      # build's compiler is resolved BEFORE any of those load.
-      # The only fix is to patch Flutter's own Gradle source files directly
-      # after the SDK is installed, before any build runs.
+      # Flutter's composite build hardcodes Kotlin 1.9.x inside the SDK itself.
+      # No project-level Gradle config can override it — the compiler is locked
+      # before any of our files load. We patch Flutter's own Gradle files
+      # directly after install, replacing every 1.9.x reference with 2.1.0.
       - name: Patch Flutter SDK Gradle Kotlin version to 2.1.0
         run: |
-          FLUTTER_ROOT=$(flutter sdk-path)
+          FLUTTER_BIN=$(which flutter)
+          FLUTTER_ROOT=$(dirname $(dirname "$FLUTTER_BIN"))
           echo "Flutter SDK root: $FLUTTER_ROOT"
           GRADLE_DIR="$FLUTTER_ROOT/packages/flutter_tools/gradle"
           echo "Patching Gradle files in: $GRADLE_DIR"
@@ -64,7 +63,8 @@ jobs:
             fi
           done
           echo "Patch complete. Verifying:"
-          grep -r "kotlin.*version\|kotlin_version" "$GRADLE_DIR" --include="*.gradle" --include="*.gradle.kts" | grep -v ".git" || true
+          grep -r "kotlin.*version\|kotlin_version" "$GRADLE_DIR" \
+            --include="*.gradle" --include="*.gradle.kts" | grep -v ".git" || true
       # ──────────────────────────────────────────────────────────────────────
 
       - name: Clean Flutter build cache
