@@ -31,6 +31,10 @@ android {
     ndkVersion "25.1.8937393"
 
     compileOptions {
+        // Required by flutter_local_notifications (uses java.time.* APIs).
+        // Without this, checkReleaseAarMetadata fails on minSdk < 26 because
+        // java.time is not natively available before Android O (API 26).
+        coreLibraryDesugaringEnabled true
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
@@ -108,6 +112,9 @@ configurations.all {
 }
 
 dependencies {
+    // Provides backported java.time.* APIs for minSdk < 26 (Android < O).
+    // Version 2.1.3 supports all APIs used by flutter_local_notifications.
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.3'
     implementation 'com.google.firebase:firebase-messaging:24.0.3'
     implementation 'androidx.multidex:multidex:2.0.1'
     implementation 'androidx.core:core-ktx:1.13.1'
