@@ -20,7 +20,7 @@ jobs:
   build-android:
     name: Build Android
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -37,13 +37,8 @@ jobs:
         with:
           flutter-version: '3.29.2'
           channel: 'stable'
-          cache: true
+          cache: false          # FIX: cache was restoring old Kotlin 1.9.0 compiler
 
-      # ─── DEFINITIVE KOTLIN FIX ────────────────────────────────────────────
-      # Flutter's composite build hardcodes Kotlin 1.9.x inside the SDK itself.
-      # No project-level Gradle config can override it — the compiler is locked
-      # before any of our files load. We patch Flutter's own Gradle files
-      # directly after install, replacing every 1.9.x reference with 2.1.0.
       - name: Patch Flutter SDK Gradle Kotlin version to 2.1.0
         run: |
           FLUTTER_BIN=$(which flutter)
@@ -65,7 +60,11 @@ jobs:
           echo "Patch complete. Verifying:"
           grep -r "kotlin.*version\|kotlin_version" "$GRADLE_DIR" \
             --include="*.gradle" --include="*.gradle.kts" | grep -v ".git" || true
-      # ──────────────────────────────────────────────────────────────────────
+
+      - name: Clear Gradle caches
+        run: |
+          rm -rf ~/.gradle/caches
+          echo "Gradle caches cleared"
 
       - name: Clean Flutter build cache
         working-directory: frontend
