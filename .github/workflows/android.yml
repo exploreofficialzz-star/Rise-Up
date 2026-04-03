@@ -39,6 +39,34 @@ jobs:
           channel: 'stable'
           cache: true
 
+      # ─── DEFINITIVE KOTLIN FIX ────────────────────────────────────────────
+      # Flutter's composite build (flutter_tools/gradle) hardcodes Kotlin 1.9.x
+      # inside the Flutter SDK itself. No project-level Gradle config, init
+      # script, or resolutionStrategy can override this because the composite
+      # build's compiler is resolved BEFORE any of those load.
+      # The only fix is to patch Flutter's own Gradle source files directly
+      # after the SDK is installed, before any build runs.
+      - name: Patch Flutter SDK Gradle Kotlin version to 2.1.0
+        run: |
+          FLUTTER_ROOT=$(flutter sdk-path)
+          echo "Flutter SDK root: $FLUTTER_ROOT"
+          GRADLE_DIR="$FLUTTER_ROOT/packages/flutter_tools/gradle"
+          echo "Patching Gradle files in: $GRADLE_DIR"
+          find "$GRADLE_DIR" -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) | while read -r FILE; do
+            if grep -q "1\.9\." "$FILE" 2>/dev/null; then
+              echo "  Patching: $FILE"
+              sed -i \
+                -e 's/kotlin_version\s*=\s*"1\.9\.[^"]*"/kotlin_version = "2.1.0"/g' \
+                -e "s/kotlin_version = '1\\.9\\.[^']*'/kotlin_version = '2.1.0'/g" \
+                -e 's/\(kotlin[^"]*\)"1\.9\.[0-9]*"/\1"2.1.0"/g' \
+                -e "s/\(kotlin[^']*\)'1\\.9\\.[0-9]*'/\1'2.1.0'/g" \
+                "$FILE"
+            fi
+          done
+          echo "Patch complete. Verifying:"
+          grep -r "kotlin.*version\|kotlin_version" "$GRADLE_DIR" --include="*.gradle" --include="*.gradle.kts" | grep -v ".git" || true
+      # ──────────────────────────────────────────────────────────────────────
+
       - name: Clean Flutter build cache
         working-directory: frontend
         run: flutter clean
@@ -73,39 +101,6 @@ jobs:
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: echo "$GOOGLE_SERVICES_JSON" | base64 --decode > google-services.json
-
-      # ─── THE DEFINITIVE KOTLIN FIX ───────────────────────────────────────
-      # Flutter's composite build (flutter_tools/gradle) hardcodes Kotlin 1.9.0
-      # and loads BEFORE any project-level Gradle file. The only mechanism that
-      # runs before composite builds is a Gradle init script in ~/.gradle/init.d/.
-      # This forces Kotlin 2.1.0 in BOTH buildscript (compiler) and runtime
-      # (stdlib) configurations across every project including composite builds.
-      - name: Inject Gradle init script to force Kotlin 2.1.0
-        run: |
-          mkdir -p ~/.gradle/init.d
-          cat > ~/.gradle/init.d/force-kotlin.gradle << 'EOF'
-          allprojects {
-            buildscript {
-              configurations.all {
-                resolutionStrategy.eachDependency { DependencyResolveDetails details ->
-                  if (details.requested.group == 'org.jetbrains.kotlin') {
-                    details.useVersion '2.1.0'
-                    details.because 'Force Kotlin 2.1.0 — overrides Flutter composite build hardcoded 1.9.0'
-                  }
-                }
-              }
-            }
-            configurations.all {
-              resolutionStrategy.eachDependency { DependencyResolveDetails details ->
-                if (details.requested.group == 'org.jetbrains.kotlin') {
-                  details.useVersion '2.1.0'
-                  details.because 'Force Kotlin 2.1.0 — overrides Flutter composite build hardcoded 1.9.0'
-                }
-              }
-            }
-          }
-          EOF
-      # ─────────────────────────────────────────────────────────────────────
 
       - name: Build APK (universal)
         if: ${{ github.event.inputs.build_type != 'aab' }}
