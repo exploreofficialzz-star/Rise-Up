@@ -16,6 +16,18 @@ allprojects {
         google()
         mavenCentral()
     }
+
+    // FIX: Force Kotlin stdlib to 2.1.0 across ALL subprojects and transitive deps.
+    // Flutter's composite build injects plugins compiled with Kotlin 2.1.0,
+    // but the compiler itself resolves to 1.9.0 without this override.
+    configurations.all {
+        resolutionStrategy.eachDependency { DependencyResolveDetails details ->
+            if (details.requested.group == 'org.jetbrains.kotlin') {
+                details.useVersion '2.1.0'
+                details.because 'Force Kotlin 2.1.0 — plugins require it'
+            }
+        }
+    }
 }
 
 rootProject.buildDir = '../build'
