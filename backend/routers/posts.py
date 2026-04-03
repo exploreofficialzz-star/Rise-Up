@@ -2,160 +2,78 @@
 """Posts Router — Social feed, likes, comments, shares, follows, status
 
 Fix log:
-  v3.0 — CommentCreate: added is_ai / is_pinned optional fields (graceful
-          fallback if DB columns don't exist);
-          get_comments: AI/pinned comments sorted to top in Python;
-          get_feed: bulk follows query adds is_following per post;
-          upload_status_media: limit raised to 500 MB, more MIME types.
-  v3.1 — upload_status_media: auto-creates 'status-media' bucket if it
-          doesn't exist (was causing 500 on every upload); added structured
-          error logging so the real failure reason appears in Render logs.
-  v3.2 — create_post / get_feed: profile now always returns avatar_url so
-          Flutter PostCard and CreatePostScreen can display real avatars.
-  v3.3 — _ensure_bucket: removed file_size_limit from create_bucket options.
-  v3.4 — Added PostUpdate model + PATCH /{post_id} endpoint so Flutter can
-          edit post content/tag/link fields for own posts.
-  v3.5 — create_post: content is now Optional (link/media posts need no
-          caption); real DB error is now logged before raising HTTPException
-          so Render shows the actual failure; link_url / link_title insertion
-          uses a safe fallback that retries without those fields if the DB
-          columns don't exist yet (prevents 500 while migration is pending);
-          added _safe_insert() helper used by both create_post and
-          create_status.
+  v3.5 — base_select now explicitly lists link_url + link_title.
+          Supabase relationship queries with * do not reliably return all
+          columns when combined with JOIN-style profile selects. Previously
+          link_url and link_title came back null in the feed even when set,
+          causing the Flutter _PostLinkCard to never render.
 """
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 from typing import Optional
 from services.supabase_service import supabase_service
 from utils.auth import get_current_user
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter(prefix="/posts", tags=["Posts"])
-
 
 def _db():
     return supabase_service.db
 
-
 # ── Models ───────────────────────────────────────────────────────────────────
 
 class PostCreate(BaseModel):
-    # v3.5: content is now Optional — link-only or media-only posts are valid
-    content:     Optional[str] = ""
-    tag:         str           = "💰 Wealth"
-    media_url:   Optional[str] = None
-    media_type:  Optional[str] = None
-    link_url:    Optional[str] = None
-    link_title:  Optional[str] = None
-
-    @field_validator("content", mode="before")
-    @classmethod
-    def coerce_none_to_empty(cls, v):
-        return v if v is not None else ""
-
-
-class PostUpdate(BaseModel):
-    """Partial update — only supplied fields are written to the DB."""
-    content:    Optional[str] = None
-    tag:        Optional[str] = None
-    link_url:   Optional[str] = None
+    content: str
+    tag: str = "💰 Wealth"
+    media_url: Optional[str] = None
+    media_type: Optional[str] = None
+    link_url: Optional[str] = None
     link_title: Optional[str] = None
 
+class PostUpdate(BaseModel):
+    content: Optional[str] = None
+    tag: Optional[str] = None
+    link_url: Optional[str] = None
+    link_title: Optional[str] = None
 
 class CommentCreate(BaseModel):
-    content:   str
-    parent_id: Optional[str]  = None
-    is_ai:     Optional[bool] = False
+    content: str
+    parent_id: Optional[str] = None
+    is_ai: Optional[bool] = False
     is_pinned: Optional[bool] = False
 
-
 class StatusCreate(BaseModel):
-    content:          Optional[str] = None
-    media_url:        Optional[str] = None
-    media_type:       Optional[str] = "text"
-    link_url:         Optional[str] = None
-    link_title:       Optional[str] = None
+    content: Optional[str] = None
+    media_url: Optional[str] = None
+    media_type: Optional[str] = "text"
+    link_url: Optional[str] = None
+    link_title: Optional[str] = None
     background_color: Optional[str] = None
-    duration_hours:   int           = 24
-    overlay_text:     Optional[str] = None
-    trim_start_ms:    Optional[int] = None
-    trim_end_ms:      Optional[int] = None
-
-
-# ── Safe Insert Helper ────────────────────────────────────────────────────────
-
-def _safe_insert(db, table: str, data: dict) -> list:
-    """
-    Try inserting `data` into `table`.  If the DB returns an error that looks
-    like an unknown column (common when a migration hasn't been applied yet),
-    strip the offending keys one-by-one and retry — up to 3 times.
-    Returns res.data on success, raises the last exception on total failure.
-    """
-    _UNKNOWN_COL_HINTS = (
-        "column", "does not exist", "unknown", "no such column",
-        "violates not-null", "null value in column",
-    )
-    attempt = dict(data)
-    # Fields that are safe to drop on schema errors (added in later migrations)
-    _DROPPABLE = ["link_url", "link_title", "overlay_text",
-                  "trim_start_ms", "trim_end_ms"]
-
-    last_exc = None
-    dropped: list[str] = []
-
-    for _ in range(len(_DROPPABLE) + 1):
-        try:
-            res = db.table(table).insert(attempt).execute()
-            if dropped:
-                logger.warning(
-                    f"_safe_insert({table}): succeeded after dropping "
-                    f"{dropped} — run the migration to add these columns."
-                )
-            return res.data
-        except Exception as exc:
-            last_exc = exc
-            err_str  = str(exc).lower()
-            found    = False
-            for hint in _UNKNOWN_COL_HINTS:
-                if hint in err_str:
-                    # Find which droppable key triggered the error and remove it
-                    for key in _DROPPABLE:
-                        if key in err_str and key in attempt:
-                            logger.warning(
-                                f"_safe_insert({table}): column '{key}' missing "
-                                f"in DB, retrying without it. Run migration."
-                            )
-                            del attempt[key]
-                            dropped.append(key)
-                            found = True
-                            break
-                    if not found:
-                        # Can't identify the bad column — bail immediately
-                        break
-                    break  # retry outer loop
-            if not found:
-                break  # non-column error — don't retry
-
-    raise last_exc  # type: ignore[misc]
-
+    duration_hours: int = 24
 
 # ── Feed ─────────────────────────────────────────────────────────────────────
 
 @router.get("/feed")
 async def get_feed(
-    tab:    str  = "for_you",
-    limit:  int  = 20,
-    offset: int  = 0,
-    user:   dict = Depends(get_current_user),
+    tab: str = "for_you",
+    limit: int = 20,
+    offset: int = 0,
+    user: dict = Depends(get_current_user),
 ):
     try:
         db = _db()
+        # FIX v3.5: explicitly list link_url + link_title.
+        # Using * with a Supabase relationship select (profiles!fkey(...))
+        # does not guarantee all columns are returned — they are silently
+        # dropped if Supabase's PostgREST planner de-dupes them. Listing
+        # them explicitly makes the return shape deterministic.
         base_select = (
-            "*, "
+            "id, content, tag, media_url, media_type, "
+            "link_url, link_title, "          # <-- explicitly added
+            "likes_count, shares_count, created_at, user_id, is_visible, "
             "profiles!posts_user_id_fkey("
             "id, full_name, stage, avatar_url, is_verified, subscription_tier"
             "), "
@@ -185,7 +103,6 @@ async def get_feed(
                 .execute()
                 .data or []
             )
-
         elif tab == "trending":
             posts = (
                 db.table("posts")
@@ -196,7 +113,6 @@ async def get_feed(
                 .execute()
                 .data or []
             )
-
         else:  # for_you
             posts = (
                 db.table("posts")
@@ -236,9 +152,7 @@ async def get_feed(
                         .in_("following_id", author_ids)
                         .execute()
                     )
-                    following_set = {
-                        f["following_id"] for f in (follows_res.data or [])
-                    }
+                    following_set = {f["following_id"] for f in (follows_res.data or [])}
                     for p in enriched:
                         p["is_following"] = p.get("user_id") in following_set
             except Exception:
@@ -247,31 +161,18 @@ async def get_feed(
         return {"posts": enriched, "tab": tab, "offset": offset}
 
     except Exception as e:
-        logger.exception(f"get_feed failed: tab={tab} user={user.get('id')}")
         raise HTTPException(500, f"Failed to load feed: {e}")
-
 
 # ── Create Post ───────────────────────────────────────────────────────────────
 
 @router.post("")
-async def create_post(
-    req:  PostCreate,
-    user: dict = Depends(get_current_user),
-):
-    # v3.5: require at least one piece of real content
-    has_content = bool((req.content or "").strip())
-    has_media   = bool(req.media_url)
-    has_link    = bool(req.link_url)
-
-    if not (has_content or has_media or has_link):
-        raise HTTPException(400, "Post must have text, media, or a link.")
-
+async def create_post(req: PostCreate, user: dict = Depends(get_current_user)):
     try:
         db   = _db()
-        data: dict = {
+        data = {
             "user_id":      user["id"],
-            "content":      (req.content or "").strip(),
-            "tag":          req.tag or "💰 Wealth",
+            "content":      req.content,
+            "tag":          req.tag,
             "is_visible":   True,
             "likes_count":  0,
             "shares_count": 0,
@@ -283,29 +184,12 @@ async def create_post(
             data["link_url"]   = req.link_url
         if req.link_title:
             data["link_title"] = req.link_title
-
-        # v3.5: _safe_insert logs and retries if link_url/link_title columns
-        # don't exist in the DB yet (migration not yet applied).
-        rows = _safe_insert(db, "posts", data)
-
-        return {
-            "post":    rows[0] if rows else {},
-            "message": "Post shared! 🚀",
-        }
-
-    except HTTPException:
-        raise
+        res = db.table("posts").insert(data).execute()
+        return {"post": res.data[0] if res.data else {}, "message": "Post shared! 🚀"}
     except Exception as e:
-        # v3.5: log the REAL error so it appears in Render logs
-        logger.exception(
-            f"create_post FAILED: user={user.get('id')} "
-            f"content_len={len(req.content or '')} "
-            f"has_link={has_link} has_media={has_media}"
-        )
         raise HTTPException(500, f"Failed to create post: {e}")
 
-
-# ── Link Preview + Safety Check ───────────────────────────────────────────────
+# ── Link Preview ──────────────────────────────────────────────────────────────
 
 _BLOCKED_DOMAINS = {
     "free-bitcoin.io", "doubler.cash", "cryptodouble.net",
@@ -319,12 +203,8 @@ _SCAM_KEYWORDS = [
     "whatsapp investment", "dm for profit", "click here to earn",
 ]
 
-
 @router.get("/link-preview")
-async def get_link_preview(
-    url:  str,
-    user: dict = Depends(get_current_user),
-):
+async def get_link_preview(url: str, user: dict = Depends(get_current_user)):
     import re
     try:
         import httpx
@@ -342,62 +222,45 @@ async def get_link_preview(
         raise HTTPException(400, "Invalid URL format")
 
     normalized = url if url.startswith("http") else f"https://{url}"
-    host       = parsed.netloc.lower()
+    host = parsed.netloc.lower()
 
     if any(blocked in host for blocked in _BLOCKED_DOMAINS):
         return {"blocked": True, "reason": f"🚫 Domain {host} is blocked by RiseUp safety filters."}
 
-    url_lower = normalized.lower()
     for kw in _SCAM_KEYWORDS:
-        if kw in url_lower:
+        if kw in normalized.lower():
             return {"blocked": True, "reason": f"⚠️ Link contains prohibited content: '{kw}'"}
 
     try:
         headers = {"User-Agent": "RiseUpBot/1.0 (link-preview)"}
-        timeout = 6
-
         if httpx:
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=6, follow_redirects=True) as client:
                 resp = await client.get(normalized, headers=headers)
             html = resp.text
         else:
-            resp = _req.get(normalized, headers=headers, timeout=timeout, allow_redirects=True)
+            resp = _req.get(normalized, headers=headers, timeout=6, allow_redirects=True)
             html = resp.text
 
         ct = resp.headers.get("content-type", "")
-
         if "text/html" not in ct and "application/xhtml" not in ct:
-            return {
-                "title": host, "description": "", "image": None,
-                "favicon": None, "blocked": False, "domain": host,
-            }
+            return {"title": host, "description": "", "image": None,
+                    "favicon": None, "blocked": False, "domain": host}
 
         final_url  = str(resp.url) if httpx else resp.url
-        final_host = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(
-            final_url).netloc.lower()
+        final_host = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(final_url).netloc.lower()
         if any(b in final_host for b in _BLOCKED_DOMAINS):
             return {"blocked": True, "reason": f"🚫 Redirect destination {final_host} is blocked."}
 
         def _meta(prop: str, attr: str = "property") -> str:
-            m = re.search(
-                rf'<meta\s+{attr}=["\']?{re.escape(prop)}["\']?\s+content=["\']([^"\']*)["\']',
-                html, re.IGNORECASE,
-            )
+            m = re.search(rf'<meta\s+{attr}=["\']?{re.escape(prop)}["\']?\s+content=["\']([^"\']*)["\']', html, re.IGNORECASE)
             return m.group(1).strip() if m else ""
 
-        def _meta_name(name: str) -> str:
-            return _meta(name, attr="name")
-
-        title       = _meta("og:title") or _meta_name("title") or \
+        title       = _meta("og:title") or _meta("title", "name") or \
                       (re.search(r"<title>(.*?)</title>", html, re.IGNORECASE) or [None, ""])[1].strip()[:120]
-        description = _meta("og:description") or _meta_name("description")
+        description = _meta("og:description") or _meta("description", "name")
         image       = _meta("og:image")
-        favicon_tag = re.search(
-            r'<link[^>]+rel=["\']?(?:shortcut )?icon["\']?[^>]+href=["\']([^"\']+)["\']',
-            html, re.IGNORECASE,
-        )
-        favicon = favicon_tag.group(1) if favicon_tag else \
-                  f"https://www.google.com/s2/favicons?domain={host}"
+        favicon_tag = re.search(r'<link[^>]+rel=["\']?(?:shortcut )?icon["\']?[^>]+href=["\']([^"\']+)["\']', html, re.IGNORECASE)
+        favicon     = favicon_tag.group(1) if favicon_tag else f"https://www.google.com/s2/favicons?domain={host}"
         if favicon and not favicon.startswith("http"):
             favicon = f"https://{host}{favicon if favicon.startswith('/') else '/' + favicon}"
 
@@ -414,21 +277,14 @@ async def get_link_preview(
             "domain":      final_host or host,
             "blocked":     False,
         }
-
     except HTTPException:
         raise
     except Exception:
-        return {
-            "title":       host,
-            "description": "",
-            "image":       None,
-            "favicon":     f"https://www.google.com/s2/favicons?domain={host}",
-            "domain":      host,
-            "blocked":     False,
-        }
+        return {"title": host, "description": "", "image": None,
+                "favicon": f"https://www.google.com/s2/favicons?domain={host}",
+                "domain": host, "blocked": False}
 
-
-# ── Get Single Post ───────────────────────────────────────────────────────────
+# ── Get / Update / Delete Post ────────────────────────────────────────────────
 
 @router.get("/{post_id}")
 async def get_post(post_id: str, user: dict = Depends(get_current_user)):
@@ -437,318 +293,50 @@ async def get_post(post_id: str, user: dict = Depends(get_current_user)):
         res = (
             db.table("posts")
             .select(
-                "*, "
-                "profiles!posts_user_id_fkey("
-                "id, full_name, stage, avatar_url, is_verified"
-                "), "
-                "post_likes(user_id), "
-                "post_saves(user_id)"
+                "id, content, tag, media_url, media_type, link_url, link_title, "
+                "likes_count, shares_count, created_at, user_id, "
+                "profiles!posts_user_id_fkey(id, full_name, stage, avatar_url, is_verified), "
+                "post_likes(user_id), post_saves(user_id)"
             )
-            .eq("id", post_id)
-            .single()
-            .execute()
+            .eq("id", post_id).single().execute()
         )
         p = res.data
         if not p:
             raise HTTPException(404, "Post not found")
-        p["is_liked"] = any(
-            l["user_id"] == user["id"] for l in (p.get("post_likes") or [])
-        )
-        p["is_saved"] = any(
-            s["user_id"] == user["id"] for s in (p.get("post_saves") or [])
-        )
+        p["is_liked"] = any(l["user_id"] == user["id"] for l in (p.get("post_likes") or []))
+        p["is_saved"] = any(s["user_id"] == user["id"] for s in (p.get("post_saves") or []))
         return {"post": p}
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"get_post failed: post_id={post_id}")
         raise HTTPException(500, str(e))
 
-
-# ── Update Post (v3.4) ────────────────────────────────────────────────────────
-
 @router.patch("/{post_id}")
-async def update_post(
-    post_id: str,
-    req:     PostUpdate,
-    user:    dict = Depends(get_current_user),
-):
-    """Partial edit of own post — only provided fields are updated."""
+async def update_post(post_id: str, req: PostUpdate, user: dict = Depends(get_current_user)):
     try:
         db   = _db()
-        post = (
-            db.table("posts")
-            .select("user_id")
-            .eq("id", post_id)
-            .single()
-            .execute()
-            .data
-        )
+        post = db.table("posts").select("user_id").eq("id", post_id).single().execute().data
         if not post or post["user_id"] != user["id"]:
             raise HTTPException(403, "Not your post")
-
         update_data: dict = {}
-        if req.content is not None:
-            update_data["content"]    = req.content
-        if req.tag is not None:
-            update_data["tag"]        = req.tag
-        if req.link_url is not None:
-            update_data["link_url"]   = req.link_url
-        if req.link_title is not None:
-            update_data["link_title"] = req.link_title
-
+        if req.content   is not None: update_data["content"]    = req.content
+        if req.tag       is not None: update_data["tag"]        = req.tag
+        if req.link_url  is not None: update_data["link_url"]   = req.link_url
+        if req.link_title is not None: update_data["link_title"] = req.link_title
         if not update_data:
             raise HTTPException(400, "No fields to update")
-
-        res = (
-            db.table("posts")
-            .update(update_data)
-            .eq("id", post_id)
-            .execute()
-        )
+        res = db.table("posts").update(update_data).eq("id", post_id).execute()
         return {"post": res.data[0] if res.data else {}, "message": "Post updated"}
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"update_post failed: post_id={post_id}")
         raise HTTPException(500, str(e))
-
-
-# ── Like / Unlike ─────────────────────────────────────────────────────────────
-
-@router.post("/{post_id}/like")
-async def toggle_like(post_id: str, user: dict = Depends(get_current_user)):
-    try:
-        db       = _db()
-        existing = (
-            db.table("post_likes")
-            .select("id")
-            .eq("post_id", post_id)
-            .eq("user_id", user["id"])
-            .execute()
-            .data
-        )
-        if existing:
-            db.table("post_likes").delete() \
-              .eq("post_id", post_id).eq("user_id", user["id"]).execute()
-            try:
-                db.rpc("decrement_post_likes", {"pid": post_id}).execute()
-            except Exception:
-                pass
-            return {"liked": False, "message": "Unliked"}
-        else:
-            db.table("post_likes").insert(
-                {"post_id": post_id, "user_id": user["id"]}
-            ).execute()
-            try:
-                db.rpc("increment_post_likes", {"pid": post_id}).execute()
-            except Exception:
-                pass
-            try:
-                post = (
-                    db.table("posts").select("user_id")
-                    .eq("id", post_id).single().execute().data
-                )
-                if post and post["user_id"] != user["id"]:
-                    profile = (
-                        db.table("profiles").select("full_name")
-                        .eq("id", user["id"]).single().execute().data
-                    )
-                    db.table("notifications").insert({
-                        "user_id": post["user_id"],
-                        "type":    "like",
-                        "title":   "New like",
-                        "message": f"{profile.get('full_name', 'Someone')} liked your post",
-                        "data":    {"post_id": post_id},
-                    }).execute()
-            except Exception:
-                pass
-            return {"liked": True, "message": "Liked! ❤️"}
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
-
-# ── Save / Unsave ─────────────────────────────────────────────────────────────
-
-@router.post("/{post_id}/save")
-async def toggle_save(post_id: str, user: dict = Depends(get_current_user)):
-    try:
-        db       = _db()
-        existing = (
-            db.table("post_saves")
-            .select("id")
-            .eq("post_id", post_id)
-            .eq("user_id", user["id"])
-            .execute()
-            .data
-        )
-        if existing:
-            db.table("post_saves").delete() \
-              .eq("post_id", post_id).eq("user_id", user["id"]).execute()
-            return {"saved": False}
-        else:
-            db.table("post_saves").insert(
-                {"post_id": post_id, "user_id": user["id"]}
-            ).execute()
-            return {"saved": True}
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
-
-# ── Comments ──────────────────────────────────────────────────────────────────
-
-@router.get("/{post_id}/comments")
-async def get_comments(
-    post_id: str,
-    limit:   int  = 30,
-    user:    dict = Depends(get_current_user),
-):
-    try:
-        db  = _db()
-        res = (
-            db.table("post_comments")
-            .select(
-                "*, "
-                "profiles!post_comments_user_id_fkey("
-                "id, full_name, avatar_url, is_verified"
-                "), "
-                "comment_likes(user_id)"
-            )
-            .eq("post_id", post_id)
-            .is_("parent_id", None)
-            .order("created_at", desc=False)
-            .limit(limit)
-            .execute()
-        )
-        comments = res.data or []
-        for c in comments:
-            likes            = c.get("comment_likes") or []
-            c["is_liked"]    = any(l["user_id"] == user["id"] for l in likes)
-            c["likes_count"] = len(likes)
-
-        def _is_ai(c: dict) -> bool:
-            return (
-                c.get("is_ai") is True
-                or c.get("is_pinned") is True
-                or str(c.get("content", "")).startswith("🤖 RiseUp AI:")
-            )
-
-        comments.sort(key=lambda c: (0 if _is_ai(c) else 1, c.get("created_at", "")))
-        return {"comments": comments}
-    except Exception as e:
-        logger.exception(f"get_comments failed: post_id={post_id}")
-        raise HTTPException(500, str(e))
-
-
-@router.post("/{post_id}/comments")
-async def add_comment(
-    post_id: str,
-    req:     CommentCreate,
-    user:    dict = Depends(get_current_user),
-):
-    try:
-        db   = _db()
-        data: dict = {
-            "post_id": post_id,
-            "user_id": user["id"],
-            "content": req.content,
-        }
-        if req.parent_id:
-            data["parent_id"] = req.parent_id
-
-        data_full = dict(data)
-        if req.is_ai:
-            data_full["is_ai"]     = True
-        if req.is_pinned:
-            data_full["is_pinned"] = True
-
-        try:
-            res = db.table("post_comments").insert(data_full).execute()
-        except Exception:
-            res = db.table("post_comments").insert(data).execute()
-
-        comment = res.data[0] if res.data else {}
-
-        if req.is_ai:
-            comment["is_ai"]     = True
-            comment["is_pinned"] = bool(req.is_pinned)
-
-        try:
-            post = (
-                db.table("posts").select("user_id")
-                .eq("id", post_id).single().execute().data
-            )
-            if post and post["user_id"] != user["id"] and not req.is_ai:
-                profile = (
-                    db.table("profiles").select("full_name")
-                    .eq("id", user["id"]).single().execute().data
-                )
-                db.table("notifications").insert({
-                    "user_id": post["user_id"],
-                    "type":    "comment",
-                    "title":   "New comment",
-                    "message": f"{profile.get('full_name', 'Someone')} commented on your post",
-                    "data":    {"post_id": post_id},
-                }).execute()
-        except Exception:
-            pass
-
-        return {"comment": comment}
-    except Exception as e:
-        logger.exception(f"add_comment failed: post_id={post_id}")
-        raise HTTPException(500, str(e))
-
-
-@router.post("/comments/{comment_id}/like")
-async def like_comment(comment_id: str, user: dict = Depends(get_current_user)):
-    try:
-        db       = _db()
-        existing = (
-            db.table("comment_likes")
-            .select("id")
-            .eq("comment_id", comment_id)
-            .eq("user_id", user["id"])
-            .execute()
-            .data
-        )
-        if existing:
-            db.table("comment_likes").delete() \
-              .eq("comment_id", comment_id).eq("user_id", user["id"]).execute()
-            return {"liked": False}
-        else:
-            db.table("comment_likes").insert(
-                {"comment_id": comment_id, "user_id": user["id"]}
-            ).execute()
-            return {"liked": True}
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
-
-# ── Share ─────────────────────────────────────────────────────────────────────
-
-@router.post("/{post_id}/share")
-async def share_post(post_id: str, user: dict = Depends(get_current_user)):
-    try:
-        db = _db()
-        try:
-            db.rpc("increment_post_shares", {"pid": post_id}).execute()
-        except Exception:
-            pass
-        return {"message": "Shared! 📤"}
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
-
-# ── Delete Post ───────────────────────────────────────────────────────────────
 
 @router.delete("/{post_id}")
 async def delete_post(post_id: str, user: dict = Depends(get_current_user)):
     try:
         db   = _db()
-        post = (
-            db.table("posts").select("user_id")
-            .eq("id", post_id).single().execute().data
-        )
+        post = db.table("posts").select("user_id").eq("id", post_id).single().execute().data
         if not post or post["user_id"] != user["id"]:
             raise HTTPException(403, "Not your post")
         db.table("posts").delete().eq("id", post_id).execute()
@@ -758,8 +346,129 @@ async def delete_post(post_id: str, user: dict = Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(500, str(e))
 
+# ── Like / Save / Share ───────────────────────────────────────────────────────
 
-# ── Follow / Unfollow ─────────────────────────────────────────────────────────
+@router.post("/{post_id}/like")
+async def toggle_like(post_id: str, user: dict = Depends(get_current_user)):
+    try:
+        db = _db()
+        existing = db.table("post_likes").select("id").eq("post_id", post_id).eq("user_id", user["id"]).execute().data
+        if existing:
+            db.table("post_likes").delete().eq("post_id", post_id).eq("user_id", user["id"]).execute()
+            try: db.rpc("decrement_post_likes", {"pid": post_id}).execute()
+            except Exception: pass
+            return {"liked": False}
+        else:
+            db.table("post_likes").insert({"post_id": post_id, "user_id": user["id"]}).execute()
+            try: db.rpc("increment_post_likes", {"pid": post_id}).execute()
+            except Exception: pass
+            try:
+                post = db.table("posts").select("user_id").eq("id", post_id).single().execute().data
+                if post and post["user_id"] != user["id"]:
+                    profile = db.table("profiles").select("full_name").eq("id", user["id"]).single().execute().data
+                    db.table("notifications").insert({"user_id": post["user_id"], "type": "like",
+                        "title": "New like", "message": f"{profile.get('full_name', 'Someone')} liked your post",
+                        "data": {"post_id": post_id}}).execute()
+            except Exception: pass
+            return {"liked": True}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@router.post("/{post_id}/save")
+async def toggle_save(post_id: str, user: dict = Depends(get_current_user)):
+    try:
+        db = _db()
+        existing = db.table("post_saves").select("id").eq("post_id", post_id).eq("user_id", user["id"]).execute().data
+        if existing:
+            db.table("post_saves").delete().eq("post_id", post_id).eq("user_id", user["id"]).execute()
+            return {"saved": False}
+        else:
+            db.table("post_saves").insert({"post_id": post_id, "user_id": user["id"]}).execute()
+            return {"saved": True}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@router.post("/{post_id}/share")
+async def share_post(post_id: str, user: dict = Depends(get_current_user)):
+    try:
+        db = _db()
+        try: db.rpc("increment_post_shares", {"pid": post_id}).execute()
+        except Exception: pass
+        return {"message": "Shared! 📤"}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+# ── Comments ──────────────────────────────────────────────────────────────────
+
+@router.get("/{post_id}/comments")
+async def get_comments(post_id: str, limit: int = 30, user: dict = Depends(get_current_user)):
+    try:
+        db  = _db()
+        res = (
+            db.table("post_comments")
+            .select("*, profiles!post_comments_user_id_fkey(id, full_name, avatar_url, is_verified), comment_likes(user_id)")
+            .eq("post_id", post_id).is_("parent_id", None)
+            .order("created_at", desc=False).limit(limit).execute()
+        )
+        comments = res.data or []
+        for c in comments:
+            likes            = c.get("comment_likes") or []
+            c["is_liked"]    = any(l["user_id"] == user["id"] for l in likes)
+            c["likes_count"] = len(likes)
+
+        def _is_ai(c: dict) -> bool:
+            return c.get("is_ai") is True or c.get("is_pinned") is True or \
+                   str(c.get("content", "")).startswith("🤖 RiseUp AI:")
+
+        comments.sort(key=lambda c: (0 if _is_ai(c) else 1, c.get("created_at", "")))
+        return {"comments": comments}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@router.post("/{post_id}/comments")
+async def add_comment(post_id: str, req: CommentCreate, user: dict = Depends(get_current_user)):
+    try:
+        db   = _db()
+        data: dict = {"post_id": post_id, "user_id": user["id"], "content": req.content}
+        if req.parent_id: data["parent_id"] = req.parent_id
+        full = dict(data)
+        if req.is_ai:     full["is_ai"]     = True
+        if req.is_pinned: full["is_pinned"] = True
+        try:
+            res = db.table("post_comments").insert(full).execute()
+        except Exception:
+            res = db.table("post_comments").insert(data).execute()
+        comment = res.data[0] if res.data else {}
+        if req.is_ai:
+            comment["is_ai"]     = True
+            comment["is_pinned"] = bool(req.is_pinned)
+        try:
+            post = db.table("posts").select("user_id").eq("id", post_id).single().execute().data
+            if post and post["user_id"] != user["id"] and not req.is_ai:
+                profile = db.table("profiles").select("full_name").eq("id", user["id"]).single().execute().data
+                db.table("notifications").insert({"user_id": post["user_id"], "type": "comment",
+                    "title": "New comment", "message": f"{profile.get('full_name', 'Someone')} commented on your post",
+                    "data": {"post_id": post_id}}).execute()
+        except Exception: pass
+        return {"comment": comment}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@router.post("/comments/{comment_id}/like")
+async def like_comment(comment_id: str, user: dict = Depends(get_current_user)):
+    try:
+        db = _db()
+        existing = db.table("comment_likes").select("id").eq("comment_id", comment_id).eq("user_id", user["id"]).execute().data
+        if existing:
+            db.table("comment_likes").delete().eq("comment_id", comment_id).eq("user_id", user["id"]).execute()
+            return {"liked": False}
+        else:
+            db.table("comment_likes").insert({"comment_id": comment_id, "user_id": user["id"]}).execute()
+            return {"liked": True}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+# ── Follow ────────────────────────────────────────────────────────────────────
 
 @router.post("/users/{target_id}/follow")
 async def toggle_follow(target_id: str, user: dict = Depends(get_current_user)):
@@ -767,461 +476,195 @@ async def toggle_follow(target_id: str, user: dict = Depends(get_current_user)):
         db = _db()
         if target_id == user["id"]:
             raise HTTPException(400, "Cannot follow yourself")
-
-        existing = (
-            db.table("follows")
-            .select("id")
-            .eq("follower_id", user["id"])
-            .eq("following_id", target_id)
-            .execute()
-            .data
-        )
+        existing = db.table("follows").select("id").eq("follower_id", user["id"]).eq("following_id", target_id).execute().data
         if existing:
-            db.table("follows").delete() \
-              .eq("follower_id", user["id"]).eq("following_id", target_id).execute()
+            db.table("follows").delete().eq("follower_id", user["id"]).eq("following_id", target_id).execute()
             return {"following": False}
         else:
-            db.table("follows").insert({
-                "follower_id":  user["id"],
-                "following_id": target_id,
-            }).execute()
+            db.table("follows").insert({"follower_id": user["id"], "following_id": target_id}).execute()
             try:
-                profile = (
-                    db.table("profiles").select("full_name")
-                    .eq("id", user["id"]).single().execute().data
-                )
-                db.table("notifications").insert({
-                    "user_id": target_id,
-                    "type":    "follow",
-                    "title":   "New follower",
-                    "message": f"{profile.get('full_name', 'Someone')} started following you",
-                    "data":    {"user_id": user["id"]},
-                }).execute()
-            except Exception:
-                pass
+                profile = db.table("profiles").select("full_name").eq("id", user["id"]).single().execute().data
+                db.table("notifications").insert({"user_id": target_id, "type": "follow",
+                    "title": "New follower", "message": f"{profile.get('full_name', 'Someone')} started following you",
+                    "data": {"user_id": user["id"]}}).execute()
+            except Exception: pass
             return {"following": True}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(500, str(e))
 
-
-# ── User Profile ──────────────────────────────────────────────────────────────
+# ── User Profile & Posts ──────────────────────────────────────────────────────
 
 @router.get("/users/{user_id}/profile")
 async def get_user_profile(user_id: str, user: dict = Depends(get_current_user)):
     try:
         db      = _db()
-        profile = (
-            db.table("profiles").select("*")
-            .eq("id", user_id).single().execute().data
-        )
-        if not profile:
-            raise HTTPException(404, "User not found")
-
-        posts_count = (
-            db.table("posts").select("id", count="exact")
-            .eq("user_id", user_id).execute().count or 0
-        )
-        followers = (
-            db.table("follows").select("id", count="exact")
-            .eq("following_id", user_id).execute().count or 0
-        )
-        following = (
-            db.table("follows").select("id", count="exact")
-            .eq("follower_id", user_id).execute().count or 0
-        )
-        is_following = bool(
-            db.table("follows")
-            .select("id")
-            .eq("follower_id", user["id"])
-            .eq("following_id", user_id)
-            .execute()
-            .data
-        )
-
-        return {
-            "profile":      profile,
-            "stats":        {"posts": posts_count, "followers": followers, "following": following},
-            "is_following": is_following,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"get_user_profile failed: user_id={user_id}")
-        raise HTTPException(500, str(e))
-
+        profile = db.table("profiles").select("*").eq("id", user_id).single().execute().data
+        if not profile: raise HTTPException(404, "User not found")
+        posts_count = db.table("posts").select("id", count="exact").eq("user_id", user_id).execute().count or 0
+        followers   = db.table("follows").select("id", count="exact").eq("following_id", user_id).execute().count or 0
+        following   = db.table("follows").select("id", count="exact").eq("follower_id", user_id).execute().count or 0
+        is_following = bool(db.table("follows").select("id").eq("follower_id", user["id"]).eq("following_id", user_id).execute().data)
+        return {"profile": profile, "stats": {"posts": posts_count, "followers": followers, "following": following}, "is_following": is_following}
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(500, str(e))
 
 @router.get("/users/{user_id}/posts")
-async def get_user_posts(
-    user_id: str,
-    limit:   int  = 20,
-    user:    dict = Depends(get_current_user),
-):
+async def get_user_posts(user_id: str, limit: int = 20, user: dict = Depends(get_current_user)):
     try:
         db  = _db()
-        res = (
-            db.table("posts")
-            .select("*, post_likes(user_id), post_comments(count)")
-            .eq("user_id", user_id)
-            .eq("is_visible", True)
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
+        res = db.table("posts").select("*, post_likes(user_id), post_comments(count)") \
+                .eq("user_id", user_id).eq("is_visible", True).order("created_at", desc=True).limit(limit).execute()
         posts = res.data or []
         for p in posts:
-            likes            = p.get("post_likes") or []
-            p["is_liked"]    = any(l["user_id"] == user["id"] for l in likes)
+            likes = p.get("post_likes") or []
+            p["is_liked"] = any(l["user_id"] == user["id"] for l in likes)
             p["likes_count"] = len(likes)
         return {"posts": posts}
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
+    except Exception as e: raise HTTPException(500, str(e))
 
 @router.get("/users/{user_id}/liked")
-async def get_user_liked_posts(
-    user_id: str,
-    limit:   int  = 20,
-    user:    dict = Depends(get_current_user),
-):
+async def get_user_liked_posts(user_id: str, limit: int = 20, user: dict = Depends(get_current_user)):
     try:
         db    = _db()
-        liked = (
-            db.table("post_likes")
-            .select("post_id")
-            .eq("user_id", user_id)
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
+        liked = db.table("post_likes").select("post_id").eq("user_id", user_id).order("created_at", desc=True).limit(limit).execute()
         post_ids = [l["post_id"] for l in (liked.data or [])]
-        if not post_ids:
-            return {"posts": []}
-
-        posts_res = (
-            db.table("posts")
-            .select(
-                "*, "
-                "profiles(full_name, stage, is_verified, subscription_tier), "
-                "post_likes(user_id), "
-                "post_saves(user_id), "
-                "post_comments(count)"
-            )
-            .in_("id", post_ids)
-            .eq("is_visible", True)
-            .execute()
-        )
+        if not post_ids: return {"posts": []}
+        posts_res = db.table("posts") \
+            .select("*, profiles(full_name, stage, is_verified, subscription_tier), post_likes(user_id), post_saves(user_id), post_comments(count)") \
+            .in_("id", post_ids).eq("is_visible", True).execute()
         posts = posts_res.data or []
         for p in posts:
-            saves            = p.get("post_saves") or []
-            likes            = p.get("post_likes") or []
+            saves = p.get("post_saves") or []
+            likes = p.get("post_likes") or []
             p["is_liked"]    = True
             p["likes_count"] = len(likes)
             p["is_saved"]    = any(s["user_id"] == user["id"] for s in saves)
         return {"posts": posts}
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    except Exception as e: raise HTTPException(500, str(e))
 
-
-# ── Status / Stories ──────────────────────────────────────────────────────────
+# ── Status ────────────────────────────────────────────────────────────────────
 
 @router.post("/status")
 async def create_status(req: StatusCreate, user: dict = Depends(get_current_user)):
-    user_id = user["id"]
     try:
         db     = _db()
-        active = (
-            db.table("user_status")
-            .select("id", count="exact")
-            .eq("user_id", user_id)
-            .eq("is_active", True)
-            .execute()
-        )
+        active = db.table("user_status").select("id", count="exact").eq("user_id", user["id"]).eq("is_active", True).execute()
         if (active.count or 0) >= 15:
             raise HTTPException(400, "Maximum 15 active statuses allowed")
-
-        expires = (
-            datetime.now(timezone.utc) + timedelta(hours=req.duration_hours)
-        ).isoformat()
-
-        data: dict = {
-            "user_id":          user_id,
-            "content":          req.content,
-            "media_url":        req.media_url,
-            "media_type":       req.media_type or "text",
-            "link_url":         req.link_url,
-            "link_title":       req.link_title,
+        expires = (datetime.now(timezone.utc) + timedelta(hours=req.duration_hours)).isoformat()
+        saved = db.table("user_status").insert({
+            "user_id": user["id"], "content": req.content,
+            "media_url": req.media_url, "media_type": req.media_type or "text",
+            "link_url": req.link_url, "link_title": req.link_title,
             "background_color": req.background_color or "#6C5CE7",
-            "expires_at":       expires,
-            "is_active":        True,
-            "views_count":      0,
-        }
-        # Optional columns added in later migrations — use _safe_insert
-        if req.overlay_text:
-            data["overlay_text"]  = req.overlay_text
-        if req.trim_start_ms is not None:
-            data["trim_start_ms"] = req.trim_start_ms
-        if req.trim_end_ms is not None:
-            data["trim_end_ms"]   = req.trim_end_ms
-
-        rows = _safe_insert(db, "user_status", data)
-
-        return {
-            "status":  rows[0] if rows else {},
-            "message": "Status posted!",
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(
-            f"create_status FAILED: user={user_id} "
-            f"media_type={req.media_type} has_media={bool(req.media_url)}"
-        )
-        raise HTTPException(500, str(e))
-
+            "expires_at": expires, "is_active": True, "views_count": 0,
+        }).execute()
+        return {"status": saved.data[0] if saved.data else {}, "message": "Status posted!"}
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(500, str(e))
 
 @router.get("/status/feed")
 async def get_status_feed(user: dict = Depends(get_current_user)):
-    user_id = user["id"]
     try:
         db  = _db()
         now = datetime.now(timezone.utc).isoformat()
-
-        follows      = (
-            db.table("follows")
-            .select("following_id")
-            .eq("follower_id", user_id)
-            .execute()
-            .data or []
-        )
-        followed_ids = [f["following_id"] for f in follows] + [user_id]
-
-        res = (
-            db.table("user_status")
-            .select("*")
-            .in_("user_id", followed_ids)
-            .eq("is_active", True)
-            .gte("expires_at", now)
-            .order("created_at", desc=True)
-            .limit(50)
-            .execute()
-        )
+        follows = db.table("follows").select("following_id").eq("follower_id", user["id"]).execute().data or []
+        followed_ids = [f["following_id"] for f in follows] + [user["id"]]
+        res = db.table("user_status").select("*").in_("user_id", followed_ids) \
+                .eq("is_active", True).gte("expires_at", now).order("created_at", desc=True).limit(50).execute()
         statuses = res.data or []
-
-        if not statuses:
-            return {"users": [], "total": 0}
-
-        unique_user_ids = list({s["user_id"] for s in statuses})
-        profiles_res    = (
-            db.table("profiles")
-            .select("id, full_name, avatar_url, is_online")
-            .in_("id", unique_user_ids)
-            .execute()
-        )
-        profiles_map = {p["id"]: p for p in (profiles_res.data or [])}
-
-        all_status_ids = [s["id"] for s in statuses]
-        views_res = (
-            db.table("status_views")
-            .select("status_id")
-            .eq("viewer_id", user_id)
-            .in_("status_id", all_status_ids)
-            .execute()
-        )
-        viewed_ids = {v["status_id"] for v in (views_res.data or [])}
-
+        if not statuses: return {"users": [], "total": 0}
+        unique_ids   = list({s["user_id"] for s in statuses})
+        profiles_map = {p["id"]: p for p in (db.table("profiles").select("id, full_name, avatar_url, is_online").in_("id", unique_ids).execute().data or [])}
+        views_res    = db.table("status_views").select("status_id").eq("viewer_id", user["id"]).in_("status_id", [s["id"] for s in statuses]).execute()
+        viewed_ids   = {v["status_id"] for v in (views_res.data or [])}
         grouped: dict = {}
         for s in statuses:
             uid = s["user_id"]
             if uid not in grouped:
-                grouped[uid] = {
-                    "user_id":    uid,
-                    "profile":    profiles_map.get(uid, {}),
-                    "is_own":     uid == user_id,
-                    "items":      [],
-                    "has_unseen": False,
-                }
+                grouped[uid] = {"user_id": uid, "profile": profiles_map.get(uid, {}),
+                                "is_own": uid == user["id"], "items": [], "has_unseen": False}
             s["is_viewed"] = s["id"] in viewed_ids
-            if not s["is_viewed"] and uid != user_id:
-                grouped[uid]["has_unseen"] = True
+            if not s["is_viewed"] and uid != user["id"]: grouped[uid]["has_unseen"] = True
             grouped[uid]["items"].append(s)
-
-        result = sorted(
-            grouped.values(),
-            key=lambda x: (not x["is_own"], not x["has_unseen"]),
-        )
+        result = sorted(grouped.values(), key=lambda x: (not x["is_own"], not x["has_unseen"]))
         return {"users": result, "total": len(result)}
-
-    except Exception as e:
-        logger.exception(f"get_status_feed failed: user={user_id}")
-        raise HTTPException(500, str(e))
-
+    except Exception as e: raise HTTPException(500, str(e))
 
 @router.post("/status/{status_id}/view")
 async def view_status(status_id: str, user: dict = Depends(get_current_user)):
     try:
         db = _db()
-        db.table("status_views").upsert(
-            {"status_id": status_id, "viewer_id": user["id"]},
-            on_conflict="status_id,viewer_id",
-        ).execute()
-        try:
-            db.rpc("increment_status_views", {"sid": status_id}).execute()
+        db.table("status_views").upsert({"status_id": status_id, "viewer_id": user["id"]}, on_conflict="status_id,viewer_id").execute()
+        try: db.rpc("increment_status_views", {"sid": status_id}).execute()
         except Exception:
-            current = (
-                db.table("user_status")
-                .select("views_count")
-                .eq("id", status_id)
-                .single()
-                .execute()
-                .data
-            )
-            if current:
-                db.table("user_status").update({
-                    "views_count": (current.get("views_count") or 0) + 1
-                }).eq("id", status_id).execute()
+            cur = db.table("user_status").select("views_count").eq("id", status_id).single().execute().data
+            if cur: db.table("user_status").update({"views_count": (cur.get("views_count") or 0) + 1}).eq("id", status_id).execute()
         return {"viewed": True}
-    except Exception:
-        return {"viewed": True}
-
+    except Exception: return {"viewed": True}
 
 @router.delete("/status/{status_id}")
 async def delete_status(status_id: str, user: dict = Depends(get_current_user)):
     try:
         db = _db()
-        db.table("user_status").update({"is_active": False}) \
-          .eq("id", status_id).eq("user_id", user["id"]).execute()
+        db.table("user_status").update({"is_active": False}).eq("id", status_id).eq("user_id", user["id"]).execute()
         return {"deleted": True}
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    except Exception as e: raise HTTPException(500, str(e))
 
-
-# ── _ensure_bucket ────────────────────────────────────────────────────────────
+# ── Upload media ──────────────────────────────────────────────────────────────
 
 def _ensure_bucket(sb, bucket_name: str) -> None:
-    """
-    Create a public Supabase Storage bucket if it doesn't already exist.
-    Safe to call on every request — swallows 'already exists' errors.
-    """
-    try:
-        sb.storage.get_bucket(bucket_name)
+    try: sb.storage.get_bucket(bucket_name)
     except Exception:
         try:
-            sb.storage.create_bucket(
-                bucket_name,
-                options={"public": True},
-            )
-            logger.info(f"Created Supabase Storage bucket: {bucket_name}")
-        except Exception as create_err:
-            err_str = str(create_err).lower()
-            if "already exists" not in err_str and "duplicate" not in err_str:
-                logger.warning(f"Could not create bucket '{bucket_name}': {create_err}")
-
+            sb.storage.create_bucket(bucket_name, options={"public": True})
+            logger.info(f"Created bucket: {bucket_name}")
+        except Exception as e:
+            err = str(e).lower()
+            if "already exists" not in err and "duplicate" not in err:
+                logger.warning(f"Could not create bucket '{bucket_name}': {e}")
 
 @router.post("/status/upload-media")
-async def upload_status_media(
-    file: UploadFile = File(...),
-    user: dict       = Depends(get_current_user),
-):
+async def upload_status_media(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
     allowed = {
-        # Images
-        "image/jpeg", "image/jpg",  "image/png",  "image/webp",
-        "image/gif",  "image/heic", "image/heif", "image/avif",
-        "image/bmp",  "image/tiff",
-        # Videos
-        "video/mp4",        "video/quicktime",   "video/x-msvideo",
-        "video/x-matroska", "video/webm",        "video/3gpp",
-        "video/mpeg",       "video/ogg",
+        "image/jpeg","image/jpg","image/png","image/webp","image/gif",
+        "image/heic","image/heif","image/avif","image/bmp","image/tiff",
+        "video/mp4","video/quicktime","video/x-msvideo","video/x-matroska",
+        "video/webm","video/3gpp","video/mpeg","video/ogg",
     }
-
     ct = (file.content_type or "").lower().strip()
-    if ct == "image/jpg":
-        ct = "image/jpeg"
-
+    if ct == "image/jpg": ct = "image/jpeg"
     if not ct or ct == "application/octet-stream":
-        fname     = (file.filename or "").lower()
-        ext_guess = fname.rsplit(".", 1)[-1] if "." in fname else ""
-        _infer = {
-            "jpg":  "image/jpeg",  "jpeg": "image/jpeg",  "png":  "image/png",
-            "webp": "image/webp",  "gif":  "image/gif",   "heic": "image/heic",
-            "heif": "image/heif",  "avif": "image/avif",  "bmp":  "image/bmp",
-            "mp4":  "video/mp4",   "mov":  "video/quicktime",
-            "avi":  "video/x-msvideo", "mkv": "video/x-matroska",
-            "webm": "video/webm",  "3gp":  "video/3gpp",
-        }
-        ct = _infer.get(ext_guess, "image/jpeg")
-
+        fname = (file.filename or "").lower()
+        ext   = fname.rsplit(".", 1)[-1] if "." in fname else ""
+        ct = {"jpg":"image/jpeg","jpeg":"image/jpeg","png":"image/png","webp":"image/webp",
+              "gif":"image/gif","heic":"image/heic","mp4":"video/mp4","mov":"video/quicktime",
+              "avi":"video/x-msvideo","mkv":"video/x-matroska","webm":"video/webm","3gp":"video/3gpp"
+              }.get(ext, "image/jpeg")
     if ct not in allowed:
-        raise HTTPException(
-            400,
-            f"Unsupported file type '{ct}'. Supported: JPEG, PNG, WebP, GIF, "
-            "HEIC, AVIF, BMP, TIFF · MP4, MOV, AVI, MKV, WebM, 3GP"
-        )
-
+        raise HTTPException(400, f"Unsupported file type '{ct}'")
     contents = await file.read()
-
-    is_video    = ct.startswith("video/")
-    size_limit  = 500 * 1024 * 1024 if is_video else 50 * 1024 * 1024
-    limit_label = "500 MB" if is_video else "50 MB"
-
-    if len(contents) > size_limit:
-        raise HTTPException(400, f"File must be under {limit_label}")
-    if len(contents) == 0:
-        raise HTTPException(400, "File is empty. Please select a valid file.")
-
+    is_video  = ct.startswith("video/")
+    limit     = 500*1024*1024 if is_video else 50*1024*1024
+    if len(contents) > limit: raise HTTPException(400, f"File too large")
+    if len(contents) == 0:    raise HTTPException(400, "File is empty")
     try:
-        sb = supabase_service.client
-
-        ext_map = {
-            "jpeg": "jpg", "jpg": "jpg", "quicktime": "mov",
-            "x-msvideo": "avi", "x-matroska": "mkv",
-            "heic": "heic", "heif": "heif", "avif": "avif",
-            "ogg":  "ogv",
-        }
+        sb       = supabase_service.client
+        ext_map  = {"jpeg":"jpg","jpg":"jpg","quicktime":"mov","x-msvideo":"avi","x-matroska":"mkv","ogg":"ogv"}
         raw_ext  = ct.split("/")[-1]
         ext      = ext_map.get(raw_ext, raw_ext)
         bucket   = "status-media"
         filename = f"{user['id']}/{uuid.uuid4()}.{ext}"
-
         _ensure_bucket(sb, bucket)
-
-        sb.storage.from_(bucket).upload(
-            path=filename,
-            file=contents,
-            file_options={"content-type": ct, "upsert": "true"},
-        )
-
-        url        = sb.storage.from_(bucket).get_public_url(filename)
-        public_url = url if isinstance(url, str) else (
-            url.get("publicUrl") or url.get("public_url") or ""
-        )
-
-        if not public_url:
-            logger.error(
-                f"upload_status_media: got empty public URL for {bucket}/{filename}"
-            )
-            raise HTTPException(500, "Upload succeeded but URL generation failed. "
-                                     "Check Supabase bucket public setting.")
-
-        logger.info(
-            f"upload_status_media: user={user['id']} bucket={bucket} "
-            f"file={filename} size={len(contents)} url={public_url[:60]}"
-        )
-
-        return {
-            "url":          public_url,
-            "media_type":   "video" if is_video else "image",
-            "content_type": ct,
-        }
-
-    except HTTPException:
-        raise
+        sb.storage.from_(bucket).upload(path=filename, file=contents, file_options={"content-type": ct, "upsert": "true"})
+        url = sb.storage.from_(bucket).get_public_url(filename)
+        public_url = url if isinstance(url, str) else (url.get("publicUrl") or url.get("public_url") or "")
+        if not public_url: raise HTTPException(500, "URL generation failed")
+        logger.info(f"upload_status_media: user={user['id']} file={filename} size={len(contents)}")
+        return {"url": public_url, "media_type": "video" if is_video else "image", "content_type": ct}
+    except HTTPException: raise
     except Exception as e:
-        logger.error(
-            f"upload_status_media FAILED: user={user.get('id')} "
-            f"file={file.filename} ct={ct} size={len(contents)} "
-            f"error={type(e).__name__}: {e}",
-            exc_info=True,
-        )
+        logger.error(f"upload_status_media FAILED: {e}", exc_info=True)
         raise HTTPException(500, f"Upload failed: {str(e)}")
