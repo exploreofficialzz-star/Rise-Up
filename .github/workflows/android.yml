@@ -48,7 +48,7 @@ jobs:
         run: flutter pub get
 
       - name: Decode keystore
-        working-directory: frontend/android
+        working-directory: frontend/android/app       # FIX: was frontend/android
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
@@ -65,7 +65,7 @@ jobs:
           storePassword=$STORE_PASSWORD
           keyPassword=$KEY_PASSWORD
           keyAlias=$KEY_ALIAS
-          storeFile=riseup-release.jks
+          storeFile=app/riseup-release.jks
           EOF
 
       - name: Decode google-services.json
