@@ -4,25 +4,6 @@ buildscript {
         google()
         mavenCentral()
     }
-
-    // Flutter 3.27.x ships flutter_tools/gradle as a composite build (via
-    // includeBuild in pluginManagement). That composite build carries Kotlin
-    // 1.9.x on its own classpath, which Gradle merges into the main buildscript
-    // classpath — and composite-build entries win version conflicts by default.
-    // Forcing here (inside buildscript {}) targets the merged buildscript
-    // classpath resolution directly, overriding what the composite brings in.
-    // pluginManagement.resolutionStrategy.eachPlugin cannot fix this because
-    // it only controls plugin-ID → artifact mapping, not classpath versioning.
-    configurations.all {
-        resolutionStrategy {
-            force "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
-            force "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
-            force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
-            force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
-            force "org.jetbrains.kotlin:kotlin-reflect:$kotlin_version"
-        }
-    }
-
     dependencies {
         classpath 'com.android.tools.build:gradle:8.3.0'
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
