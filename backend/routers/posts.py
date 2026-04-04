@@ -145,28 +145,7 @@ async def get_feed(
             p["is_following"]   = False
             enriched.append(p)
 
-        if enriched:
-            try:
-                author_ids = list({
-                    p.get("user_id") for p in enriched
-                    if p.get("user_id") and p["user_id"] != user["id"]
-                })
-                if author_ids:
-                    follows_res = (
-                        db.table("follows")
-                        .select("following_id")
-                        .eq("follower_id", user["id"])
-                        .in_("following_id", author_ids)
-                        .execute()
-                    )
-                    following_set = {
-                        f["following_id"] for f in (follows_res.data or [])
-                    }
-                    for p in enriched:
-                        p["is_following"] = p.get("user_id") in following_set
-            except Exception:
-                pass  # Non-fatal — is_following defaults to False
-
+        enriched = _enrich_following(db, enriched, user["id"])
         return {"posts": enriched, "tab": tab, "offset": offset}
 
     except Exception as e:
@@ -732,6 +711,38 @@ async def toggle_follow(target_id: str, user: dict = Depends(get_current_user)):
         logger.exception("toggle_follow failed: target_id=%s", target_id)
         raise HTTPException(500, str(e))
 
+# ── Shared helper ────────────────────────────────────────────────────────────
+
+def _enrich_following(db, posts: list, viewer_id: str) -> list:
+    """Set is_following on each post based on whether viewer follows the author.
+
+    Runs a single bulk query for all unique author IDs so it's O(1) DB calls
+    regardless of how many posts are in the list. Safe to call even when posts
+    is empty.
+    """
+    try:
+        author_ids = list({
+            p.get("user_id") for p in posts
+            if p.get("user_id") and p["user_id"] != viewer_id
+        })
+        if not author_ids:
+            return posts
+        follows_res = (
+            db.table("follows")
+            .select("following_id")
+            .eq("follower_id", viewer_id)
+            .in_("following_id", author_ids)
+            .execute()
+        )
+        following_set = {f["following_id"] for f in (follows_res.data or [])}
+        for p in posts:
+            uid = p.get("user_id")
+            if uid and uid != viewer_id:
+                p["is_following"] = uid in following_set
+    except Exception as e:
+        logger.warning("_enrich_following failed: %s", e)
+    return posts
+
 # ── User Profile & Posts ──────────────────────────────────────────────────────
 
 @router.get("/users/{user_id}/profile")
@@ -796,7 +807,12 @@ async def get_user_posts(
         db  = _db()
         res = (
             db.table("posts")
-            .select("*, post_likes(user_id), post_comments(id)")
+            .select(
+                "id, content, tag, media_url, media_type, link_url, link_title, "
+                "likes_count, shares_count, created_at, user_id, is_visible, "
+                "profiles!user_id(id, full_name, avatar_url, stage, is_verified, subscription_tier), "
+                "post_likes(user_id), post_saves(user_id), post_comments(id)"
+            )
             .eq("user_id", user_id)
             .eq("is_visible", True)
             .order("created_at", desc=True)
@@ -805,10 +821,16 @@ async def get_user_posts(
         )
         posts = res.data or []
         for p in posts:
-            likes             = p.get("post_likes") or []
-            p["is_liked"]     = any(l["user_id"] == user["id"] for l in likes)
-            p["likes_count"]  = len(likes)
+            likes               = p.get("post_likes") or []
+            saves               = p.get("post_saves") or []
+            p["is_liked"]       = any(l["user_id"] == user["id"] for l in likes)
+            p["is_saved"]       = any(s["user_id"] == user["id"] for s in saves)
+            p["likes_count"]    = len(likes)
             p["comments_count"] = len(p.get("post_comments") or [])
+            p["is_following"]   = False
+
+        # Enrich is_following for all unique authors
+        posts = _enrich_following(db, posts, user["id"])
         return {"posts": posts}
     except Exception as e:
         logger.exception("get_user_posts failed: user_id=%s", user_id)
@@ -834,7 +856,11 @@ async def get_user_liked_posts(
         posts_res = (
             db.table("posts")
             .select(
-                "*, profiles(full_name, stage, is_verified, subscription_tier), "
+                "id, content, tag, media_url, media_type, link_url, link_title, "
+                "likes_count, shares_count, created_at, user_id, is_visible, "
+                # FIX v3.7: added id + avatar_url — without these PostModel gets
+                # no avatar and no userId, so other users' cards render blank.
+                "profiles!user_id(id, full_name, avatar_url, stage, is_verified, subscription_tier), "
                 "post_likes(user_id), post_saves(user_id), post_comments(id)"
             )
             .in_("id", post_ids)
@@ -843,12 +869,16 @@ async def get_user_liked_posts(
         )
         posts = posts_res.data or []
         for p in posts:
-            saves             = p.get("post_saves") or []
-            likes             = p.get("post_likes") or []
-            p["is_liked"]     = True
-            p["likes_count"]  = len(likes)
-            p["is_saved"]     = any(s["user_id"] == user["id"] for s in saves)
+            saves               = p.get("post_saves") or []
+            likes               = p.get("post_likes") or []
+            p["is_liked"]       = True
+            p["likes_count"]    = len(likes)
+            p["is_saved"]       = any(s["user_id"] == user["id"] for s in saves)
             p["comments_count"] = len(p.get("post_comments") or [])
+            p["is_following"]   = False
+
+        # FIX v3.7: enrich is_following so Follow/Following button is correct
+        posts = _enrich_following(db, posts, user["id"])
         return {"posts": posts}
     except Exception as e:
         logger.exception("get_user_liked_posts failed: user_id=%s", user_id)
