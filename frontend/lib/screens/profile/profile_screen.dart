@@ -1,18 +1,17 @@
 // frontend/lib/screens/profile/profile_screen.dart
-// v4.0 — Cached, Instant-Load, Rich Feed (matches HomeScreen quality)
+// v4.1 — Production-ready: cached avatar, post-author patch, no "Your Name" flash
 //
-// ARCHITECTURE:
-//  · _restoreCache()  → runs on initState — instantly paints cached data
-//  · _silentRefresh() → runs after first frame — fetches fresh data quietly
-//  · AutomaticKeepAliveClientMixin on _ProfilePostsTab → tabs never die
-//  · videoPreloadManager → preloads upcoming video posts (same as HomeScreen)
-//  · PostCard / PostModel imported from home_screen.dart → identical feed UX
-//  · Skeleton shimmer (_PSh) → only shown when NO cache exists at all
-//  · kIsWeb guard → safe on web, android, ios
-//  · RefreshIndicator → manual pull-to-refresh always available
+// FIXES vs v4.0:
+//  · AppBar title suppressed until real data loads (no "Your Name" flash)
+//  · Avatar uses CachedNetworkImage for instant repeat loads
+//  · _patchPostAuthors() fills in real name + avatar on every post
+//    where PostModel.name == 'User' / empty and userId matches current user
+//  · NOTE: PostModel.name and PostModel.avatarUrl must be non-final (var)
+//    in home_screen.dart for the patch to compile.
 
 import 'dart:convert';
 import 'dart:io';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -26,7 +25,7 @@ import '../../services/api_service.dart';
 import '../home/home_screen.dart' show PostModel, PostCard, videoPreloadManager;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Stage helper (local — slightly different labels from home)
+// Stage helper
 // ─────────────────────────────────────────────────────────────────────────────
 class StageInfo {
   static Map<String, dynamic> get(String stage) {
@@ -44,7 +43,7 @@ class StageInfo {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Shimmer building block  (mirrors _Sh in home_screen.dart)
+// Shimmer building block
 // ─────────────────────────────────────────────────────────────────────────────
 class _PSh extends StatelessWidget {
   const _PSh({this.w, required this.h, this.r = 8, this.circle = false});
@@ -65,10 +64,8 @@ class _PSh extends StatelessWidget {
       ),
     )
         .animate(onPlay: (c) => c.repeat())
-        .shimmer(
-          duration: 1200.ms,
-          color: dark ? Colors.white10 : Colors.white70,
-        );
+        .shimmer(duration: 1200.ms,
+                 color: dark ? Colors.white10 : Colors.white70);
   }
 }
 
@@ -96,7 +93,6 @@ class _ProfileHeaderSkeleton extends StatelessWidget {
         crossAxisAlignment:
             isCompact ? CrossAxisAlignment.start : CrossAxisAlignment.center,
         children: [
-          // Avatar + stats row
           if (isCompact)
             Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
               const _PSh(w: 76, h: 76, circle: true),
@@ -104,11 +100,7 @@ class _ProfileHeaderSkeleton extends StatelessWidget {
               Expanded(
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: const [
-                    _StatSkel(),
-                    _StatSkel(),
-                    _StatSkel(),
-                  ],
+                  children: const [_StatSkel(), _StatSkel(), _StatSkel()],
                 ),
               ),
             ])
@@ -122,7 +114,6 @@ class _ProfileHeaderSkeleton extends StatelessWidget {
                 _StatSkel(),
               ]),
             ]),
-
           const SizedBox(height: 16),
           Row(
             mainAxisAlignment: isCompact
@@ -137,9 +128,8 @@ class _ProfileHeaderSkeleton extends StatelessWidget {
           const SizedBox(height: 10),
           const _PSh(h: 12),
           const SizedBox(height: 4),
-          _PSh(w: MediaQuery.of(ctx).size.width * .55, h: 12),
+          const _PSh(w: 200, h: 12),
           const SizedBox(height: 16),
-          // Action buttons
           Row(children: const [
             Expanded(child: _PSh(h: 36, r: 10)),
             SizedBox(width: 8),
@@ -148,7 +138,6 @@ class _ProfileHeaderSkeleton extends StatelessWidget {
             _PSh(w: 58, h: 36, r: 10),
           ]),
           const SizedBox(height: 16),
-          // Feature tiles
           Row(children: const [
             Expanded(child: _PSh(h: 58, r: 10)),
             SizedBox(width: 8),
@@ -175,7 +164,7 @@ class _StatSkel extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Post card skeleton  (mirrors _PostCardSkeleton in home_screen.dart)
+// Post card skeleton
 // ─────────────────────────────────────────────────────────────────────────────
 class _ProfilePostSkeleton extends StatelessWidget {
   final bool isDark;
@@ -183,7 +172,7 @@ class _ProfilePostSkeleton extends StatelessWidget {
 
   @override
   Widget build(BuildContext ctx) {
-    final w = MediaQuery.of(ctx).size.width;
+    final w  = MediaQuery.of(ctx).size.width;
     final bg = isDark ? AppColors.bgCard : Colors.white;
     return Container(
       color:   bg,
@@ -192,13 +181,12 @@ class _ProfilePostSkeleton extends StatelessWidget {
         Row(children: [
           const _PSh(w: 44, h: 44, circle: true),
           const SizedBox(width: 10),
-          Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              _PSh(w: w * .35, h: 13),
-              const SizedBox(height: 5),
-              _PSh(w: w * .25, h: 11),
-            ]),
-          ),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+            _PSh(w: w * .35, h: 13),
+            const SizedBox(height: 5),
+            _PSh(w: w * .25, h: 11),
+          ])),
           const _PSh(w: 60, h: 26, r: 13),
         ]),
         const SizedBox(height: 14),
@@ -208,10 +196,8 @@ class _ProfilePostSkeleton extends StatelessWidget {
         const SizedBox(height: 6),
         _PSh(w: w * .55, h: 13),
         const SizedBox(height: 12),
-        AspectRatio(
-          aspectRatio: 16 / 9,
-          child: _PSh(h: double.infinity, r: 12),
-        ),
+        AspectRatio(aspectRatio: 16 / 9,
+            child: _PSh(h: double.infinity, r: 12)),
         const SizedBox(height: 14),
         Row(children: const [
           _PSh(w: 55, h: 18, r: 9), SizedBox(width: 18),
@@ -243,28 +229,24 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
 
-  // ── Cache keys ────────────────────────────────────────────────────────
   static const _kProfile    = 'riseup_my_profile_v2';
   static const _kPosts      = 'riseup_my_posts_v2';
   static const _kLikedPosts = 'riseup_my_liked_v2';
-  static const _kQuota      = 'riseup_ai_quota_v1'; // shared w/ HomeScreen
+  static const _kQuota      = 'riseup_ai_quota_v1';
 
   late TabController _tabCtrl;
 
-  Map<String, dynamic> _profile   = {};
+  Map<String, dynamic> _profile    = {};
   List<PostModel>      _posts      = [];
   List<PostModel>      _likedPosts = [];
 
-  /// true = no cache yet → shows header + post skeleton
-  bool _loading    = true;
-  /// true = background refresh in progress (tiny spinner in AppBar)
-  bool _refreshing = false;
+  bool _loading    = true;   // no cache yet → show skeleton
+  bool _refreshing = false;  // background refresh spinner
 
-  String             _currentUserId = '';
-  Map<String, bool>  _followState   = {};
+  String            _currentUserId = '';
+  Map<String, bool> _followState   = {};
 
-  // AI quota (same key as HomeScreen so count is shared)
-  int  _aiUsed   = 0;
+  int  _aiUsed  = 0;
   static const int _freeLimit = 3;
 
   bool      _isPremium  = false;
@@ -276,9 +258,8 @@ class _ProfileScreenState extends State<ProfileScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _tabCtrl = TabController(length: 2, vsync: this);
-    _restoreCache();   // instant
-    WidgetsBinding.instance
-        .addPostFrameCallback((_) => _silentRefresh()); // background
+    _restoreCache();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _silentRefresh());
   }
 
   @override
@@ -294,49 +275,49 @@ class _ProfileScreenState extends State<ProfileScreen>
     if (state == AppLifecycleState.resumed && mounted) _silentRefresh();
   }
 
-  // ── Step 1: instant cache restore ────────────────────────────────────
+  // ── Step 1: instant cache restore ─────────────────────────────────────
   Future<void> _restoreCache() async {
     try {
       final prefs = await SharedPreferences.getInstance();
 
-      // ── Profile ──────────────────────────────────────────────────────
+      // Profile
       final pStr = prefs.getString(_kProfile);
       if (pStr != null) {
         final p = Map<String, dynamic>.from(jsonDecode(pStr) as Map);
-        if (mounted) {
-          setState(() {
-            _profile   = p;
-            _isPremium = p['subscription_tier'] == 'premium' ||
-                         p['is_premium'] == true;
-            _loading   = false; // cache exists → no skeleton
-          });
-        }
+        if (mounted) setState(() {
+          _profile   = p;
+          _isPremium = p['subscription_tier'] == 'premium' ||
+                       p['is_premium'] == true;
+          _loading   = false;
+        });
       }
 
-      // ── Posts ─────────────────────────────────────────────────────────
+      // Posts
       final postsStr = prefs.getString(_kPosts);
       if (postsStr != null) {
-        final raws = jsonDecode(postsStr) as List;
-        final list = raws
+        final list = (jsonDecode(postsStr) as List)
             .map((x) => PostModel.fromApi(Map<String, dynamic>.from(x as Map)))
             .toList();
         if (mounted && list.isNotEmpty) {
           setState(() => _posts = list);
+          _patchPostAuthors(list, likedList: []);
           _preloadVideos(list);
         }
       }
 
-      // ── Liked posts ────────────────────────────────────────────────────
+      // Liked posts
       final likedStr = prefs.getString(_kLikedPosts);
       if (likedStr != null) {
-        final raws = jsonDecode(likedStr) as List;
-        final list = raws
+        final list = (jsonDecode(likedStr) as List)
             .map((x) => PostModel.fromApi(Map<String, dynamic>.from(x as Map)))
             .toList();
-        if (mounted && list.isNotEmpty) setState(() => _likedPosts = list);
+        if (mounted && list.isNotEmpty) {
+          setState(() => _likedPosts = list);
+          _patchPostAuthors([], likedList: list);
+        }
       }
 
-      // ── AI quota (shared) ──────────────────────────────────────────────
+      // AI quota
       final qStr = prefs.getString(_kQuota);
       if (qStr != null) {
         final sv    = Map<String, dynamic>.from(jsonDecode(qStr) as Map);
@@ -347,18 +328,16 @@ class _ProfileScreenState extends State<ProfileScreen>
       }
     } catch (_) {}
 
-    // Load ad only after premium status is known
     _loadAd();
   }
 
-  // ── Step 2: silent background fetch ───────────────────────────────────
+  // ── Step 2: silent background fetch ────────────────────────────────────
   Future<void> _silentRefresh() async {
     if (_refreshing || !mounted) return;
     if (mounted) setState(() => _refreshing = true);
     await _fetchAndApply();
   }
 
-  // ── Pull-to-refresh ────────────────────────────────────────────────────
   Future<void> _pullRefresh() => _fetchAndApply();
 
   Future<void> _fetchAndApply() async {
@@ -373,12 +352,12 @@ class _ProfileScreenState extends State<ProfileScreen>
         api.getLikedPosts(userId),
       ]);
 
-      // ── Profile merge (same logic as v3) ─────────────────────────────
+      // Profile merge
       final profileRes  = results[0] as Map? ?? {};
       final profileData =
           (profileRes['profile'] as Map?)?.cast<String, dynamic>() ?? {};
-      final statsData =
-          (profileRes['stats'] as Map?)?.cast<String, dynamic>() ?? {};
+      final statsData   =
+          (profileRes['stats']   as Map?)?.cast<String, dynamic>() ?? {};
       final merged = <String, dynamic>{
         ...profileData,
         'followers_count': profileData['followers_count'] ??
@@ -391,9 +370,8 @@ class _ProfileScreenState extends State<ProfileScreen>
             0,
       };
 
-      // ── Posts ──────────────────────────────────────────────────────────
-      final rawPosts  = (results[1] as Map?)?['posts'] as List? ?? [];
-      final rawLiked  = (results[2] as Map?)?['posts'] as List? ?? [];
+      final rawPosts = (results[1] as Map?)?['posts'] as List? ?? [];
+      final rawLiked = (results[2] as Map?)?['posts'] as List? ?? [];
 
       final posts = rawPosts
           .map((x) => PostModel.fromApi(x as Map<String, dynamic>))
@@ -402,7 +380,15 @@ class _ProfileScreenState extends State<ProfileScreen>
           .map((x) => PostModel.fromApi(x as Map<String, dynamic>))
           .toList();
 
-      // ── Follow state ───────────────────────────────────────────────────
+      // ── Patch author name/avatar before rendering ──────────────────────
+      // This ensures posts that return 'User' / empty name show the real
+      // profile data. Requires PostModel.name and PostModel.avatarUrl
+      // to be non-final (var) in home_screen.dart.
+      final patchedProfile = merged;
+      _patchPostAuthors(posts, likedList: liked,
+          overrideProfile: patchedProfile, overrideUserId: userId);
+
+      // Follow state
       final fw = <String, bool>{};
       for (final p in [...posts, ...liked]) {
         if (p.userId.isNotEmpty) fw[p.userId] = p.isFollowing;
@@ -410,34 +396,69 @@ class _ProfileScreenState extends State<ProfileScreen>
 
       if (mounted) {
         setState(() {
-          _profile      = merged;
-          _posts        = posts;
-          _likedPosts   = liked;
-          _followState  = fw;
-          _isPremium    = merged['subscription_tier'] == 'premium' ||
-                          merged['is_premium'] == true;
-          _loading      = false;
-          _refreshing   = false;
+          _profile     = merged;
+          _posts       = posts;
+          _likedPosts  = liked;
+          _followState = fw;
+          _isPremium   = merged['subscription_tier'] == 'premium' ||
+                         merged['is_premium'] == true;
+          _loading     = false;
+          _refreshing  = false;
         });
         _preloadVideos(posts);
       }
 
-      // ── Persist to cache ───────────────────────────────────────────────
+      // Persist to cache
       final prefs = await SharedPreferences.getInstance();
       await Future.wait([
-        prefs.setString(_kProfile,
-            jsonEncode(merged)),
-        prefs.setString(_kPosts,
-            jsonEncode(rawPosts.take(40).toList())),
-        prefs.setString(_kLikedPosts,
-            jsonEncode(rawLiked.take(40).toList())),
+        prefs.setString(_kProfile,    jsonEncode(merged)),
+        prefs.setString(_kPosts,      jsonEncode(rawPosts.take(40).toList())),
+        prefs.setString(_kLikedPosts, jsonEncode(rawLiked.take(40).toList())),
       ]);
+
+      if (!_isPremium) _loadAd();
     } catch (_) {
       if (mounted) setState(() { _loading = false; _refreshing = false; });
     }
   }
 
-  // ── Video preloading (same as HomeScreen) ──────────────────────────────
+  // ── Post author patch ──────────────────────────────────────────────────
+  // Fills in the real name + avatar on posts whose author data came through
+  // as 'User' / empty string (API join issue in PostModel.fromApi).
+  // For own posts:  always patch with current user profile data.
+  // For liked tab:  only patch posts belonging to the current user.
+  void _patchPostAuthors(
+    List<PostModel> myPosts, {
+    required List<PostModel> likedList,
+    Map<String, dynamic>?    overrideProfile,
+    String?                  overrideUserId,
+  }) {
+    final prof   = overrideProfile ?? _profile;
+    final uid    = overrideUserId  ?? _currentUserId;
+    final myName = prof['full_name']?.toString() ?? '';
+    final myAvt  = prof['avatar_url']?.toString() ?? '';
+    if (myName.isEmpty) return;
+
+    for (final p in myPosts) {
+      // All posts in "my posts" tab belong to the current user
+      if (_needsPatch(p)) {
+        p.name      = myName;
+        p.avatarUrl = myAvt;
+      }
+    }
+    for (final p in likedList) {
+      // Only patch own posts in the liked feed
+      if (p.userId == uid && _needsPatch(p)) {
+        p.name      = myName;
+        p.avatarUrl = myAvt;
+      }
+    }
+  }
+
+  bool _needsPatch(PostModel p) =>
+      p.name.isEmpty || p.name == 'User' || p.name == 'user';
+
+  // ── Video preloading ────────────────────────────────────────────────────
   void _preloadVideos(List<PostModel> posts) {
     for (int i = 0; i < posts.length && i < 5; i++) {
       final p = posts[i];
@@ -459,7 +480,10 @@ class _ProfileScreenState extends State<ProfileScreen>
         request: const AdRequest(),
         listener: BannerAdListener(
           onAdLoaded: (ad) {
-            if (mounted) setState(() { _bannerAd = ad as BannerAd; _isAdLoaded = true; });
+            if (mounted) setState(() {
+              _bannerAd   = ad as BannerAd;
+              _isAdLoaded = true;
+            });
           },
           onAdFailedToLoad: (ad, _) {
             ad.dispose();
@@ -500,7 +524,6 @@ class _ProfileScreenState extends State<ProfileScreen>
   }
 
   // ── Post action callbacks ──────────────────────────────────────────────
-
   Future<void> _onLike(PostModel post) async {
     HapticFeedback.mediumImpact();
     setState(() {
@@ -554,25 +577,23 @@ class _ProfileScreenState extends State<ProfileScreen>
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
             child: Text('Share Post',
-                style: TextStyle(
-                    fontSize: 15, fontWeight: FontWeight.w700,
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700,
                     color: dark ? Colors.white : Colors.black87)),
           ),
           ListTile(
-            leading: Container(
-              width: 40, height: 40,
-              decoration: BoxDecoration(
-                  color: AppColors.primary.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(10)),
-              child: const Icon(Icons.link_rounded, color: AppColors.primary, size: 20),
-            ),
+            leading: Container(width: 40, height: 40,
+                decoration: BoxDecoration(
+                    color: AppColors.primary.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(10)),
+                child: const Icon(Icons.link_rounded,
+                    color: AppColors.primary, size: 20)),
             title: Text('Copy post link',
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
                     color: dark ? Colors.white : Colors.black87)),
             onTap: () {
               Navigator.pop(ctx);
-              Clipboard.setData(
-                  ClipboardData(text: 'https://riseup.app/post/${post.id}'));
+              Clipboard.setData(ClipboardData(
+                  text: 'https://riseup.app/post/${post.id}'));
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                   content: Text('Link copied'),
                   backgroundColor: AppColors.success,
@@ -580,13 +601,12 @@ class _ProfileScreenState extends State<ProfileScreen>
             },
           ),
           ListTile(
-            leading: Container(
-              width: 40, height: 40,
-              decoration: BoxDecoration(
-                  color: Colors.blue.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(10)),
-              child: const Icon(Icons.copy_rounded, color: Colors.blue, size: 20),
-            ),
+            leading: Container(width: 40, height: 40,
+                decoration: BoxDecoration(
+                    color: Colors.blue.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(10)),
+                child: const Icon(Icons.copy_rounded,
+                    color: Colors.blue, size: 20)),
             title: Text('Copy text',
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
                     color: dark ? Colors.white : Colors.black87)),
@@ -604,7 +624,8 @@ class _ProfileScreenState extends State<ProfileScreen>
       ),
     );
     api.sharePost(post.id).catchError((_) {
-      if (mounted) setState(() => post.shares = (post.shares - 1).clamp(0, 999999));
+      if (mounted) setState(() =>
+          post.shares = (post.shares - 1).clamp(0, 999999));
     });
   }
 
@@ -655,7 +676,6 @@ class _ProfileScreenState extends State<ProfileScreen>
       _posts.removeWhere((p) => p.id == id);
       _likedPosts.removeWhere((p) => p.id == id);
     });
-    // Purge from cache so it stays gone after restart
     SharedPreferences.getInstance().then((prefs) {
       final raw = _posts.map((p) => {
         'id': p.id, 'content': p.content, 'tag': p.tag,
@@ -682,11 +702,16 @@ class _ProfileScreenState extends State<ProfileScreen>
     final textColor    = isDark ? Colors.white : Colors.black87;
     final subColor     = isDark ? Colors.white54 : Colors.black45;
 
-    final name      = _profile['full_name']?.toString() ?? 'Your Name';
-    final stage     = _profile['stage']?.toString() ?? 'survival';
-    final stageInfo = StageInfo.get(stage);
+    // ── FIX: only show the real name once it's loaded from cache/API.
+    // Suppresses the "Your Name" flash on first paint.
+    final hasProfile = _profile.isNotEmpty;
+    final name       = hasProfile
+        ? (_profile['full_name']?.toString() ?? '')
+        : '';
+    final stage      = _profile['stage']?.toString() ?? 'survival';
+    final stageInfo  = StageInfo.get(stage);
 
-    final sw       = MediaQuery.of(context).size.width;
+    final sw        = MediaQuery.of(context).size.width;
     final isTablet  = sw > 600;
     final isDesktop = sw > 1024;
 
@@ -700,11 +725,20 @@ class _ProfileScreenState extends State<ProfileScreen>
           icon: Icon(Iconsax.arrow_left, color: textColor),
           onPressed: _goBack,
         ),
-        title: Text(name,
-            style: TextStyle(
-                fontSize: 16, fontWeight: FontWeight.w700, color: textColor)),
+        // ── FIX: AnimatedSwitcher fades the name in once available
+        title: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 250),
+          child: name.isNotEmpty
+              ? Text(
+                  name,
+                  key: ValueKey(name),
+                  style: TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.w700,
+                      color: textColor),
+                )
+              : const SizedBox.shrink(key: ValueKey('empty')),
+        ),
         actions: [
-          // Tiny spinner shows during silent background refresh
           if (_refreshing)
             Padding(
               padding: const EdgeInsets.only(right: 4),
@@ -729,18 +763,16 @@ class _ProfileScreenState extends State<ProfileScreen>
         ),
       ),
       body: Column(children: [
-        // Banner ad (non-premium, mobile/tablet only)
+        // Banner ad (non-premium, mobile only)
         if (!_isPremium && _isAdLoaded && _bannerAd != null && !kIsWeb)
           Container(
             color:   cardColor,
             padding: const EdgeInsets.symmetric(vertical: 8),
-            child: Center(
-              child: SizedBox(
-                width:  _bannerAd!.size.width.toDouble(),
-                height: _bannerAd!.size.height.toDouble(),
-                child:  AdWidget(ad: _bannerAd!),
-              ),
-            ),
+            child: Center(child: SizedBox(
+              width:  _bannerAd!.size.width.toDouble(),
+              height: _bannerAd!.size.height.toDouble(),
+              child:  AdWidget(ad: _bannerAd!),
+            )),
           ),
         Expanded(
           child: _buildContent(
@@ -761,7 +793,7 @@ class _ProfileScreenState extends State<ProfileScreen>
     required String name, required String stage,
     required Map<String, dynamic> stageInfo,
   }) {
-    // ── Tablet / Desktop two-column ──────────────────────────────────────
+    // Tablet / Desktop two-column
     if (isTablet || isDesktop) {
       return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Container(
@@ -795,14 +827,14 @@ class _ProfileScreenState extends State<ProfileScreen>
         ),
         Expanded(
           child: _buildPostsSection(
-            isDark: isDark, cardColor: cardColor, borderColor: borderColor,
-            textColor: textColor, subColor: subColor,
+            isDark: isDark, cardColor: cardColor,
+            borderColor: borderColor, textColor: textColor, subColor: subColor,
           ),
         ),
       ]);
     }
 
-    // ── Mobile single-column ─────────────────────────────────────────────
+    // Mobile single-column
     return RefreshIndicator(
       onRefresh: _pullRefresh,
       color: AppColors.primary,
@@ -879,13 +911,12 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
   }
 
-  // ── Profile header (same design, unchanged) ────────────────────────────
+  // ── Profile header ─────────────────────────────────────────────────────
   Widget _buildProfileHeader({
     required bool isDark, required Color cardColor, required Color surfaceColor,
     required Color borderColor, required Color textColor, required Color subColor,
     required String name, required String stage,
-    required Map<String, dynamic> stageInfo, required bool isCompact,
-    Key? key,
+    required Map<String, dynamic> stageInfo, required bool isCompact, Key? key,
   }) {
     final isPremium      = _profile['subscription_tier'] == 'premium' ||
                            _profile['is_premium'] == true;
@@ -900,7 +931,7 @@ class _ProfileScreenState extends State<ProfileScreen>
         crossAxisAlignment:
             isCompact ? CrossAxisAlignment.start : CrossAxisAlignment.center,
         children: [
-          // ── Avatar + stats ─────────────────────────────────────────────
+          // Avatar + stats
           if (isCompact)
             Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
               _buildAvatar(name: name,
@@ -935,13 +966,12 @@ class _ProfileScreenState extends State<ProfileScreen>
 
           const SizedBox(height: 16),
 
-          // ── Name + badge ───────────────────────────────────────────────
+          // Name + badge
           if (isCompact)
             Row(children: [
               Flexible(
                 child: Text(name,
-                    style: TextStyle(
-                        fontSize: 15, fontWeight: FontWeight.w700,
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700,
                         color: textColor),
                     overflow: TextOverflow.ellipsis),
               ),
@@ -952,8 +982,7 @@ class _ProfileScreenState extends State<ProfileScreen>
           else
             Column(children: [
               Text(name,
-                  style: TextStyle(
-                      fontSize: 18, fontWeight: FontWeight.w700,
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700,
                       color: textColor)),
               const SizedBox(height: 8),
               Row(mainAxisAlignment: MainAxisAlignment.center, children: [
@@ -964,7 +993,7 @@ class _ProfileScreenState extends State<ProfileScreen>
 
           const SizedBox(height: 8),
 
-          // ── Bio ────────────────────────────────────────────────────────
+          // Bio
           Text(
             _profile['bio']?.toString().isNotEmpty == true
                 ? _profile['bio'].toString()
@@ -973,7 +1002,7 @@ class _ProfileScreenState extends State<ProfileScreen>
             textAlign: isCompact ? TextAlign.left : TextAlign.center,
           ),
 
-          // ── Status ─────────────────────────────────────────────────────
+          // Status
           if ((_profile['status']?.toString() ?? '').isNotEmpty) ...[
             const SizedBox(height: 8),
             Row(
@@ -995,7 +1024,7 @@ class _ProfileScreenState extends State<ProfileScreen>
             ),
           ],
 
-          // ── Country ────────────────────────────────────────────────────
+          // Country
           if ((_profile['country']?.toString() ?? '').isNotEmpty) ...[
             const SizedBox(height: 6),
             Row(
@@ -1013,23 +1042,19 @@ class _ProfileScreenState extends State<ProfileScreen>
 
           const SizedBox(height: 16),
 
-          // ── Action buttons ─────────────────────────────────────────────
+          // Action buttons
           if (isCompact)
             Row(children: [
-              Expanded(
-                child: _buildActionButton('Edit Profile',
-                    onTap: () => context.push('/edit-profile')
-                        .then((_) => _silentRefresh()),
-                    surfaceColor: surfaceColor, borderColor: borderColor,
-                    textColor: textColor),
-              ),
+              Expanded(child: _buildActionButton('Edit Profile',
+                  onTap: () => context.push('/edit-profile')
+                      .then((_) => _silentRefresh()),
+                  surfaceColor: surfaceColor, borderColor: borderColor,
+                  textColor: textColor)),
               const SizedBox(width: 8),
-              Expanded(
-                child: _buildActionButton('Share Profile',
-                    onTap: _shareProfile,
-                    surfaceColor: surfaceColor, borderColor: borderColor,
-                    textColor: textColor),
-              ),
+              Expanded(child: _buildActionButton('Share Profile',
+                  onTap: _shareProfile,
+                  surfaceColor: surfaceColor, borderColor: borderColor,
+                  textColor: textColor)),
               if (!isPremium) ...[
                 const SizedBox(width: 8),
                 _buildProButton(),
@@ -1055,7 +1080,7 @@ class _ProfileScreenState extends State<ProfileScreen>
 
           const SizedBox(height: 16),
 
-          // ── Feature tiles ──────────────────────────────────────────────
+          // Feature tiles
           Row(children: [
             _ProfileFeatureTile('🎨', 'Portfolio', () => context.push('/portfolio')),
             const SizedBox(width: 8),
@@ -1070,6 +1095,7 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
   }
 
+  // ── FIX: use CachedNetworkImage for instant repeat loads ────────────────
   Widget _buildAvatar({
     required String name, required String? avatarUrl,
     required Color cardColor, required bool isCompact,
@@ -1077,6 +1103,12 @@ class _ProfileScreenState extends State<ProfileScreen>
     final size    = isCompact ? 76.0 : 100.0;
     final initial = name.isNotEmpty ? name[0].toUpperCase() : '👤';
     final fSz     = isCompact ? 32.0 : 40.0;
+
+    Widget fallback = Center(
+      child: Text(initial,
+          style: TextStyle(fontSize: fSz, color: Colors.white,
+              fontWeight: FontWeight.w700)),
+    );
 
     return Stack(children: [
       Container(
@@ -1088,15 +1120,14 @@ class _ProfileScreenState extends State<ProfileScreen>
         ),
         child: ClipOval(
           child: avatarUrl != null && avatarUrl.isNotEmpty
-              ? Image.network(avatarUrl, fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => Center(
-                      child: Text(initial,
-                          style: TextStyle(fontSize: fSz, color: Colors.white,
-                              fontWeight: FontWeight.w700))))
-              : Center(
-                  child: Text(initial,
-                      style: TextStyle(fontSize: fSz, color: Colors.white,
-                          fontWeight: FontWeight.w700))),
+              ? CachedNetworkImage(
+                  imageUrl:    avatarUrl,
+                  fit:         BoxFit.cover,
+                  // Show gradient fallback while loading (no flash)
+                  placeholder: (_, __) => fallback,
+                  errorWidget: (_, __, ___) => fallback,
+                )
+              : fallback,
         ),
       ),
       Positioned(
@@ -1108,7 +1139,8 @@ class _ProfileScreenState extends State<ProfileScreen>
             width:  isCompact ? 22 : 28,
             height: isCompact ? 22 : 28,
             decoration: BoxDecoration(
-              color: AppColors.primary, shape: BoxShape.circle,
+              color:  AppColors.primary,
+              shape:  BoxShape.circle,
               border: Border.all(color: cardColor, width: 2),
             ),
             child: Icon(Icons.camera_alt_rounded, color: Colors.white,
@@ -1126,7 +1158,8 @@ class _ProfileScreenState extends State<ProfileScreen>
       decoration: BoxDecoration(
           color: c.withOpacity(0.15), borderRadius: BorderRadius.circular(10)),
       child: Text('${si['emoji']} ${si['label']}',
-          style: TextStyle(fontSize: 10, color: c, fontWeight: FontWeight.w600)),
+          style: TextStyle(fontSize: 10, color: c,
+              fontWeight: FontWeight.w600)),
     );
   }
 
@@ -1138,8 +1171,8 @@ class _ProfileScreenState extends State<ProfileScreen>
           borderRadius: BorderRadius.circular(8),
         ),
         child: const Text('⭐ PRO',
-            style: TextStyle(
-                color: Colors.white, fontSize: 9, fontWeight: FontWeight.w700)),
+            style: TextStyle(color: Colors.white, fontSize: 9,
+                fontWeight: FontWeight.w700)),
       );
 
   Widget _buildActionButton(String label, {
@@ -1159,8 +1192,7 @@ class _ProfileScreenState extends State<ProfileScreen>
           ),
           child: Center(
             child: Text(label,
-                style: TextStyle(
-                    fontSize: 13, fontWeight: FontWeight.w600,
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
                     color: textColor)),
           ),
         ),
@@ -1177,13 +1209,11 @@ class _ProfileScreenState extends State<ProfileScreen>
             borderRadius: BorderRadius.circular(10),
           ),
           child: const Text('⭐ Pro',
-              style: TextStyle(
-                  color: Colors.white, fontSize: 13,
+              style: TextStyle(color: Colors.white, fontSize: 13,
                   fontWeight: FontWeight.w700)),
         ),
       );
 
-  // Tablet/Desktop posts section
   Widget _buildPostsSection({
     required bool isDark, required Color cardColor,
     required Color borderColor, required Color textColor, required Color subColor,
@@ -1240,7 +1270,7 @@ class _ProfileScreenState extends State<ProfileScreen>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Profile posts tab  (AutomaticKeepAliveClientMixin — tab survives switching)
+// Profile posts tab  (AutomaticKeepAliveClientMixin)
 // ─────────────────────────────────────────────────────────────────────────────
 class _ProfilePostsTab extends StatefulWidget {
   final List<PostModel>      posts;
@@ -1255,16 +1285,16 @@ class _ProfilePostsTab extends StatefulWidget {
 
   const _ProfilePostsTab({
     super.key,
-    required this.posts,        required this.isLoading,
-    required this.isLikedTab,   required this.isDark,
-    required this.cardColor,    required this.borderColor,
-    required this.textColor,    required this.subColor,
-    required this.isPremium,    required this.aiRemaining,
-    required this.currentUserId,required this.followState,
-    required this.onLike,       required this.onSave,
-    required this.onComment,    required this.onShare,
-    required this.onAskAI,      required this.onPrivateChat,
-    required this.onFollow,     required this.onPostDeleted,
+    required this.posts,         required this.isLoading,
+    required this.isLikedTab,    required this.isDark,
+    required this.cardColor,     required this.borderColor,
+    required this.textColor,     required this.subColor,
+    required this.isPremium,     required this.aiRemaining,
+    required this.currentUserId, required this.followState,
+    required this.onLike,        required this.onSave,
+    required this.onComment,     required this.onShare,
+    required this.onAskAI,       required this.onPrivateChat,
+    required this.onFollow,      required this.onPostDeleted,
   });
 
   @override
@@ -1282,7 +1312,6 @@ class _ProfilePostsTabState extends State<_ProfilePostsTab>
   void initState() {
     super.initState();
     _sc.addListener(_onScroll);
-    // Kick off video preloading for visible posts
     WidgetsBinding.instance.addPostFrameCallback((_) => _preloadAhead(0));
   }
 
@@ -1300,8 +1329,8 @@ class _ProfilePostsTabState extends State<_ProfilePostsTab>
 
   void _onScroll() {
     if (!_sc.hasClients) return;
-    const estH  = 480.0;
-    final idx   = (_sc.position.pixels / estH).floor();
+    const estH = 480.0;
+    final idx  = (_sc.position.pixels / estH).floor();
     _preloadAhead(idx + 1);
   }
 
@@ -1317,9 +1346,9 @@ class _ProfilePostsTabState extends State<_ProfilePostsTab>
 
   @override
   Widget build(BuildContext ctx) {
-    super.build(ctx); // required for AutomaticKeepAliveClientMixin
+    super.build(ctx);
 
-    // ── Skeleton ────────────────────────────────────────────────────────
+    // Skeleton
     if (widget.isLoading && widget.posts.isEmpty) {
       return ListView.separated(
         physics: const NeverScrollableScrollPhysics(),
@@ -1331,7 +1360,7 @@ class _ProfilePostsTabState extends State<_ProfilePostsTab>
       );
     }
 
-    // ── Empty state ──────────────────────────────────────────────────────
+    // Empty state
     if (widget.posts.isEmpty) {
       return Center(
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
@@ -1354,8 +1383,7 @@ class _ProfilePostsTabState extends State<_ProfilePostsTab>
                     borderRadius: BorderRadius.circular(20)),
                 child: const Text('Create your first post',
                     style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600)),
+                        color: Colors.white, fontWeight: FontWeight.w600)),
               ),
             ),
           ],
@@ -1363,10 +1391,9 @@ class _ProfilePostsTabState extends State<_ProfilePostsTab>
       );
     }
 
-    // ── Post list with PostCard ──────────────────────────────────────────
     return ListView.separated(
       controller:  _sc,
-      cacheExtent: 2000, // keep ~3 screens alive, same as HomeScreen
+      cacheExtent: 2000,
       padding:     EdgeInsets.zero,
       physics:     const AlwaysScrollableScrollPhysics(),
       itemCount:   widget.posts.length,
@@ -1415,8 +1442,8 @@ class _StatCol extends StatelessWidget {
   @override
   Widget build(BuildContext ctx) => Column(children: [
         Text(value,
-            style: TextStyle(
-                fontSize: 18, fontWeight: FontWeight.w800, color: textColor)),
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800,
+                color: textColor)),
         const SizedBox(height: 2),
         Text(label, style: TextStyle(fontSize: 11, color: subColor)),
       ]);
@@ -1443,8 +1470,7 @@ class _ProfileFeatureTile extends StatelessWidget {
             Text(emoji, style: const TextStyle(fontSize: 18)),
             const SizedBox(height: 2),
             Text(label,
-                style: TextStyle(
-                    fontSize: 10, fontWeight: FontWeight.w600,
+                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600,
                     color: isDark ? Colors.white70 : Colors.black54)),
           ]),
         ),
