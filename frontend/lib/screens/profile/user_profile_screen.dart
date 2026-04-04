@@ -61,8 +61,13 @@ class _UserHeaderSkeleton extends StatelessWidget {
   final bool  isDark;
   final Color card;
   final bool  isTablet;
-  const _UserHeaderSkeleton({required this.isDark, required this.card,
-      required this.isTablet});
+  // FIX #2: added super.key so callers can pass key: ValueKey('sk')
+  const _UserHeaderSkeleton({
+    super.key,
+    required this.isDark,
+    required this.card,
+    required this.isTablet,
+  });
 
   @override
   Widget build(BuildContext ctx) {
@@ -757,10 +762,13 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                       ),
                                       child: ClipOval(
                                         child: avatar != null && avatar.isNotEmpty
+                                            // FIX #1: errorBuilder → errorWidget
+                                            // (cached_network_image 3.4.x uses errorWidget,
+                                            //  not errorBuilder)
                                             ? CachedNetworkImage(
                                                 imageUrl: avatar,
                                                 fit: BoxFit.cover,
-                                                errorBuilder: (_, __, ___) =>
+                                                errorWidget: (_, __, ___) =>
                                                     _avatarFallback(name))
                                             : _avatarFallback(name),
                                       ),
