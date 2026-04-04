@@ -1,13 +1,13 @@
 // frontend/lib/screens/profile/profile_screen.dart
-// v4.1 — Production-ready: cached avatar, post-author patch, no "Your Name" flash
+// v4.2 — Production-ready: immutable PostModel patch
 //
-// FIXES vs v4.0:
-//  · AppBar title suppressed until real data loads (no "Your Name" flash)
-//  · Avatar uses CachedNetworkImage for instant repeat loads
-//  · _patchPostAuthors() fills in real name + avatar on every post
-//    where PostModel.name == 'User' / empty and userId matches current user
-//  · NOTE: PostModel.name and PostModel.avatarUrl must be non-final (var)
-//    in home_screen.dart for the patch to compile.
+// FIXES vs v4.1:
+//  · PostModel.name / avatarUrl are final — cannot be assigned directly.
+//    _patchMyPosts() and _patchLikedPosts() now RECONSTRUCT PostModel
+//    instances via _copyWithAuthor() instead of mutating fields.
+//  · _patchPostAuthors() removed; replaced with two pure helpers that
+//    return new lists (no side-effects, no compile errors).
+//  · All other behaviour (cache, shimmer, CachedNetworkImage, ads) preserved.
 
 import 'dart:convert';
 import 'dart:io';
@@ -240,8 +240,8 @@ class _ProfileScreenState extends State<ProfileScreen>
   List<PostModel>      _posts      = [];
   List<PostModel>      _likedPosts = [];
 
-  bool _loading    = true;   // no cache yet → show skeleton
-  bool _refreshing = false;  // background refresh spinner
+  bool _loading    = true;
+  bool _refreshing = false;
 
   String            _currentUserId = '';
   Map<String, bool> _followState   = {};
@@ -292,28 +292,28 @@ class _ProfileScreenState extends State<ProfileScreen>
         });
       }
 
-      // Posts
+      // Posts — patch author BEFORE setState so first render is correct
       final postsStr = prefs.getString(_kPosts);
       if (postsStr != null) {
-        final list = (jsonDecode(postsStr) as List)
+        final raw = (jsonDecode(postsStr) as List)
             .map((x) => PostModel.fromApi(Map<String, dynamic>.from(x as Map)))
             .toList();
-        if (mounted && list.isNotEmpty) {
-          setState(() => _posts = list);
-          _patchPostAuthors(list, likedList: []);
-          _preloadVideos(list);
+        if (mounted && raw.isNotEmpty) {
+          final patched = _patchMyPosts(raw, _profile);
+          setState(() => _posts = patched);
+          _preloadVideos(patched);
         }
       }
 
       // Liked posts
       final likedStr = prefs.getString(_kLikedPosts);
       if (likedStr != null) {
-        final list = (jsonDecode(likedStr) as List)
+        final raw = (jsonDecode(likedStr) as List)
             .map((x) => PostModel.fromApi(Map<String, dynamic>.from(x as Map)))
             .toList();
-        if (mounted && list.isNotEmpty) {
-          setState(() => _likedPosts = list);
-          _patchPostAuthors([], likedList: list);
+        if (mounted && raw.isNotEmpty) {
+          final patched = _patchLikedPosts(raw, _profile, _currentUserId);
+          setState(() => _likedPosts = patched);
         }
       }
 
@@ -380,32 +380,28 @@ class _ProfileScreenState extends State<ProfileScreen>
           .map((x) => PostModel.fromApi(x as Map<String, dynamic>))
           .toList();
 
-      // ── Patch author name/avatar before rendering ──────────────────────
-      // This ensures posts that return 'User' / empty name show the real
-      // profile data. Requires PostModel.name and PostModel.avatarUrl
-      // to be non-final (var) in home_screen.dart.
-      final patchedProfile = merged;
-      _patchPostAuthors(posts, likedList: liked,
-          overrideProfile: patchedProfile, overrideUserId: userId);
+      // ── Patch author name/avatar (immutable reconstruction) ───────────
+      final patchedPosts = _patchMyPosts(posts, merged);
+      final patchedLiked = _patchLikedPosts(liked, merged, userId);
 
       // Follow state
       final fw = <String, bool>{};
-      for (final p in [...posts, ...liked]) {
+      for (final p in [...patchedPosts, ...patchedLiked]) {
         if (p.userId.isNotEmpty) fw[p.userId] = p.isFollowing;
       }
 
       if (mounted) {
         setState(() {
           _profile     = merged;
-          _posts       = posts;
-          _likedPosts  = liked;
+          _posts       = patchedPosts;
+          _likedPosts  = patchedLiked;
           _followState = fw;
           _isPremium   = merged['subscription_tier'] == 'premium' ||
                          merged['is_premium'] == true;
           _loading     = false;
           _refreshing  = false;
         });
-        _preloadVideos(posts);
+        _preloadVideos(patchedPosts);
       }
 
       // Persist to cache
@@ -422,41 +418,78 @@ class _ProfileScreenState extends State<ProfileScreen>
     }
   }
 
-  // ── Post author patch ──────────────────────────────────────────────────
-  // Fills in the real name + avatar on posts whose author data came through
-  // as 'User' / empty string (API join issue in PostModel.fromApi).
-  // For own posts:  always patch with current user profile data.
-  // For liked tab:  only patch posts belonging to the current user.
-  void _patchPostAuthors(
-    List<PostModel> myPosts, {
-    required List<PostModel> likedList,
-    Map<String, dynamic>?    overrideProfile,
-    String?                  overrideUserId,
-  }) {
-    final prof   = overrideProfile ?? _profile;
-    final uid    = overrideUserId  ?? _currentUserId;
-    final myName = prof['full_name']?.toString() ?? '';
-    final myAvt  = prof['avatar_url']?.toString() ?? '';
-    if (myName.isEmpty) return;
+  // ── Author patch helpers (immutable — reconstruct PostModel) ───────────
+  //
+  // PostModel.name and PostModel.avatarUrl are final fields; we cannot
+  // assign to them.  Instead we create a new PostModel instance with the
+  // corrected values via _copyWithAuthor().
 
-    for (final p in myPosts) {
-      // All posts in "my posts" tab belong to the current user
-      if (_needsPatch(p)) {
-        p.name      = myName;
-        p.avatarUrl = myAvt;
-      }
-    }
-    for (final p in likedList) {
-      // Only patch own posts in the liked feed
-      if (p.userId == uid && _needsPatch(p)) {
-        p.name      = myName;
-        p.avatarUrl = myAvt;
-      }
-    }
-  }
+  /// Returns a new PostModel with [name] and [avatarUrl] overridden.
+  PostModel _copyWithAuthor(PostModel p, String name, String avatarUrl) =>
+      PostModel(
+        id:           p.id,
+        name:         name,
+        username:     p.username,
+        time:         p.time,
+        avatar:       p.avatar,
+        avatarUrl:    avatarUrl.isNotEmpty ? avatarUrl : p.avatarUrl,
+        tag:          p.tag,
+        content:      p.content,
+        mediaUrl:     p.mediaUrl,
+        mediaType:    p.mediaType,
+        linkUrl:      p.linkUrl,
+        linkTitle:    p.linkTitle,
+        likes:        p.likes,
+        comments:     p.comments,
+        shares:       p.shares,
+        verified:     p.verified,
+        isPremiumPost: p.isPremiumPost,
+        isLiked:      p.isLiked,
+        isSaved:      p.isSaved,
+        isFollowing:  p.isFollowing,
+        userId:       p.userId,
+      );
+
+  /// Returns a new PostModel with only [avatarUrl] overridden.
+  PostModel _copyWithAvatar(PostModel p, String avatarUrl) =>
+      _copyWithAuthor(p, p.name, avatarUrl);
 
   bool _needsPatch(PostModel p) =>
       p.name.isEmpty || p.name == 'User' || p.name == 'user';
+
+  /// Patches ALL posts in the "My Posts" tab (they all belong to current user).
+  List<PostModel> _patchMyPosts(
+    List<PostModel> posts,
+    Map<String, dynamic> prof,
+  ) {
+    final name = prof['full_name']?.toString() ?? '';
+    final avt  = prof['avatar_url']?.toString() ?? '';
+    if (name.isEmpty) return posts;
+
+    return posts.map((p) {
+      if (_needsPatch(p))          return _copyWithAuthor(p, name, avt);
+      if (p.avatarUrl.isEmpty && avt.isNotEmpty) return _copyWithAvatar(p, avt);
+      return p;
+    }).toList();
+  }
+
+  /// Patches posts in the "Liked" tab — only patches posts owned by [uid].
+  List<PostModel> _patchLikedPosts(
+    List<PostModel> posts,
+    Map<String, dynamic> prof,
+    String uid,
+  ) {
+    final name = prof['full_name']?.toString() ?? '';
+    final avt  = prof['avatar_url']?.toString() ?? '';
+    if (name.isEmpty) return posts;
+
+    return posts.map((p) {
+      if (p.userId != uid) return p;
+      if (_needsPatch(p))          return _copyWithAuthor(p, name, avt);
+      if (p.avatarUrl.isEmpty && avt.isNotEmpty) return _copyWithAvatar(p, avt);
+      return p;
+    }).toList();
+  }
 
   // ── Video preloading ────────────────────────────────────────────────────
   void _preloadVideos(List<PostModel> posts) {
@@ -702,8 +735,6 @@ class _ProfileScreenState extends State<ProfileScreen>
     final textColor    = isDark ? Colors.white : Colors.black87;
     final subColor     = isDark ? Colors.white54 : Colors.black45;
 
-    // ── FIX: only show the real name once it's loaded from cache/API.
-    // Suppresses the "Your Name" flash on first paint.
     final hasProfile = _profile.isNotEmpty;
     final name       = hasProfile
         ? (_profile['full_name']?.toString() ?? '')
@@ -725,7 +756,6 @@ class _ProfileScreenState extends State<ProfileScreen>
           icon: Icon(Iconsax.arrow_left, color: textColor),
           onPressed: _goBack,
         ),
-        // ── FIX: AnimatedSwitcher fades the name in once available
         title: AnimatedSwitcher(
           duration: const Duration(milliseconds: 250),
           child: name.isNotEmpty
@@ -763,7 +793,6 @@ class _ProfileScreenState extends State<ProfileScreen>
         ),
       ),
       body: Column(children: [
-        // Banner ad (non-premium, mobile only)
         if (!_isPremium && _isAdLoaded && _bannerAd != null && !kIsWeb)
           Container(
             color:   cardColor,
@@ -793,7 +822,6 @@ class _ProfileScreenState extends State<ProfileScreen>
     required String name, required String stage,
     required Map<String, dynamic> stageInfo,
   }) {
-    // Tablet / Desktop two-column
     if (isTablet || isDesktop) {
       return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Container(
@@ -834,7 +862,6 @@ class _ProfileScreenState extends State<ProfileScreen>
       ]);
     }
 
-    // Mobile single-column
     return RefreshIndicator(
       onRefresh: _pullRefresh,
       color: AppColors.primary,
@@ -931,7 +958,6 @@ class _ProfileScreenState extends State<ProfileScreen>
         crossAxisAlignment:
             isCompact ? CrossAxisAlignment.start : CrossAxisAlignment.center,
         children: [
-          // Avatar + stats
           if (isCompact)
             Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
               _buildAvatar(name: name,
@@ -966,7 +992,6 @@ class _ProfileScreenState extends State<ProfileScreen>
 
           const SizedBox(height: 16),
 
-          // Name + badge
           if (isCompact)
             Row(children: [
               Flexible(
@@ -993,7 +1018,6 @@ class _ProfileScreenState extends State<ProfileScreen>
 
           const SizedBox(height: 8),
 
-          // Bio
           Text(
             _profile['bio']?.toString().isNotEmpty == true
                 ? _profile['bio'].toString()
@@ -1002,7 +1026,6 @@ class _ProfileScreenState extends State<ProfileScreen>
             textAlign: isCompact ? TextAlign.left : TextAlign.center,
           ),
 
-          // Status
           if ((_profile['status']?.toString() ?? '').isNotEmpty) ...[
             const SizedBox(height: 8),
             Row(
@@ -1024,7 +1047,6 @@ class _ProfileScreenState extends State<ProfileScreen>
             ),
           ],
 
-          // Country
           if ((_profile['country']?.toString() ?? '').isNotEmpty) ...[
             const SizedBox(height: 6),
             Row(
@@ -1042,7 +1064,6 @@ class _ProfileScreenState extends State<ProfileScreen>
 
           const SizedBox(height: 16),
 
-          // Action buttons
           if (isCompact)
             Row(children: [
               Expanded(child: _buildActionButton('Edit Profile',
@@ -1080,7 +1101,6 @@ class _ProfileScreenState extends State<ProfileScreen>
 
           const SizedBox(height: 16),
 
-          // Feature tiles
           Row(children: [
             _ProfileFeatureTile('🎨', 'Portfolio', () => context.push('/portfolio')),
             const SizedBox(width: 8),
@@ -1095,7 +1115,6 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
   }
 
-  // ── FIX: use CachedNetworkImage for instant repeat loads ────────────────
   Widget _buildAvatar({
     required String name, required String? avatarUrl,
     required Color cardColor, required bool isCompact,
@@ -1123,7 +1142,6 @@ class _ProfileScreenState extends State<ProfileScreen>
               ? CachedNetworkImage(
                   imageUrl:    avatarUrl,
                   fit:         BoxFit.cover,
-                  // Show gradient fallback while loading (no flash)
                   placeholder: (_, __) => fallback,
                   errorWidget: (_, __, ___) => fallback,
                 )
@@ -1348,7 +1366,6 @@ class _ProfilePostsTabState extends State<_ProfilePostsTab>
   Widget build(BuildContext ctx) {
     super.build(ctx);
 
-    // Skeleton
     if (widget.isLoading && widget.posts.isEmpty) {
       return ListView.separated(
         physics: const NeverScrollableScrollPhysics(),
@@ -1360,7 +1377,6 @@ class _ProfilePostsTabState extends State<_ProfilePostsTab>
       );
     }
 
-    // Empty state
     if (widget.posts.isEmpty) {
       return Center(
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
