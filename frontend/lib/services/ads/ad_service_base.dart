@@ -1,36 +1,46 @@
+// lib/services/ads/ad_service_base.dart
 // ─────────────────────────────────────────────────────────────
-//  Abstract interface — shared by mobile & web implementations
+//  AdServiceBase — Single contract that EVERY platform must
+//  implement.  Adding a method here forces the compiler to
+//  remind you to stub it on web too — no more runtime gaps.
 // ─────────────────────────────────────────────────────────────
+
 import 'package:flutter/material.dart';
 
 abstract class AdServiceBase {
+  // ── Lifecycle ──────────────────────────────────────────────
   Future<void> initialize();
-  
+
+  // ── Rewarded ───────────────────────────────────────────────
+  bool get isRewardedReady;
+
   Future<bool> showRewardedAd({
     required String featureKey,
     required VoidCallback onRewarded,
     required VoidCallback onDismissed,
   });
-  
+
+  // ── Interstitial ───────────────────────────────────────────
   Future<void> showInterstitialIfReady();
+
+  /// Force-shows an interstitial regardless of cooldown.
+  /// No-op on web (AdMob not supported).
+  Future<void> forceShowInterstitial();
+
+  // ── App Open ───────────────────────────────────────────────
   Future<void> showAppOpenAdIfAvailable();
-  
-  bool get isRewardedReady;
-}
 
-// Placeholder widgets for web (shows nothing cleanly)
-class BannerAdPlaceholder extends StatelessWidget {
-  final double height;
-  const BannerAdPlaceholder({super.key, this.height = 0});
-  
-  @override
-  Widget build(BuildContext context) => SizedBox(height: height);
-}
+  // ── Banner ─────────────────────────────────────────────────
+  /// Inline banner widget (e.g. inside a list).
+  Widget getBannerWidget();
 
-class NativeAdPlaceholder extends StatelessWidget {
-  final double height;
-  const NativeAdPlaceholder({super.key, this.height = 0});
-  
-  @override
-  Widget build(BuildContext context) => SizedBox(height: height);
+  /// Sticky bottom banner widget (anchored to scaffold bottom).
+  /// Returns [SizedBox.shrink] on web / premium users.
+  Widget getStickyBanner(BuildContext context);
+
+  // ── Native ─────────────────────────────────────────────────
+  Widget? getNativeWidget();
+
+  // ── Cleanup ────────────────────────────────────────────────
+  void dispose();
 }
