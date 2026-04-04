@@ -1,14 +1,13 @@
 // frontend/lib/screens/profile/user_profile_screen.dart
-// v3.0 — Cached, Instant-Load, Rich Feed (matches HomeScreen quality)
+// v3.1 — Production-ready: post-author patch, errorWidget fix, super.key fix
 //
-// ARCHITECTURE (mirrors profile_screen.dart v4.0):
-//  · Per-user cache key  → riseup_user_profile_{userId}_v2
-//  · _restoreCache()     → instantaneous display on first paint
-//  · _silentRefresh()    → background fetch, no loading flash
-//  · AutomaticKeepAliveClientMixin on _UserPostsTab → tab survives switching
-//  · PostCard / PostModel from home_screen.dart → full rich feed
-//  · Skeleton shimmer (_USh) for header + posts when no cache
-//  · kIsWeb guard for ads and Platform.isAndroid
+// FIXES vs v3.0:
+//  · _patchPostAuthors() fills real name + avatar on all posts belonging
+//    to the profile user where PostModel.name == 'User' / empty
+//  · CachedNetworkImage: errorBuilder → errorWidget (cached_network_image 3.4.x)
+//  · _UserHeaderSkeleton: added super.key so ValueKey('sk') compiles
+//  · NOTE: PostModel.name and PostModel.avatarUrl must be non-final (var)
+//    in home_screen.dart for the patch to compile.
 
 import 'dart:convert';
 import 'dart:io';
@@ -47,10 +46,8 @@ class _USh extends StatelessWidget {
       ),
     )
         .animate(onPlay: (c) => c.repeat())
-        .shimmer(
-          duration: 1200.ms,
-          color: dark ? Colors.white10 : Colors.white70,
-        );
+        .shimmer(duration: 1200.ms,
+                 color: dark ? Colors.white10 : Colors.white70);
   }
 }
 
@@ -61,7 +58,7 @@ class _UserHeaderSkeleton extends StatelessWidget {
   final bool  isDark;
   final Color card;
   final bool  isTablet;
-  // FIX #2: added super.key so callers can pass key: ValueKey('sk')
+  // super.key lets callers pass key: ValueKey('sk') without compile error
   const _UserHeaderSkeleton({
     super.key,
     required this.isDark,
@@ -76,7 +73,6 @@ class _UserHeaderSkeleton extends StatelessWidget {
       color:   card,
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // Avatar + name row
         Row(children: [
           _USh(w: isTablet ? 100 : 80, h: isTablet ? 100 : 80, circle: true),
           const SizedBox(width: 16),
@@ -90,14 +86,12 @@ class _UserHeaderSkeleton extends StatelessWidget {
           ])),
         ]),
         const SizedBox(height: 20),
-        // Stats row
         Row(children: const [
           _StatS(), SizedBox(width: 20),
           _StatS(), SizedBox(width: 20),
           _StatS(),
         ]),
         const SizedBox(height: 16),
-        // Follow / Message buttons
         Row(children: const [
           Expanded(child: _USh(h: 44, r: 12)),
           SizedBox(width: 10),
@@ -189,7 +183,6 @@ class UserProfileScreen extends StatefulWidget {
 class _UserProfileScreenState extends State<UserProfileScreen>
     with SingleTickerProviderStateMixin {
 
-  // Per-user cache keys (capped at last 15 profiles by TTL approach)
   String get _kProfile => 'riseup_user_profile_${widget.userId}_v2';
   String get _kPosts   => 'riseup_user_posts_${widget.userId}_v2';
 
@@ -199,8 +192,8 @@ class _UserProfileScreenState extends State<UserProfileScreen>
   Map<String, dynamic> _stats     = {};
   List<PostModel>      _posts     = [];
 
-  bool _loading    = true;   // true = no cache → shows skeleton
-  bool _refreshing = false;  // silent background refresh
+  bool _loading    = true;
+  bool _refreshing = false;
 
   bool _isFollowing   = false;
   bool _isOwnProfile  = false;
@@ -218,8 +211,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     super.initState();
     _tabs = TabController(length: 2, vsync: this);
     _restoreCache();
-    WidgetsBinding.instance
-        .addPostFrameCallback((_) => _silentRefresh());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _silentRefresh());
   }
 
   @override
@@ -234,28 +226,25 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     try {
       final prefs = await SharedPreferences.getInstance();
 
-      // Profile
       final pStr = prefs.getString(_kProfile);
       if (pStr != null) {
         final d = Map<String, dynamic>.from(jsonDecode(pStr) as Map);
-        if (mounted) {
-          setState(() {
-            _profile     = (d['profile'] as Map?)?.cast<String, dynamic>() ?? {};
-            _stats       = (d['stats']   as Map?)?.cast<String, dynamic>() ?? {};
-            _isFollowing = d['is_following'] == true;
-            _isPremium   = _profile['subscription_tier'] == 'premium';
-            _loading     = false;
-          });
-        }
+        if (mounted) setState(() {
+          _profile     = (d['profile'] as Map?)?.cast<String, dynamic>() ?? {};
+          _stats       = (d['stats']   as Map?)?.cast<String, dynamic>() ?? {};
+          _isFollowing = d['is_following'] == true;
+          _isPremium   = _profile['subscription_tier'] == 'premium';
+          _loading     = false;
+        });
       }
 
-      // Posts
       final postsStr = prefs.getString(_kPosts);
       if (postsStr != null) {
         final list = (jsonDecode(postsStr) as List)
             .map((x) => PostModel.fromApi(Map<String, dynamic>.from(x as Map)))
             .toList();
         if (mounted && list.isNotEmpty) {
+          _patchPostAuthors(list);
           setState(() {
             _posts = list;
             final fw = <String, bool>{};
@@ -294,12 +283,15 @@ class _UserProfileScreenState extends State<UserProfileScreen>
         api.getUserPosts(widget.userId),
       ]);
 
-      final d      = results[0] as Map? ?? {};
-      final prof   = (d['profile'] as Map?)?.cast<String, dynamic>() ?? {};
-      final stats  = (d['stats']   as Map?)?.cast<String, dynamic>() ?? {};
-      final posts  = ((results[1] as Map?)?['posts'] as List? ?? [])
+      final d     = results[0] as Map? ?? {};
+      final prof  = (d['profile'] as Map?)?.cast<String, dynamic>() ?? {};
+      final stats = (d['stats']   as Map?)?.cast<String, dynamic>() ?? {};
+      final posts = ((results[1] as Map?)?['posts'] as List? ?? [])
           .map((x) => PostModel.fromApi(x as Map<String, dynamic>))
           .toList();
+
+      // ── Patch author before setState so first render is correct ────────
+      _patchPostAuthors(posts, overrideProfile: prof);
 
       final fw = <String, bool>{};
       for (final p in posts) {
@@ -338,6 +330,33 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     }
   }
 
+  // ── Post author patch ──────────────────────────────────────────────────
+  // All posts on a user's profile page belong to that user.
+  // If PostModel.fromApi fails to map the joined profile row correctly,
+  // this fills in the real name + avatar from the profile we already hold.
+  // Requires PostModel.name and PostModel.avatarUrl to be non-final (var).
+  void _patchPostAuthors(List<PostModel> posts,
+      {Map<String, dynamic>? overrideProfile}) {
+    final prof   = overrideProfile ?? _profile;
+    final pName  = prof['full_name']?.toString() ?? '';
+    final pAvt   = prof['avatar_url']?.toString() ?? '';
+    if (pName.isEmpty) return;
+
+    for (final p in posts) {
+      // Only patch posts that belong to this profile's user
+      if (p.userId == widget.userId || p.userId.isEmpty) {
+        if (p.name.isEmpty || p.name == 'User' || p.name == 'user') {
+          p.name      = pName;
+          p.avatarUrl = pAvt;
+        }
+        // Also patch avatar if it's empty even when name is correct
+        if ((p.avatarUrl ?? '').isEmpty && pAvt.isNotEmpty) {
+          p.avatarUrl = pAvt;
+        }
+      }
+    }
+  }
+
   void _preloadVideos(List<PostModel> posts) {
     for (int i = 0; i < posts.length && i < 5; i++) {
       final p = posts[i];
@@ -358,7 +377,10 @@ class _UserProfileScreenState extends State<UserProfileScreen>
         request: const AdRequest(),
         listener: BannerAdListener(
           onAdLoaded: (ad) {
-            if (mounted) setState(() { _bannerAd = ad as BannerAd; _isAdLoaded = true; });
+            if (mounted) setState(() {
+              _bannerAd   = ad as BannerAd;
+              _isAdLoaded = true;
+            });
           },
           onAdFailedToLoad: (ad, _) {
             ad.dispose();
@@ -382,7 +404,8 @@ class _UserProfileScreenState extends State<UserProfileScreen>
           _isFollowing   = following;
           _followLoading = false;
           final c = (_stats['followers'] as int? ?? 0);
-          _stats  = {..._stats, 'followers': following ? c + 1 : (c - 1).clamp(0, 999999)};
+          _stats = {..._stats,
+            'followers': following ? c + 1 : (c - 1).clamp(0, 999999)};
         });
         HapticFeedback.lightImpact();
         _snack(following ? 'Now following' : 'Unfollowed', isError: false);
@@ -414,8 +437,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
   }
 
   void _shareProfile() {
-    Clipboard.setData(ClipboardData(
-        text: 'riseup.app/u/${widget.userId}'));
+    Clipboard.setData(ClipboardData(text: 'riseup.app/u/${widget.userId}'));
     _snack('Link copied', isError: false);
   }
 
@@ -465,7 +487,8 @@ class _UserProfileScreenState extends State<UserProfileScreen>
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Container(width: 36, height: 4,
               margin: const EdgeInsets.only(top: 12, bottom: 4),
-              decoration: BoxDecoration(color: Colors.grey.withOpacity(0.3),
+              decoration: BoxDecoration(
+                  color: Colors.grey.withOpacity(0.3),
                   borderRadius: BorderRadius.circular(2))),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
@@ -475,9 +498,11 @@ class _UserProfileScreenState extends State<UserProfileScreen>
           ),
           ListTile(
             leading: Container(width: 40, height: 40,
-                decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.1),
+                decoration: BoxDecoration(
+                    color: AppColors.primary.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(10)),
-                child: const Icon(Icons.link_rounded, color: AppColors.primary, size: 20)),
+                child: const Icon(Icons.link_rounded,
+                    color: AppColors.primary, size: 20)),
             title: Text('Copy post link',
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
                     color: dark ? Colors.white : Colors.black87)),
@@ -490,9 +515,11 @@ class _UserProfileScreenState extends State<UserProfileScreen>
           ),
           ListTile(
             leading: Container(width: 40, height: 40,
-                decoration: BoxDecoration(color: Colors.blue.withOpacity(0.1),
+                decoration: BoxDecoration(
+                    color: Colors.blue.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(10)),
-                child: const Icon(Icons.copy_rounded, color: Colors.blue, size: 20)),
+                child: const Icon(Icons.copy_rounded,
+                    color: Colors.blue, size: 20)),
             title: Text('Copy text',
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
                     color: dark ? Colors.white : Colors.black87)),
@@ -507,7 +534,8 @@ class _UserProfileScreenState extends State<UserProfileScreen>
       ),
     );
     api.sharePost(post.id).catchError((_) {
-      if (mounted) setState(() => post.shares = (post.shares - 1).clamp(0, 999999));
+      if (mounted) setState(() =>
+          post.shares = (post.shares - 1).clamp(0, 999999));
     });
   }
 
@@ -661,7 +689,6 @@ class _UserProfileScreenState extends State<UserProfileScreen>
               },
             ),
             actions: [
-              // Tiny spinner during silent refresh
               if (_refreshing)
                 Padding(
                   padding: const EdgeInsets.only(right: 4),
@@ -686,18 +713,20 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                       decoration: BoxDecoration(
                         gradient: LinearGradient(
                           colors: [
-                            (isDark ? const Color(0xFF2A2A2A) : const Color(0xFFE4E4E4)),
-                            (isDark ? const Color(0xFF1A1A1A) : const Color(0xFFD0D0D0)),
+                            isDark ? const Color(0xFF2A2A2A)
+                                   : const Color(0xFFE4E4E4),
+                            isDark ? const Color(0xFF1A1A1A)
+                                   : const Color(0xFFD0D0D0),
                           ],
                           begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
+                          end:   Alignment.bottomRight,
                         ),
                       ),
                       child: SafeArea(
                         child: Padding(
                           padding: const EdgeInsets.fromLTRB(20, 60, 20, 20),
                           child: Column(
-                            mainAxisAlignment: MainAxisAlignment.end,
+                            mainAxisAlignment:  MainAxisAlignment.end,
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Row(children: [
@@ -733,14 +762,14 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                             AppColors.accent.withOpacity(0.6),
                           ],
                           begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
+                          end:   Alignment.bottomRight,
                         ),
                       ),
                       child: SafeArea(
                         child: Padding(
                           padding: const EdgeInsets.fromLTRB(20, 60, 20, 20),
                           child: Column(
-                            mainAxisAlignment: MainAxisAlignment.end,
+                            mainAxisAlignment:  MainAxisAlignment.end,
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Row(children: [
@@ -761,13 +790,15 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                         )],
                                       ),
                                       child: ClipOval(
-                                        child: avatar != null && avatar.isNotEmpty
-                                            // FIX #1: errorBuilder → errorWidget
-                                            // (cached_network_image 3.4.x uses errorWidget,
-                                            //  not errorBuilder)
+                                        child: avatar != null &&
+                                                avatar.isNotEmpty
+                                            // CachedNetworkImage with correct
+                                            // errorWidget (not errorBuilder)
                                             ? CachedNetworkImage(
-                                                imageUrl: avatar,
-                                                fit: BoxFit.cover,
+                                                imageUrl:    avatar,
+                                                fit:         BoxFit.cover,
+                                                placeholder: (_, __) =>
+                                                    _avatarFallback(name),
                                                 errorWidget: (_, __, ___) =>
                                                     _avatarFallback(name))
                                             : _avatarFallback(name),
@@ -808,7 +839,8 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                             horizontal: 8, vertical: 3),
                                         decoration: BoxDecoration(
                                           color: Colors.white.withOpacity(0.2),
-                                          borderRadius: BorderRadius.circular(20),
+                                          borderRadius:
+                                              BorderRadius.circular(20),
                                         ),
                                         child: Text(_stageLabel(stage),
                                             style: const TextStyle(
@@ -821,7 +853,8 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                     if (status.isNotEmpty)
                                       Text(status,
                                           style: const TextStyle(
-                                              color: Colors.white70, fontSize: 12),
+                                              color: Colors.white70,
+                                              fontSize: 12),
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis),
                                     if (country.isNotEmpty)
@@ -856,7 +889,8 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                       color: AppColors.gold.withOpacity(0.25),
                                       borderRadius: BorderRadius.circular(20),
                                       border: Border.all(
-                                          color: AppColors.gold.withOpacity(0.3)),
+                                          color:
+                                              AppColors.gold.withOpacity(0.3)),
                                     ),
                                     child: Row(
                                         mainAxisSize: MainAxisSize.min,
@@ -866,7 +900,8 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                       const SizedBox(width: 4),
                                       Text('${_fmt(earned.toInt())} earned',
                                           style: const TextStyle(
-                                              color: AppColors.gold, fontSize: 11,
+                                              color: AppColors.gold,
+                                              fontSize: 11,
                                               fontWeight: FontWeight.w700)),
                                     ]),
                                   ),
@@ -944,13 +979,11 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                   onPrivateChat: _onPrivateChat, onFollow: _onFollow,
                   onPostDeleted: _onPostDeleted,
                 ),
-                // Liked posts private for other users
                 Center(
                   child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                    const Text('❤️',
-                        style: TextStyle(fontSize: 48)),
+                    const Text('❤️', style: TextStyle(fontSize: 48)),
                     const SizedBox(height: 12),
                     Text('Liked posts are private',
                         style: TextStyle(color: sub, fontSize: 14)),
@@ -974,7 +1007,6 @@ class _UserProfileScreenState extends State<UserProfileScreen>
         color:   card,
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // Follow / Message / Edit buttons
           if (!_isOwnProfile)
             Row(children: [
               Expanded(
@@ -984,7 +1016,9 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                     duration: const Duration(milliseconds: 200),
                     padding: const EdgeInsets.symmetric(vertical: 11),
                     decoration: BoxDecoration(
-                      color:        _isFollowing ? Colors.transparent : AppColors.primary,
+                      color: _isFollowing
+                          ? Colors.transparent
+                          : AppColors.primary,
                       borderRadius: BorderRadius.circular(12),
                       border: _isFollowing
                           ? Border.all(color: isDark
@@ -1029,12 +1063,13 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                   child: Container(
                     padding: const EdgeInsets.symmetric(vertical: 11),
                     decoration: BoxDecoration(
-                      color: isDark ? AppColors.bgSurface : Colors.grey.shade100,
+                      color: isDark
+                          ? AppColors.bgSurface
+                          : Colors.grey.shade100,
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                          color: isDark
-                              ? Colors.white.withOpacity(0.12)
-                              : Colors.grey.shade300),
+                      border: Border.all(color: isDark
+                          ? Colors.white.withOpacity(0.12)
+                          : Colors.grey.shade300),
                     ),
                     child: Row(
                         mainAxisAlignment: MainAxisAlignment.center,
@@ -1060,10 +1095,9 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                 decoration: BoxDecoration(
                   color: isDark ? AppColors.bgSurface : Colors.grey.shade100,
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                      color: isDark
-                          ? Colors.white.withOpacity(0.12)
-                          : Colors.grey.shade300),
+                  border: Border.all(color: isDark
+                      ? Colors.white.withOpacity(0.12)
+                      : Colors.grey.shade300),
                 ),
                 child: const Center(
                   child: Text('Edit Profile',
@@ -1088,7 +1122,8 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                 itemCount: skills.length,
                 separatorBuilder: (_, __) => const SizedBox(width: 6),
                 itemBuilder: (_, i) => Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
                     color: AppColors.primary.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(20),
@@ -1124,22 +1159,21 @@ class _UserProfileScreenState extends State<UserProfileScreen>
           ),
           const SizedBox(width: 12),
           Expanded(
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
               const Text('Remove Ads & Unlock Features',
-                  style: TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w600,
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
                       color: AppColors.primary)),
               Text('Upgrade to Pro for an ad-free experience',
-                  style: TextStyle(
-                      fontSize: 11, color: Colors.grey.shade600)),
+                  style: TextStyle(fontSize: 11,
+                      color: Colors.grey.shade600)),
             ]),
           ),
           ElevatedButton(
             onPressed: () => context.go('/premium'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary, foregroundColor: Colors.white,
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               minimumSize: Size.zero,
               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -1153,8 +1187,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
         color: AppColors.primary.withOpacity(0.15),
         child: Center(
           child: Text(n.isNotEmpty ? n[0].toUpperCase() : '?',
-              style: const TextStyle(
-                  fontSize: 28, fontWeight: FontWeight.w800,
+              style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800,
                   color: AppColors.primary)),
         ),
       );
@@ -1207,8 +1240,8 @@ class _UserProfileScreenState extends State<UserProfileScreen>
             Icon(icon, color: color, size: 20),
             const SizedBox(width: 12),
             Text(label,
-                style: TextStyle(
-                    color: color, fontWeight: FontWeight.w600, fontSize: 14)),
+                style: TextStyle(color: color, fontWeight: FontWeight.w600,
+                    fontSize: 14)),
           ]),
         ),
       );
@@ -1238,8 +1271,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
   void _showReportSheet() {
     final reasons = [
-      'Spam', 'Harassment',
-      'Inappropriate content', 'Fake account', 'Other',
+      'Spam', 'Harassment', 'Inappropriate content', 'Fake account', 'Other',
     ];
     showModalBottomSheet(
       context: context,
@@ -1305,8 +1337,7 @@ class _UserPostsTabState extends State<_UserPostsTab>
   void initState() {
     super.initState();
     _sc.addListener(_onScroll);
-    WidgetsBinding.instance
-        .addPostFrameCallback((_) => _preloadAhead(0));
+    WidgetsBinding.instance.addPostFrameCallback((_) => _preloadAhead(0));
   }
 
   @override
@@ -1415,8 +1446,8 @@ class _StatChip extends StatelessWidget {
   @override
   Widget build(BuildContext _) => Column(children: [
         Text(value,
-            style: TextStyle(
-                fontSize: 16, fontWeight: FontWeight.w800, color: color)),
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800,
+                color: color)),
         Text(label,
             style: TextStyle(fontSize: 10, color: color.withOpacity(0.7))),
       ]);
@@ -1429,7 +1460,7 @@ class _BioText extends StatelessWidget {
 
   @override
   Widget build(BuildContext ctx) {
-    final urlRe  = RegExp(r'https?://\S+|www\.\S+');
+    final urlRe   = RegExp(r'https?://\S+|www\.\S+');
     final matches = urlRe.allMatches(bio);
     if (matches.isEmpty) {
       return Text(bio,
@@ -1441,22 +1472,19 @@ class _BioText extends StatelessWidget {
       if (m.start > last) {
         spans.add(TextSpan(
             text:  bio.substring(last, m.start),
-            style: TextStyle(
-                fontSize: 13, color: textColor, height: 1.5)));
+            style: TextStyle(fontSize: 13, color: textColor, height: 1.5)));
       }
       spans.add(TextSpan(
           text:  bio.substring(m.start, m.end),
           style: const TextStyle(
-              fontSize: 13, color: AppColors.primary,
-              height: 1.5,
+              fontSize: 13, color: AppColors.primary, height: 1.5,
               decoration: TextDecoration.underline)));
       last = m.end;
     }
     if (last < bio.length) {
       spans.add(TextSpan(
           text:  bio.substring(last),
-          style: TextStyle(
-              fontSize: 13, color: textColor, height: 1.5)));
+          style: TextStyle(fontSize: 13, color: textColor, height: 1.5)));
     }
     return SelectableText.rich(TextSpan(children: spans));
   }
