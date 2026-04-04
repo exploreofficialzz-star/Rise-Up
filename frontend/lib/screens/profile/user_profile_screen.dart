@@ -1,13 +1,13 @@
 // frontend/lib/screens/profile/user_profile_screen.dart
-// v3.1 — Production-ready: post-author patch, errorWidget fix, super.key fix
+// v3.2 — Production-ready: immutable PostModel patch
 //
-// FIXES vs v3.0:
-//  · _patchPostAuthors() fills real name + avatar on all posts belonging
-//    to the profile user where PostModel.name == 'User' / empty
-//  · CachedNetworkImage: errorBuilder → errorWidget (cached_network_image 3.4.x)
-//  · _UserHeaderSkeleton: added super.key so ValueKey('sk') compiles
-//  · NOTE: PostModel.name and PostModel.avatarUrl must be non-final (var)
-//    in home_screen.dart for the patch to compile.
+// FIXES vs v3.1:
+//  · PostModel.name / avatarUrl are final — cannot be assigned directly.
+//    _patchPostAuthors() now returns a NEW List<PostModel> with reconstructed
+//    instances via _copyWithAuthor() instead of mutating final fields.
+//  · All call sites updated to use the returned patched list.
+//  · CachedNetworkImage errorWidget (not errorBuilder) — preserved.
+//  · _UserHeaderSkeleton super.key — preserved.
 
 import 'dart:convert';
 import 'dart:io';
@@ -58,7 +58,6 @@ class _UserHeaderSkeleton extends StatelessWidget {
   final bool  isDark;
   final Color card;
   final bool  isTablet;
-  // super.key lets callers pass key: ValueKey('sk') without compile error
   const _UserHeaderSkeleton({
     super.key,
     required this.isDark,
@@ -240,20 +239,21 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
       final postsStr = prefs.getString(_kPosts);
       if (postsStr != null) {
-        final list = (jsonDecode(postsStr) as List)
+        final raw = (jsonDecode(postsStr) as List)
             .map((x) => PostModel.fromApi(Map<String, dynamic>.from(x as Map)))
             .toList();
-        if (mounted && list.isNotEmpty) {
-          _patchPostAuthors(list);
+        if (mounted && raw.isNotEmpty) {
+          // Patch BEFORE setState so first render is already correct
+          final patched = _patchPostAuthors(raw);
           setState(() {
-            _posts = list;
+            _posts = patched;
             final fw = <String, bool>{};
-            for (final p in list) {
+            for (final p in patched) {
               if (p.userId.isNotEmpty) fw[p.userId] = p.isFollowing;
             }
             _followState = fw;
           });
-          _preloadVideos(list);
+          _preloadVideos(patched);
         }
       }
     } catch (_) {}
@@ -286,12 +286,12 @@ class _UserProfileScreenState extends State<UserProfileScreen>
       final d     = results[0] as Map? ?? {};
       final prof  = (d['profile'] as Map?)?.cast<String, dynamic>() ?? {};
       final stats = (d['stats']   as Map?)?.cast<String, dynamic>() ?? {};
-      final posts = ((results[1] as Map?)?['posts'] as List? ?? [])
+      final rawList = ((results[1] as Map?)?['posts'] as List? ?? [])
           .map((x) => PostModel.fromApi(x as Map<String, dynamic>))
           .toList();
 
-      // ── Patch author before setState so first render is correct ────────
-      _patchPostAuthors(posts, overrideProfile: prof);
+      // ── Patch author before setState (immutable reconstruction) ────────
+      final posts = _patchPostAuthors(rawList, overrideProfile: prof);
 
       final fw = <String, bool>{};
       for (final p in posts) {
@@ -330,31 +330,66 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     }
   }
 
-  // ── Post author patch ──────────────────────────────────────────────────
-  // All posts on a user's profile page belong to that user.
-  // If PostModel.fromApi fails to map the joined profile row correctly,
-  // this fills in the real name + avatar from the profile we already hold.
-  // Requires PostModel.name and PostModel.avatarUrl to be non-final (var).
-  void _patchPostAuthors(List<PostModel> posts,
-      {Map<String, dynamic>? overrideProfile}) {
-    final prof   = overrideProfile ?? _profile;
-    final pName  = prof['full_name']?.toString() ?? '';
-    final pAvt   = prof['avatar_url']?.toString() ?? '';
-    if (pName.isEmpty) return;
+  // ── Author patch helper (immutable — returns NEW list) ─────────────────
+  //
+  // PostModel.name and PostModel.avatarUrl are final fields in home_screen.dart.
+  // We cannot assign to them; instead we reconstruct the PostModel with
+  // corrected values using _copyWithAuthor().
+  //
+  // All posts on this user's profile page belong to [widget.userId], so we
+  // patch every post where name is missing/generic OR avatar is empty.
 
-    for (final p in posts) {
+  /// Returns a new PostModel with [name] and [avatarUrl] replaced.
+  PostModel _copyWithAuthor(PostModel p, String name, String avatarUrl) =>
+      PostModel(
+        id:           p.id,
+        name:         name,
+        username:     p.username,
+        time:         p.time,
+        avatar:       p.avatar,
+        avatarUrl:    avatarUrl.isNotEmpty ? avatarUrl : p.avatarUrl,
+        tag:          p.tag,
+        content:      p.content,
+        mediaUrl:     p.mediaUrl,
+        mediaType:    p.mediaType,
+        linkUrl:      p.linkUrl,
+        linkTitle:    p.linkTitle,
+        likes:        p.likes,
+        comments:     p.comments,
+        shares:       p.shares,
+        verified:     p.verified,
+        isPremiumPost: p.isPremiumPost,
+        isLiked:      p.isLiked,
+        isSaved:      p.isSaved,
+        isFollowing:  p.isFollowing,
+        userId:       p.userId,
+      );
+
+  /// Returns a new PostModel with only [avatarUrl] replaced.
+  PostModel _copyWithAvatar(PostModel p, String avatarUrl) =>
+      _copyWithAuthor(p, p.name, avatarUrl);
+
+  /// Returns a new list with author name/avatar corrected where needed.
+  List<PostModel> _patchPostAuthors(
+    List<PostModel> posts, {
+    Map<String, dynamic>? overrideProfile,
+  }) {
+    final prof  = overrideProfile ?? _profile;
+    final pName = prof['full_name']?.toString() ?? '';
+    final pAvt  = prof['avatar_url']?.toString() ?? '';
+    if (pName.isEmpty) return posts;
+
+    return posts.map((p) {
       // Only patch posts that belong to this profile's user
-      if (p.userId == widget.userId || p.userId.isEmpty) {
-        if (p.name.isEmpty || p.name == 'User' || p.name == 'user') {
-          p.name      = pName;
-          p.avatarUrl = pAvt;
-        }
-        // Also patch avatar if it's empty even when name is correct
-        if ((p.avatarUrl ?? '').isEmpty && pAvt.isNotEmpty) {
-          p.avatarUrl = pAvt;
-        }
-      }
-    }
+      if (p.userId != widget.userId && p.userId.isNotEmpty) return p;
+
+      final needsName = p.name.isEmpty || p.name == 'User' || p.name == 'user';
+      final needsAvt  = p.avatarUrl.isEmpty && pAvt.isNotEmpty;
+
+      if (needsName) return _copyWithAuthor(p, pName, pAvt);
+      if (needsAvt)  return _copyWithAvatar(p, pAvt);
+      return p;
+    }).toList();
   }
 
   void _preloadVideos(List<PostModel> posts) {
@@ -790,10 +825,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                         )],
                                       ),
                                       child: ClipOval(
-                                        child: avatar != null &&
-                                                avatar.isNotEmpty
-                                            // CachedNetworkImage with correct
-                                            // errorWidget (not errorBuilder)
+                                        child: avatar != null && avatar.isNotEmpty
                                             ? CachedNetworkImage(
                                                 imageUrl:    avatar,
                                                 fit:         BoxFit.cover,
@@ -889,8 +921,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                       color: AppColors.gold.withOpacity(0.25),
                                       borderRadius: BorderRadius.circular(20),
                                       border: Border.all(
-                                          color:
-                                              AppColors.gold.withOpacity(0.3)),
+                                          color: AppColors.gold.withOpacity(0.3)),
                                     ),
                                     child: Row(
                                         mainAxisSize: MainAxisSize.min,
