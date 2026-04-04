@@ -1,101 +1,89 @@
-// frontend/lib/services/ad_manager.dart
-// ─────────────────────────────────────────────────────────────────
-// RiseUp Ad Manager — PRODUCTION READY (with SharedPreferences)
-// ─────────────────────────────────────────────────────────────────
+// lib/services/ad_manager.dart
+// ─────────────────────────────────────────────────────────────
+//  RiseUp Ad Manager — PRODUCTION READY
+//  Works on Android, iOS (full AdMob) and Web (all stubs).
+// ─────────────────────────────────────────────────────────────
 
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'ad_service.dart';
+import 'ad_service.dart';   // conditional export: mobile vs web
 
-// Global singleton
+/// Global singleton.
 final adManager = AdManager._();
 
 class AdManager {
   AdManager._();
 
-  bool _isPremium = false;
-  int _agentUsesToday = 0;
-  int _workflowCount = 0;
-  
-  // Skill unlock tracking (NEW)
-  int _adWatchesForSkill = 0;
-  static const int _requiredAdWatches = 3;
-  
-  // Premium feature tracking (NEW)
-  int _premiumUsesRemaining = 3;
+  // ── State ──────────────────────────────────────────────────
+  bool _isPremium         = false;
+  int  _agentUsesToday    = 0;
+  int  _workflowCount     = 0;
+  int  _adWatchesForSkill = 0;
+  int  _premiumUsesLeft   = 3;
 
-  // Limits
-  static const int kFreeAgentDaily = 3;
-  static const int kFreeWorkflowMax = 2;
-  static const int kFeedAdFrequency = 4;
+  // ── Limits ─────────────────────────────────────────────────
+  static const int kFreeAgentDaily    = 3;
+  static const int kFreeWorkflowMax   = 2;
+  static const int kFeedAdFrequency   = 4;   // 1 ad per N posts
+  static const int kSkillAdWatches    = 3;   // ads needed to unlock a skill
 
-  // SharedPreferences keys (NEW)
-  static const String _keyPremiumUses = 'ad_premium_uses';
-  static const String _keySkillWatches = 'ad_skill_watches';
-  static const String _keyLastResetDate = 'ad_last_reset_date';
+  // ── SharedPreferences keys ─────────────────────────────────
+  static const _kPremiumUses  = 'ad_premium_uses';
+  static const _kSkillWatches = 'ad_skill_watches';
+  static const _kLastReset    = 'ad_last_reset_date';
 
-  // ═════════════════════════════════════════════════════════════════
-  // GETTERS
-  // ═════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
+  //  GETTERS
+  // ══════════════════════════════════════════════════════════
 
-  bool get isPremium => _isPremium;
-  bool get canUseAgent => _isPremium || _agentUsesToday < kFreeAgentDaily;
-  bool get canCreateWorkflow => _isPremium || _workflowCount < kFreeWorkflowMax;
-  int get agentUsesRemaining => _isPremium ? 999 : (kFreeAgentDaily - _agentUsesToday).clamp(0, kFreeAgentDaily);
-  int get workflowsRemaining => _isPremium ? 999 : (kFreeWorkflowMax - _workflowCount).clamp(0, kFreeWorkflowMax);
+  bool get isPremium           => _isPremium;
+  bool get canUseAgent         => _isPremium || _agentUsesToday    < kFreeAgentDaily;
+  bool get canCreateWorkflow   => _isPremium || _workflowCount     < kFreeWorkflowMax;
+  bool get canUsePremiumFeature=> _isPremium || _premiumUsesLeft   > 0;
+  bool get canUseChallenge     => canUsePremiumFeature;
+  bool get canUseSkill         => canUsePremiumFeature;
 
-  // NEW: Generic premium feature checking
-  bool get canUsePremiumFeature => isPremium || _premiumUsesRemaining > 0;
-  int get premiumUsesRemaining => _premiumUsesRemaining;
+  int  get agentUsesRemaining  => _isPremium ? 999 : (kFreeAgentDaily  - _agentUsesToday).clamp(0, kFreeAgentDaily);
+  int  get workflowsRemaining  => _isPremium ? 999 : (kFreeWorkflowMax - _workflowCount ).clamp(0, kFreeWorkflowMax);
+  int  get premiumUsesRemaining=> _isPremium ? 999 : _premiumUsesLeft;
+  int  get challengeUsesRemaining => premiumUsesRemaining;
+  int  get skillUsesRemaining     => premiumUsesRemaining;
 
-  // NEW: Challenge-specific (aliases for clarity)
-  bool get canUseChallenge => canUsePremiumFeature;
-  int get challengeUsesRemaining => _premiumUsesRemaining;
-
-  // NEW: Skill-specific
-  bool get canUseSkill => canUsePremiumFeature;
-  int get skillUsesRemaining => _premiumUsesRemaining;
-
-  // ═════════════════════════════════════════════════════════════════
-  // INITIALIZATION
-  // ═════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
+  //  INITIALISATION
+  // ══════════════════════════════════════════════════════════
 
   Future<void> initialize({required bool isPremium}) async {
     _isPremium = isPremium;
     if (!isPremium) {
       await adService.initialize();
-      await _loadFromPrefs(); // NEW
-      await _checkDailyReset(); // NEW
+      await _loadFromPrefs();
+      await _checkDailyReset();
     }
   }
 
-  void updatePremiumStatus(bool isPremium) {
-    _isPremium = isPremium;
-  }
+  void updatePremiumStatus(bool isPremium) => _isPremium = isPremium;
 
-  // ═════════════════════════════════════════════════════════════════
-  // USAGE TRACKING
-  // ═════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
+  //  USAGE TRACKING
+  // ══════════════════════════════════════════════════════════
 
   void recordAgentUse() {
     if (!_isPremium) _agentUsesToday++;
   }
 
-  void setWorkflowCount(int count) {
-    _workflowCount = count;
-  }
+  void setWorkflowCount(int count) => _workflowCount = count;
 
-  // NEW: Record premium feature usage
   void recordPremiumFeatureUse() {
-    if (!isPremium) {
-      _premiumUsesRemaining = (_premiumUsesRemaining - 1).clamp(0, 999);
+    if (!_isPremium) {
+      _premiumUsesLeft = (_premiumUsesLeft - 1).clamp(0, 999);
       _saveToPrefs();
     }
   }
 
-  // ═════════════════════════════════════════════════════════════════
-  // FEED AD LOGIC
-  // ═════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
+  //  FEED AD LOGIC
+  // ══════════════════════════════════════════════════════════
 
   bool shouldShowFeedAd(int index) {
     if (_isPremium) return false;
@@ -104,40 +92,32 @@ class AdManager {
 
   int realPostIndex(int visualIndex) {
     if (_isPremium) return visualIndex;
-    final adsBefore = visualIndex ~/ (kFeedAdFrequency + 1);
-    return visualIndex - adsBefore;
+    return visualIndex - (visualIndex ~/ (kFeedAdFrequency + 1));
   }
 
   int feedItemCount(int postCount) {
     if (_isPremium) return postCount;
-    final adCount = postCount ~/ kFeedAdFrequency;
-    return postCount + adCount;
+    return postCount + (postCount ~/ kFeedAdFrequency);
   }
 
-  // ═════════════════════════════════════════════════════════════════
-  // REWARDED AD UNLOCKS
-  // ═════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
+  //  REWARDED AD UNLOCKS
+  // ══════════════════════════════════════════════════════════
 
   Future<bool> watchAdForAgentUse(BuildContext context) async {
     if (_isPremium) return true;
-    
     return adService.showRewardedAd(
       featureKey: 'agent_extra_use',
-      onRewarded: () {
-        _agentUsesToday = (_agentUsesToday - 1).clamp(0, kFreeAgentDaily);
-      },
+      onRewarded: () => _agentUsesToday = (_agentUsesToday - 1).clamp(0, kFreeAgentDaily),
       onDismissed: () {},
     );
   }
 
   Future<bool> watchAdForWorkflow(BuildContext context) async {
     if (_isPremium) return true;
-    
     return adService.showRewardedAd(
       featureKey: 'workflow_extra',
-      onRewarded: () {
-        _workflowCount = (_workflowCount - 1).clamp(0, kFreeWorkflowMax);
-      },
+      onRewarded: () => _workflowCount = (_workflowCount - 1).clamp(0, kFreeWorkflowMax),
       onDismissed: () {},
     );
   }
@@ -148,7 +128,6 @@ class AdManager {
     required String featureName,
   }) async {
     if (_isPremium) return true;
-    
     return adService.showRewardedAd(
       featureKey: featureKey,
       onRewarded: () {},
@@ -156,7 +135,7 @@ class AdManager {
     );
   }
 
-  // NEW: Watch ad to unlock skill (requires multiple watches)
+  /// Watch ads progressively to unlock a skill (requires [kSkillAdWatches] watches).
   Future<bool> watchAdForSkillUnlock(BuildContext context) async {
     final ok = await adService.showRewardedAd(
       featureKey: 'skill_unlock',
@@ -166,110 +145,108 @@ class AdManager {
       },
       onDismissed: () {},
     );
-    
-    if (ok && _adWatchesForSkill >= _requiredAdWatches) {
+
+    if (ok && _adWatchesForSkill >= kSkillAdWatches) {
       _adWatchesForSkill = 0;
       await _saveToPrefs();
-      return true; // Unlocked
+      return true; // fully unlocked
     }
-    
-    // Show progress
+
     if (ok && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Watch ${_requiredAdWatches - _adWatchesForSkill} more ads to unlock'),
-          duration: const Duration(seconds: 2),
-        ),
-      );
+      final remaining = kSkillAdWatches - _adWatchesForSkill;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Watch $remaining more ad${remaining == 1 ? "" : "s"} to unlock'),
+        duration: const Duration(seconds: 2),
+      ));
     }
-    
     return false;
   }
 
-  // NEW: Watch ad for premium feature access (adds uses)
+  /// Watch one rewarded ad to gain extra premium-feature uses.
   Future<bool> watchAdForPremiumFeature(BuildContext context) async {
     return adService.showRewardedAd(
       featureKey: 'premium_feature',
       onRewarded: () {
-        _premiumUsesRemaining++;
+        _premiumUsesLeft++;
         _saveToPrefs();
       },
       onDismissed: () {},
     );
   }
 
-  // NEW: Alias for challenge feature
-  Future<bool> watchAdForChallenge(BuildContext context) async {
-    return await watchAdForPremiumFeature(context);
-  }
+  Future<bool> watchAdForChallenge(BuildContext context) =>
+      watchAdForPremiumFeature(context);
 
-  // NEW: Alias for skill feature access
-  Future<bool> watchAdForSkill(BuildContext context) async {
-    return await watchAdForPremiumFeature(context);
-  }
+  Future<bool> watchAdForSkill(BuildContext context) =>
+      watchAdForPremiumFeature(context);
 
-  // ═════════════════════════════════════════════════════════════════
-  // INTERSTITIAL ADS
-  // ═════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
+  //  INTERSTITIAL
+  // ══════════════════════════════════════════════════════════
 
+  /// Show interstitial if one is cached and ready.
   Future<void> showInterstitial() async {
     if (_isPremium) return;
     await adService.showInterstitialIfReady();
   }
 
+  /// Force an interstitial (ignores cooldown on mobile).
+  /// Web: no-op (stub handles it safely).
   Future<void> forceInterstitial() async {
     if (_isPremium) return;
     await adService.forceShowInterstitial();
   }
 
-  // ═════════════════════════════════════════════════════════════════
-  // BANNER ADS
-  // ═════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
+  //  BANNER
+  // ══════════════════════════════════════════════════════════
 
+  /// Inline banner (e.g. inside a ListView).
   Widget getBannerWidget() {
     if (_isPremium) return const SizedBox.shrink();
     return adService.getBannerWidget();
   }
 
+  /// Sticky bottom banner (anchored to scaffold).
+  /// Web returns SizedBox.shrink() via the stub.
   Widget getStickyBanner(BuildContext context) {
     if (_isPremium) return const SizedBox.shrink();
     return adService.getStickyBanner(context);
   }
 
-  // ═════════════════════════════════════════════════════════════════
-  // PERSISTENCE (SharedPreferences) — NEW
-  // ═════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
+  //  PERSISTENCE
+  // ══════════════════════════════════════════════════════════
 
   Future<void> _loadFromPrefs() async {
-    final prefs = await SharedPreferences.getInstance();
-    _premiumUsesRemaining = prefs.getInt(_keyPremiumUses) ?? 3;
-    _adWatchesForSkill = prefs.getInt(_keySkillWatches) ?? 0;
+    final p = await SharedPreferences.getInstance();
+    _premiumUsesLeft   = p.getInt(_kPremiumUses)  ?? 3;
+    _adWatchesForSkill = p.getInt(_kSkillWatches) ?? 0;
   }
 
   Future<void> _saveToPrefs() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_keyPremiumUses, _premiumUsesRemaining);
-    await prefs.setInt(_keySkillWatches, _adWatchesForSkill);
+    final p = await SharedPreferences.getInstance();
+    await p.setInt(_kPremiumUses,  _premiumUsesLeft);
+    await p.setInt(_kSkillWatches, _adWatchesForSkill);
   }
 
-  // ═════════════════════════════════════════════════════════════════
-  // DAILY RESET — NEW
-  // ═════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
+  //  DAILY RESET
+  // ══════════════════════════════════════════════════════════
 
   Future<void> _checkDailyReset() async {
-    final prefs = await SharedPreferences.getInstance();
-    final lastReset = prefs.getString(_keyLastResetDate);
+    final p     = await SharedPreferences.getInstance();
+    final last  = p.getString(_kLastReset);
     final today = DateTime.now().toIso8601String().split('T')[0];
-    
-    if (lastReset != today) {
+    if (last != today) {
       resetDailyLimits();
-      await prefs.setString(_keyLastResetDate, today);
+      await p.setString(_kLastReset, today);
     }
   }
 
   void resetDailyLimits() {
-    _agentUsesToday = 0;
-    _premiumUsesRemaining = 3;
+    _agentUsesToday  = 0;
+    _premiumUsesLeft = 3;
     _saveToPrefs();
   }
 }
