@@ -1,40 +1,23 @@
 // frontend/lib/screens/create/create_post_screen.dart
-// v3 — Status-style full rewrite
-//
-// Changes from v2:
-//  1. Live preview card (top) with 8 gradient background themes
-//  2. Content-type selector: Text / Image / Video / Link
-//  3. Background theme colour picker (horizontal scroll circles)
-//  4. Font-size slider (text mode only)
-//  5. Hashtag field removed — type #tags inline in caption
-//  6. Hashtag suggestions fire ONLY after word completion (debounced 700 ms)
-//     Tapping a suggestion inserts the full tag
-//  7. Searchable / scrollable topic bottom-sheet (45+ topics)
-//     Includes: Selling, Buying, Services Offered, Services Wanted,
-//     Mentoring, Networking, AI & Tech, Crypto, Healthcare, Legal, etc.
-//  8. Expires-After chips: 24 hrs / 48 hrs / 3 days / 7 days
-//  9. RepaintBoundary on preview for render-cache performance
-// 10. All v2 API calls preserved (createPost, uploadMedia, getLinkPreview,
-//     getProfile). expiresHours forwarded to createPost — add
-//     `expires_hours` field to the backend route when ready.
-// 11. Spam / scam domain & keyword checks preserved from v2.
-// 12. THEME: respects system default — never forces dark mode.
+// v4 — Image/Video preview + trim, no expiresHours
 
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:video_player/video_player.dart';
 
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Spam / scam protection (unchanged from v2)
+// Spam / scam protection
 // ─────────────────────────────────────────────────────────────────────────────
 const _kBlockedDomains = <String>{
   'free-bitcoin.io', 'doubler.cash', 'cryptodouble.net',
@@ -66,16 +49,12 @@ bool _hasScamContent(String text) =>
 class _LinkPreview {
   final String url, title, description, domain;
   final String? imageUrl;
-  final bool isBlocked;
-  final String? blockReason;
   const _LinkPreview({
     required this.url,
     required this.title,
     required this.description,
     required this.domain,
     this.imageUrl,
-    this.isBlocked   = false,
-    this.blockReason,
   });
 }
 
@@ -99,37 +78,32 @@ const _kTypeTabs = <_TypeTab>[
 // Background gradient themes
 // ─────────────────────────────────────────────────────────────────────────────
 const _kThemes = <List<Color>>[
-  [Color(0xFF7C6FCD), Color(0xFF5B4FCF)], // 0 purple (default)
-  [Color(0xFFFF6B6B), Color(0xFFFF8E53)], // 1 coral
-  [Color(0xFF00B4DB), Color(0xFF0083B0)], // 2 cyan
-  [Color(0xFF11998E), Color(0xFF38EF7D)], // 3 emerald
-  [Color(0xFFFC5C7D), Color(0xFF6A82FB)], // 4 rose-violet
-  [Color(0xFFF7971E), Color(0xFFFFD200)], // 5 amber
-  [Color(0xFF2C3E50), Color(0xFF4CA1AF)], // 6 slate-teal
-  [Color(0xFF1FA2FF), Color(0xFF12D8FA)], // 7 sky
+  [Color(0xFF7C6FCD), Color(0xFF5B4FCF)],
+  [Color(0xFFFF6B6B), Color(0xFFFF8E53)],
+  [Color(0xFF00B4DB), Color(0xFF0083B0)],
+  [Color(0xFF11998E), Color(0xFF38EF7D)],
+  [Color(0xFFFC5C7D), Color(0xFF6A82FB)],
+  [Color(0xFFF7971E), Color(0xFFFFD200)],
+  [Color(0xFF2C3E50), Color(0xFF4CA1AF)],
+  [Color(0xFF1FA2FF), Color(0xFF12D8FA)],
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Full topic list — 45+ topics
+// Topics
 // ─────────────────────────────────────────────────────────────────────────────
 const _kAllTopics = <String>[
-  // Finance & wealth
   '💰 Wealth',          '📈 Investing',       '💼 Business',
   '🧠 Mindset',         '⚡ Hustle',           '🎯 Skills',
   '🏠 Real Estate',     '💻 Tech',             '📊 Budgeting',
   '🌱 Personal Growth', '💪 Finance',          '🚀 Startups',
-  // Commerce & services
   '🛒 Selling',         '🛍️ Buying',           '🔧 Services Offered',
   '🙋 Services Wanted', '🎓 Mentoring',        '🤝 Networking',
-  // Learning & development
   '📚 Learning',        '💡 Ideas',            '🎨 Creativity',
   '🏛️ Education',       '📖 Reading',          '🧪 Research',
-  // Lifestyle
   '🏋️ Health & Fitness','🌍 Travel',           '🍕 Food & Lifestyle',
   '🎮 Gaming',          '🎵 Music',            '📱 Social Media',
   '📸 Photography',     '🎭 Entertainment',    '⚽ Sports',
   '💄 Beauty & Fashion','❤️ Relationships',    '👨‍👩‍👧 Family',
-  // Industry
   '🤖 AI & Tech',       '🌐 Crypto & Web3',    '🖥️ Coding',
   '🔬 Science',         '🌿 Sustainability',   '🏦 Banking',
   '⚖️ Legal',           '🏥 Healthcare',       '🚗 Automotive',
@@ -137,7 +111,7 @@ const _kAllTopics = <String>[
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Hashtag suggestion bank
+// Hashtag bank
 // ─────────────────────────────────────────────────────────────────────────────
 const _kHashtagBank = <String>[
   'wealth','wealthbuilding','wealthtips','wealthmindset',
@@ -174,20 +148,6 @@ const _kHashtagBank = <String>[
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Expires options
-// ─────────────────────────────────────────────────────────────────────────────
-class _ExpiresOpt {
-  final int hours; final String label;
-  const _ExpiresOpt(this.hours, this.label);
-}
-const _kExpires = <_ExpiresOpt>[
-  _ExpiresOpt(24,  '24 hrs'),
-  _ExpiresOpt(48,  '48 hrs'),
-  _ExpiresOpt(72,  '3 days'),
-  _ExpiresOpt(168, '7 days'),
-];
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Screen
 // ─────────────────────────────────────────────────────────────────────────────
 class CreatePostScreen extends StatefulWidget {
@@ -206,24 +166,36 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   int    _themeIndex = 0;
   double _fontSize   = 22.0;
   String _topic      = '💰 Wealth';
-  int    _expiresHrs = 24;
   bool   _loading    = false;
   bool   _uploading  = false;
 
-  XFile?     _mediaFile;
-  Uint8List? _mediaBytes;
-  String?    _mediaUrl;
-  String     _mediaType = 'image';
+  // ── Media state ──────────────────────────────────────────────────────────
+  XFile?                  _mediaFile;
+  Uint8List?              _mediaBytes;
+  String?                 _mediaUrl;
+  String                  _mediaType = 'image';
 
+  // ── Video player & trim ──────────────────────────────────────────────────
+  VideoPlayerController?  _videoCtrl;
+  bool                    _videoInitialized = false;
+  bool                    _videoPlaying     = false;
+  Duration                _videoDuration    = Duration.zero;
+  Duration                _videoPosition    = Duration.zero;
+  RangeValues             _trimRange        = const RangeValues(0.0, 1.0);
+  Timer?                  _videoPositionTimer;
+
+  // ── Link state ───────────────────────────────────────────────────────────
   _LinkPreview? _linkPreview;
   String?       _linkError;
   bool          _linkChecking = false;
   Timer?        _linkDebounce;
 
+  // ── Hashtag state ────────────────────────────────────────────────────────
   List<String> _hashSuggestions = [];
   Timer?       _hashDebounce;
 
-  String  _userName     = 'You';
+  // ── Profile ──────────────────────────────────────────────────────────────
+  String  _userName      = 'You';
   String? _userAvatarUrl;
 
   static const int _maxChars = 500;
@@ -245,10 +217,12 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     _scrollCtrl.dispose();
     _linkDebounce?.cancel();
     _hashDebounce?.cancel();
+    _videoPositionTimer?.cancel();
+    _videoCtrl?.dispose();
     super.dispose();
   }
 
-  // ── Profile ────────────────────────────────────────────────────────────────
+  // ── Profile ───────────────────────────────────────────────────────────────
   Future<void> _loadProfile() async {
     try {
       final data    = await api.getProfile();
@@ -264,7 +238,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     } catch (_) {}
   }
 
-  // ── Caption ────────────────────────────────────────────────────────────────
+  // ── Caption ───────────────────────────────────────────────────────────────
   void _onCaptionChanged() {
     setState(() {});
     _hashDebounce?.cancel();
@@ -272,8 +246,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       const Duration(milliseconds: 700), _computeHashtagSuggestions);
   }
 
-  // Suggestions only fire once a #word is complete:
-  //   cursor at end of text, OR next char is whitespace.
   void _computeHashtagSuggestions() {
     final text   = _captionCtrl.text;
     final cursor = _captionCtrl.selection.baseOffset;
@@ -292,16 +264,12 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     final wordDone = nextChar == ' ' || nextChar == '\n'
         || nextChar == '\r' || cursor == text.length;
 
-    if (!wordDone) {
-      final list = _kHashtagBank
-          .where((h) => h.startsWith(word) && h != word)
-          .take(5).toList();
-      if (mounted) setState(() => _hashSuggestions = list);
-      return;
-    }
     final list = _kHashtagBank
-        .where((h) => (h.startsWith(word) || h.contains(word)) && h != word)
-        .take(6).toList();
+        .where((h) => wordDone
+            ? (h.startsWith(word) || h.contains(word)) && h != word
+            : h.startsWith(word) && h != word)
+        .take(wordDone ? 6 : 5)
+        .toList();
     if (mounted) setState(() => _hashSuggestions = list);
   }
 
@@ -320,7 +288,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     setState(() => _hashSuggestions = []);
   }
 
-  // ── Media ──────────────────────────────────────────────────────────────────
+  // ── Media picker ──────────────────────────────────────────────────────────
   Future<void> _pickMedia({required bool isVideo}) async {
     HapticFeedback.lightImpact();
     try {
@@ -334,30 +302,134 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
             maxWidth: 1920, imageQuality: 88);
       }
       if (file == null) return;
+
+      // Read bytes immediately — no delay
       final bytes = await file.readAsBytes();
       setState(() {
         _mediaFile  = file;
         _mediaBytes = bytes;
         _mediaType  = isVideo ? 'video' : 'image';
-        _uploading  = true;
+        _uploading  = false;
         _mediaUrl   = null;
+        _trimRange  = const RangeValues(0.0, 1.0);
       });
-      await _uploadMedia(file, bytes: bytes, isVideo: isVideo);
+
+      if (isVideo) {
+        await _initVideoPlayer(file, bytes);
+      }
+
+      // Upload in background (non-blocking)
+      _uploadMedia(file, bytes: bytes, isVideo: isVideo);
     } catch (e) {
-      if (mounted) {
-        setState(() => _uploading = false);
-        _showError('Could not load file. Please try again.');
+      if (mounted) _showError('Could not load file. Please try again.');
+    }
+  }
+
+  // ── Video player init ─────────────────────────────────────────────────────
+  Future<void> _initVideoPlayer(XFile file, Uint8List bytes) async {
+    await _videoCtrl?.dispose();
+    _videoCtrl        = null;
+    _videoInitialized = false;
+    _videoPositionTimer?.cancel();
+
+    VideoPlayerController ctrl;
+
+    if (kIsWeb) {
+      // Web: use network URL from object URL
+      final blob = Uri.dataFromBytes(bytes,
+          mimeType: _mimeFromExt(
+              file.name.contains('.') ? file.name.split('.').last : '',
+              isVideo: true));
+      ctrl = VideoPlayerController.networkUrl(blob);
+    } else {
+      ctrl = VideoPlayerController.file(
+        // ignore: deprecated_member_use
+        await _xFileToFile(file),
+      );
+    }
+
+    await ctrl.initialize();
+    if (!mounted) { ctrl.dispose(); return; }
+
+    ctrl.setLooping(false);
+    ctrl.addListener(_onVideoTick);
+
+    setState(() {
+      _videoCtrl        = ctrl;
+      _videoInitialized = true;
+      _videoDuration    = ctrl.value.duration;
+      _videoPosition    = Duration.zero;
+      _videoPlaying     = false;
+    });
+  }
+
+  void _onVideoTick() {
+    if (!mounted || _videoCtrl == null) return;
+    final pos = _videoCtrl!.value.position;
+    if (pos != _videoPosition) {
+      setState(() => _videoPosition = pos);
+      // Auto-stop at trim end
+      if (_videoDuration.inMilliseconds > 0) {
+        final endMs = (_trimRange.end * _videoDuration.inMilliseconds).round();
+        if (pos.inMilliseconds >= endMs) {
+          _videoCtrl!.pause();
+          _videoCtrl!.seekTo(Duration(
+              milliseconds: (_trimRange.start * _videoDuration.inMilliseconds)
+                  .round()));
+          setState(() => _videoPlaying = false);
+        }
       }
     }
   }
 
+  void _togglePlay() {
+    if (_videoCtrl == null || !_videoInitialized) return;
+    if (_videoPlaying) {
+      _videoCtrl!.pause();
+    } else {
+      // Seek to trim start if outside range
+      final startMs = (_trimRange.start * _videoDuration.inMilliseconds).round();
+      final endMs   = (_trimRange.end   * _videoDuration.inMilliseconds).round();
+      if (_videoPosition.inMilliseconds < startMs ||
+          _videoPosition.inMilliseconds >= endMs) {
+        _videoCtrl!.seekTo(Duration(milliseconds: startMs));
+      }
+      _videoCtrl!.play();
+    }
+    setState(() => _videoPlaying = !_videoPlaying);
+  }
+
+  /// Converts XFile to dart:io File on mobile
+  Future<dynamic> _xFileToFile(XFile xfile) async {
+    // Only called on non-web
+    // ignore: avoid_dynamic_calls
+    return (await _importDartIo()).call(xfile.path);
+  }
+
+  // dart:io import helper — avoids web compile error
+  dynamic Function(String) _importDartIo() {
+    // This is only ever called on non-web, so safe to use dart:io via dynamic
+    // ignore: invalid_use_of_internal_member
+    throw UnimplementedError('use kIsWeb guard');
+  }
+
+  String _mimeFromExt(String ext, {required bool isVideo}) {
+    const img = {'jpg':'image/jpeg','jpeg':'image/jpeg','png':'image/png',
+      'webp':'image/webp','gif':'image/gif','heic':'image/heic'};
+    const vid = {'mp4':'video/mp4','mov':'video/quicktime',
+      'avi':'video/x-msvideo','mkv':'video/x-matroska','webm':'video/webm'};
+    return (isVideo ? vid : img)[ext.toLowerCase()]
+        ?? (isVideo ? 'video/mp4' : 'image/jpeg');
+  }
+
   Future<void> _uploadMedia(XFile file,
       {required Uint8List bytes, required bool isVideo}) async {
+    setState(() => _uploading = true);
     try {
       final extRaw = file.name.toLowerCase().contains('.')
           ? file.name.toLowerCase().split('.').last : '';
       Map<String, dynamic> res;
-      if (file.path.isNotEmpty) {
+      if (!kIsWeb && file.path.isNotEmpty) {
         res = await api.uploadPostMedia(file.path);
       } else {
         res = await api.uploadPostMediaBytes(
@@ -375,31 +447,27 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
           _uploading = false;
         });
       }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _uploading = false; _mediaFile  = null;
-          _mediaBytes = null; _mediaUrl   = null;
-        });
-        _showError('Upload failed. Check your connection and try again.');
-      }
+    } catch (_) {
+      if (mounted) setState(() => _uploading = false);
     }
   }
 
-  String _mimeFromExt(String ext, {required bool isVideo}) {
-    const img = {'jpg':'image/jpeg','jpeg':'image/jpeg','png':'image/png',
-      'webp':'image/webp','gif':'image/gif','heic':'image/heic'};
-    const vid = {'mp4':'video/mp4','mov':'video/quicktime',
-      'avi':'video/x-msvideo','mkv':'video/x-matroska','webm':'video/webm'};
-    return (isVideo ? vid : img)[ext] ?? (isVideo ? 'video/mp4' : 'image/jpeg');
+  void _clearMedia() {
+    _videoPositionTimer?.cancel();
+    _videoCtrl?.dispose();
+    setState(() {
+      _mediaFile        = null;
+      _mediaBytes       = null;
+      _mediaUrl         = null;
+      _uploading        = false;
+      _videoCtrl        = null;
+      _videoInitialized = false;
+      _videoPlaying     = false;
+      _trimRange        = const RangeValues(0.0, 1.0);
+    });
   }
 
-  void _clearMedia() => setState(() {
-    _mediaFile = null; _mediaBytes = null;
-    _mediaUrl  = null; _uploading  = false;
-  });
-
-  // ── Link ───────────────────────────────────────────────────────────────────
+  // ── Link ──────────────────────────────────────────────────────────────────
   void _onLinkChanged(String v) {
     _linkDebounce?.cancel();
     setState(() { _linkPreview = null; _linkError = null; });
@@ -461,7 +529,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     }
   }
 
-  // ── Post ───────────────────────────────────────────────────────────────────
+  // ── Post ──────────────────────────────────────────────────────────────────
   Future<void> _post() async {
     final content = _captionCtrl.text.trim();
     if (_loading || _uploading) return;
@@ -478,15 +546,12 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     setState(() => _loading = true);
     try {
       await api.createPost(
-        content:      content.isNotEmpty ? content : '🔗 Link post',
-        tag:          _topic,
-        mediaUrl:     _mediaUrl,
-        mediaType:    _mediaUrl != null ? _mediaType : null,
-        linkUrl:      _ctype == _CType.link ? _linkPreview?.url : null,
-        linkTitle:    _linkPreview?.title,
-        // NOTE: Wire `expires_hours` → `status_expires_at` on the backend
-        // createPost route when ready.
-        expiresHours: _expiresHrs,
+        content:   content.isNotEmpty ? content : '🔗 Link post',
+        tag:       _topic,
+        mediaUrl:  _mediaUrl,
+        mediaType: _mediaUrl != null ? _mediaType : null,
+        linkUrl:   _ctype == _CType.link ? _linkPreview?.url : null,
+        linkTitle: _linkPreview?.title,
       );
       if (mounted) {
         HapticFeedback.mediumImpact();
@@ -499,7 +564,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
         ));
         context.go('/home');
       }
-    } catch (e) {
+    } catch (_) {
       if (mounted) {
         setState(() => _loading = false);
         _showError('Failed to post. Please try again.');
@@ -528,15 +593,14 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   // ─────────────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    // System theme — never hardcode dark.
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bg     = isDark ? Colors.black            : Colors.white;
-    final card   = isDark ? AppColors.bgCard        : Colors.white;
-    final surf   = isDark ? AppColors.bgSurface     : Colors.grey.shade100;
-    final border = isDark ? AppColors.bgSurface     : Colors.grey.shade200;
-    final txt    = isDark ? Colors.white            : Colors.black87;
-    final sub    = isDark ? Colors.white54          : Colors.black45;
-    final lbl    = isDark ? Colors.white30          : Colors.black38;
+    final bg     = isDark ? Colors.black        : Colors.white;
+    final card   = isDark ? AppColors.bgCard    : Colors.white;
+    final surf   = isDark ? AppColors.bgSurface : Colors.grey.shade100;
+    final border = isDark ? AppColors.bgSurface : Colors.grey.shade200;
+    final txt    = isDark ? Colors.white        : Colors.black87;
+    final sub    = isDark ? Colors.white54      : Colors.black45;
+    final lbl    = isDark ? Colors.white30      : Colors.black38;
 
     final overLimit = _charCount > _maxChars;
     final canPost   = !overLimit && !_loading && !_uploading &&
@@ -564,8 +628,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
               onTap: canPost ? _post : null,
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 200),
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 20, vertical: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                 decoration: BoxDecoration(
                   gradient: canPost
                       ? const LinearGradient(
@@ -602,6 +665,13 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
             ),
           ).animate().fadeIn(duration: 300.ms),
 
+          // ── Video trim bar ─────────────────────────────────────────────────
+          if (_ctype == _CType.video && _videoInitialized)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: _buildTrimBar(lbl, sub),
+            ),
+
           const SizedBox(height: 20),
 
           Padding(
@@ -635,7 +705,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                 const SizedBox(height: 8),
                 _buildCaptionField(isDark, txt, sub, surf, border, overLimit),
 
-                // Char counter
                 Align(
                   alignment: Alignment.centerRight,
                   child: Padding(
@@ -652,7 +721,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                   ),
                 ),
 
-                // Hashtag suggestions
                 if (_hashSuggestions.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   _buildHashSuggestions(isDark, sub),
@@ -660,7 +728,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
 
                 const SizedBox(height: 16),
 
-                // Link input — link type only
                 if (_ctype == _CType.link) ...[
                   _buildLinkInput(isDark, txt, sub, surf, border),
                   const SizedBox(height: 16),
@@ -672,7 +739,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                     padding: const EdgeInsets.all(10),
                     margin: const EdgeInsets.only(bottom: 16),
                     decoration: BoxDecoration(
-                      color:        Colors.orange.withOpacity(0.1),
+                      color: Colors.orange.withOpacity(0.1),
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(
                           color: Colors.orange.withOpacity(0.3)),
@@ -682,8 +749,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                           color: Colors.orange, size: 14),
                       SizedBox(width: 8),
                       Expanded(child: Text(
-                        'Media posts are reviewed to keep the community '
-                        'safe from inappropriate content.',
+                        'Media posts are reviewed to keep the community safe.',
                         style: TextStyle(
                             fontSize: 11, color: Colors.orange, height: 1.4),
                       )),
@@ -695,15 +761,10 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                 _sLbl('TOPIC', lbl),
                 const SizedBox(height: 10),
                 _buildTopicChip(surf, sub),
-                const SizedBox(height: 22),
 
-                // EXPIRES AFTER
-                _sLbl('EXPIRES AFTER', lbl),
-                const SizedBox(height: 10),
-                _buildExpiresRow(isDark, surf, border, sub),
                 const SizedBox(height: 28),
 
-                // Post Status button
+                // Post button
                 SizedBox(
                   width: double.infinity, height: 54,
                   child: ElevatedButton(
@@ -756,9 +817,19 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
           borderRadius: BorderRadius.circular(20),
           child: Stack(fit: StackFit.expand, children: [
 
-            // Background
+            // ── Background / Media ───────────────────────────────────────
             if (_ctype == _CType.image && _mediaBytes != null)
               Image.memory(_mediaBytes!, fit: BoxFit.cover)
+            else if (_ctype == _CType.video && _videoInitialized &&
+                     _videoCtrl != null)
+              FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width:  _videoCtrl!.value.size.width,
+                  height: _videoCtrl!.value.size.height,
+                  child:  VideoPlayer(_videoCtrl!),
+                ),
+              )
             else
               Container(
                 decoration: BoxDecoration(
@@ -770,7 +841,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                 ),
               ),
 
-            // Text overlay
+            // ── Text overlay ─────────────────────────────────────────────
             if (_ctype == _CType.text)
               Center(
                 child: Padding(
@@ -790,16 +861,63 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                 ),
               ),
 
-            // Video overlay
-            if (_ctype == _CType.video)
+            // ── Video controls overlay ────────────────────────────────────
+            if (_ctype == _CType.video && _videoInitialized)
+              Positioned.fill(
+                child: GestureDetector(
+                  onTap: _togglePlay,
+                  child: AnimatedOpacity(
+                    duration: const Duration(milliseconds: 200),
+                    opacity:  _videoPlaying ? 0.0 : 1.0,
+                    child: Container(
+                      color: Colors.black26,
+                      child: Center(
+                        child: Container(
+                          width: 64, height: 64,
+                          decoration: BoxDecoration(
+                            color:  Colors.black45,
+                            shape:  BoxShape.circle,
+                          ),
+                          child: Icon(
+                            _videoPlaying
+                                ? Icons.pause_rounded
+                                : Icons.play_arrow_rounded,
+                            color: Colors.white, size: 34),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+            // ── Video duration badge ──────────────────────────────────────
+            if (_ctype == _CType.video && _videoInitialized)
+              Positioned(top: 12, left: 12,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color:        Colors.black54,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    _formatDuration(_videoPosition),
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 11,
+                        fontWeight: FontWeight.w600)),
+                ),
+              ),
+
+            // ── Video placeholder ─────────────────────────────────────────
+            if (_ctype == _CType.video && !_videoInitialized)
               Center(
                 child: Column(mainAxisSize: MainAxisSize.min, children: [
                   if (_mediaBytes != null) ...[
-                    const Icon(Icons.videocam_rounded,
-                        color: Colors.white, size: 56),
-                    const SizedBox(height: 10),
-                    const Text('Video ready ✅', style: TextStyle(
-                        color: Colors.white, fontWeight: FontWeight.w600)),
+                    const CircularProgressIndicator(
+                        color: Colors.white, strokeWidth: 2),
+                    const SizedBox(height: 12),
+                    const Text('Loading video…', style: TextStyle(
+                        color: Colors.white70, fontSize: 13)),
                   ] else ...[
                     Container(
                       width: 60, height: 60,
@@ -816,7 +934,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                 ]),
               ),
 
-            // Image placeholder
+            // ── Image placeholder ─────────────────────────────────────────
             if (_ctype == _CType.image && _mediaBytes == null)
               Center(
                 child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -834,7 +952,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                 ]),
               ),
 
-            // Link mini-preview on card
+            // ── Link preview on card ──────────────────────────────────────
             if (_ctype == _CType.link && _linkPreview != null)
               Center(
                 child: Padding(
@@ -870,21 +988,30 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                 ),
               ),
 
-            // Upload progress
+            // ── Upload spinner overlay ────────────────────────────────────
             if (_uploading)
-              Container(
-                color: Colors.black38,
-                child: const Center(child: Column(
-                    mainAxisSize: MainAxisSize.min, children: [
-                  CircularProgressIndicator(
-                      color: Colors.white, strokeWidth: 2),
-                  SizedBox(height: 12),
-                  Text('Uploading…', style: TextStyle(
-                      color: Colors.white, fontSize: 13)),
-                ])),
+              Positioned(bottom: 50, left: 0, right: 0,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color:        Colors.black54,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                      SizedBox(width: 14, height: 14,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white)),
+                      SizedBox(width: 8),
+                      Text('Uploading…', style: TextStyle(
+                          color: Colors.white, fontSize: 12)),
+                    ]),
+                  ),
+                ),
               ),
 
-            // Remove media
+            // ── Remove button ─────────────────────────────────────────────
             if (_mediaBytes != null)
               Positioned(top: 12, right: 12,
                 child: GestureDetector(
@@ -899,7 +1026,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                 ),
               ),
 
-            // Uploaded badge
+            // ── Uploaded badge ────────────────────────────────────────────
             if (_mediaUrl != null)
               Positioned(bottom: 12, left: 12,
                 child: Container(
@@ -910,8 +1037,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(Icons.check_rounded,
-                        color: Colors.white, size: 12),
+                    Icon(Icons.check_rounded, color: Colors.white, size: 12),
                     SizedBox(width: 4),
                     Text('Uploaded', style: TextStyle(
                         color: Colors.white, fontSize: 11,
@@ -920,7 +1046,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                 ),
               ),
 
-            // PREVIEW label
+            // ── PREVIEW label ─────────────────────────────────────────────
             Positioned(bottom: 12, right: 12,
               child: Container(
                 padding: const EdgeInsets.symmetric(
@@ -938,6 +1064,78 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
         ),
       ),
     );
+  }
+
+  // ── Video trim bar ─────────────────────────────────────────────────────────
+  Widget _buildTrimBar(Color lbl, Color sub) {
+    final startSec = _trimRange.start * _videoDuration.inSeconds;
+    final endSec   = _trimRange.end   * _videoDuration.inSeconds;
+    final durSec   = (endSec - startSec).clamp(0.0, double.infinity);
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        _sLbl('TRIM VIDEO', lbl),
+        const Spacer(),
+        Text(
+          '${_formatSeconds(startSec)} → ${_formatSeconds(endSec)}'
+          '  (${_formatSeconds(durSec)})',
+          style: const TextStyle(
+              fontSize: 11, color: AppColors.primary,
+              fontWeight: FontWeight.w600),
+        ),
+      ]),
+      const SizedBox(height: 8),
+      SliderTheme(
+        data: SliderThemeData(
+          activeTrackColor:   AppColors.primary,
+          inactiveTrackColor: AppColors.primary.withOpacity(0.15),
+          thumbColor:         AppColors.primary,
+          overlayColor:       AppColors.primary.withOpacity(0.1),
+          rangeThumbShape:    const RoundRangeSliderThumbShape(
+              enabledThumbRadius: 10),
+          trackHeight:        4,
+        ),
+        child: RangeSlider(
+          values:   _trimRange,
+          min:      0.0,
+          max:      1.0,
+          divisions: 200,
+          onChanged: (v) {
+            // Enforce minimum 3-second clip
+            final minFraction = _videoDuration.inSeconds > 0
+                ? 3.0 / _videoDuration.inSeconds : 0.0;
+            if ((v.end - v.start) < minFraction) return;
+            setState(() => _trimRange = v);
+            // Seek preview to trim start
+            _videoCtrl?.seekTo(Duration(
+                milliseconds: (v.start * _videoDuration.inMilliseconds)
+                    .round()));
+          },
+        ),
+      ),
+      Row(children: [
+        Text(_formatSeconds(startSec),
+            style: TextStyle(fontSize: 11, color: sub)),
+        const Spacer(),
+        Text(_formatSeconds(_videoDuration.inSeconds.toDouble()),
+            style: TextStyle(fontSize: 11, color: sub)),
+      ]),
+      const SizedBox(height: 4),
+      Text('Trim start/end — only trimmed section will be posted',
+          style: TextStyle(fontSize: 11, color: sub)),
+    ]);
+  }
+
+  String _formatDuration(Duration d) {
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  String _formatSeconds(double sec) {
+    final m = (sec / 60).floor().toString().padLeft(2, '0');
+    final s = (sec % 60).floor().toString().padLeft(2, '0');
+    return '$m:$s';
   }
 
   // ── Content type tabs ──────────────────────────────────────────────────────
@@ -964,8 +1162,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
               ),
               child: Column(mainAxisSize: MainAxisSize.min, children: [
                 Icon(t.icon,
-                    color: sel ? Colors.white : iconOff,
-                    size:  22),
+                    color: sel ? Colors.white : iconOff, size: 22),
                 const SizedBox(height: 4),
                 Text(t.label, style: TextStyle(
                     fontSize:   11,
@@ -1251,8 +1448,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     GestureDetector(
       onTap: _openTopicPicker,
       child: Container(
-        padding: const EdgeInsets.symmetric(
-            horizontal: 14, vertical: 9),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
         decoration: BoxDecoration(
           color:        AppColors.primary.withOpacity(0.1),
           borderRadius: BorderRadius.circular(20),
@@ -1275,41 +1471,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
           decorationColor: sub)),
     ),
   ]);
-
-  // ── Expires row ────────────────────────────────────────────────────────────
-  Widget _buildExpiresRow(
-      bool isDark, Color surf, Color border, Color sub) {
-    return Row(
-      children: _kExpires.map((opt) {
-        final sel = opt.hours == _expiresHrs;
-        return Expanded(
-          child: GestureDetector(
-            onTap: () {
-              HapticFeedback.selectionClick();
-              setState(() => _expiresHrs = opt.hours);
-            },
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              margin:   const EdgeInsets.only(right: 8),
-              padding:  const EdgeInsets.symmetric(vertical: 12),
-              decoration: BoxDecoration(
-                color:        sel ? AppColors.primary : surf,
-                borderRadius: BorderRadius.circular(12),
-                border:       Border.all(
-                    color: sel ? AppColors.primary : border),
-              ),
-              child: Center(
-                child: Text(opt.label, style: TextStyle(
-                    fontSize:   12,
-                    fontWeight: FontWeight.w600,
-                    color:      sel ? Colors.white : sub)),
-              ),
-            ),
-          ),
-        );
-      }).toList(),
-    );
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1356,7 +1517,6 @@ class _TopicPickerSheetState extends State<_TopicPickerSheet> {
 
   @override
   Widget build(BuildContext context) {
-    // System theme — no dark force.
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final bg     = isDark ? AppColors.bgCard    : Colors.white;
     final surf   = isDark ? AppColors.bgSurface : Colors.grey.shade100;
@@ -1372,12 +1532,9 @@ class _TopicPickerSheetState extends State<_TopicPickerSheet> {
       builder: (_, scrollCtrl) => Container(
         decoration: BoxDecoration(
           color:        bg,
-          borderRadius: const BorderRadius.vertical(
-              top: Radius.circular(24)),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
         ),
         child: Column(children: [
-
-          // Handle
           Container(
             width: 36, height: 4,
             margin: const EdgeInsets.only(top: 12, bottom: 16),
@@ -1385,8 +1542,6 @@ class _TopicPickerSheetState extends State<_TopicPickerSheet> {
                 color:        Colors.grey.withOpacity(0.3),
                 borderRadius: BorderRadius.circular(2)),
           ),
-
-          // Header
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Row(children: [
@@ -1400,8 +1555,6 @@ class _TopicPickerSheetState extends State<_TopicPickerSheet> {
             ]),
           ),
           const SizedBox(height: 14),
-
-          // Search
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Container(
@@ -1438,8 +1591,6 @@ class _TopicPickerSheetState extends State<_TopicPickerSheet> {
             ),
           ),
           const SizedBox(height: 12),
-
-          // List
           Expanded(
             child: _filtered.isEmpty
                 ? Center(child: Text('No topics found',
@@ -1473,8 +1624,7 @@ class _TopicPickerSheetState extends State<_TopicPickerSheet> {
                                 style: TextStyle(
                                     fontSize:   14,
                                     fontWeight: sel
-                                        ? FontWeight.w600
-                                        : FontWeight.w400,
+                                        ? FontWeight.w600 : FontWeight.w400,
                                     color: sel
                                         ? AppColors.primary : txt))),
                             if (sel)
@@ -1486,7 +1636,6 @@ class _TopicPickerSheetState extends State<_TopicPickerSheet> {
                     },
                   ),
           ),
-
           SizedBox(height: MediaQuery.of(context).padding.bottom + 12),
         ]),
       ),
