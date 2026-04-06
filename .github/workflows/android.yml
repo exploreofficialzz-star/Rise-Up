@@ -97,14 +97,17 @@ jobs:
         if: ${{ github.event.inputs.build_type != 'aab' }}
         working-directory: frontend
         env:
-          ADMOB_APP_ID: ${{ secrets.ADMOB_APP_ID }}
-          BANNER_AD_UNIT_ID: ${{ secrets.ADMOB_BANNER_AD_UNIT }}
-          REWARDED_AD_UNIT_ID: ${{ secrets.ADMOB_REWARDED_AD_UNIT }}
-          INTERSTITIAL_AD_UNIT_ID: ${{ secrets.ADMOB_INTERSTITIAL_AD_UNIT }}
-          NATIVE_AD_UNIT_ID: ${{ secrets.NATIVE_AD_UNIT_ID }}
+          # Core
           API_BASE_URL: ${{ secrets.API_BASE_URL }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          # AdMob — env var names match GitHub secret names
+          ADMOB_APP_ID: ${{ secrets.ADMOB_APP_ID }}
+          # Shared ad unit IDs (used as fallback by AppConstants)
+          BANNER_AD_UNIT_ID: ${{ secrets.ADMOB_BANNER_AD_UNIT }}
+          INTERSTITIAL_AD_UNIT_ID: ${{ secrets.ADMOB_INTERSTITIAL_AD_UNIT }}
+          REWARDED_AD_UNIT_ID: ${{ secrets.ADMOB_REWARDED_AD_UNIT }}
+          NATIVE_AD_UNIT_ID: ${{ secrets.NATIVE_AD_UNIT_ID }}
         run: |
           flutter build apk --release \
             --dart-define=API_BASE_URL=$API_BASE_URL \
@@ -112,8 +115,8 @@ jobs:
             --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY \
             --dart-define=ADMOB_APP_ID=$ADMOB_APP_ID \
             --dart-define=BANNER_AD_UNIT_ID=$BANNER_AD_UNIT_ID \
-            --dart-define=REWARDED_AD_UNIT_ID=$REWARDED_AD_UNIT_ID \
             --dart-define=INTERSTITIAL_AD_UNIT_ID=$INTERSTITIAL_AD_UNIT_ID \
+            --dart-define=REWARDED_AD_UNIT_ID=$REWARDED_AD_UNIT_ID \
             --dart-define=NATIVE_AD_UNIT_ID=$NATIVE_AD_UNIT_ID
 
       # =========================
@@ -123,14 +126,16 @@ jobs:
         if: ${{ github.event.inputs.build_type != 'apk' || startsWith(github.ref, 'refs/tags/') }}
         working-directory: frontend
         env:
-          ADMOB_APP_ID: ${{ secrets.ADMOB_APP_ID }}
-          BANNER_AD_UNIT_ID: ${{ secrets.ADMOB_BANNER_AD_UNIT }}
-          REWARDED_AD_UNIT_ID: ${{ secrets.ADMOB_REWARDED_AD_UNIT }}
-          INTERSTITIAL_AD_UNIT_ID: ${{ secrets.ADMOB_INTERSTITIAL_AD_UNIT }}
-          NATIVE_AD_UNIT_ID: ${{ secrets.NATIVE_AD_UNIT_ID }}
+          # Core
           API_BASE_URL: ${{ secrets.API_BASE_URL }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          # AdMob
+          ADMOB_APP_ID: ${{ secrets.ADMOB_APP_ID }}
+          BANNER_AD_UNIT_ID: ${{ secrets.ADMOB_BANNER_AD_UNIT }}
+          INTERSTITIAL_AD_UNIT_ID: ${{ secrets.ADMOB_INTERSTITIAL_AD_UNIT }}
+          REWARDED_AD_UNIT_ID: ${{ secrets.ADMOB_REWARDED_AD_UNIT }}
+          NATIVE_AD_UNIT_ID: ${{ secrets.NATIVE_AD_UNIT_ID }}
         run: |
           flutter build appbundle --release \
             --dart-define=API_BASE_URL=$API_BASE_URL \
@@ -138,8 +143,8 @@ jobs:
             --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY \
             --dart-define=ADMOB_APP_ID=$ADMOB_APP_ID \
             --dart-define=BANNER_AD_UNIT_ID=$BANNER_AD_UNIT_ID \
-            --dart-define=REWARDED_AD_UNIT_ID=$REWARDED_AD_UNIT_ID \
             --dart-define=INTERSTITIAL_AD_UNIT_ID=$INTERSTITIAL_AD_UNIT_ID \
+            --dart-define=REWARDED_AD_UNIT_ID=$REWARDED_AD_UNIT_ID \
             --dart-define=NATIVE_AD_UNIT_ID=$NATIVE_AD_UNIT_ID
 
       # =========================
