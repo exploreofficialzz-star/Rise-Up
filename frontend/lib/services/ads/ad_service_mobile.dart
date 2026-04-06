@@ -27,6 +27,9 @@ class AdService implements AdServiceBase {
   bool _bannerLoading = false;
   bool _nativeLoading = false;
 
+  // FIX 2: Guard against double-init (adManager calls initialize() on startup)
+  bool _initialized = false;
+
   // ── Frequency & Capping ────────────────────────────────────
   int _interstitialCount = 0;
   static const int _interstitialFreq = 3;
@@ -45,6 +48,10 @@ class AdService implements AdServiceBase {
   // ── Initialization ─────────────────────────────────────────
   @override
   Future<void> initialize() async {
+    // FIX 2: Prevent double-init
+    if (_initialized) return;
+    _initialized = true;
+
     await MobileAds.instance.initialize();
     
     // Preload all ad types
@@ -59,6 +66,8 @@ class AdService implements AdServiceBase {
   // ═══════════════════════════════════════════════════════════
 
   void _loadRewardedAd() {
+    // FIX 1: Guard against empty ad unit ID (silent AdMob failure)
+    if (_rewardedAdUnit.isEmpty) return;
     if (_rewardedLoading || _rewardedAd != null) return;
     if (_rewardedCountToday >= _maxRewardedPerDay) return;
 
@@ -131,12 +140,14 @@ class AdService implements AdServiceBase {
             adUnitId: _rewardedAdUnit,
             hours: 1,
           );
-          onRewarded();
-          if (!completer.isCompleted) completer.complete(true);
         } catch (_) {
-          onDismissed();
-          if (!completer.isCompleted) completer.complete(false);
+          // FIX 3: Backend call failed but user already watched the ad —
+          // reward them locally regardless so they aren't penalised.
+          debugPrint('[AdService] unlockViaAd failed — rewarding locally');
         }
+        // Always reward: moved outside try/catch
+        onRewarded();
+        if (!completer.isCompleted) completer.complete(true);
       },
     );
 
@@ -149,6 +160,8 @@ class AdService implements AdServiceBase {
   // ═══════════════════════════════════════════════════════════
 
   void _loadInterstitialAd() {
+    // FIX 1: Guard against empty ad unit ID
+    if (_interstitialAdUnit.isEmpty) return;
     if (_interstitialLoading || _interstitialAd != null) return;
     
     _interstitialLoading = true;
@@ -235,6 +248,8 @@ class AdService implements AdServiceBase {
   // ═══════════════════════════════════════════════════════════
 
   void _loadBannerAd() {
+    // FIX 1: Guard against empty ad unit ID
+    if (_bannerAdUnit.isEmpty) return;
     if (_bannerLoading || _bannerAd != null) return;
     
     _bannerLoading = true;
@@ -288,6 +303,8 @@ class AdService implements AdServiceBase {
   // ═══════════════════════════════════════════════════════════
 
   void _loadNativeAd() {
+    // FIX 1: Guard against empty ad unit ID
+    if (_nativeAdUnit.isEmpty) return;
     if (_nativeLoading || _nativeAd != null) return;
     
     _nativeLoading = true;
@@ -378,8 +395,12 @@ class _BannerAdWidgetState extends State<BannerAdWidget> {
   }
 
   void _loadAd() {
+    // FIX 1: Guard against empty ad unit ID in widget too
+    const unit = String.fromEnvironment('BANNER_AD_UNIT_ID');
+    if (unit.isEmpty) return;
+
     _ad = BannerAd(
-      adUnitId: const String.fromEnvironment('BANNER_AD_UNIT_ID'),
+      adUnitId: unit,
       size: widget.size,
       request: const AdRequest(),
       listener: BannerAdListener(
@@ -435,8 +456,12 @@ class _NativeAdWidgetState extends State<NativeAdWidget> {
   }
 
   void _loadAd() {
+    // FIX 1: Guard against empty ad unit ID in widget too
+    const unit = String.fromEnvironment('NATIVE_AD_UNIT_ID');
+    if (unit.isEmpty) return;
+
     _ad = NativeAd(
-      adUnitId: const String.fromEnvironment('NATIVE_AD_UNIT_ID'),
+      adUnitId: unit,
       request: const AdRequest(),
       factoryId: widget.factoryId,
       listener: NativeAdListener(
