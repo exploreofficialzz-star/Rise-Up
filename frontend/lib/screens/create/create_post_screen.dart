@@ -212,7 +212,8 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   XFile?     _mediaFile;
   Uint8List? _mediaBytes;
   String?    _mediaUrl;
-  String     _mediaType = 'image';
+  String     _mediaType    = 'image';
+  bool       _uploadFailed = false; // true when upload errors out
 
   // Video
   VideoPlayerController? _videoCtrl;
@@ -236,6 +237,9 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   // ── Has enough content to post? ───────────────────────────────────────────
   bool get _canPost {
     if (_charCount > _maxChars || _loading || _uploading) return false;
+    // If the user picked media but upload hasn't finished or failed → block.
+    // We never let a post go out with mediaUrl=null when media was selected.
+    if (_mediaBytes != null && _mediaUrl == null) return false;
     final hasCaption = _captionCtrl.text.trim().isNotEmpty;
     final hasMedia   = _mediaUrl != null;
     final hasLink    = _linkEnabled && _linkPreview != null && _linkError == null;
@@ -335,11 +339,12 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       if (file == null) return;
       final bytes = await file.readAsBytes();
       setState(() {
-        _mediaFile  = file;
-        _mediaBytes = bytes;
-        _mediaType  = isVideo ? 'video' : 'image';
-        _mediaUrl   = null;
-        _trim       = const RangeValues(0.0, 1.0);
+        _mediaFile    = file;
+        _mediaBytes   = bytes;
+        _mediaType    = isVideo ? 'video' : 'image';
+        _mediaUrl     = null;
+        _uploadFailed = false;
+        _trim         = const RangeValues(0.0, 1.0);
       });
       if (isVideo) _initVideo(file, bytes);
       _uploadMedia(file, bytes: bytes, isVideo: isVideo);
@@ -356,6 +361,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       _videoReady = _videoPlaying = false;
       _trim = const RangeValues(0.0, 1.0);
       _uploading = false;
+      _uploadFailed = false;
       if (_panel == _Panel.trim) _panel = _Panel.none;
     });
   }
@@ -365,12 +371,25 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     await _videoCtrl?.dispose();
     setState(() { _videoReady = false; _videoPlaying = false; });
 
-    final VideoPlayerController ctrl;
+    VideoPlayerController ctrl;
     if (kIsWeb) {
+      // Web: encode bytes as a data URI
       ctrl = VideoPlayerController.networkUrl(
           Uri.dataFromBytes(bytes, mimeType: 'video/mp4'));
     } else {
-      ctrl = VideoPlayerController.networkUrl(Uri.file(xfile.path));
+      // Mobile (Android / iOS): use the file path directly.
+      // VideoPlayerController.file() is the correct API — networkUrl with
+      // Uri.file() silently fails on many devices because ExoPlayer on newer
+      // Android versions rejects file:// URIs without READ_EXTERNAL_STORAGE.
+      // Workaround: use contentUri / asset bytes via networkUrl with data URI
+      // when file path is empty (e.g. some iOS simulators), else use file path.
+      if (xfile.path.isNotEmpty) {
+        // ignore: deprecated_member_use — file() is the right API on mobile
+        ctrl = VideoPlayerController.contentUri(Uri.file(xfile.path));
+      } else {
+        ctrl = VideoPlayerController.networkUrl(
+            Uri.dataFromBytes(bytes, mimeType: 'video/mp4'));
+      }
     }
     try {
       await ctrl.initialize();
@@ -440,7 +459,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
 
   Future<void> _uploadMedia(XFile file,
       {required Uint8List bytes, required bool isVideo}) async {
-    if (mounted) setState(() => _uploading = true);
+    if (mounted) setState(() { _uploading = true; _uploadFailed = false; });
     try {
       final ext = file.name.contains('.') ? file.name.split('.').last : '';
       final res = (!kIsWeb && file.path.isNotEmpty)
@@ -451,14 +470,47 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                   ? file.name
                   : 'media.${isVideo ? 'mp4' : 'jpg'}',
               mimeType: _mimeFromExt(ext, isVideo: isVideo));
+
+      final url = res['url']?.toString();
+      if (url == null || url.isEmpty) {
+        // Backend returned success but no URL — treat as failure
+        throw Exception('No URL returned from upload');
+      }
+
       if (mounted) setState(() {
-        _mediaUrl  = res['url']?.toString();
-        _mediaType = res['media_type']?.toString()
-            ?? (isVideo ? 'video' : 'image');
-        _uploading = false;
+        _mediaUrl  = url;
+        // Always trust the local flag for video — don't let the backend
+        // accidentally override 'video' with 'image' and break feed rendering.
+        _mediaType = isVideo
+            ? 'video'
+            : (res['media_type']?.toString() ?? 'image');
+        _uploading    = false;
+        _uploadFailed = false;
       });
-    } catch (_) {
-      if (mounted) setState(() => _uploading = false);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _uploading    = false;
+          _uploadFailed = true;
+          _mediaUrl     = null; // make sure it's definitely null
+        });
+        // Show a persistent snackbar with a retry action
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: const Text('Upload failed. Tap Retry to try again.'),
+          backgroundColor: AppColors.error,
+          duration: const Duration(seconds: 8),
+          action: SnackBarAction(
+            label:     'Retry',
+            textColor: Colors.white,
+            onPressed: () {
+              if (_mediaFile != null && _mediaBytes != null) {
+                _uploadMedia(_mediaFile!,
+                    bytes: _mediaBytes!, isVideo: _mediaType == 'video');
+              }
+            },
+          ),
+        ));
+      }
     }
   }
 
@@ -871,7 +923,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
             ]),
           ),
 
-        // ── Upload badge ───────────────────────────────────────────────────
+        // ── Upload badges (uploading / failed / success) ───────────────────
         if (_uploading)
           Positioned(
             bottom: _linkEnabled && _linkPreview != null ? 80 : 12,
@@ -893,7 +945,40 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
             ),
           ),
 
-        if (_mediaUrl != null && !_uploading)
+        // Upload failed — tap badge to retry
+        if (_uploadFailed && !_uploading)
+          Positioned(
+            bottom: _linkEnabled && _linkPreview != null ? 80 : 12,
+            left:   12,
+            child: GestureDetector(
+              onTap: () {
+                if (_mediaFile != null && _mediaBytes != null) {
+                  _uploadMedia(_mediaFile!,
+                      bytes:   _mediaBytes!,
+                      isVideo: _mediaType == 'video');
+                }
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                    color:        AppColors.error.withOpacity(0.9),
+                    borderRadius: BorderRadius.circular(16)),
+                child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(Icons.refresh_rounded,
+                      color: Colors.white, size: 13),
+                  SizedBox(width: 5),
+                  Text('Upload failed — tap to retry',
+                      style: TextStyle(
+                          color:      Colors.white,
+                          fontSize:   11,
+                          fontWeight: FontWeight.w600)),
+                ]),
+              ),
+            ),
+          ),
+
+        if (_mediaUrl != null && !_uploading && !_uploadFailed)
           Positioned(
             bottom: _linkEnabled && _linkPreview != null ? 80 : 12,
             left:   12,
