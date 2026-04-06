@@ -1,11 +1,12 @@
 // frontend/lib/screens/create/create_post_screen.dart
-// v4 — Create Post: Facebook-style right vertical toolbar
+// v5 — Create Post
 //
-// Layout: Preview fills screen | Right toolbar (all tools) | Caption always bottom
-// Tools on right: Text · Photo · Video · Link | Theme · Font · Topic · Trim
-// 24 themes: 12 gradients + 12 solid colours
-// Video: inline player + trim range slider in toolbar panel
-// Everything on-screen — zero vertical scroll required
+// ✅ Link = standalone OR combined with Text / Photo / Video
+// ✅ Text mode: toggle background theme on/off
+// ✅ Caption bar: clean flat design, no heavy border
+// ✅ Right toolbar: Text · Photo · Video | Theme · BG · Font · Link · Topic · Trim
+// ✅ 24 themes: 12 gradients + 12 solids
+// ✅ Video: inline player + trim panel
 
 import 'dart:async';
 import 'dart:typed_data';
@@ -26,45 +27,54 @@ import '../../services/api_service.dart';
 // Safety filters
 // ─────────────────────────────────────────────────────────────────────────────
 const _kBlockedDomains = <String>{
-  'free-bitcoin.io','doubler.cash','cryptodouble.net',
-  'invest-fast.com','fastprofit.xyz','earnnow.cc',
+  'free-bitcoin.io', 'doubler.cash', 'cryptodouble.net',
+  'invest-fast.com', 'fastprofit.xyz', 'earnnow.cc',
 };
 const _kScamKeywords = <String>[
-  'double your','triple your','1000% return','guaranteed profit',
-  'click here to earn','wire transfer','western union',
-  'send btc','send eth','private key','seed phrase',
-  'whatsapp investment','dm for investment',
+  'double your', 'triple your', '1000% return', 'guaranteed profit',
+  'click here to earn', 'wire transfer', 'western union',
+  'send btc', 'send eth', 'private key', 'seed phrase',
+  'whatsapp investment', 'dm for investment',
 ];
+
 bool _isDomainBlocked(String url) {
   try {
     final h = Uri.parse(url.startsWith('http') ? url : 'https://$url')
-        .host.toLowerCase();
+        .host
+        .toLowerCase();
     return _kBlockedDomains.any((d) => h.contains(d));
-  } catch (_) { return false; }
+  } catch (_) {
+    return false;
+  }
 }
+
 bool _hasScamContent(String t) =>
     _kScamKeywords.any((k) => t.toLowerCase().contains(k));
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Theme model — 1 colour = solid, 2 colours = gradient
+// Theme model
 // ─────────────────────────────────────────────────────────────────────────────
 class _PostTheme {
   final List<Color> colors;
   final bool textDark;
   const _PostTheme(this.colors, {this.textDark = false});
+
   bool get isGradient => colors.length > 1;
   Color get textColor => textDark ? Colors.black87 : Colors.white;
+
   Decoration get decoration => BoxDecoration(
-    color: isGradient ? null : colors.first,
-    gradient: isGradient
-        ? LinearGradient(colors: colors,
-            begin: Alignment.topLeft, end: Alignment.bottomRight)
-        : null,
-  );
+        color: isGradient ? null : colors.first,
+        gradient: isGradient
+            ? LinearGradient(
+                colors: colors,
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight)
+            : null,
+      );
 }
 
 const _kThemes = <_PostTheme>[
-  // ── Gradients ──────────────────────────────────────────────────────────────
+  // Gradients (0–11)
   _PostTheme([Color(0xFF7C6FCD), Color(0xFF5B4FCF)]),
   _PostTheme([Color(0xFFFF6B6B), Color(0xFFFF8E53)]),
   _PostTheme([Color(0xFF00B4DB), Color(0xFF0083B0)]),
@@ -77,7 +87,7 @@ const _kThemes = <_PostTheme>[
   _PostTheme([Color(0xFF134E5E), Color(0xFF71B280)]),
   _PostTheme([Color(0xFF360033), Color(0xFF0B8793)]),
   _PostTheme([Color(0xFFFFB347), Color(0xFFFF6961)]),
-  // ── Solid colours ──────────────────────────────────────────────────────────
+  // Solids (12–23)
   _PostTheme([Color(0xFF000000)]),
   _PostTheme([Color(0xFFFFFFFF)], textDark: true),
   _PostTheme([Color(0xFFE53935)]),
@@ -93,27 +103,40 @@ const _kThemes = <_PostTheme>[
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Content type & panel enums
+// Enums
 // ─────────────────────────────────────────────────────────────────────────────
-enum _CType { text, image, video, link }
+/// Media content type — Text / Photo / Video.
+/// Link is a separate add-on toggle, not a content type.
+enum _CType { text, image, video }
+
+/// Which sliding panel is open in the toolbar.
 enum _Panel { none, theme, font, trim, link }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Topics & hashtags
+// Topics
 // ─────────────────────────────────────────────────────────────────────────────
 const _kAllTopics = <String>[
-  '💰 Wealth','📈 Investing','💼 Business','🧠 Mindset','⚡ Hustle','🎯 Skills',
-  '🏠 Real Estate','💻 Tech','📊 Budgeting','🌱 Personal Growth','💪 Finance',
-  '🚀 Startups','🛒 Selling','🛍️ Buying','🔧 Services Offered','🙋 Services Wanted',
-  '🎓 Mentoring','🤝 Networking','📚 Learning','💡 Ideas','🎨 Creativity',
-  '🏛️ Education','📖 Reading','🧪 Research','🏋️ Health & Fitness','🌍 Travel',
-  '🍕 Food & Lifestyle','🎮 Gaming','🎵 Music','📱 Social Media','📸 Photography',
-  '🎭 Entertainment','⚽ Sports','💄 Beauty & Fashion','❤️ Relationships',
-  '👨‍👩‍👧 Family','🤖 AI & Tech','🌐 Crypto & Web3','🖥️ Coding','🔬 Science',
-  '🌿 Sustainability','🏦 Banking','⚖️ Legal','🏥 Healthcare','🚗 Automotive',
-  '🍳 Food Business','🏗️ Construction','🎪 Events & Marketing',
+  '💰 Wealth',          '📈 Investing',        '💼 Business',
+  '🧠 Mindset',         '⚡ Hustle',            '🎯 Skills',
+  '🏠 Real Estate',     '💻 Tech',              '📊 Budgeting',
+  '🌱 Personal Growth', '💪 Finance',           '🚀 Startups',
+  '🛒 Selling',         '🛍️ Buying',            '🔧 Services Offered',
+  '🙋 Services Wanted', '🎓 Mentoring',         '🤝 Networking',
+  '📚 Learning',        '💡 Ideas',             '🎨 Creativity',
+  '🏛️ Education',       '📖 Reading',           '🧪 Research',
+  '🏋️ Health & Fitness','🌍 Travel',            '🍕 Food & Lifestyle',
+  '🎮 Gaming',          '🎵 Music',             '📱 Social Media',
+  '📸 Photography',     '🎭 Entertainment',     '⚽ Sports',
+  '💄 Beauty & Fashion','❤️ Relationships',     '👨‍👩‍👧 Family',
+  '🤖 AI & Tech',       '🌐 Crypto & Web3',     '🖥️ Coding',
+  '🔬 Science',         '🌿 Sustainability',    '🏦 Banking',
+  '⚖️ Legal',           '🏥 Healthcare',        '🚗 Automotive',
+  '🍳 Food Business',   '🏗️ Construction',      '🎪 Events & Marketing',
 ];
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Hashtag bank
+// ─────────────────────────────────────────────────────────────────────────────
 const _kHashtagBank = <String>[
   'wealth','wealthbuilding','wealthtips','wealthmindset','investing',
   'investingtips','investingforbeginners','stockmarket','business','businesstips',
@@ -145,8 +168,11 @@ class _LinkPreview {
   final String url, title, description, domain;
   final String? imageUrl;
   const _LinkPreview({
-    required this.url, required this.title,
-    required this.description, required this.domain, this.imageUrl,
+    required this.url,
+    required this.title,
+    required this.description,
+    required this.domain,
+    this.imageUrl,
   });
 }
 
@@ -163,13 +189,24 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   final _captionCtrl = TextEditingController();
   final _linkCtrl    = TextEditingController();
 
-  _CType _ctype      = _CType.text;
-  _Panel _panel      = _Panel.none;
-  int    _themeIndex = 0;
-  double _fontSize   = 22.0;
-  String _topic      = '💰 Wealth';
-  bool   _loading    = false;
-  bool   _uploading  = false;
+  // Core
+  _CType _ctype        = _CType.text;
+  _Panel _panel        = _Panel.none;
+  int    _themeIndex   = 0;
+  double _fontSize     = 22.0;
+  String _topic        = '💰 Wealth';
+  bool   _loading      = false;
+  bool   _uploading    = false;
+
+  // Text background on/off (text mode only)
+  bool   _useBackground = true;
+
+  // Link — works as standalone OR alongside any content type
+  bool          _linkEnabled  = false;
+  _LinkPreview? _linkPreview;
+  String?       _linkError;
+  bool          _linkChecking = false;
+  Timer?        _linkDebounce;
 
   // Media
   XFile?     _mediaFile;
@@ -185,14 +222,8 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   Duration               _videoPos     = Duration.zero;
   RangeValues            _trim         = const RangeValues(0.0, 1.0);
 
-  // Link
-  _LinkPreview? _linkPreview;
-  String?       _linkError;
-  bool          _linkChecking = false;
-  Timer?        _linkDebounce;
-
   // Hashtags
-  List<String> _hashSugg     = [];
+  List<String> _hashSugg    = [];
   Timer?       _hashDebounce;
 
   // Profile
@@ -201,6 +232,15 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
 
   static const int _maxChars = 500;
   int get _charCount => _captionCtrl.text.length;
+
+  // ── Has enough content to post? ───────────────────────────────────────────
+  bool get _canPost {
+    if (_charCount > _maxChars || _loading || _uploading) return false;
+    final hasCaption = _captionCtrl.text.trim().isNotEmpty;
+    final hasMedia   = _mediaUrl != null;
+    final hasLink    = _linkEnabled && _linkPreview != null && _linkError == null;
+    return hasCaption || hasMedia || hasLink;
+  }
 
   @override
   void initState() {
@@ -220,6 +260,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     super.dispose();
   }
 
+  // ── Profile ───────────────────────────────────────────────────────────────
   Future<void> _loadProfile() async {
     try {
       final data    = await api.getProfile();
@@ -233,23 +274,26 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     } catch (_) {}
   }
 
-  // ── Caption / hashtags ─────────────────────────────────────────────────────
+  // ── Caption / hashtags ────────────────────────────────────────────────────
   void _onCaptionChanged() {
     setState(() {});
     _hashDebounce?.cancel();
-    _hashDebounce =
-        Timer(const Duration(milliseconds: 700), _computeHashSugg);
+    _hashDebounce = Timer(const Duration(milliseconds: 700), _computeHashSugg);
   }
 
   void _computeHashSugg() {
     final text   = _captionCtrl.text;
     final cursor = _captionCtrl.selection.baseOffset;
     if (cursor < 0 || cursor > text.length) {
-      if (mounted) setState(() => _hashSugg = []); return;
+      if (mounted) setState(() => _hashSugg = []);
+      return;
     }
     final before = text.substring(0, cursor);
     final match  = RegExp(r'#(\w{2,})$').firstMatch(before);
-    if (match == null) { if (mounted) setState(() => _hashSugg = []); return; }
+    if (match == null) {
+      if (mounted) setState(() => _hashSugg = []);
+      return;
+    }
     final word = match.group(1)!.toLowerCase();
     final next = cursor < text.length ? text[cursor] : ' ';
     final done = next == ' ' || next == '\n' || cursor == text.length;
@@ -257,7 +301,8 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
         .where((h) => done
             ? (h.startsWith(word) || h.contains(word)) && h != word
             : h.startsWith(word) && h != word)
-        .take(done ? 6 : 5).toList();
+        .take(done ? 6 : 5)
+        .toList();
     if (mounted) setState(() => _hashSugg = list);
   }
 
@@ -276,7 +321,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     setState(() => _hashSugg = []);
   }
 
-  // ── Media ──────────────────────────────────────────────────────────────────
+  // ── Media ─────────────────────────────────────────────────────────────────
   Future<void> _pickMedia({required bool isVideo}) async {
     HapticFeedback.lightImpact();
     try {
@@ -285,7 +330,8 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
           ? await picker.pickVideo(source: ImageSource.gallery)
           : await picker.pickImage(
               source: ImageSource.gallery,
-              maxWidth: 1920, imageQuality: 88);
+              maxWidth: 1920,
+              imageQuality: 88);
       if (file == null) return;
       final bytes = await file.readAsBytes();
       setState(() {
@@ -302,20 +348,36 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     }
   }
 
-  // ── Video ──────────────────────────────────────────────────────────────────
+  void _clearMedia() {
+    _videoCtrl?.dispose();
+    setState(() {
+      _mediaFile = _mediaBytes = _mediaUrl = null;
+      _videoCtrl = null;
+      _videoReady = _videoPlaying = false;
+      _trim = const RangeValues(0.0, 1.0);
+      _uploading = false;
+      if (_panel == _Panel.trim) _panel = _Panel.none;
+    });
+  }
+
+  // ── Video ─────────────────────────────────────────────────────────────────
   Future<void> _initVideo(XFile xfile, Uint8List bytes) async {
     await _videoCtrl?.dispose();
     setState(() { _videoReady = false; _videoPlaying = false; });
+
     final VideoPlayerController ctrl;
     if (kIsWeb) {
       ctrl = VideoPlayerController.networkUrl(
-        Uri.dataFromBytes(bytes, mimeType: 'video/mp4'));
+          Uri.dataFromBytes(bytes, mimeType: 'video/mp4'));
     } else {
       ctrl = VideoPlayerController.networkUrl(Uri.file(xfile.path));
     }
     try {
       await ctrl.initialize();
-    } catch (_) { ctrl.dispose(); return; }
+    } catch (_) {
+      ctrl.dispose();
+      return;
+    }
     if (!mounted) { ctrl.dispose(); return; }
     ctrl.setLooping(false);
     ctrl.addListener(_onVideoTick);
@@ -362,23 +424,16 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     setState(() => _videoPlaying = !_videoPlaying);
   }
 
-  void _clearMedia() {
-    _videoCtrl?.dispose();
-    setState(() {
-      _mediaFile = _mediaBytes = _mediaUrl = null;
-      _videoCtrl = null;
-      _videoReady = _videoPlaying = false;
-      _trim = const RangeValues(0.0, 1.0);
-      _uploading = false;
-      if (_panel == _Panel.trim) _panel = _Panel.none;
-    });
-  }
-
   String _mimeFromExt(String ext, {required bool isVideo}) {
-    const img = {'jpg':'image/jpeg','jpeg':'image/jpeg','png':'image/png',
-      'webp':'image/webp','gif':'image/gif','heic':'image/heic'};
-    const vid = {'mp4':'video/mp4','mov':'video/quicktime',
-      'avi':'video/x-msvideo','mkv':'video/x-matroska','webm':'video/webm'};
+    const img = {
+      'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
+      'webp': 'image/webp', 'gif': 'image/gif', 'heic': 'image/heic',
+    };
+    const vid = {
+      'mp4': 'video/mp4', 'mov': 'video/quicktime',
+      'avi': 'video/x-msvideo', 'mkv': 'video/x-matroska',
+      'webm': 'video/webm',
+    };
     return (isVideo ? vid : img)[ext.toLowerCase()]
         ?? (isVideo ? 'video/mp4' : 'image/jpeg');
   }
@@ -393,7 +448,8 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
           : await api.uploadPostMediaBytes(
               bytes:    bytes,
               filename: file.name.isNotEmpty
-                  ? file.name : 'media.${isVideo ? 'mp4' : 'jpg'}',
+                  ? file.name
+                  : 'media.${isVideo ? 'mp4' : 'jpg'}',
               mimeType: _mimeFromExt(ext, isVideo: isVideo));
       if (mounted) setState(() {
         _mediaUrl  = res['url']?.toString();
@@ -406,7 +462,20 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     }
   }
 
-  // ── Link ───────────────────────────────────────────────────────────────────
+  // ── Link ──────────────────────────────────────────────────────────────────
+  void _toggleLink() {
+    HapticFeedback.selectionClick();
+    setState(() {
+      _linkEnabled = !_linkEnabled;
+      _panel = _linkEnabled ? _Panel.link : _Panel.none;
+      if (!_linkEnabled) {
+        _linkCtrl.clear();
+        _linkPreview = null;
+        _linkError   = null;
+      }
+    });
+  }
+
   void _onLinkChanged(String v) {
     _linkDebounce?.cancel();
     setState(() { _linkPreview = null; _linkError = null; });
@@ -420,15 +489,18 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     Uri? uri;
     try { uri = Uri.parse(url); } catch (_) {}
     if (uri == null || !uri.hasAuthority) {
-      if (mounted) setState(() => _linkError = 'Invalid URL format.'); return;
+      if (mounted) setState(() => _linkError = 'Invalid URL format.');
+      return;
     }
     if (_isDomainBlocked(url)) {
-      if (mounted) setState(() =>
-          _linkError = '🚫 Domain blocked by RiseUp safety filters.'); return;
+      if (mounted) setState(
+          () => _linkError = '🚫 Domain blocked by RiseUp safety filters.');
+      return;
     }
     if (_hasScamContent(url)) {
-      if (mounted) setState(() =>
-          _linkError = '⚠️ Link appears to promote a scam.'); return;
+      if (mounted) setState(
+          () => _linkError = '⚠️ Link appears to promote a scam.');
+      return;
     }
     setState(() => _linkChecking = true);
     try {
@@ -437,7 +509,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       if (data['blocked'] == true) {
         setState(() {
           _linkChecking = false;
-          _linkError = data['reason']?.toString()
+          _linkError    = data['reason']?.toString()
               ?? '🚫 Blocked by RiseUp safety filters.';
         });
         return;
@@ -455,30 +527,31 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     } catch (_) {
       if (mounted) setState(() {
         _linkChecking = false;
-        _linkPreview  = _LinkPreview(url: url, title: uri!.host,
+        _linkPreview  = _LinkPreview(
+            url: url, title: uri!.host,
             description: '', domain: uri.host);
       });
     }
   }
 
-  // ── Post ───────────────────────────────────────────────────────────────────
+  // ── Post ──────────────────────────────────────────────────────────────────
   Future<void> _post() async {
+    if (!_canPost) return;
     final content = _captionCtrl.text.trim();
-    if (_loading || _uploading) return;
-    if (content.isEmpty && _mediaUrl == null && _linkPreview == null) return;
-    if (_charCount > _maxChars) return;
     if (_hasScamContent(content)) {
-      _showErr('⚠️ Post violates community guidelines.'); return;
+      _showErr('⚠️ Post violates community guidelines.');
+      return;
     }
     setState(() => _loading = true);
     try {
       await api.createPost(
-        content:   content.isNotEmpty ? content : '🔗 Link post',
+        content:   content.isNotEmpty ? content : (_linkPreview != null
+            ? '🔗 ${_linkPreview!.title}' : '📷 Post'),
         tag:       _topic,
         mediaUrl:  _mediaUrl,
         mediaType: _mediaUrl != null ? _mediaType : null,
-        linkUrl:   _ctype == _CType.link ? _linkPreview?.url : null,
-        linkTitle: _linkPreview?.title,
+        linkUrl:   _linkEnabled ? _linkPreview?.url : null,
+        linkTitle: _linkEnabled ? _linkPreview?.title : null,
       );
       if (mounted) {
         HapticFeedback.mediumImpact();
@@ -499,7 +572,9 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   }
 
   void _showErr(String msg) => ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), backgroundColor: AppColors.error,
+      SnackBar(
+          content: Text(msg),
+          backgroundColor: AppColors.error,
           duration: const Duration(seconds: 3)));
 
   void _togglePanel(_Panel p) {
@@ -509,10 +584,11 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
 
   void _setType(_CType t) {
     HapticFeedback.selectionClick();
-    final wasMedia = _ctype == _CType.image || _ctype == _CType.video;
     setState(() {
       _ctype = t;
-      _panel = t == _CType.link ? _Panel.link : _Panel.none;
+      // Close font/trim panels when switching away
+      if (_panel == _Panel.font && t != _CType.text) _panel = _Panel.none;
+      if (_panel == _Panel.trim && t != _CType.video) _panel = _Panel.none;
     });
     if (t == _CType.image) _pickMedia(isVideo: false);
     if (t == _CType.video) _pickMedia(isVideo: true);
@@ -544,50 +620,43 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     final subClr  = isDark ? Colors.white54          : Colors.black45;
     final lblClr  = isDark ? Colors.white24          : Colors.black26;
 
-    final overLimit = _charCount > _maxChars;
-    final canPost   = !overLimit && !_loading && !_uploading &&
-        (_captionCtrl.text.trim().isNotEmpty ||
-         _mediaUrl != null ||
-         (_ctype == _CType.link && _linkPreview != null));
-
     return Scaffold(
       backgroundColor:          bgColor,
       resizeToAvoidBottomInset: true,
-      appBar: _buildAppBar(barClr, border, txtClr, canPost),
+      appBar: _buildAppBar(barClr, border, txtClr),
       body: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // ── Main ──────────────────────────────────────────────────────────
+          // ── Main area ────────────────────────────────────────────────────
           Expanded(
             child: Column(children: [
-              // Preview — fills all available space
+              // Preview fills all free space
               Expanded(child: _buildPreview(isDark)),
 
-              // Sliding panel (theme / font / trim / link)
+              // Sliding panel (opens between preview and caption)
               AnimatedSize(
-                duration:  const Duration(milliseconds: 250),
-                curve:     Curves.easeOutCubic,
-                child:     _panel == _Panel.none
+                duration: const Duration(milliseconds: 240),
+                curve:    Curves.easeOutCubic,
+                child:    _panel == _Panel.none
                     ? const SizedBox.shrink()
                     : _buildPanel(isDark, surf, border, txtClr, subClr),
               ),
 
-              // Caption bar — always visible
+              // Caption — always visible, clean flat bar
               _buildCaptionBar(
-                  isDark, surf, border, txtClr, subClr, lblClr, overLimit),
+                  isDark, surf, border, txtClr, subClr, lblClr),
             ]),
           ),
 
-          // ── Right toolbar ─────────────────────────────────────────────────
+          // ── Right toolbar ────────────────────────────────────────────────
           _buildToolbar(barClr, border, subClr),
         ],
       ),
     );
   }
 
-  // ── AppBar ─────────────────────────────────────────────────────────────────
-  PreferredSizeWidget _buildAppBar(
-      Color bar, Color border, Color txt, bool canPost) {
+  // ── AppBar ────────────────────────────────────────────────────────────────
+  PreferredSizeWidget _buildAppBar(Color bar, Color border, Color txt) {
     return AppBar(
       backgroundColor:  bar,
       elevation:        0,
@@ -596,32 +665,36 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
         icon:      Icon(Icons.close_rounded, color: txt),
         onPressed: () => context.go('/home'),
       ),
-      title: Text('New Post', style: TextStyle(
-          fontSize: 16, fontWeight: FontWeight.w700, color: txt)),
+      title: Text('New Post',
+          style: TextStyle(
+              fontSize: 16, fontWeight: FontWeight.w700, color: txt)),
       actions: [
         Padding(
           padding: const EdgeInsets.only(right: 14, top: 10, bottom: 10),
           child: GestureDetector(
-            onTap: canPost ? _post : null,
+            onTap: _canPost ? _post : null,
             child: AnimatedContainer(
               duration:   const Duration(milliseconds: 200),
               padding:    const EdgeInsets.symmetric(
                   horizontal: 22, vertical: 8),
               decoration: BoxDecoration(
-                gradient: canPost
+                gradient: _canPost
                     ? const LinearGradient(
                         colors: [AppColors.primary, AppColors.accent])
                     : null,
-                color:        canPost ? null : Colors.grey.shade400,
+                color:        _canPost ? null : Colors.grey.shade400,
                 borderRadius: BorderRadius.circular(20),
               ),
               child: _loading
-                  ? const SizedBox(width: 16, height: 16,
+                  ? const SizedBox(
+                      width: 16, height: 16,
                       child: CircularProgressIndicator(
                           strokeWidth: 2, color: Colors.white))
-                  : const Text('Post', style: TextStyle(
-                      color: Colors.white, fontWeight: FontWeight.w700,
-                      fontSize: 14)),
+                  : const Text('Post',
+                      style: TextStyle(
+                          color:      Colors.white,
+                          fontWeight: FontWeight.w700,
+                          fontSize:   14)),
             ),
           ),
         ),
@@ -633,17 +706,19 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     );
   }
 
-  // ── Preview ────────────────────────────────────────────────────────────────
+  // ── Preview ───────────────────────────────────────────────────────────────
   Widget _buildPreview(bool isDark) {
     final theme   = _kThemes[_themeIndex];
     final caption = _captionCtrl.text;
+    final showBg  = _ctype == _CType.text && _useBackground;
 
     return GestureDetector(
       onTap: (_ctype == _CType.image || _ctype == _CType.video)
-          ? () => _pickMedia(isVideo: _ctype == _CType.video) : null,
+          ? () => _pickMedia(isVideo: _ctype == _CType.video)
+          : null,
       child: Stack(fit: StackFit.expand, children: [
 
-        // ── Background ───────────────────────────────────────────────────────
+        // ── Background ─────────────────────────────────────────────────────
         if (_ctype == _CType.image && _mediaBytes != null)
           Image.memory(_mediaBytes!, fit: BoxFit.cover)
         else if (_ctype == _CType.video && _videoReady && _videoCtrl != null)
@@ -655,32 +730,83 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
               child:  VideoPlayer(_videoCtrl!),
             ),
           )
+        else if (showBg)
+          Container(decoration: theme.decoration)
         else
-          Container(decoration: theme.decoration),
+          // Plain background (no theme) — just the scaffold colour
+          Container(
+            color: isDark ? const Color(0xFF0A0A0A) : Colors.white,
+          ),
 
-        // ── Text overlay ─────────────────────────────────────────────────────
+        // ── Text overlay ───────────────────────────────────────────────────
         if (_ctype == _CType.text)
           Center(
             child: Padding(
-              padding: const EdgeInsets.all(32),
+              padding: const EdgeInsets.fromLTRB(28, 28, 28, 20),
               child: Text(
                 caption.isEmpty ? 'Start typing below…' : caption,
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize:   _fontSize,
-                  color:      theme.textColor,
+                  color:      showBg
+                      ? theme.textColor
+                      : (isDark ? Colors.white : Colors.black87),
                   fontWeight: FontWeight.w600,
                   height:     1.45,
-                  shadows: [Shadow(
-                      blurRadius: 12,
-                      color: theme.textDark
-                          ? Colors.white38 : Colors.black26)],
+                  shadows: showBg
+                      ? [Shadow(
+                          blurRadius: 12,
+                          color: theme.textDark
+                              ? Colors.white38 : Colors.black26)]
+                      : null,
                 ),
               ),
             ),
           ),
 
-        // ── Video controls ───────────────────────────────────────────────────
+        // ── Link preview card on preview (all content types) ───────────────
+        if (_linkEnabled && _linkPreview != null && _linkError == null)
+          Positioned(
+            left: 16, right: 16, bottom: 16,
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color:        Colors.black.withOpacity(0.55),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                    color: Colors.white.withOpacity(0.18)),
+              ),
+              child: Row(children: [
+                const Icon(Icons.link_rounded,
+                    color: Colors.white70, size: 14),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(_linkPreview!.domain,
+                          style: const TextStyle(
+                              color: Colors.white54, fontSize: 10)),
+                      const SizedBox(height: 2),
+                      Text(_linkPreview!.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color:      Colors.white,
+                              fontSize:   12,
+                              fontWeight: FontWeight.w600)),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const Icon(Icons.verified_rounded,
+                    color: AppColors.success, size: 14),
+              ]),
+            ),
+          ),
+
+        // ── Video controls ─────────────────────────────────────────────────
         if (_ctype == _CType.video && _videoReady)
           GestureDetector(
             onTap: _togglePlay,
@@ -705,77 +831,56 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
             ),
           ),
 
-        // ── Video loading ────────────────────────────────────────────────────
+        // ── Video loading ──────────────────────────────────────────────────
         if (_ctype == _CType.video && _mediaBytes != null && !_videoReady)
-          Container(color: Colors.black38,
-            child: const Center(child: Column(
-              mainAxisSize: MainAxisSize.min, children: [
-              CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-              SizedBox(height: 12),
-              Text('Loading video…',
-                  style: TextStyle(color: Colors.white70, fontSize: 13)),
-            ]))),
-
-        // ── Media placeholders ───────────────────────────────────────────────
-        if ((_ctype == _CType.image || _ctype == _CType.video)
-            && _mediaBytes == null)
-          Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Container(
-              width: 64, height: 64,
-              decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.18),
-                  shape: BoxShape.circle),
-              child: Icon(
-                _ctype == _CType.video
-                    ? Icons.video_call_rounded
-                    : Icons.add_photo_alternate_rounded,
-                color: Colors.white, size: 30),
-            ),
-            const SizedBox(height: 12),
-            Text(_ctype == _CType.video
-                ? 'Tap to add video' : 'Tap to add photo',
-              style: const TextStyle(color: Colors.white70, fontSize: 14)),
-          ])),
-
-        // ── Link overlay ─────────────────────────────────────────────────────
-        if (_ctype == _CType.link && _linkPreview != null)
-          Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color:        Colors.white.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: Colors.white.withOpacity(0.3)),
-                ),
-                child: Column(mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Row(children: [
-                    const Icon(Icons.link_rounded,
-                        color: Colors.white70, size: 13),
-                    const SizedBox(width: 6),
-                    Flexible(child: Text(_linkPreview!.domain,
-                        style: const TextStyle(
-                            color: Colors.white70, fontSize: 11))),
-                  ]),
-                  const SizedBox(height: 6),
-                  Text(_linkPreview!.title,
-                      maxLines: 2, overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          color: Colors.white, fontSize: 14,
-                          fontWeight: FontWeight.w700)),
-                ]),
-              ),
+          Container(
+            color: Colors.black38,
+            child: const Center(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                CircularProgressIndicator(
+                    color: Colors.white, strokeWidth: 2),
+                SizedBox(height: 12),
+                Text('Loading video…',
+                    style: TextStyle(color: Colors.white70, fontSize: 13)),
+              ]),
             ),
           ),
 
-        // ── Upload badge ─────────────────────────────────────────────────────
+        // ── Media placeholder ──────────────────────────────────────────────
+        if ((_ctype == _CType.image || _ctype == _CType.video)
+            && _mediaBytes == null)
+          Center(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Container(
+                width: 64, height: 64,
+                decoration: BoxDecoration(
+                    color:  Colors.grey.withOpacity(0.2),
+                    shape:  BoxShape.circle),
+                child: Icon(
+                  _ctype == _CType.video
+                      ? Icons.video_call_rounded
+                      : Icons.add_photo_alternate_rounded,
+                  color: Colors.grey, size: 30),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                _ctype == _CType.video
+                    ? 'Tap to add video' : 'Tap to add photo',
+                style: TextStyle(
+                    color: Colors.grey.shade500, fontSize: 14)),
+            ]),
+          ),
+
+        // ── Upload badge ───────────────────────────────────────────────────
         if (_uploading)
-          Positioned(bottom: 10, left: 10,
+          Positioned(
+            bottom: _linkEnabled && _linkPreview != null ? 80 : 12,
+            left:   12,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              decoration: BoxDecoration(color: Colors.black54,
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                  color:        Colors.black54,
                   borderRadius: BorderRadius.circular(16)),
               child: const Row(mainAxisSize: MainAxisSize.min, children: [
                 SizedBox(width: 12, height: 12,
@@ -789,24 +894,31 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
           ),
 
         if (_mediaUrl != null && !_uploading)
-          Positioned(bottom: 10, left: 10,
+          Positioned(
+            bottom: _linkEnabled && _linkPreview != null ? 80 : 12,
+            left:   12,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
-                  color: AppColors.success.withOpacity(0.9),
+                  color:        AppColors.success.withOpacity(0.9),
                   borderRadius: BorderRadius.circular(16)),
               child: const Row(mainAxisSize: MainAxisSize.min, children: [
                 Icon(Icons.check_rounded, color: Colors.white, size: 12),
                 SizedBox(width: 4),
-                Text('Uploaded', style: TextStyle(color: Colors.white,
-                    fontSize: 11, fontWeight: FontWeight.w600)),
+                Text('Uploaded',
+                    style: TextStyle(
+                        color:      Colors.white,
+                        fontSize:   11,
+                        fontWeight: FontWeight.w600)),
               ]),
             ),
           ),
 
-        // ── Remove button ────────────────────────────────────────────────────
+        // ── Remove media ───────────────────────────────────────────────────
         if (_mediaBytes != null)
-          Positioned(top: 10, left: 10,
+          Positioned(
+            top: 10, left: 10,
             child: GestureDetector(
               onTap: _clearMedia,
               child: Container(
@@ -819,21 +931,26 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
             ),
           ),
 
-        // ── Video time ───────────────────────────────────────────────────────
+        // ── Video time badge ───────────────────────────────────────────────
         if (_ctype == _CType.video && _videoReady)
-          Positioned(top: 10, right: 10,
+          Positioned(
+            top: 10, right: 10,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(color: Colors.black54,
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                  color:        Colors.black54,
                   borderRadius: BorderRadius.circular(8)),
-              child: Text(_fmtDur(_videoPos), style: const TextStyle(
-                  color: Colors.white, fontSize: 11,
-                  fontWeight: FontWeight.w600)),
+              child: Text(_fmtDur(_videoPos),
+                  style: const TextStyle(
+                      color: Colors.white, fontSize: 11,
+                      fontWeight: FontWeight.w600)),
             ),
           ),
 
-        // ── Topic chip centred top ───────────────────────────────────────────
-        Positioned(top: 10, left: 0, right: 0,
+        // ── Topic chip centred top ─────────────────────────────────────────
+        Positioned(
+          top: 10, left: 0, right: 0,
           child: Center(
             child: GestureDetector(
               onTap: _openTopicPicker,
@@ -841,11 +958,13 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                 padding: const EdgeInsets.symmetric(
                     horizontal: 12, vertical: 5),
                 decoration: BoxDecoration(
-                    color: Colors.black45,
+                    color:        Colors.black.withOpacity(0.40),
                     borderRadius: BorderRadius.circular(14)),
-                child: Text(_topic, style: const TextStyle(
-                    color: Colors.white, fontSize: 11,
-                    fontWeight: FontWeight.w600)),
+                child: Text(_topic,
+                    style: const TextStyle(
+                        color:      Colors.white,
+                        fontSize:   11,
+                        fontWeight: FontWeight.w600)),
               ),
             ),
           ),
@@ -854,7 +973,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     );
   }
 
-  // ── Sliding panel ──────────────────────────────────────────────────────────
+  // ── Sliding panel ─────────────────────────────────────────────────────────
   Widget _buildPanel(bool isDark, Color surf, Color border,
       Color txt, Color sub) {
     return Container(
@@ -862,11 +981,11 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       decoration: BoxDecoration(
         color:  surf,
         border: Border(
-            top: BorderSide(color: border),
+            top:    BorderSide(color: border),
             bottom: BorderSide(color: border)),
       ),
       child: AnimatedSwitcher(
-        duration:      const Duration(milliseconds: 200),
+        duration:      const Duration(milliseconds: 180),
         switchInCurve: Curves.easeOut,
         child: KeyedSubtree(
           key: ValueKey(_panel),
@@ -882,35 +1001,44 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     );
   }
 
-  // Theme panel — gradient row + solid colour row
+  // Theme panel
   Widget _panelTheme(Color sub) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-      child: Column(mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('GRADIENTS', style: TextStyle(fontSize: 9, color: sub,
-            fontWeight: FontWeight.w700, letterSpacing: 0.8)),
-        const SizedBox(height: 6),
-        SizedBox(height: 40,
-          child: ListView.builder(
-            scrollDirection: Axis.horizontal,
-            itemCount: 12,
-            itemBuilder: (_, i) => _themeCircle(i),
+      child: Column(
+        mainAxisSize:        MainAxisSize.min,
+        crossAxisAlignment:  CrossAxisAlignment.start,
+        children: [
+          Text('GRADIENTS',
+              style: TextStyle(
+                  fontSize: 9, color: sub,
+                  fontWeight: FontWeight.w700, letterSpacing: 0.8)),
+          const SizedBox(height: 6),
+          SizedBox(
+            height: 38,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount:       12,
+              itemBuilder:     (_, i) => _themeCircle(i),
+            ),
           ),
-        ),
-        const SizedBox(height: 8),
-        Text('SOLID COLOURS', style: TextStyle(fontSize: 9, color: sub,
-            fontWeight: FontWeight.w700, letterSpacing: 0.8)),
-        const SizedBox(height: 6),
-        SizedBox(height: 40,
-          child: ListView.builder(
-            scrollDirection: Axis.horizontal,
-            itemCount: 12,
-            itemBuilder: (_, i) => _themeCircle(12 + i),
+          const SizedBox(height: 8),
+          Text('SOLID COLOURS',
+              style: TextStyle(
+                  fontSize: 9, color: sub,
+                  fontWeight: FontWeight.w700, letterSpacing: 0.8)),
+          const SizedBox(height: 6),
+          SizedBox(
+            height: 38,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount:       12,
+              itemBuilder:     (_, i) => _themeCircle(12 + i),
+            ),
           ),
-        ),
-        const SizedBox(height: 4),
-      ]),
+          const SizedBox(height: 4),
+        ],
+      ),
     );
   }
 
@@ -924,25 +1052,30 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 160),
-        width: 34, height: 34,
+        width: 32, height: 32,
         margin: const EdgeInsets.only(right: 8),
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           color: t.isGradient ? null : t.colors.first,
           gradient: t.isGradient
-              ? LinearGradient(colors: t.colors,
-                  begin: Alignment.topLeft, end: Alignment.bottomRight)
+              ? LinearGradient(
+                  colors: t.colors,
+                  begin:  Alignment.topLeft,
+                  end:    Alignment.bottomRight)
               : null,
           border: Border.all(
-              color: sel ? Colors.white : Colors.transparent, width: 2.5),
+              color: sel ? Colors.white : Colors.transparent,
+              width: 2.5),
           boxShadow: sel
-              ? [BoxShadow(color: t.colors.first.withOpacity(0.55),
-                  blurRadius: 8, spreadRadius: 1)]
+              ? [BoxShadow(
+                  color:        t.colors.first.withOpacity(0.55),
+                  blurRadius:   8,
+                  spreadRadius: 1)]
               : [],
         ),
         child: sel
             ? const Center(child: Icon(Icons.check_rounded,
-                color: Colors.white, size: 15))
+                color: Colors.white, size: 14))
             : null,
       ),
     );
@@ -953,8 +1086,9 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
       child: Row(children: [
-        Text('Aa', style: TextStyle(fontSize: 13, color: sub,
-            fontWeight: FontWeight.w600)),
+        Text('Aa',
+            style: TextStyle(
+                fontSize: 13, color: sub, fontWeight: FontWeight.w600)),
         Expanded(
           child: SliderTheme(
             data: SliderThemeData(
@@ -963,17 +1097,22 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
               thumbColor:         AppColors.primary,
               overlayColor:       AppColors.primary.withOpacity(0.12),
               trackHeight:        3,
-              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 10),
+              thumbShape: const RoundSliderThumbShape(
+                  enabledThumbRadius: 10),
             ),
             child: Slider(
-              value:     _fontSize, min: 14, max: 40, divisions: 26,
+              value:     _fontSize,
+              min:       14,
+              max:       40,
+              divisions: 26,
               onChanged: (v) => setState(() => _fontSize = v),
             ),
           ),
         ),
-        Text('${_fontSize.round()}px', style: const TextStyle(
-            fontSize: 12, color: AppColors.primary,
-            fontWeight: FontWeight.w600)),
+        Text('${_fontSize.round()}px',
+            style: const TextStyle(
+                fontSize: 12, color: AppColors.primary,
+                fontWeight: FontWeight.w600)),
       ]),
     );
   }
@@ -991,7 +1130,8 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
               color: AppColors.primary, size: 13),
           const SizedBox(width: 6),
           Text('${_fmtS(startS)} → ${_fmtS(endS)}',
-              style: const TextStyle(fontSize: 11, color: AppColors.primary,
+              style: const TextStyle(
+                  fontSize: 11, color: AppColors.primary,
                   fontWeight: FontWeight.w600)),
           const Spacer(),
           Text('Clip: ${_fmtS(endS - startS)}',
@@ -1003,12 +1143,15 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
             inactiveTrackColor: AppColors.primary.withOpacity(0.2),
             thumbColor:         AppColors.primary,
             overlayColor:       AppColors.primary.withOpacity(0.1),
-            rangeThumbShape: const RoundRangeSliderThumbShape(
+            rangeThumbShape:    const RoundRangeSliderThumbShape(
                 enabledThumbRadius: 10),
             trackHeight: 4,
           ),
           child: RangeSlider(
-            values:    _trim, min: 0.0, max: 1.0, divisions: 200,
+            values:    _trim,
+            min:       0.0,
+            max:       1.0,
+            divisions: 200,
             onChanged: (v) {
               final minF = _videoDur.inSeconds > 0
                   ? 3.0 / _videoDur.inSeconds : 0.0;
@@ -1031,17 +1174,36 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     );
   }
 
-  // Link panel
+  // Link panel — always addable alongside any content
   Widget _panelLink(bool isDark, Color txt, Color sub, Color border) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
+        // Header row: icon + label + "Add link to post" info
+        Row(children: [
+          const Icon(Icons.add_link_rounded,
+              color: AppColors.primary, size: 16),
+          const SizedBox(width: 8),
+          Text('Add link to this post',
+              style: TextStyle(
+                  fontSize:   12,
+                  color:      txt,
+                  fontWeight: FontWeight.w600)),
+          const Spacer(),
+          Text('Works with text, photo & video',
+              style: TextStyle(fontSize: 10, color: sub)),
+        ]),
+        const SizedBox(height: 8),
+        // URL field
         Container(
           decoration: BoxDecoration(
-            color:        isDark ? const Color(0xFF2C2C2E) : Colors.white,
+            color:        isDark
+                ? const Color(0xFF2C2C2E) : Colors.white,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: _linkError != null
-                ? AppColors.error.withOpacity(0.5) : border),
+            border: Border.all(
+                color: _linkError != null
+                    ? AppColors.error.withOpacity(0.6)
+                    : border),
           ),
           child: Row(children: [
             Padding(
@@ -1058,31 +1220,38 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                 style:        TextStyle(fontSize: 13, color: txt),
                 onChanged:    _onLinkChanged,
                 decoration: InputDecoration(
-                  hintText:  'Paste a URL (https://…)',
+                  hintText:  'Paste URL (https://…)',
                   hintStyle: TextStyle(color: sub, fontSize: 12),
                   border:    InputBorder.none,
                   contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 10),
+                      horizontal: 10, vertical: 11),
                 ),
               ),
             ),
             if (_linkChecking)
-              const Padding(padding: EdgeInsets.only(right: 10),
-                child: SizedBox(width: 14, height: 14,
+              const Padding(
+                padding: EdgeInsets.only(right: 10),
+                child: SizedBox(
+                    width: 14, height: 14,
                     child: CircularProgressIndicator(
-                        strokeWidth: 2, color: AppColors.primary)))
+                        strokeWidth: 2, color: AppColors.primary)),
+              )
             else if (_linkCtrl.text.isNotEmpty)
               GestureDetector(
                 onTap: () => setState(() {
-                  _linkCtrl.clear(); _linkPreview = null; _linkError = null;
+                  _linkCtrl.clear();
+                  _linkPreview = null;
+                  _linkError   = null;
                 }),
                 child: Padding(
                   padding: const EdgeInsets.only(right: 10),
-                  child: Icon(Icons.close_rounded, color: sub, size: 15),
+                  child: Icon(Icons.close_rounded,
+                      color: sub, size: 15),
                 ),
               ),
           ]),
         ),
+        // Error
         if (_linkError != null)
           Padding(
             padding: const EdgeInsets.only(top: 6),
@@ -1090,10 +1259,12 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
               const Icon(Icons.block_rounded,
                   color: AppColors.error, size: 12),
               const SizedBox(width: 6),
-              Flexible(child: Text(_linkError!, style: const TextStyle(
-                  color: AppColors.error, fontSize: 11))),
+              Flexible(child: Text(_linkError!,
+                  style: const TextStyle(
+                      color: AppColors.error, fontSize: 11))),
             ]),
           ),
+        // Success
         if (_linkPreview != null && _linkError == null)
           Padding(
             padding: const EdgeInsets.only(top: 6),
@@ -1101,35 +1272,42 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
               const Icon(Icons.verified_rounded,
                   color: AppColors.success, size: 13),
               const SizedBox(width: 6),
-              Flexible(child: Text(_linkPreview!.title,
-                  maxLines: 1, overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 11, color: sub,
-                      fontWeight: FontWeight.w500))),
+              Flexible(
+                child: Text(
+                  '${_linkPreview!.domain} · ${_linkPreview!.title}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 11, color: sub,
+                      fontWeight: FontWeight.w500),
+                ),
+              ),
             ]),
           ),
       ]),
     );
   }
 
-  // ── Caption bar ─────────────────────────────────────────────────────────────
+  // ── Caption bar — clean flat design, no border container ─────────────────
   Widget _buildCaptionBar(bool isDark, Color surf, Color border,
-      Color txt, Color sub, Color lbl, bool overLimit) {
+      Color txt, Color sub, Color lbl) {
+    final overLimit = _charCount > _maxChars;
     return Container(
       decoration: BoxDecoration(
         color:  surf,
-        border: Border(top: BorderSide(color: border)),
+        border: Border(top: BorderSide(color: border, width: 0.5)),
       ),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
 
-        // Hashtag suggestions strip
+        // Hashtag suggestion strip
         if (_hashSugg.isNotEmpty)
           SizedBox(
-            height: 40,
+            height: 38,
             child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              padding:         const EdgeInsets.symmetric(
-                  horizontal: 12, vertical: 6),
-              itemCount:       _hashSugg.length,
+              scrollDirection:  Axis.horizontal,
+              padding:          const EdgeInsets.symmetric(
+                  horizontal: 12, vertical: 5),
+              itemCount:        _hashSugg.length,
               separatorBuilder: (_, __) => const SizedBox(width: 6),
               itemBuilder: (_, i) {
                 final tag = _hashSugg[i];
@@ -1139,82 +1317,98 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                     padding: const EdgeInsets.symmetric(
                         horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
-                      color:        AppColors.primary.withOpacity(0.08),
-                      borderRadius: BorderRadius.circular(14),
+                      color: AppColors.primary.withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(12),
                       border: Border.all(
-                          color: AppColors.primary.withOpacity(0.25)),
+                          color: AppColors.primary.withOpacity(0.22)),
                     ),
-                    child: Text('#$tag', style: const TextStyle(
-                        fontSize: 11, color: AppColors.primary,
-                        fontWeight: FontWeight.w600)),
+                    child: Text('#$tag',
+                        style: const TextStyle(
+                            fontSize:   11,
+                            color:      AppColors.primary,
+                            fontWeight: FontWeight.w600)),
                   ),
                 );
               },
             ),
           ),
 
-        // Text input row
+        // ── Main input row ─────────────────────────────────────────────────
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-            // Avatar
-            CircleAvatar(
-              radius:          16,
-              backgroundImage: _userAvatar != null
-                  ? NetworkImage(_userAvatar!) : null,
-              backgroundColor: AppColors.primary.withOpacity(0.15),
-              child: _userAvatar == null
-                  ? Text(_userName.isNotEmpty
-                          ? _userName[0].toUpperCase() : 'U',
-                      style: const TextStyle(fontSize: 12,
-                          color: AppColors.primary,
-                          fontWeight: FontWeight.w700))
-                  : null,
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 100),
-                child: TextField(
-                  controller: _captionCtrl,
-                  maxLines:   null,
-                  style: TextStyle(fontSize: 14, color: txt, height: 1.5),
-                  decoration: InputDecoration(
-                    hintText:  _ctype == _CType.text
-                        ? 'Write your post… #hashtags welcome'
-                        : 'Add a caption… #hashtags welcome',
-                    hintStyle: TextStyle(color: sub, fontSize: 13),
-                    border:    InputBorder.none,
-                    isDense:   true,
-                    contentPadding: const EdgeInsets.symmetric(vertical: 4),
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              // Avatar
+              CircleAvatar(
+                radius:          18,
+                backgroundImage: _userAvatar != null
+                    ? NetworkImage(_userAvatar!) : null,
+                backgroundColor: AppColors.primary.withOpacity(0.15),
+                child: _userAvatar == null
+                    ? Text(
+                        _userName.isNotEmpty
+                            ? _userName[0].toUpperCase() : 'U',
+                        style: const TextStyle(
+                            fontSize:   13,
+                            color:      AppColors.primary,
+                            fontWeight: FontWeight.w700))
+                    : null,
+              ),
+              const SizedBox(width: 10),
+              // Text field — flat, no container border
+              Expanded(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 96),
+                  child: TextField(
+                    controller: _captionCtrl,
+                    maxLines:   null,
+                    style: TextStyle(
+                        fontSize: 14, color: txt, height: 1.5),
+                    decoration: InputDecoration(
+                      hintText:  _ctype == _CType.text
+                          ? 'Write your post… use #hashtags'
+                          : 'Add a caption… use #hashtags',
+                      hintStyle: TextStyle(color: sub, fontSize: 13),
+                      // No borders at all — completely flat
+                      border:        InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      isDense:       true,
+                      contentPadding: EdgeInsets.zero,
+                    ),
                   ),
                 ),
               ),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              '${_maxChars - _charCount}',
-              style: TextStyle(
-                fontSize:   11,
-                fontWeight: FontWeight.w600,
-                color: overLimit
-                    ? AppColors.error
-                    : (_maxChars - _charCount) < 50
-                        ? AppColors.warning : lbl,
+              const SizedBox(width: 8),
+              // Char counter
+              Text(
+                '${_maxChars - _charCount}',
+                style: TextStyle(
+                  fontSize:   11,
+                  fontWeight: FontWeight.w600,
+                  color: overLimit
+                      ? AppColors.error
+                      : (_maxChars - _charCount) < 50
+                          ? AppColors.warning : lbl,
+                ),
               ),
-            ),
-          ]),
+            ],
+          ),
         ),
 
         // Media review notice
-        if (_mediaBytes != null && _ctype != _CType.link)
+        if (_mediaBytes != null)
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+            padding: const EdgeInsets.fromLTRB(14, 0, 14, 6),
             child: Row(children: const [
               Icon(Icons.shield_outlined, color: Colors.orange, size: 11),
               SizedBox(width: 6),
-              Expanded(child: Text('Media reviewed before publishing.',
-                  style: TextStyle(fontSize: 10, color: Colors.orange))),
+              Expanded(
+                child: Text('Media is reviewed before publishing.',
+                    style:
+                        TextStyle(fontSize: 10, color: Colors.orange)),
+              ),
             ]),
           ),
 
@@ -1223,76 +1417,138 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     );
   }
 
-  // ── Right toolbar ──────────────────────────────────────────────────────────
+  // ── Right toolbar ─────────────────────────────────────────────────────────
   Widget _buildToolbar(Color bar, Color border, Color sub) {
     return Container(
       width:      62,
       decoration: BoxDecoration(
         color:  bar,
-        border: Border(left: BorderSide(color: border)),
+        border: Border(left: BorderSide(color: border, width: 0.5)),
       ),
       child: SafeArea(
         left: false, right: false, bottom: false,
         child: Column(children: [
           const SizedBox(height: 10),
 
-          // Content type
-          _toolBtn(icon: Iconsax.text,    label: 'Text',
-              active: _ctype == _CType.text,
-              onTap:  () { if (_ctype != _CType.text) _setType(_CType.text); },
-              sub: sub),
-          _toolBtn(icon: Iconsax.image,   label: 'Photo',
-              active: _ctype == _CType.image,
-              onTap:  () => _setType(_CType.image), sub: sub),
-          _toolBtn(icon: Iconsax.video,   label: 'Video',
-              active: _ctype == _CType.video,
-              onTap:  () => _setType(_CType.video), sub: sub),
-          _toolBtn(icon: Icons.link_rounded, label: 'Link',
-              active: _ctype == _CType.link,
-              onTap:  () { if (_ctype != _CType.link) _setType(_CType.link); },
-              sub: sub),
+          // ── Content type ───────────────────────────────────────────────
+          _toolBtn(
+            icon:   Iconsax.text,
+            label:  'Text',
+            active: _ctype == _CType.text,
+            onTap:  () { if (_ctype != _CType.text) _setType(_CType.text); },
+            sub:    sub,
+          ),
+          _toolBtn(
+            icon:   Iconsax.image,
+            label:  'Photo',
+            active: _ctype == _CType.image,
+            onTap:  () => _setType(_CType.image),
+            sub:    sub,
+          ),
+          _toolBtn(
+            icon:   Iconsax.video,
+            label:  'Video',
+            active: _ctype == _CType.video,
+            onTap:  () => _setType(_CType.video),
+            sub:    sub,
+          ),
 
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            padding: const EdgeInsets.symmetric(
+                horizontal: 10, vertical: 6),
             child: Divider(color: border, height: 1),
           ),
 
-          // Features
-          _toolBtn(icon: Icons.palette_outlined, label: 'Theme',
-              active: _panel == _Panel.theme,
-              onTap:  () => _togglePanel(_Panel.theme), sub: sub),
+          // ── Features ───────────────────────────────────────────────────
+          _toolBtn(
+            icon:   Icons.palette_outlined,
+            label:  'Theme',
+            active: _panel == _Panel.theme,
+            onTap:  () => _togglePanel(_Panel.theme),
+            sub:    sub,
+          ),
+
+          // BG toggle — text mode only
           if (_ctype == _CType.text)
-            _toolBtn(icon: Icons.text_fields_rounded, label: 'Font',
-                active: _panel == _Panel.font,
-                onTap:  () => _togglePanel(_Panel.font), sub: sub),
-          _toolBtn(icon: Iconsax.hashtag, label: 'Topic',
-              active: false, onTap: _openTopicPicker, sub: sub),
+            _toolBtnToggle(
+              icon:    Icons.format_color_fill_rounded,
+              label:   'BG',
+              enabled: _useBackground,
+              sub:     sub,
+              onTap: () {
+                HapticFeedback.selectionClick();
+                setState(() => _useBackground = !_useBackground);
+              },
+            ),
+
+          // Font size — text mode only
+          if (_ctype == _CType.text)
+            _toolBtn(
+              icon:   Icons.text_fields_rounded,
+              label:  'Font',
+              active: _panel == _Panel.font,
+              onTap:  () => _togglePanel(_Panel.font),
+              sub:    sub,
+            ),
+
+          // Link — add-on toggle, works with ALL content types
+          _toolBtnToggle(
+            icon:    Icons.add_link_rounded,
+            label:   'Link',
+            enabled: _linkEnabled,
+            sub:     sub,
+            onTap:   _toggleLink,
+          ),
+
+          _toolBtn(
+            icon:   Iconsax.hashtag,
+            label:  'Topic',
+            active: false,
+            onTap:  _openTopicPicker,
+            sub:    sub,
+          ),
+
+          // Trim — video mode only, after video is ready
           if (_ctype == _CType.video && _videoReady)
-            _toolBtn(icon: Icons.content_cut_rounded, label: 'Trim',
-                active: _panel == _Panel.trim,
-                onTap:  () => _togglePanel(_Panel.trim), sub: sub),
+            _toolBtn(
+              icon:   Icons.content_cut_rounded,
+              label:  'Trim',
+              active: _panel == _Panel.trim,
+              onTap:  () => _togglePanel(_Panel.trim),
+              sub:    sub,
+            ),
 
           const Spacer(),
 
-          // POST button at bottom of toolbar
+          // POST button at bottom
           GestureDetector(
-            onTap: () { HapticFeedback.mediumImpact(); _post(); },
+            onTap: () {
+              HapticFeedback.mediumImpact();
+              _post();
+            },
             child: Container(
-              margin: const EdgeInsets.fromLTRB(6, 0, 6, 14),
+              margin:  const EdgeInsets.fromLTRB(6, 0, 6, 14),
               padding: const EdgeInsets.symmetric(vertical: 12),
               decoration: BoxDecoration(
                 gradient: const LinearGradient(
                     colors: [AppColors.primary, AppColors.accent],
-                    begin: Alignment.topCenter, end: Alignment.bottomCenter),
+                    begin:  Alignment.topCenter,
+                    end:    Alignment.bottomCenter),
                 borderRadius: BorderRadius.circular(14),
               ),
               child: _loading
-                  ? const Center(child: SizedBox(width: 14, height: 14,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Colors.white)))
-                  : const Center(child: Text('POST', style: TextStyle(
-                      color: Colors.white, fontSize: 10,
-                      fontWeight: FontWeight.w800, letterSpacing: 0.8))),
+                  ? const Center(
+                      child: SizedBox(
+                          width: 14, height: 14,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white)))
+                  : const Center(
+                      child: Text('POST',
+                          style: TextStyle(
+                              color:         Colors.white,
+                              fontSize:      10,
+                              fontWeight:    FontWeight.w800,
+                              letterSpacing: 0.8))),
             ),
           ),
         ]),
@@ -1300,6 +1556,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     );
   }
 
+  /// Active/inactive toolbar button
   Widget _toolBtn({
     required IconData     icon,
     required String       label,
@@ -1316,34 +1573,86 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
         padding:     const EdgeInsets.symmetric(vertical: 8),
         decoration: BoxDecoration(
           color:        active
-              ? AppColors.primary.withOpacity(0.12) : Colors.transparent,
+              ? AppColors.primary.withOpacity(0.12)
+              : Colors.transparent,
           borderRadius: BorderRadius.circular(12),
         ),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon, size: 21,
+          Icon(icon, size: 20,
               color: active ? AppColors.primary : sub),
           const SizedBox(height: 3),
-          Text(label, style: TextStyle(
-              fontSize:   9,
-              color:      active ? AppColors.primary : sub,
-              fontWeight: active ? FontWeight.w700 : FontWeight.w400)),
+          Text(label,
+              style: TextStyle(
+                  fontSize:   9,
+                  color:      active ? AppColors.primary : sub,
+                  fontWeight: active
+                      ? FontWeight.w700 : FontWeight.w400)),
         ]),
       ),
     );
   }
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
+  /// On/off toggle toolbar button (e.g. BG, Link)
+  Widget _toolBtnToggle({
+    required IconData     icon,
+    required String       label,
+    required bool         enabled,
+    required VoidCallback onTap,
+    required Color        sub,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration:    const Duration(milliseconds: 180),
+        width:       54,
+        margin:      const EdgeInsets.symmetric(vertical: 2, horizontal: 4),
+        padding:     const EdgeInsets.symmetric(vertical: 8),
+        decoration: BoxDecoration(
+          color:        enabled
+              ? AppColors.primary.withOpacity(0.12)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Stack(clipBehavior: Clip.none, children: [
+            Icon(icon, size: 20,
+                color: enabled ? AppColors.primary : sub),
+            // Small dot indicator when active
+            if (enabled)
+              Positioned(
+                top: -2, right: -4,
+                child: Container(
+                  width: 7, height: 7,
+                  decoration: const BoxDecoration(
+                      color:  AppColors.primary,
+                      shape:  BoxShape.circle),
+                ),
+              ),
+          ]),
+          const SizedBox(height: 3),
+          Text(label,
+              style: TextStyle(
+                  fontSize:   9,
+                  color:      enabled ? AppColors.primary : sub,
+                  fontWeight: enabled
+                      ? FontWeight.w700 : FontWeight.w400)),
+        ]),
+      ),
+    );
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
   String _fmtDur(Duration d) =>
-      '${d.inMinutes.remainder(60).toString().padLeft(2,'0')}:'
-      '${d.inSeconds.remainder(60).toString().padLeft(2,'0')}';
+      '${d.inMinutes.remainder(60).toString().padLeft(2, '0')}:'
+      '${d.inSeconds.remainder(60).toString().padLeft(2, '0')}';
 
   String _fmtS(double s) =>
-      '${(s/60).floor().toString().padLeft(2,'0')}:'
-      '${(s%60).floor().toString().padLeft(2,'0')}';
+      '${(s / 60).floor().toString().padLeft(2, '0')}:'
+      '${(s % 60).floor().toString().padLeft(2, '0')}';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Topic picker
+// Topic picker bottom-sheet
 // ─────────────────────────────────────────────────────────────────────────────
 class _TopicSheet extends StatefulWidget {
   final String selected;
@@ -1364,12 +1673,17 @@ class _TopicSheetState extends State<_TopicSheet> {
       final q = _ctrl.text.toLowerCase().trim();
       setState(() => _filtered = q.isEmpty
           ? _kAllTopics
-          : _kAllTopics.where((t) => t.toLowerCase().contains(q)).toList());
+          : _kAllTopics
+              .where((t) => t.toLowerCase().contains(q))
+              .toList());
     });
   }
 
   @override
-  void dispose() { _ctrl.dispose(); super.dispose(); }
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1381,23 +1695,31 @@ class _TopicSheetState extends State<_TopicSheet> {
     final sub    = isDark ? Colors.white54      : Colors.black45;
 
     return DraggableScrollableSheet(
-      initialChildSize: 0.72, minChildSize: 0.4, maxChildSize: 0.92,
-      expand: false,
+      initialChildSize: 0.72,
+      minChildSize:     0.4,
+      maxChildSize:     0.92,
+      expand:           false,
       builder: (_, sc) => Container(
-        decoration: BoxDecoration(color: bg,
+        decoration: BoxDecoration(
+            color:        bg,
             borderRadius: const BorderRadius.vertical(
                 top: Radius.circular(24))),
         child: Column(children: [
-          Container(width: 36, height: 4,
-              margin: const EdgeInsets.only(top: 12, bottom: 16),
-              decoration: BoxDecoration(
-                  color: Colors.grey.withOpacity(0.3),
-                  borderRadius: BorderRadius.circular(2))),
+          Container(
+            width: 36, height: 4,
+            margin: const EdgeInsets.only(top: 12, bottom: 16),
+            decoration: BoxDecoration(
+                color:        Colors.grey.withOpacity(0.3),
+                borderRadius: BorderRadius.circular(2)),
+          ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Row(children: [
-              Text('Choose Topic', style: TextStyle(
-                  fontSize: 18, fontWeight: FontWeight.w700, color: txt)),
+              Text('Choose Topic',
+                  style: TextStyle(
+                      fontSize:   18,
+                      fontWeight: FontWeight.w700,
+                      color:      txt)),
               const Spacer(),
               Text('${_kAllTopics.length} topics',
                   style: TextStyle(fontSize: 12, color: sub)),
@@ -1407,26 +1729,35 @@ class _TopicSheetState extends State<_TopicSheet> {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Container(
-              decoration: BoxDecoration(color: surf,
+              decoration: BoxDecoration(
+                  color:        surf,
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: border)),
+                  border:       Border.all(color: border)),
               child: Row(children: [
-                const Padding(padding: EdgeInsets.only(left: 12),
-                    child: Icon(Icons.search_rounded,
-                        color: AppColors.primary, size: 20)),
-                Expanded(child: TextField(
-                  controller: _ctrl,
-                  style: TextStyle(fontSize: 14, color: txt),
-                  decoration: InputDecoration(
-                    hintText: 'Search topics…',
-                    hintStyle: TextStyle(color: sub, fontSize: 13),
-                    border: InputBorder.none,
-                    contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 13)),
-                )),
+                const Padding(
+                  padding: EdgeInsets.only(left: 12),
+                  child: Icon(Icons.search_rounded,
+                      color: AppColors.primary, size: 20),
+                ),
+                Expanded(
+                  child: TextField(
+                    controller: _ctrl,
+                    style:      TextStyle(fontSize: 14, color: txt),
+                    decoration: InputDecoration(
+                      hintText:  'Search topics…',
+                      hintStyle: TextStyle(color: sub, fontSize: 13),
+                      border:    InputBorder.none,
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 13),
+                    ),
+                  ),
+                ),
                 if (_ctrl.text.isNotEmpty)
-                  IconButton(icon: const Icon(Icons.close_rounded, size: 18),
-                      color: sub, onPressed: () => _ctrl.clear()),
+                  IconButton(
+                    icon:      const Icon(Icons.close_rounded, size: 18),
+                    color:     sub,
+                    onPressed: () => _ctrl.clear(),
+                  ),
               ]),
             ),
           ),
@@ -1451,18 +1782,25 @@ class _TopicSheetState extends State<_TopicSheet> {
                               horizontal: 16, vertical: 13),
                           decoration: BoxDecoration(
                             color: sel
-                                ? AppColors.primary.withOpacity(0.1) : surf,
+                                ? AppColors.primary.withOpacity(0.1)
+                                : surf,
                             borderRadius: BorderRadius.circular(14),
-                            border: Border.all(color: sel
-                                ? AppColors.primary.withOpacity(0.4)
-                                : Colors.transparent),
+                            border: Border.all(
+                                color: sel
+                                    ? AppColors.primary.withOpacity(0.4)
+                                    : Colors.transparent),
                           ),
                           child: Row(children: [
-                            Expanded(child: Text(t, style: TextStyle(
-                                fontSize:   14,
-                                fontWeight: sel
-                                    ? FontWeight.w600 : FontWeight.w400,
-                                color: sel ? AppColors.primary : txt))),
+                            Expanded(
+                              child: Text(t,
+                                  style: TextStyle(
+                                      fontSize:   14,
+                                      fontWeight: sel
+                                          ? FontWeight.w600
+                                          : FontWeight.w400,
+                                      color: sel
+                                          ? AppColors.primary : txt)),
+                            ),
                             if (sel)
                               const Icon(Icons.check_circle_rounded,
                                   color: AppColors.primary, size: 18),
@@ -1471,7 +1809,8 @@ class _TopicSheetState extends State<_TopicSheet> {
                       );
                     }),
           ),
-          SizedBox(height: MediaQuery.of(context).padding.bottom + 12),
+          SizedBox(
+              height: MediaQuery.of(context).padding.bottom + 12),
         ]),
       ),
     );
