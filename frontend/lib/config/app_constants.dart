@@ -4,68 +4,63 @@ import 'package:google_fonts/google_fonts.dart';
 // ═══════════════════════════════════════════════════════════════════
 // RISEUP APP CONSTANTS — PRODUCTION READY
 // All IDs loaded from environment variables only — NO DEBUG/TEST IDs
+// Keys MUST match --dart-define keys in .github/workflows/build.yml
 // ═══════════════════════════════════════════════════════════════════
 
 // ── API ─────────────────────────────────────────────────────────────
 const String kApiBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
-  defaultValue: 'https://riseup-api.onrender.com/api/v1',
+  defaultValue: 'https://rise-up-zkcj.onrender.com/api/v1',
 );
 const String kSupabaseUrl = String.fromEnvironment(
-  'SUPABASE_URL', 
+  'SUPABASE_URL',
   defaultValue: '',
 );
 const String kSupabaseAnonKey = String.fromEnvironment(
-  'SUPABASE_ANON_KEY', 
+  'SUPABASE_ANON_KEY',
   defaultValue: '',
 );
 
 // ── AdMob — PRODUCTION ONLY ─────────────────────────────────────────
-// All IDs MUST be set via environment variables — NO FALLBACK TEST IDs
-const String kAdMobAppId = String.fromEnvironment('ADMOB_APP_ID');
-const String kRewardedAdUnit = String.fromEnvironment('ADMOB_REWARDED_UNIT');
-const String kBannerAdUnit = String.fromEnvironment('ADMOB_BANNER_UNIT');
-const String kInterstitialAdUnit = String.fromEnvironment('ADMOB_INTERSTITIAL_UNIT');
-const String kAppOpenAdUnit = String.fromEnvironment('ADMOB_APP_OPEN_UNIT');
+// Keys match --dart-define names in build.yml exactly.
+// Any mismatch = empty string at runtime = silent ad failure.
+const String kAdMobAppId         = String.fromEnvironment('ADMOB_APP_ID');
+const String kBannerAdUnit       = String.fromEnvironment('BANNER_AD_UNIT_ID');
+const String kRewardedAdUnit     = String.fromEnvironment('REWARDED_AD_UNIT_ID');
+const String kInterstitialAdUnit = String.fromEnvironment('INTERSTITIAL_AD_UNIT_ID');
+// ── Native Ads ───────────────────────────────────────────────────────
+const String kNativeAdUnitAndroid = String.fromEnvironment('NATIVE_AD_UNIT_ID');
+const String kNativeAdUnitIOS     = String.fromEnvironment('NATIVE_AD_UNIT_ID_IOS');
 
-// ── NATIVE ADS — NEW PRODUCTION IDs ───────────────────────────────────
-const String kNativeAdUnitAndroid = String.fromEnvironment('ADMOB_NATIVE_UNIT_ANDROID');
-const String kNativeAdUnitIOS = String.fromEnvironment('ADMOB_NATIVE_UNIT_IOS');
-
-// ── PLATFORM-SPECIFIC AD UNITS ───────────────────────────────────────
+// ── Platform-specific Ad Units ───────────────────────────────────────
+// Falls back to the shared unit if platform-specific one is not provided.
 class AppConstants {
-  // Banner Ads
-  static String get androidBannerAdUnitId => 
-      String.fromEnvironment('ADMOB_BANNER_UNIT_ANDROID', defaultValue: kBannerAdUnit);
-  static String get iosBannerAdUnitId => 
-      String.fromEnvironment('ADMOB_BANNER_UNIT_IOS', defaultValue: kBannerAdUnit);
-  
-  // Interstitial Ads
-  static String get androidInterstitialAdUnitId => 
-      String.fromEnvironment('ADMOB_INTERSTITIAL_UNIT_ANDROID', defaultValue: kInterstitialAdUnit);
-  static String get iosInterstitialAdUnitId => 
-      String.fromEnvironment('ADMOB_INTERSTITIAL_UNIT_IOS', defaultValue: kInterstitialAdUnit);
-  
-  // Rewarded Ads
-  static String get androidRewardedAdUnitId => 
-      String.fromEnvironment('ADMOB_REWARDED_UNIT_ANDROID', defaultValue: kRewardedAdUnit);
-  static String get iosRewardedAdUnitId => 
-      String.fromEnvironment('ADMOB_REWARDED_UNIT_IOS', defaultValue: kRewardedAdUnit);
-  
-  // App Open Ads
-  static String get androidAppOpenAdUnitId => 
-      String.fromEnvironment('ADMOB_APP_OPEN_UNIT_ANDROID', defaultValue: kAppOpenAdUnit);
-  static String get iosAppOpenAdUnitId => 
-      String.fromEnvironment('ADMOB_APP_OPEN_UNIT_IOS', defaultValue: kAppOpenAdUnit);
-  
-  // Native Ads — NEW
+  // Banner
+  static String get androidBannerAdUnitId =>
+      String.fromEnvironment('BANNER_AD_UNIT_ID_ANDROID', defaultValue: kBannerAdUnit);
+  static String get iosBannerAdUnitId =>
+      String.fromEnvironment('BANNER_AD_UNIT_ID_IOS', defaultValue: kBannerAdUnit);
+
+  // Interstitial
+  static String get androidInterstitialAdUnitId =>
+      String.fromEnvironment('INTERSTITIAL_AD_UNIT_ID_ANDROID', defaultValue: kInterstitialAdUnit);
+  static String get iosInterstitialAdUnitId =>
+      String.fromEnvironment('INTERSTITIAL_AD_UNIT_ID_IOS', defaultValue: kInterstitialAdUnit);
+
+  // Rewarded
+  static String get androidRewardedAdUnitId =>
+      String.fromEnvironment('REWARDED_AD_UNIT_ID_ANDROID', defaultValue: kRewardedAdUnit);
+  static String get iosRewardedAdUnitId =>
+      String.fromEnvironment('REWARDED_AD_UNIT_ID_IOS', defaultValue: kRewardedAdUnit);
+
+  // Native
   static String get androidNativeAdUnitId => kNativeAdUnitAndroid;
-  static String get iosNativeAdUnitId => kNativeAdUnitIOS;
+  static String get iosNativeAdUnitId     => kNativeAdUnitIOS;
 }
 
-// ── AdSense (Web) — PRODUCTION ONLY ──────────────────────────────────
-const String kAdSensePublisherId = String.fromEnvironment('ADSENSE_PUBLISHER_ID');
-const String kAdSenseTopSlotId = String.fromEnvironment('ADSENSE_TOP_SLOT');
+// ── AdSense (Web) ────────────────────────────────────────────────────
+const String kAdSensePublisherId  = String.fromEnvironment('ADSENSE_PUBLISHER_ID');
+const String kAdSenseTopSlotId    = String.fromEnvironment('ADSENSE_TOP_SLOT');
 const String kAdSenseBottomSlotId = String.fromEnvironment('ADSENSE_BOTTOM_SLOT');
 
 // ── Colors ────────────────────────────────────────────────────────────
@@ -180,9 +175,9 @@ class AppTheme {
     ),
     textTheme: GoogleFonts.interTextTheme(
         ThemeData.dark().textTheme).copyWith(
-      bodyLarge: AppTextStyles.body,
+      bodyLarge:  AppTextStyles.body,
       bodyMedium: AppTextStyles.body,
-      bodySmall: AppTextStyles.bodySmall,
+      bodySmall:  AppTextStyles.bodySmall,
     ),
     appBarTheme: AppBarTheme(
       backgroundColor: AppColors.bgDark,
@@ -194,8 +189,7 @@ class AppTheme {
     cardTheme: CardTheme(
       color: AppColors.bgCard,
       elevation: 0,
-      shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
@@ -206,24 +200,19 @@ class AppTheme {
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(12),
-        borderSide:
-            const BorderSide(color: AppColors.primary, width: 1.5),
+        borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
       ),
       hintStyle: AppTextStyles.label,
-      contentPadding: const EdgeInsets.symmetric(
-          horizontal: 16, vertical: 14),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
     ),
     elevatedButtonTheme: ElevatedButtonThemeData(
       style: ElevatedButton.styleFrom(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
         elevation: 0,
-        padding: const EdgeInsets.symmetric(
-            horizontal: 24, vertical: 14),
-        shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12)),
-        textStyle: GoogleFonts.inter(
-            fontWeight: FontWeight.w600, fontSize: 15),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        textStyle: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 15),
       ),
     ),
     bottomNavigationBarTheme: const BottomNavigationBarThemeData(
@@ -247,22 +236,18 @@ class AppTheme {
       onPrimary: Colors.white,
       onSurface: Colors.black87,
     ),
-    textTheme: GoogleFonts.interTextTheme(
-        ThemeData.light().textTheme),
+    textTheme: GoogleFonts.interTextTheme(ThemeData.light().textTheme),
     appBarTheme: AppBarTheme(
       backgroundColor: Colors.white,
       elevation: 0,
       centerTitle: true,
-      titleTextStyle:
-          AppTextStyles.h4.copyWith(color: Colors.black87),
-      iconTheme:
-          const IconThemeData(color: Colors.black87),
+      titleTextStyle: AppTextStyles.h4.copyWith(color: Colors.black87),
+      iconTheme: const IconThemeData(color: Colors.black87),
     ),
     cardTheme: CardTheme(
       color: const Color(0xFFF5F5F5),
       elevation: 0,
-      shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
@@ -273,25 +258,19 @@ class AppTheme {
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(12),
-        borderSide: const BorderSide(
-            color: AppColors.primary, width: 1.5),
+        borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
       ),
-      hintStyle: AppTextStyles.label
-          .copyWith(color: Colors.black38),
-      contentPadding: const EdgeInsets.symmetric(
-          horizontal: 16, vertical: 14),
+      hintStyle: AppTextStyles.label.copyWith(color: Colors.black38),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
     ),
     elevatedButtonTheme: ElevatedButtonThemeData(
       style: ElevatedButton.styleFrom(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
         elevation: 0,
-        padding: const EdgeInsets.symmetric(
-            horizontal: 24, vertical: 14),
-        shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12)),
-        textStyle: GoogleFonts.inter(
-            fontWeight: FontWeight.w600, fontSize: 15),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        textStyle: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 15),
       ),
     ),
     bottomNavigationBarTheme: const BottomNavigationBarThemeData(
@@ -304,7 +283,7 @@ class AppTheme {
   );
 }
 
-// ── Spacing ─────────────────────────────────────────────────────────
+// ── Spacing ──────────────────────────────────────────────────────────
 class AppSpacing {
   static const double xs  = 4;
   static const double sm  = 8;
@@ -314,7 +293,7 @@ class AppSpacing {
   static const double xxl = 48;
 }
 
-// ── Radius ──────────────────────────────────────────────────────────
+// ── Radius ───────────────────────────────────────────────────────────
 class AppRadius {
   static BorderRadius get sm   => BorderRadius.circular(8);
   static BorderRadius get md   => BorderRadius.circular(12);
@@ -323,7 +302,7 @@ class AppRadius {
   static BorderRadius get pill => BorderRadius.circular(50);
 }
 
-// ── Shadows ─────────────────────────────────────────────────────────
+// ── Shadows ──────────────────────────────────────────────────────────
 class AppShadows {
   static List<BoxShadow> get card => [
     BoxShadow(
@@ -341,7 +320,7 @@ class AppShadows {
   ];
 }
 
-// ── Feature Keys ────────────────────────────────────────────────────
+// ── Feature Keys ─────────────────────────────────────────────────────
 class FeatureKeys {
   static const String aiRoadmap         = 'ai_roadmap';
   static const String taskBooster       = 'task_booster';
@@ -352,7 +331,7 @@ class FeatureKeys {
   static const String advancedAnalytics = 'advanced_analytics';
 }
 
-// ── Stage Info ──────────────────────────────────────────────────────
+// ── Stage Info ───────────────────────────────────────────────────────
 class StageInfo {
   static Map<String, dynamic> get(String stage) {
     switch (stage.toLowerCase()) {
