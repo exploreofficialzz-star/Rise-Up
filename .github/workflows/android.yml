@@ -101,47 +101,59 @@ jobs:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: echo "$GOOGLE_SERVICES_JSON" | base64 --decode > google-services.json
 
+      # ── APK BUILD ───────────────────────────────────────────────────────────
+      # FIX: Added all 4 missing ad unit dart-defines (were blank strings before).
+      # FIX: Key names now match exactly what ad_service.dart reads via
+      #      String.fromEnvironment(). Previous names (ADMOB_REWARDED_UNIT etc.)
+      #      did not match — every ad unit ID was an empty string at runtime.
       - name: Build APK (universal)
         if: ${{ github.event.inputs.build_type != 'aab' }}
         working-directory: frontend
         env:
-          ADMOB_APP_ID:      ${{ secrets.ADMOB_APP_ID }}
-          NATIVE_AD_UNIT:    ${{ secrets.NATIVE_AD_UNIT_ID }}
-          API_BASE_URL:      ${{ secrets.API_BASE_URL }}
-          SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          ADMOB_APP_ID:             ${{ secrets.ADMOB_APP_ID }}
+          BANNER_AD_UNIT_ID:        ${{ secrets.ADMOB_BANNER_AD_UNIT }}
+          REWARDED_AD_UNIT_ID:      ${{ secrets.ADMOB_REWARDED_AD_UNIT }}
+          INTERSTITIAL_AD_UNIT_ID:  ${{ secrets.ADMOB_INTERSTITIAL_AD_UNIT }}
+          NATIVE_AD_UNIT_ID:        ${{ secrets.NATIVE_AD_UNIT_ID }}
+          API_BASE_URL:             ${{ secrets.API_BASE_URL }}
+          SUPABASE_URL:             ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY:        ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
           flutter build apk --release \
             --dart-define=API_BASE_URL=$API_BASE_URL \
             --dart-define=SUPABASE_URL=$SUPABASE_URL \
             --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY \
             --dart-define=ADMOB_APP_ID=$ADMOB_APP_ID \
-            --dart-define=NATIVE_AD_UNIT=$NATIVE_AD_UNIT
+            --dart-define=BANNER_AD_UNIT_ID=$BANNER_AD_UNIT_ID \
+            --dart-define=REWARDED_AD_UNIT_ID=$REWARDED_AD_UNIT_ID \
+            --dart-define=INTERSTITIAL_AD_UNIT_ID=$INTERSTITIAL_AD_UNIT_ID \
+            --dart-define=NATIVE_AD_UNIT_ID=$NATIVE_AD_UNIT_ID
 
+      # ── AAB BUILD ───────────────────────────────────────────────────────────
+      # FIX: Same key name alignment. Removed ADMOB_APP_OPEN_UNIT (app open ads
+      #      are disabled in code — no point passing the secret).
       - name: Build AAB (Play Store)
         if: ${{ github.event.inputs.build_type != 'apk' || startsWith(github.ref, 'refs/tags/') }}
         working-directory: frontend
         env:
-          ADMOB_APP_ID:            ${{ secrets.ADMOB_APP_ID }}
-          ADMOB_REWARDED_UNIT:     ${{ secrets.ADMOB_REWARDED_AD_UNIT }}
-          ADMOB_BANNER_UNIT:       ${{ secrets.ADMOB_BANNER_AD_UNIT }}
-          ADMOB_INTERSTITIAL_UNIT: ${{ secrets.ADMOB_INTERSTITIAL_AD_UNIT }}
-          ADMOB_APP_OPEN_UNIT:     ${{ secrets.ADMOB_APP_OPEN_AD_UNIT }}
-          NATIVE_AD_UNIT:          ${{ secrets.NATIVE_AD_UNIT_ID }}
-          API_BASE_URL:            ${{ secrets.API_BASE_URL }}
-          SUPABASE_URL:            ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY:       ${{ secrets.SUPABASE_ANON_KEY }}
+          ADMOB_APP_ID:             ${{ secrets.ADMOB_APP_ID }}
+          BANNER_AD_UNIT_ID:        ${{ secrets.ADMOB_BANNER_AD_UNIT }}
+          REWARDED_AD_UNIT_ID:      ${{ secrets.ADMOB_REWARDED_AD_UNIT }}
+          INTERSTITIAL_AD_UNIT_ID:  ${{ secrets.ADMOB_INTERSTITIAL_AD_UNIT }}
+          NATIVE_AD_UNIT_ID:        ${{ secrets.NATIVE_AD_UNIT_ID }}
+          API_BASE_URL:             ${{ secrets.API_BASE_URL }}
+          SUPABASE_URL:             ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY:        ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
           flutter build appbundle --release \
             --dart-define=API_BASE_URL=$API_BASE_URL \
             --dart-define=SUPABASE_URL=$SUPABASE_URL \
             --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY \
             --dart-define=ADMOB_APP_ID=$ADMOB_APP_ID \
-            --dart-define=ADMOB_REWARDED_UNIT=$ADMOB_REWARDED_UNIT \
-            --dart-define=ADMOB_BANNER_UNIT=$ADMOB_BANNER_UNIT \
-            --dart-define=ADMOB_INTERSTITIAL_UNIT=$ADMOB_INTERSTITIAL_UNIT \
-            --dart-define=ADMOB_APP_OPEN_UNIT=$ADMOB_APP_OPEN_UNIT \
-            --dart-define=NATIVE_AD_UNIT=$NATIVE_AD_UNIT
+            --dart-define=BANNER_AD_UNIT_ID=$BANNER_AD_UNIT_ID \
+            --dart-define=REWARDED_AD_UNIT_ID=$REWARDED_AD_UNIT_ID \
+            --dart-define=INTERSTITIAL_AD_UNIT_ID=$INTERSTITIAL_AD_UNIT_ID \
+            --dart-define=NATIVE_AD_UNIT_ID=$NATIVE_AD_UNIT_ID
 
       - name: Upload APK artifact
         if: ${{ github.event.inputs.build_type != 'aab' }}
