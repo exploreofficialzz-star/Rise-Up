@@ -302,6 +302,26 @@ async def get_methods_stats():
     }
 
 
+# NOTE: /methods/my/tracked MUST come before /methods/{method_id}
+# FastAPI matches routes top-to-bottom; without this ordering,
+# "my" would be captured as method_id and /tracked would 404.
+@router.get("/methods/my/tracked")
+async def get_tracked_methods_early(
+    status: Optional[str] = Query(None),
+    user:   dict = Depends(get_current_user),
+):
+    """Get all methods the current user is tracking. (Early registration to avoid /{method_id} capture.)"""
+    sb = supabase_service.client
+    q  = sb.table("user_income_methods")\
+        .select("*, income_methods(id,method_number,title,category,investment_tier,"
+                "tags,avg_earning_monthly_usd_low,avg_earning_monthly_usd_high,section_emoji)")\
+        .eq("user_id", user["id"])
+    if status:
+        q = q.eq("status", status)
+    result = q.order("updated_at", desc=True).execute()
+    return {"methods": result.data or [], "count": len(result.data or [])}
+
+
 @router.get("/methods/{method_id}")
 async def get_method(method_id: str):
     sb     = supabase_service.client
@@ -426,22 +446,6 @@ async def track_method(
     result = sb.table("user_income_methods")\
         .upsert(payload, on_conflict="user_id,method_id").execute()
     return {"tracked": True, "data": result.data[0] if result.data else payload}
-
-
-@router.get("/methods/my/tracked")
-async def get_tracked_methods(
-    status: Optional[str] = Query(None),
-    user:   dict = Depends(get_current_user),
-):
-    sb = supabase_service.client
-    q  = sb.table("user_income_methods")\
-        .select("*, income_methods(id,method_number,title,category,investment_tier,"
-                "tags,avg_earning_monthly_usd_low,avg_earning_monthly_usd_high,section_emoji)")\
-        .eq("user_id", user["id"])
-    if status:
-        q = q.eq("status", status)
-    result = q.order("updated_at", desc=True).execute()
-    return {"methods": result.data or [], "count": len(result.data or [])}
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -956,4 +960,3 @@ def _capital_to_tiers(capital: float) -> List[str]:
     if capital <= 100_000:     return ["zero","micro","low","medium"]
     if capital <= 1_000_000:   return ["zero","micro","low","medium","high"]
     return ["zero","micro","low","medium","high","major","ultra","billion"]
-
