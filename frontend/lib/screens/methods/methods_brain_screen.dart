@@ -243,7 +243,7 @@ class _MethodsBrainScreenState extends ConsumerState<MethodsBrainScreen>
                     colors: [Color(0xFF6C63FF), Color(0xFF3B82F6)]),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: const Icon(Iconsax.brain, color: Colors.white, size: 18),
+              child: const Icon(Iconsax.cpu, color: Colors.white, size: 18),
             ),
             const SizedBox(width: 10),
             Column(
@@ -772,7 +772,7 @@ class _MethodDetailScreen extends ConsumerWidget {
 
           if (method.howToStart != null) ...[
             const SizedBox(height: 20),
-            _SectionHeader('How to Start', Iconsax.rocket),
+            _SectionHeader('How to Start', Iconsax.flash),
             const SizedBox(height: 8),
             Text(method.howToStart!,
                 style: TextStyle(
@@ -1051,4 +1051,3 @@ class _ErrorState extends StatelessWidget {
     );
   }
 }
-
