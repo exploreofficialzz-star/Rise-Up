@@ -752,6 +752,14 @@ class _HomeScreenState extends State<HomeScreen>
     api.sharePost(post.id).catchError((_) {
       if (mounted) setState(() => post.shares = (post.shares - 1).clamp(0, 999999));
     });
+    // Brain signal: shares reveal high engagement — fire-and-forget
+    if (post.content.isNotEmpty) {
+      api.recordInteractionSignal(
+        action:      'share',
+        postId:      post.id,
+        postContent: post.content,
+      );
+    }
   }
 
   // ── AI ────────────────────────────────────────────────────────────────────
@@ -1163,6 +1171,14 @@ class _HomeScreenState extends State<HomeScreen>
                           if (mounted) {
                             setState(() => p.isLiked = r['liked'] == true);
                           }
+                          // Brain signal: fire-and-forget, never blocks UI
+                          if (r['liked'] == true && p.content.isNotEmpty) {
+                            api.recordInteractionSignal(
+                              action:      'like',
+                              postId:      p.id,
+                              postContent: p.content,
+                            );
+                          }
                         } catch (_) {
                           if (mounted) setState(() {
                             p.isLiked  = !p.isLiked;
@@ -1177,6 +1193,14 @@ class _HomeScreenState extends State<HomeScreen>
                           final r = await api.toggleSave(p.id);
                           if (mounted) {
                             setState(() => p.isSaved = r['saved'] == true);
+                          }
+                          // Brain signal: saved posts reveal strong interests
+                          if (r['saved'] == true && p.content.isNotEmpty) {
+                            api.recordInteractionSignal(
+                              action:      'save',
+                              postId:      p.id,
+                              postContent: p.content,
+                            );
                           }
                         } catch (_) {
                           if (mounted) setState(() => p.isSaved = !p.isSaved);
