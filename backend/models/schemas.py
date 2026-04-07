@@ -1,11 +1,15 @@
 """
-RiseUp Pydantic Schemas v3.0
-Adds brain fields to ChatResponse for Flutter escalation UI.
+RiseUp Pydantic Schemas v3.1
+Adds all missing models: TaskUpdate, PaymentInitRequest, PaymentVerifyRequest,
+AdUnlockRequest, ProfileUpdate, EarningLog — required by tasks, payments,
+and progress routers.
 """
 
 from typing import Optional, List, Any, Dict
 from pydantic import BaseModel, Field
 
+
+# ── Chat ──────────────────────────────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
     message:          str
@@ -41,3 +45,54 @@ class GenerateTasksRequest(BaseModel):
     count:    int  = Field(default=5, ge=1, le=20)
     urgency:  str  = "immediate"
     category: Optional[str] = None
+
+
+# ── Tasks ─────────────────────────────────────────────────────────────────────
+
+class TaskUpdate(BaseModel):
+    status:           Optional[str]   = None   # pending | in_progress | completed | skipped
+    actual_earnings:  Optional[float] = None
+    notes:            Optional[str]   = None
+    priority:         Optional[str]   = None   # low | medium | high
+    due_date:         Optional[str]   = None   # ISO 8601
+
+
+# ── Payments ──────────────────────────────────────────────────────────────────
+
+class PaymentInitRequest(BaseModel):
+    plan:     str            # monthly | yearly
+    currency: Optional[str] = None   # defaults to profile currency
+
+
+class PaymentVerifyRequest(BaseModel):
+    transaction_id: Optional[str] = None   # Flutterwave transaction ID
+    tx_ref:         Optional[str] = None   # internal tx reference
+
+
+class AdUnlockRequest(BaseModel):
+    feature_key:    str
+    ad_unit_id:     str
+    duration_hours: Optional[int] = 1
+
+
+# ── Progress / Profile ────────────────────────────────────────────────────────
+
+class ProfileUpdate(BaseModel):
+    full_name:    Optional[str]   = None
+    bio:          Optional[str]   = None
+    phone:        Optional[str]   = None
+    country:      Optional[str]   = None
+    currency:     Optional[str]   = None
+    stage:        Optional[str]   = None   # survival | stability | growth | wealth
+    skills:       Optional[List[str]] = None
+    goals:        Optional[List[str]] = None
+    avatar_url:   Optional[str]   = None
+    language:     Optional[str]   = None
+
+
+class EarningLog(BaseModel):
+    amount:      float
+    source_type: str            # task | referral | investment | other
+    source_id:   Optional[str]  = None
+    description: Optional[str]  = None
+    currency:    str             = "NGN"
