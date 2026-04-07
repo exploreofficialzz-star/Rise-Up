@@ -1433,6 +1433,365 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // ── METHODS BRAIN ──────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /// Brain-aware AI mentor chat — searches RiseUp internally before responding.
+  /// Returns reply + escalation signals (needs_external, methods, marketplace).
+  Future<Map<String, dynamic>> brainMentorChat({
+    required String message,
+    String?  sessionId,
+    String   language = 'en',
+    List<Map<String, String>> history = const [],
+  }) async {
+    try {
+      final r = await _dio.post('/brain/mentor/chat', data: {
+        'message':    message,
+        if (sessionId != null) 'session_id': sessionId,
+        'language':   language,
+        'history':    history,
+      });
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Search only within RiseUp: methods, marketplace, service providers.
+  Future<Map<String, dynamic>> brainInternalSearch(
+      String query, {int limit = 5}) async {
+    try {
+      final r = await _dio.post('/brain/search/internal',
+          data: {'query': query, 'limit': limit});
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  // ── Income Methods Library ────────────────────────────────────────────────
+
+  /// Browse the 10,000 income methods with optional filters.
+  Future<Map<String, dynamic>> getBrainMethods({
+    String? investmentTier,
+    String? category,
+    String? skillLevel,
+    String? timeToFirst,
+    String? search,
+    bool?   featured,
+    bool?   trending,
+    int     limit  = 20,
+    int     offset = 0,
+  }) async {
+    try {
+      final r = await _dio.get('/brain/methods', queryParameters: {
+        if (investmentTier != null) 'investment_tier': investmentTier,
+        if (category       != null) 'category':        category,
+        if (skillLevel     != null) 'skill_level':     skillLevel,
+        if (timeToFirst    != null) 'time_to_first':   timeToFirst,
+        if (search         != null) 'search':          search,
+        if (featured       != null) 'featured':        featured,
+        if (trending       != null) 'trending':        trending,
+        'limit':  limit,
+        'offset': offset,
+      });
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Search income methods by keyword.
+  Future<Map<String, dynamic>> searchBrainMethods(
+      String query, {int limit = 20}) async {
+    try {
+      final r = await _dio.get('/brain/methods/search',
+          queryParameters: {'q': query, 'limit': limit});
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Get a single method's full detail.
+  Future<Map<String, dynamic>> getBrainMethod(String methodId) async {
+    try {
+      final r = await _dio.get('/brain/methods/$methodId');
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Get featured methods.
+  Future<Map<String, dynamic>> getFeaturedMethods({int limit = 10}) async {
+    try {
+      final r = await _dio.get('/brain/methods/featured',
+          queryParameters: {'limit': limit});
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Get stats about the methods library.
+  Future<Map<String, dynamic>> getMethodsStats() async {
+    try {
+      final r = await _dio.get('/brain/methods/stats');
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Get all investment tier definitions.
+  Future<Map<String, dynamic>> getMethodTiers() async {
+    try {
+      final r = await _dio.get('/brain/methods/tiers');
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Track or update a method for this user.
+  Future<Map<String, dynamic>> trackMethod(
+      String methodId, {String status = 'exploring', String? notes}) async {
+    try {
+      final r = await _dio.post('/brain/methods/$methodId/track',
+          data: {'status': status, if (notes != null) 'notes': notes});
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Get all methods the user is tracking.
+  Future<Map<String, dynamic>> getTrackedMethods({String? status}) async {
+    try {
+      final r = await _dio.get('/brain/methods/my/tracked',
+          queryParameters: {if (status != null) 'status': status});
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  // ── Positioning Quiz ──────────────────────────────────────────────────────
+
+  /// Save user positioning quiz answers and get personalised method recommendations.
+  Future<Map<String, dynamic>> savePositioning(
+      Map<String, dynamic> data) async {
+    try {
+      final r = await _dio.post('/brain/methods/position', data: data);
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Get current positioning and recommended methods.
+  Future<Map<String, dynamic>> getMyPositioning() async {
+    try {
+      final r = await _dio.get('/brain/methods/positioning/me');
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  // ── Marketplace ───────────────────────────────────────────────────────────
+
+  /// Browse marketplace listings with filters.
+  Future<Map<String, dynamic>> getMarketplaceListings({
+    String? listingType,
+    String? country,
+    bool?   isGlobal,
+    String? tags,
+    String? search,
+    int     limit  = 20,
+    int     offset = 0,
+  }) async {
+    try {
+      final r = await _dio.get('/brain/marketplace', queryParameters: {
+        if (listingType != null) 'listing_type': listingType,
+        if (country     != null) 'country':      country,
+        if (isGlobal    != null) 'is_global':    isGlobal,
+        if (tags        != null) 'tags':         tags,
+        if (search      != null) 'search':       search,
+        'limit':  limit,
+        'offset': offset,
+      });
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Create a new marketplace listing.
+  Future<Map<String, dynamic>> createMarketplaceListing(
+      Map<String, dynamic> data) async {
+    try {
+      final r = await _dio.post('/brain/marketplace', data: data);
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Send an inquiry on a marketplace listing.
+  Future<Map<String, dynamic>> inquireMarketplaceListing(
+      String listingId, String message, {Map<String, dynamic>? contactInfo}) async {
+    try {
+      final r = await _dio.post('/brain/marketplace/$listingId/inquire',
+          data: {'message': message, 'contact_info': contactInfo ?? {}});
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Get the current user's marketplace listings.
+  Future<Map<String, dynamic>> getMyMarketplaceListings(
+      {String? status}) async {
+    try {
+      final r = await _dio.get('/brain/marketplace/my',
+          queryParameters: {if (status != null) 'status': status});
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Delete / cancel a marketplace listing.
+  Future<Map<String, dynamic>> deleteMarketplaceListing(
+      String listingId) async {
+    try {
+      final r = await _dio.delete('/brain/marketplace/$listingId');
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  // ── Agentic Tasks ─────────────────────────────────────────────────────────
+
+  /// Create an agentic task (find buyers, sellers, service providers, etc.).
+  Future<Map<String, dynamic>> createAgenticTask({
+    required String title,
+    required String description,
+    String  taskType = 'custom',
+    String  priority = 'normal',
+    Map<String, dynamic> inputData = const {},
+  }) async {
+    try {
+      final r = await _dio.post('/brain/task/create', data: {
+        'task_type':   taskType,
+        'title':       title,
+        'description': description,
+        'priority':    priority,
+        'input_data':  inputData,
+      });
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Get a single agentic task with steps and discovered contacts.
+  Future<Map<String, dynamic>> getAgenticTask(String taskId) async {
+    try {
+      final r = await _dio.get('/brain/task/$taskId');
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// List all agentic tasks for the current user.
+  Future<Map<String, dynamic>> listAgenticTasks(
+      {String? status, String? taskType, int limit = 20}) async {
+    try {
+      final r = await _dio.get('/brain/task', queryParameters: {
+        if (status   != null) 'status':    status,
+        if (taskType != null) 'task_type': taskType,
+        'limit': limit,
+      });
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Approve external web search for an agentic task.
+  Future<Map<String, dynamic>> approveExternalSearch(String taskId) async {
+    try {
+      final r = await _dio.post('/brain/task/$taskId/approve-external', data: {});
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Approve full agentic execution ("handle everything").
+  Future<Map<String, dynamic>> approveAgenticExecution(String taskId) async {
+    try {
+      final r = await _dio.post('/brain/task/$taskId/approve-execute', data: {});
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Cancel an agentic task.
+  Future<Map<String, dynamic>> cancelAgenticTask(String taskId) async {
+    try {
+      final r = await _dio.delete('/brain/task/$taskId');
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Get contacts discovered by an agentic task.
+  Future<Map<String, dynamic>> getTaskContacts(
+      String taskId, {String? contactType, int minScore = 0}) async {
+    try {
+      final r = await _dio.get('/brain/contacts/$taskId', queryParameters: {
+        if (contactType != null) 'contact_type': contactType,
+        'min_score': minScore,
+      });
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Update a contact's status or notes.
+  Future<Map<String, dynamic>> updateAgenticContact(
+      String contactId, Map<String, dynamic> data) async {
+    try {
+      final r = await _dio.patch('/brain/contacts/$contactId', data: data);
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ── ADAPTIVE BRAIN SIGNALS ─────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /// Record a post-creation signal into the adaptive brain.
+  /// Fire-and-forget — call after createPost() succeeds.
+  /// Returns economic signals + marketplace suggestions (may be null on error).
+  Future<Map<String, dynamic>?> recordPostSignal({
+    required String postId,
+    required String content,
+    String? tag,
+  }) async {
+    try {
+      final r = await _dio.post('/ai/signal/post', data: {
+        'post_id': postId,
+        'content': content,
+        if (tag != null) 'tag': tag,
+      });
+      return r.data as Map<String, dynamic>?;
+    } catch (_) {
+      return null; // Signal collection is best-effort — never throws
+    }
+  }
+
+  /// Record a like / save / share interaction signal.
+  /// Fire-and-forget — call after interaction is confirmed by server.
+  Future<void> recordInteractionSignal({
+    required String action,       // 'like' | 'save' | 'share'
+    required String postId,
+    required String postContent,
+  }) async {
+    try {
+      await _dio.post('/ai/signal/interaction', data: {
+        'action':       action,
+        'post_id':      postId,
+        'post_content': postContent.length > 200
+            ? postContent.substring(0, 200)
+            : postContent,
+      });
+    } catch (_) {
+      // Silent — signal collection never blocks the UI
+    }
+  }
+
+  /// Get the adaptive economic profile the brain has learned about this user.
+  Future<Map<String, dynamic>> getAdaptiveProfile() async {
+    try {
+      final r = await _dio.get('/ai/adaptive-profile');
+      return (r.data as Map<String, dynamic>?)?['profile']
+          as Map<String, dynamic>? ?? {};
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Find RiseUp users whose economic needs complement this user.
+  /// E.g. if user wants to sell a laptop, returns users looking to buy laptops.
+  Future<List<dynamic>> getComplementaryUsers({int limit = 5}) async {
+    try {
+      final r = await _dio.get('/ai/complementary-users',
+          queryParameters: {'limit': limit});
+      return (r.data as Map?)?['matches'] as List? ?? [];
+    } catch (_) { return []; }
+  }
+
 } // end ApiService
 
 // ─────────────────────────────────────────────────────────────────────────────
