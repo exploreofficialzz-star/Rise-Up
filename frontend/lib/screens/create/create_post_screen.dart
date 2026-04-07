@@ -7,6 +7,7 @@
 // ✅ Right toolbar: Text · Photo · Video | Theme · BG · Font · Link · Topic · Trim
 // ✅ 24 themes: 12 gradients + 12 solids
 // ✅ Video: inline player + trim panel
+// ✅ AI brain signal: fire-and-forget on every post (adaptive profile)
 
 import 'dart:async';
 import 'dart:typed_data';
@@ -213,7 +214,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   Uint8List? _mediaBytes;
   String?    _mediaUrl;
   String     _mediaType    = 'image';
-  bool       _uploadFailed = false; // true when upload errors out
+  bool       _uploadFailed = false;
 
   // Video
   VideoPlayerController? _videoCtrl;
@@ -237,8 +238,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   // ── Has enough content to post? ───────────────────────────────────────────
   bool get _canPost {
     if (_charCount > _maxChars || _loading || _uploading) return false;
-    // If the user picked media but upload hasn't finished or failed → block.
-    // We never let a post go out with mediaUrl=null when media was selected.
     if (_mediaBytes != null && _mediaUrl == null) return false;
     final hasCaption = _captionCtrl.text.trim().isNotEmpty;
     final hasMedia   = _mediaUrl != null;
@@ -373,18 +372,11 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
 
     VideoPlayerController ctrl;
     if (kIsWeb) {
-      // Web: encode bytes as a data URI
       ctrl = VideoPlayerController.networkUrl(
           Uri.dataFromBytes(bytes, mimeType: 'video/mp4'));
     } else {
-      // Mobile (Android / iOS): use the file path directly.
-      // VideoPlayerController.file() is the correct API — networkUrl with
-      // Uri.file() silently fails on many devices because ExoPlayer on newer
-      // Android versions rejects file:// URIs without READ_EXTERNAL_STORAGE.
-      // Workaround: use contentUri / asset bytes via networkUrl with data URI
-      // when file path is empty (e.g. some iOS simulators), else use file path.
       if (xfile.path.isNotEmpty) {
-        // ignore: deprecated_member_use — file() is the right API on mobile
+        // ignore: deprecated_member_use
         ctrl = VideoPlayerController.contentUri(Uri.file(xfile.path));
       } else {
         ctrl = VideoPlayerController.networkUrl(
@@ -473,14 +465,11 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
 
       final url = res['url']?.toString();
       if (url == null || url.isEmpty) {
-        // Backend returned success but no URL — treat as failure
         throw Exception('No URL returned from upload');
       }
 
       if (mounted) setState(() {
         _mediaUrl  = url;
-        // Always trust the local flag for video — don't let the backend
-        // accidentally override 'video' with 'image' and break feed rendering.
         _mediaType = isVideo
             ? 'video'
             : (res['media_type']?.toString() ?? 'image');
@@ -492,9 +481,8 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
         setState(() {
           _uploading    = false;
           _uploadFailed = true;
-          _mediaUrl     = null; // make sure it's definitely null
+          _mediaUrl     = null;
         });
-        // Show a persistent snackbar with a retry action
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: const Text('Upload failed. Tap Retry to try again.'),
           backgroundColor: AppColors.error,
@@ -596,7 +584,8 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     }
     setState(() => _loading = true);
     try {
-      await api.createPost(
+      // Capture result so we can extract the post ID for the brain signal
+      final postResult = await api.createPost(
         content:   content.isNotEmpty ? content : (_linkPreview != null
             ? '🔗 ${_linkPreview!.title}' : '📷 Post'),
         tag:       _topic,
@@ -605,6 +594,21 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
         linkUrl:   _linkEnabled ? _linkPreview?.url : null,
         linkTitle: _linkEnabled ? _linkPreview?.title : null,
       );
+
+      // ── Brain signal: fire-and-forget, never blocks navigation ───────────
+      // Extracts economic signals (buying? selling? service needed?) from the
+      // post content and updates the user's adaptive profile so the AI mentor
+      // gets smarter with every post.
+      final postId =
+          (postResult as Map?)?['post']?['id']?.toString() ?? '';
+      if (postId.isNotEmpty && content.isNotEmpty) {
+        api.recordPostSignal(
+          postId:  postId,
+          content: content,
+          tag:     _topic,
+        ); // intentionally not awaited — fire-and-forget
+      }
+
       if (mounted) {
         HapticFeedback.mediumImpact();
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -638,7 +642,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     HapticFeedback.selectionClick();
     setState(() {
       _ctype = t;
-      // Close font/trim panels when switching away
       if (_panel == _Panel.font && t != _CType.text) _panel = _Panel.none;
       if (_panel == _Panel.trim && t != _CType.video) _panel = _Panel.none;
     });
@@ -682,10 +685,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
           // ── Main area ────────────────────────────────────────────────────
           Expanded(
             child: Column(children: [
-              // Preview fills all free space
               Expanded(child: _buildPreview(isDark)),
-
-              // Sliding panel (opens between preview and caption)
               AnimatedSize(
                 duration: const Duration(milliseconds: 240),
                 curve:    Curves.easeOutCubic,
@@ -693,8 +693,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                     ? const SizedBox.shrink()
                     : _buildPanel(isDark, surf, border, txtClr, subClr),
               ),
-
-              // Caption — always visible, clean flat bar
               _buildCaptionBar(
                   isDark, surf, border, txtClr, subClr, lblClr),
             ]),
@@ -785,7 +783,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
         else if (showBg)
           Container(decoration: theme.decoration)
         else
-          // Plain background (no theme) — just the scaffold colour
           Container(
             color: isDark ? const Color(0xFF0A0A0A) : Colors.white,
           ),
@@ -816,7 +813,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
             ),
           ),
 
-        // ── Link preview card on preview (all content types) ───────────────
+        // ── Link preview card on preview ───────────────────────────────────
         if (_linkEnabled && _linkPreview != null && _linkError == null)
           Positioned(
             left: 16, right: 16, bottom: 16,
@@ -923,7 +920,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
             ]),
           ),
 
-        // ── Upload badges (uploading / failed / success) ───────────────────
+        // ── Upload badges ──────────────────────────────────────────────────
         if (_uploading)
           Positioned(
             bottom: _linkEnabled && _linkPreview != null ? 80 : 12,
@@ -945,7 +942,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
             ),
           ),
 
-        // Upload failed — tap badge to retry
         if (_uploadFailed && !_uploading)
           Positioned(
             bottom: _linkEnabled && _linkPreview != null ? 80 : 12,
@@ -1033,7 +1029,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
             ),
           ),
 
-        // ── Topic chip centred top ─────────────────────────────────────────
+        // ── Topic chip ─────────────────────────────────────────────────────
         Positioned(
           top: 10, left: 0, right: 0,
           child: Center(
@@ -1259,12 +1255,11 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     );
   }
 
-  // Link panel — always addable alongside any content
+  // Link panel
   Widget _panelLink(bool isDark, Color txt, Color sub, Color border) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
-        // Header row: icon + label + "Add link to post" info
         Row(children: [
           const Icon(Icons.add_link_rounded,
               color: AppColors.primary, size: 16),
@@ -1279,7 +1274,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
               style: TextStyle(fontSize: 10, color: sub)),
         ]),
         const SizedBox(height: 8),
-        // URL field
         Container(
           decoration: BoxDecoration(
             color:        isDark
@@ -1336,7 +1330,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
               ),
           ]),
         ),
-        // Error
         if (_linkError != null)
           Padding(
             padding: const EdgeInsets.only(top: 6),
@@ -1349,7 +1342,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                       color: AppColors.error, fontSize: 11))),
             ]),
           ),
-        // Success
         if (_linkPreview != null && _linkError == null)
           Padding(
             padding: const EdgeInsets.only(top: 6),
@@ -1373,7 +1365,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     );
   }
 
-  // ── Caption bar — clean flat design, no border container ─────────────────
+  // ── Caption bar ───────────────────────────────────────────────────────────
   Widget _buildCaptionBar(bool isDark, Color surf, Color border,
       Color txt, Color sub, Color lbl) {
     final overLimit = _charCount > _maxChars;
@@ -1418,13 +1410,12 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
             ),
           ),
 
-        // ── Main input row ─────────────────────────────────────────────────
+        // Main input row
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              // Avatar
               CircleAvatar(
                 radius:          18,
                 backgroundImage: _userAvatar != null
@@ -1441,7 +1432,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                     : null,
               ),
               const SizedBox(width: 10),
-              // Text field — flat, no container border
               Expanded(
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxHeight: 96),
@@ -1455,7 +1445,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                           ? 'Write your post… use #hashtags'
                           : 'Add a caption… use #hashtags',
                       hintStyle: TextStyle(color: sub, fontSize: 13),
-                      // No borders at all — completely flat
                       border:        InputBorder.none,
                       enabledBorder: InputBorder.none,
                       focusedBorder: InputBorder.none,
@@ -1466,7 +1455,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                 ),
               ),
               const SizedBox(width: 8),
-              // Char counter
               Text(
                 '${_maxChars - _charCount}',
                 style: TextStyle(
@@ -1515,7 +1503,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
         child: Column(children: [
           const SizedBox(height: 10),
 
-          // ── Content type ───────────────────────────────────────────────
           _toolBtn(
             icon:   Iconsax.text,
             label:  'Text',
@@ -1544,7 +1531,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
             child: Divider(color: border, height: 1),
           ),
 
-          // ── Features ───────────────────────────────────────────────────
           _toolBtn(
             icon:   Icons.palette_outlined,
             label:  'Theme',
@@ -1553,7 +1539,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
             sub:    sub,
           ),
 
-          // BG toggle — text mode only
           if (_ctype == _CType.text)
             _toolBtnToggle(
               icon:    Icons.format_color_fill_rounded,
@@ -1566,7 +1551,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
               },
             ),
 
-          // Font size — text mode only
           if (_ctype == _CType.text)
             _toolBtn(
               icon:   Icons.text_fields_rounded,
@@ -1576,7 +1560,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
               sub:    sub,
             ),
 
-          // Link — add-on toggle, works with ALL content types
           _toolBtnToggle(
             icon:    Icons.add_link_rounded,
             label:   'Link',
@@ -1593,7 +1576,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
             sub:    sub,
           ),
 
-          // Trim — video mode only, after video is ready
           if (_ctype == _CType.video && _videoReady)
             _toolBtn(
               icon:   Icons.content_cut_rounded,
@@ -1605,7 +1587,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
 
           const Spacer(),
 
-          // POST button at bottom
           GestureDetector(
             onTap: () {
               HapticFeedback.mediumImpact();
@@ -1641,7 +1622,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     );
   }
 
-  /// Active/inactive toolbar button
   Widget _toolBtn({
     required IconData     icon,
     required String       label,
@@ -1677,7 +1657,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     );
   }
 
-  /// On/off toggle toolbar button (e.g. BG, Link)
   Widget _toolBtnToggle({
     required IconData     icon,
     required String       label,
@@ -1702,7 +1681,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
           Stack(clipBehavior: Clip.none, children: [
             Icon(icon, size: 20,
                 color: enabled ? AppColors.primary : sub),
-            // Small dot indicator when active
             if (enabled)
               Positioned(
                 top: -2, right: -4,
