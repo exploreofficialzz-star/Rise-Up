@@ -2,17 +2,17 @@
 """Posts Router — Social feed, likes, comments, shares, follows, status
 
 Fix log:
+  v4.0 — Brain signals: create_post, toggle_like, toggle_save, share_post,
+          create_status all fire fire-and-forget adaptive brain signals so
+          the AI learns from user behaviour. Import is wrapped in try/except
+          so if the brain service is not yet deployed the router still loads.
   v3.6 — Feed: switched profiles join hint to !user_id (portable, no FK name
-          dependency). Replaced post_comments(count) with post_comments(id) and
-          len() — the (count) aggregate syntax is PostgREST v10+ only and fails
-          silently on older Supabase instances.
-          create_post: removed hardcoded likes_count/shares_count from INSERT
-          (let DB defaults handle them — inserting 0 fails when the column is
-          generated). link_url / link_title insert is now safely guarded.
-          All except blocks now call logger.exception() so the real traceback
-          appears in server logs instead of being swallowed.
+          dependency). post_comments(id) instead of post_comments(count).
+          create_post: removed hardcoded likes_count/shares_count from INSERT.
+          link_url / link_title insert is safely guarded.
   v3.5 — base_select now explicitly lists link_url + link_title.
 """
+import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -22,11 +22,50 @@ from typing import Optional
 from services.supabase_service import supabase_service
 from utils.auth import get_current_user
 
+# ── Brain signal import (graceful — router loads even if brain not deployed) ──
+try:
+    from services.adaptive_brain_service import (
+        process_post_signal,
+        process_status_signal,
+        process_interaction_signal,
+        SignalType,
+    )
+    _BRAIN_ENABLED = True
+except Exception as _brain_import_err:
+    _BRAIN_ENABLED = False
+    import logging as _lg
+    _lg.getLogger(__name__).warning(
+        "Adaptive brain service not available — signals disabled: %s",
+        _brain_import_err,
+    )
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/posts", tags=["Posts"])
 
 def _db():
     return supabase_service.db
+
+
+# ── Brain signal helper ──────────────────────────────────────────────────────
+
+def _fire_signal(coro):
+    """
+    Schedule a brain signal coroutine as a background task.
+    Fire-and-forget — never blocks the response, never raises.
+    Works correctly inside async FastAPI endpoint context.
+    """
+    if not _BRAIN_ENABLED:
+        return
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.ensure_future(coro)
+        else:
+            # Should never happen inside FastAPI, but safe fallback
+            loop.run_until_complete(coro)
+    except Exception as e:
+        logger.debug("Brain signal fire failed (non-critical): %s", e)
+
 
 # ── Models ────────────────────────────────────────────────────────────────────
 
@@ -59,6 +98,7 @@ class StatusCreate(BaseModel):
     background_color: Optional[str] = None
     duration_hours: int = 24
 
+
 # ── Feed ──────────────────────────────────────────────────────────────────────
 
 @router.get("/feed")
@@ -71,13 +111,6 @@ async def get_feed(
     try:
         db = _db()
 
-        # FIX v3.6:
-        # 1. profiles!user_id(...) — use column hint instead of FK constraint
-        #    name. The FK name (posts_user_id_fkey) is DB-specific and breaks
-        #    when Supabase auto-generates a different name. Column hint is stable.
-        # 2. post_comments(id) instead of post_comments(count) — the (count)
-        #    aggregate is PostgREST v10+ only and throws a 500 on earlier
-        #    instances. We fetch ids and use len() on the returned array.
         base_select = (
             "id, content, tag, media_url, media_type, "
             "link_url, link_title, "
@@ -140,7 +173,6 @@ async def get_feed(
             p["is_liked"]       = any(l["user_id"] == user["id"] for l in likes)
             p["is_saved"]       = any(s["user_id"] == user["id"] for s in saves)
             p["likes_count"]    = len(likes)
-            # FIX v3.6: count the returned id array instead of using aggregate
             p["comments_count"] = len(comments_data)
             p["is_following"]   = False
             enriched.append(p)
@@ -152,6 +184,7 @@ async def get_feed(
         logger.exception("get_feed failed: tab=%s user=%s", tab, user.get("id"))
         raise HTTPException(500, f"Failed to load feed: {e}")
 
+
 # ── Create Post ───────────────────────────────────────────────────────────────
 
 @router.post("")
@@ -159,9 +192,6 @@ async def create_post(req: PostCreate, user: dict = Depends(get_current_user)):
     try:
         db = _db()
 
-        # FIX v3.6: Do NOT include likes_count / shares_count in the insert.
-        # If those columns have DB-level defaults (or are generated), inserting
-        # an explicit 0 raises a PostgreSQL error. Let the DB set them.
         data: dict = {
             "user_id":    user["id"],
             "content":    req.content,
@@ -172,10 +202,6 @@ async def create_post(req: PostCreate, user: dict = Depends(get_current_user)):
             data["media_url"]  = req.media_url
             data["media_type"] = req.media_type or "image"
 
-        # FIX v3.6: Guard link fields — columns may not exist in older schema
-        # versions. We attempt the full insert first; if it fails due to an
-        # unknown column we retry without the link fields so the post still
-        # goes through (better UX than a hard 500).
         if req.link_url:
             data["link_url"] = req.link_url
         if req.link_title:
@@ -185,7 +211,6 @@ async def create_post(req: PostCreate, user: dict = Depends(get_current_user)):
             res = db.table("posts").insert(data).execute()
         except Exception as insert_err:
             err_str = str(insert_err).lower()
-            # If the failure is about link columns not existing, retry without them
             if "link_url" in err_str or "link_title" in err_str or "column" in err_str:
                 logger.warning(
                     "create_post: link column missing, retrying without link fields. err=%s",
@@ -197,13 +222,28 @@ async def create_post(req: PostCreate, user: dict = Depends(get_current_user)):
             else:
                 raise
 
+        post = res.data[0] if res.data else {}
+        post_id = post.get("id", "")
+
+        # ── v4.0: Fire adaptive brain signal (background, never blocks) ───────
+        # The brain will extract economic signals (sell/buy/service intents)
+        # from the post content and update the user's adaptive profile.
+        if post_id and req.content:
+            _fire_signal(process_post_signal(
+                user_id  = user["id"],
+                post_id  = post_id,
+                content  = req.content,
+                tag      = req.tag,
+            ))
+
         return {
-            "post":    res.data[0] if res.data else {},
+            "post":    post,
             "message": "Post shared! 🚀",
         }
     except Exception as e:
         logger.exception("create_post failed: user=%s", user.get("id"))
         raise HTTPException(500, f"Failed to create post: {e}")
+
 
 # ── Link Preview ──────────────────────────────────────────────────────────────
 
@@ -213,8 +253,6 @@ _BLOCKED_DOMAINS = {
     "bit.ly-redirect.com", "paypal-confirm.net", "amazonsupport.io",
 }
 
-# FIX v3.6: Removed generic "whatsapp" term — WhatsApp is a legitimate
-# platform. Only flag explicit investment-fraud phrasing.
 _SCAM_KEYWORDS = [
     "double your money", "triple your money", "guaranteed profit",
     "1000% return", "send btc", "send eth", "private key", "seed phrase",
@@ -332,13 +370,14 @@ async def get_link_preview(url: str, user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.warning("link_preview fetch error for %s: %s", host, e)
         return {
-            "title":   host,
+            "title":       host,
             "description": "",
-            "image":   None,
-            "favicon": f"https://www.google.com/s2/favicons?domain={host}",
-            "domain":  host,
-            "blocked": False,
+            "image":       None,
+            "favicon":     f"https://www.google.com/s2/favicons?domain={host}",
+            "domain":      host,
+            "blocked":     False,
         }
+
 
 # ── Get / Update / Delete Post ────────────────────────────────────────────────
 
@@ -374,6 +413,7 @@ async def get_post(post_id: str, user: dict = Depends(get_current_user)):
         logger.exception("get_post failed: post_id=%s", post_id)
         raise HTTPException(500, str(e))
 
+
 @router.patch("/{post_id}")
 async def update_post(
     post_id: str, req: PostUpdate, user: dict = Depends(get_current_user)
@@ -405,6 +445,7 @@ async def update_post(
         logger.exception("update_post failed: post_id=%s", post_id)
         raise HTTPException(500, str(e))
 
+
 @router.delete("/{post_id}")
 async def delete_post(post_id: str, user: dict = Depends(get_current_user)):
     try:
@@ -426,6 +467,7 @@ async def delete_post(post_id: str, user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.exception("delete_post failed: post_id=%s", post_id)
         raise HTTPException(500, str(e))
+
 
 # ── Like / Save / Share ───────────────────────────────────────────────────────
 
@@ -458,39 +500,57 @@ async def toggle_like(post_id: str, user: dict = Depends(get_current_user)):
                 db.rpc("increment_post_likes", {"pid": post_id}).execute()
             except Exception:
                 pass
+
+            # ── v4.0: Brain signal — learn from what user likes ───────────
+            # Fetch post content for signal (best-effort)
             try:
-                post = (
+                post_row = (
                     db.table("posts")
-                    .select("user_id")
+                    .select("content, user_id, tag")
                     .eq("id", post_id)
                     .single()
                     .execute()
                     .data
                 )
-                if post and post["user_id"] != user["id"]:
-                    profile = (
-                        db.table("profiles")
-                        .select("full_name")
-                        .eq("id", user["id"])
-                        .single()
-                        .execute()
-                        .data
-                    )
-                    db.table("notifications").insert(
-                        {
-                            "user_id": post["user_id"],
-                            "type":    "like",
-                            "title":   "New like",
-                            "message": f"{profile.get('full_name', 'Someone')} liked your post",
-                            "data":    {"post_id": post_id},
-                        }
-                    ).execute()
+                if post_row:
+                    # Send notification to post author
+                    if post_row["user_id"] != user["id"]:
+                        try:
+                            profile = (
+                                db.table("profiles")
+                                .select("full_name")
+                                .eq("id", user["id"])
+                                .single()
+                                .execute()
+                                .data
+                            )
+                            db.table("notifications").insert(
+                                {
+                                    "user_id": post_row["user_id"],
+                                    "type":    "like",
+                                    "title":   "New like",
+                                    "message": f"{profile.get('full_name', 'Someone')} liked your post",
+                                    "data":    {"post_id": post_id},
+                                }
+                            ).execute()
+                        except Exception:
+                            pass
+
+                    # Fire brain signal
+                    _fire_signal(process_interaction_signal(
+                        user_id      = user["id"],
+                        signal_type  = SignalType.POST_LIKED,
+                        post_content = post_row.get("content", ""),
+                        post_id      = post_id,
+                    ))
             except Exception:
                 pass
+
             return {"liked": True}
     except Exception as e:
         logger.exception("toggle_like failed: post_id=%s", post_id)
         raise HTTPException(500, str(e))
+
 
 @router.post("/{post_id}/save")
 async def toggle_save(post_id: str, user: dict = Depends(get_current_user)):
@@ -513,10 +573,32 @@ async def toggle_save(post_id: str, user: dict = Depends(get_current_user)):
             db.table("post_saves").insert(
                 {"post_id": post_id, "user_id": user["id"]}
             ).execute()
+
+            # ── v4.0: Brain signal — saved posts reveal strong interests ──
+            try:
+                post_row = (
+                    db.table("posts")
+                    .select("content, tag")
+                    .eq("id", post_id)
+                    .single()
+                    .execute()
+                    .data
+                )
+                if post_row:
+                    _fire_signal(process_interaction_signal(
+                        user_id      = user["id"],
+                        signal_type  = SignalType.POST_SAVED,
+                        post_content = post_row.get("content", ""),
+                        post_id      = post_id,
+                    ))
+            except Exception:
+                pass
+
             return {"saved": True}
     except Exception as e:
         logger.exception("toggle_save failed: post_id=%s", post_id)
         raise HTTPException(500, str(e))
+
 
 @router.post("/{post_id}/share")
 async def share_post(post_id: str, user: dict = Depends(get_current_user)):
@@ -526,10 +608,32 @@ async def share_post(post_id: str, user: dict = Depends(get_current_user)):
             db.rpc("increment_post_shares", {"pid": post_id}).execute()
         except Exception:
             pass
+
+        # ── v4.0: Brain signal — shares reveal high engagement / interest ──
+        try:
+            post_row = (
+                db.table("posts")
+                .select("content, tag")
+                .eq("id", post_id)
+                .single()
+                .execute()
+                .data
+            )
+            if post_row:
+                _fire_signal(process_interaction_signal(
+                    user_id      = user["id"],
+                    signal_type  = SignalType.POST_SHARED,
+                    post_content = post_row.get("content", ""),
+                    post_id      = post_id,
+                ))
+        except Exception:
+            pass
+
         return {"message": "Shared! 📤"}
     except Exception as e:
         logger.exception("share_post failed: post_id=%s", post_id)
         raise HTTPException(500, str(e))
+
 
 # ── Comments ──────────────────────────────────────────────────────────────────
 
@@ -574,6 +678,7 @@ async def get_comments(
     except Exception as e:
         logger.exception("get_comments failed: post_id=%s", post_id)
         raise HTTPException(500, str(e))
+
 
 @router.post("/{post_id}/comments")
 async def add_comment(
@@ -633,6 +738,7 @@ async def add_comment(
         logger.exception("add_comment failed: post_id=%s", post_id)
         raise HTTPException(500, str(e))
 
+
 @router.post("/comments/{comment_id}/like")
 async def like_comment(comment_id: str, user: dict = Depends(get_current_user)):
     try:
@@ -658,6 +764,7 @@ async def like_comment(comment_id: str, user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.exception("like_comment failed: comment_id=%s", comment_id)
         raise HTTPException(500, str(e))
+
 
 # ── Follow ────────────────────────────────────────────────────────────────────
 
@@ -711,15 +818,11 @@ async def toggle_follow(target_id: str, user: dict = Depends(get_current_user)):
         logger.exception("toggle_follow failed: target_id=%s", target_id)
         raise HTTPException(500, str(e))
 
-# ── Shared helper ────────────────────────────────────────────────────────────
+
+# ── Shared helper ─────────────────────────────────────────────────────────────
 
 def _enrich_following(db, posts: list, viewer_id: str) -> list:
-    """Set is_following on each post based on whether viewer follows the author.
-
-    Runs a single bulk query for all unique author IDs so it's O(1) DB calls
-    regardless of how many posts are in the list. Safe to call even when posts
-    is empty.
-    """
+    """Set is_following on each post — single bulk DB query regardless of list size."""
     try:
         author_ids = list({
             p.get("user_id") for p in posts
@@ -742,6 +845,7 @@ def _enrich_following(db, posts: list, viewer_id: str) -> list:
     except Exception as e:
         logger.warning("_enrich_following failed: %s", e)
     return posts
+
 
 # ── User Profile & Posts ──────────────────────────────────────────────────────
 
@@ -799,6 +903,7 @@ async def get_user_profile(user_id: str, user: dict = Depends(get_current_user))
         logger.exception("get_user_profile failed: user_id=%s", user_id)
         raise HTTPException(500, str(e))
 
+
 @router.get("/users/{user_id}/posts")
 async def get_user_posts(
     user_id: str, limit: int = 20, user: dict = Depends(get_current_user)
@@ -828,13 +933,12 @@ async def get_user_posts(
             p["likes_count"]    = len(likes)
             p["comments_count"] = len(p.get("post_comments") or [])
             p["is_following"]   = False
-
-        # Enrich is_following for all unique authors
         posts = _enrich_following(db, posts, user["id"])
         return {"posts": posts}
     except Exception as e:
         logger.exception("get_user_posts failed: user_id=%s", user_id)
         raise HTTPException(500, str(e))
+
 
 @router.get("/users/{user_id}/liked")
 async def get_user_liked_posts(
@@ -858,8 +962,6 @@ async def get_user_liked_posts(
             .select(
                 "id, content, tag, media_url, media_type, link_url, link_title, "
                 "likes_count, shares_count, created_at, user_id, is_visible, "
-                # FIX v3.7: added id + avatar_url — without these PostModel gets
-                # no avatar and no userId, so other users' cards render blank.
                 "profiles!user_id(id, full_name, avatar_url, stage, is_verified, subscription_tier), "
                 "post_likes(user_id), post_saves(user_id), post_comments(id)"
             )
@@ -876,13 +978,12 @@ async def get_user_liked_posts(
             p["is_saved"]       = any(s["user_id"] == user["id"] for s in saves)
             p["comments_count"] = len(p.get("post_comments") or [])
             p["is_following"]   = False
-
-        # FIX v3.7: enrich is_following so Follow/Following button is correct
         posts = _enrich_following(db, posts, user["id"])
         return {"posts": posts}
     except Exception as e:
         logger.exception("get_user_liked_posts failed: user_id=%s", user_id)
         raise HTTPException(500, str(e))
+
 
 # ── Status ────────────────────────────────────────────────────────────────────
 
@@ -916,8 +1017,20 @@ async def create_status(req: StatusCreate, user: dict = Depends(get_current_user
                 "views_count":      0,
             }
         ).execute()
+
+        status_data = saved.data[0] if saved.data else {}
+
+        # ── v4.0: Brain signal — status content reveals what user is thinking ──
+        content_text = req.content or ""
+        if content_text and status_data.get("id"):
+            _fire_signal(process_status_signal(
+                user_id   = user["id"],
+                status_id = status_data.get("id", ""),
+                content   = content_text,
+            ))
+
         return {
-            "status":  saved.data[0] if saved.data else {},
+            "status":  status_data,
             "message": "Status posted!",
         }
     except HTTPException:
@@ -925,6 +1038,7 @@ async def create_status(req: StatusCreate, user: dict = Depends(get_current_user
     except Exception as e:
         logger.exception("create_status failed: user=%s", user.get("id"))
         raise HTTPException(500, str(e))
+
 
 @router.get("/status/feed")
 async def get_status_feed(user: dict = Depends(get_current_user)):
@@ -995,6 +1109,7 @@ async def get_status_feed(user: dict = Depends(get_current_user)):
         logger.exception("get_status_feed failed: user=%s", user.get("id"))
         raise HTTPException(500, str(e))
 
+
 @router.post("/status/{status_id}/view")
 async def view_status(status_id: str, user: dict = Depends(get_current_user)):
     try:
@@ -1022,6 +1137,7 @@ async def view_status(status_id: str, user: dict = Depends(get_current_user)):
     except Exception:
         return {"viewed": True}
 
+
 @router.delete("/status/{status_id}")
 async def delete_status(status_id: str, user: dict = Depends(get_current_user)):
     try:
@@ -1033,6 +1149,7 @@ async def delete_status(status_id: str, user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.exception("delete_status failed: status_id=%s", status_id)
         raise HTTPException(500, str(e))
+
 
 # ── Upload media ──────────────────────────────────────────────────────────────
 
@@ -1047,6 +1164,7 @@ def _ensure_bucket(sb, bucket_name: str) -> None:
             err = str(e).lower()
             if "already exists" not in err and "duplicate" not in err:
                 logger.warning(f"Could not create bucket '{bucket_name}': {e}")
+
 
 @router.post("/status/upload-media")
 async def upload_status_media(
