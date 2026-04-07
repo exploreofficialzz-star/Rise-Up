@@ -128,6 +128,7 @@ load_router("contracts", "contracts")
 load_router("crm", "crm")
 load_router("challenges", "challenges")
 load_router("portfolio", "portfolio")
+load_router("methods_brain", "methods_brain")
 
 print("\n" + "="*60)
 print("ROUTER LOADING SUMMARY")
