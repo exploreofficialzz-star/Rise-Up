@@ -86,9 +86,9 @@ final router = GoRouter(
     GoRoute(
       path: '/comments/:postId',
       builder: (_, s) => CommentsScreen(
-        postId:  s.pathParameters['postId']!,
-        content: s.uri.queryParameters['content'] ?? '',
-        author:  s.uri.queryParameters['author']  ?? '',
+        postId:      s.pathParameters['postId']!,
+        postContent: s.uri.queryParameters['content'] ?? '',
+        postAuthor:  s.uri.queryParameters['author']  ?? '',
       ),
     ),
     GoRoute(
@@ -129,18 +129,24 @@ final router = GoRouter(
         GoRoute(path: '/live',          builder: (_, __) => const LiveScreen()),
         GoRoute(
           path: '/live-viewer/:id',
-          builder: (_, s) => LiveViewerScreen(sessionId: s.pathParameters['id']!),
+          builder: (_, s) => LiveViewerScreen(
+            sessionId: s.pathParameters['id']!,
+            host:  s.uri.queryParameters['host']  ?? '',
+            title: s.uri.queryParameters['title'] ?? '',
+          ),
         ),
         GoRoute(path: '/groups', builder: (_, __) => const GroupsScreen()),
         GoRoute(
           path: '/group/:id',
-          builder: (_, s) => GroupDetailScreen(groupId: s.pathParameters['id']!),
+          builder: (_, s) => GroupDetailScreen(
+            groupId:   s.pathParameters['id']!,
+            groupName: s.uri.queryParameters['name'] ?? '',
+          ),
         ),
         GoRoute(
           path: '/chat',
           builder: (_, s) => ChatScreen(
-            sessionId:  s.uri.queryParameters['sessionId'],
-            workflowId: s.uri.queryParameters['workflowId'],
+            conversationId: s.uri.queryParameters['sessionId'] ?? s.uri.queryParameters['conversationId'],
           ),
         ),
         GoRoute(path: '/create-status', builder: (_, __) => const CreateStatusScreen()),
