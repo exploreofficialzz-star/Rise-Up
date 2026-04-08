@@ -180,8 +180,9 @@ class WorkflowResearchNotifier extends StateNotifier<WorkflowResearchState> {
       // ── Brain signal: non-blocking, fire and forget ───────────────────────
       if (wfId.isNotEmpty) {
         api.recordInteractionSignal(
-          action: 'workflow_created',
-          postId: wfId,
+          action:      'workflow_created',
+          postId:      wfId,
+          postContent: '',           // ← FIX: required param — not a post context
         );
       }
       // ─────────────────────────────────────────────────────────────────────
@@ -282,11 +283,11 @@ class _WorkflowResearchScreenState
   Widget _buildPhase(WorkflowResearchState s,
       WorkflowResearchNotifier n, bool isDark) {
     switch (s.phase) {
-      case _Phase.input:      return _InputPhase(key: const ValueKey('i'), isDark: isDark);
+      case _Phase.input:       return _InputPhase(key: const ValueKey('i'), isDark: isDark);
       case _Phase.researching: return _ResearchingPhase(key: const ValueKey('r'));
-      case _Phase.review:     return _ReviewPhase(key: const ValueKey('v'), isDark: isDark);
-      case _Phase.creating:   return const _CreatingPhase(key: ValueKey('c'));
-      case _Phase.done:       return const _DonePhase(key: ValueKey('d'));
+      case _Phase.review:      return _ReviewPhase(key: const ValueKey('v'), isDark: isDark);
+      case _Phase.creating:    return const _CreatingPhase(key: ValueKey('c'));
+      case _Phase.done:        return const _DonePhase(key: ValueKey('d'));
     }
   }
 }
