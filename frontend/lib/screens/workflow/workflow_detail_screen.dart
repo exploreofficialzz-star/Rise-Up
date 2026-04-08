@@ -812,7 +812,7 @@ class _TabBarDelegate extends SliverPersistentHeaderDelegate {
             fontWeight: FontWeight.w700, fontSize: 12),
         tabs: const [
           Tab(text: 'Steps',     icon: Icon(Iconsax.task,        size: 18)),
-          Tab(text: 'Tools',     icon: Icon(Iconsax.setting_2,   size: 18)), // ✅ FIXED: was Iconsax.tool
+          Tab(text: 'Tools',     icon: Icon(Iconsax.setting_2,   size: 18)), // ✅ FIXED: was Iconsax.setting_2
           Tab(text: 'Revenue',   icon: Icon(Iconsax.money,       size: 18)),
           Tab(text: 'AI Assist', icon: Icon(Iconsax.cpu,         size: 18)),
         ],
@@ -1215,7 +1215,7 @@ class _ToolsTab extends StatelessWidget {
         ],
         if (freeTools.isEmpty && paidTools.isEmpty)
           _EmptyState(
-            icon:     Iconsax.setting_2, // ✅ FIXED: was Iconsax.tool
+            icon:     Iconsax.setting_2, // ✅ FIXED: was Iconsax.setting_2
             title:    'No tools yet',
             subtitle: 'Tools will be added as you progress',
             isDark:   isDark,
@@ -2142,14 +2142,31 @@ class _AIAssistTabState extends State<_AIAssistTab> {
             mainAxisAlignment:
                 MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                'AI Output',
-                style: AppTextStyles.h4.copyWith(
-                  color: widget.isDark
-                      ? Colors.white
-                      : Colors.black87,
+              Row(children: [
+                Text(
+                  'AI Output',
+                  style: AppTextStyles.h4.copyWith(
+                    color: widget.isDark
+                        ? Colors.white
+                        : Colors.black87,
+                  ),
                 ),
-              ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                        colors: [Color(0xFF6C5CE7), Color(0xFF00B894)]),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.auto_awesome, color: Colors.white, size: 9),
+                    SizedBox(width: 3),
+                    Text('Brain Enhanced',
+                        style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.w700)),
+                  ]),
+                ),
+              ]),
               Row(
                 children: [
                   IconButton(
