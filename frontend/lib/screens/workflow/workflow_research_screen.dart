@@ -434,11 +434,11 @@ class _InputPhaseState extends ConsumerState<_InputPhase> {
   static const _skills = ['Writing','Design','Coding','Video Editing','Marketing','Sales','Translation','Data Entry','Photography','Social Media'];
   static const _examples = [
     '💡 I want to start a YouTube channel',
-    '📱 Find contacts of phone sellers in Lagos',
+    '📱 Find contacts of phone sellers or buyers in any location',
     '💼 Freelance design jobs online',
-    '🛒 Where to source phones cheaply in Abuja',
+    '🛒 Where to source phones cheaply',
     '💰 I want to earn from home',
-    '🔬 How to start dropshipping in Nigeria',
+    '🔬 How to start dropshipping',
   ];
 
   @override
@@ -477,7 +477,7 @@ class _InputPhaseState extends ConsumerState<_InputPhase> {
                     maxLines: 4, minLines: 3,
                     style: TextStyle(fontSize: 15, color: text, height: 1.5),
                     decoration: InputDecoration(
-                      hintText: 'e.g. "I want to earn from YouTube" or "find phone sellers in Kano"',
+                      hintText: 'e.g. "I want to earn from YouTube" or "find phone sellers in any location"',
                       hintStyle: TextStyle(color: sub.withOpacity(0.6), fontSize: 12, height: 1.5),
                       border: InputBorder.none, contentPadding: const EdgeInsets.all(16),
                     ),
