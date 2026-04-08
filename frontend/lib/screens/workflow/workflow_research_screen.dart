@@ -311,7 +311,14 @@ class WorkflowResearchNotifier extends StateNotifier<WorkflowResearchState> {
       });
       final wfId = result['workflow_id']?.toString() ?? '';
       state = state.copyWith(phase: _Phase.done, isLoading: false);
-      if (wfId.isNotEmpty) api.recordInteractionSignal(action: 'workflow_created', postId: wfId);
+      // ✅ FIX: postContent is a required named param — pass empty string
+      if (wfId.isNotEmpty) {
+        api.recordInteractionSignal(
+          action: 'workflow_created',
+          postId: wfId,
+          postContent: '',
+        );
+      }
       await Future.delayed(const Duration(milliseconds: 700));
       if (context.mounted && wfId.isNotEmpty) context.pushReplacement('/workflow/$wfId');
     } catch (e) {
