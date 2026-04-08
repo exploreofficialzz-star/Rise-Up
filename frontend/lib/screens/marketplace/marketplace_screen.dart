@@ -1,9 +1,16 @@
 // frontend/lib/screens/marketplace/marketplace_screen.dart
+// v1.0 — RiseUp Marketplace — Buy · Sell · Services
 //
-// RiseUp Marketplace — Browse income tools, courses, templates & mentorship
-// Full dark/light mode · search · category filter · API-integrated
+// Features:
+//  • Browse listings with filter chips (All / Selling / Wanted / Services)
+//  • Search with live query (uses brain internal search)
+//  • Create new listing with type, title, description, price, tags
+//  • Contact seller via inquiry bottom sheet → api.inquireMarketplaceListing
+//  • My Listings tab — view and delete own listings
+//  • Brain AI suggestions — complementary users from adaptive profile
+//  • "Can't find it? Let AI search the web" → escalates to agent/workflow
+//  • Pull-to-refresh, pagination at 80% scroll
 
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -13,116 +20,7 @@ import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 
 // ─────────────────────────────────────────────────────────────────
-// MODEL
-// ─────────────────────────────────────────────────────────────────
-
-class _MarketItem {
-  final String  id;
-  final String  title;
-  final String  description;
-  final String  category;
-  final String  emoji;
-  final double  price;
-  final double? originalPrice;
-  final double  rating;
-  final int     reviews;
-  final int     students;
-  final bool    isFree;
-  final bool    isFeatured;
-  final bool    isPurchased;
-  final String? author;
-  final String? authorTitle;
-  final List    tags;
-
-  _MarketItem.fromJson(Map j)
-      : id            = j['id']?.toString()            ?? '',
-        title         = j['title']?.toString()         ?? '',
-        description   = j['description']?.toString()   ?? '',
-        category      = j['category']?.toString()      ?? 'course',
-        emoji         = j['emoji']?.toString()         ?? '📦',
-        price         = (j['price'] as num?)?.toDouble()          ?? 0.0,
-        originalPrice = (j['original_price'] as num?)?.toDouble(),
-        rating        = (j['rating'] as num?)?.toDouble()         ?? 4.5,
-        reviews       = (j['reviews'] as num?)?.toInt()           ?? 0,
-        students      = (j['students'] as num?)?.toInt()          ?? 0,
-        isFree        = j['is_free'] == true || (j['price'] as num? ?? 0) == 0,
-        isFeatured    = j['is_featured'] == true,
-        isPurchased   = j['is_purchased'] == true,
-        author        = j['author']?.toString(),
-        authorTitle   = j['author_title']?.toString(),
-        tags          = (j['tags'] as List?) ?? [];
-}
-
-// ─────────────────────────────────────────────────────────────────
-// CATEGORIES
-// ─────────────────────────────────────────────────────────────────
-
-const _kCategories = [
-  {'id': '',            'label': 'All',         'emoji': '🌎', 'color': Color(0xFF6C63FF)},
-  {'id': 'course',      'label': 'Courses',     'emoji': '📚', 'color': Color(0xFF3B82F6)},
-  {'id': 'template',    'label': 'Templates',   'emoji': '📄', 'color': Color(0xFF10B981)},
-  {'id': 'tool',        'label': 'Tools',       'emoji': '🛠️',  'color': Color(0xFFF59E0B)},
-  {'id': 'mentorship',  'label': 'Mentorship',  'emoji': '🎯', 'color': Color(0xFFEF4444)},
-  {'id': 'free',        'label': 'Free',        'emoji': '🎁', 'color': Color(0xFF8B5CF6)},
-];
-
-// ─────────────────────────────────────────────────────────────────
-// FALLBACK DATA (shown when API is unavailable)
-// ─────────────────────────────────────────────────────────────────
-
-final _kFallback = [
-  {
-    'id': 'f1', 'title': 'Freelancing Fast-Start Kit',
-    'description': 'Land your first client in 7 days. Includes pitch templates, pricing guide & niche finder.',
-    'category': 'template', 'emoji': '📄', 'price': 19.0, 'original_price': 49.0,
-    'rating': 4.8, 'reviews': 312, 'students': 1840, 'is_featured': true,
-    'author': 'RiseUp Team', 'author_title': 'Income Strategists',
-    'tags': ['freelance', 'templates', 'beginner'],
-  },
-  {
-    'id': 'f2', 'title': 'Zero to \$1K: Content Creator Blueprint',
-    'description': 'Build a monetised content channel from scratch with step-by-step video lessons.',
-    'category': 'course', 'emoji': '🎥', 'price': 0.0, 'is_free': true,
-    'rating': 4.6, 'reviews': 891, 'students': 6420,
-    'author': 'Alex Rivera', 'author_title': 'Creator Coach',
-    'tags': ['content', 'youtube', 'tiktok', 'free'],
-  },
-  {
-    'id': 'f3', 'title': 'AI Income Toolkit',
-    'description': 'Prompts, workflows, and automation scripts to generate income using ChatGPT & Claude.',
-    'category': 'tool', 'emoji': '🤖', 'price': 29.0, 'original_price': 79.0,
-    'rating': 4.9, 'reviews': 540, 'students': 2100, 'is_featured': true,
-    'author': 'RiseUp AI', 'author_title': 'AI Tools Lab',
-    'tags': ['AI', 'automation', 'tools'],
-  },
-  {
-    'id': 'f4', 'title': 'Dropshipping Launchpad',
-    'description': 'From product research to first sale. Winning product spreadsheet included.',
-    'category': 'course', 'emoji': '📦', 'price': 49.0,
-    'rating': 4.4, 'reviews': 228, 'students': 980,
-    'author': 'Sam Chen', 'author_title': '7-Figure Store Owner',
-    'tags': ['ecom', 'dropshipping', 'shopify'],
-  },
-  {
-    'id': 'f5', 'title': '1-on-1 Income Strategy Session',
-    'description': '60-minute call with a certified RiseUp mentor to map out your personal income plan.',
-    'category': 'mentorship', 'emoji': '🎯', 'price': 99.0,
-    'rating': 5.0, 'reviews': 87, 'students': 87,
-    'author': 'Certified Mentors', 'author_title': 'RiseUp Mentorship',
-    'tags': ['coaching', '1-on-1', 'strategy'],
-  },
-  {
-    'id': 'f6', 'title': 'Notion Income Dashboard (Free)',
-    'description': 'Track earnings, expenses, and goals in one beautiful Notion template. Duplicate instantly.',
-    'category': 'template', 'emoji': '📊', 'price': 0.0, 'is_free': true,
-    'rating': 4.7, 'reviews': 1204, 'students': 8900,
-    'author': 'RiseUp Team', 'author_title': 'Productivity Tools',
-    'tags': ['notion', 'tracker', 'free'],
-  },
-];
-
-// ─────────────────────────────────────────────────────────────────
-// SCREEN
+// Screen
 // ─────────────────────────────────────────────────────────────────
 
 class MarketplaceScreen extends StatefulWidget {
@@ -132,1024 +30,1332 @@ class MarketplaceScreen extends StatefulWidget {
   State<MarketplaceScreen> createState() => _MarketplaceScreenState();
 }
 
-class _MarketplaceScreenState extends State<MarketplaceScreen> {
-  final _searchCtrl = TextEditingController();
-  final _scrollCtrl = ScrollController();
-  Timer? _debounce;
+class _MarketplaceScreenState extends State<MarketplaceScreen>
+    with SingleTickerProviderStateMixin {
 
-  List<_MarketItem> _items     = [];
-  List<_MarketItem> _featured  = [];
-  bool   _loading              = true;
-  String? _error;
-  String _selectedCategory     = '';
-  String _searchQuery          = '';
-  _MarketItem? _selectedItem;
+  late TabController _tab;
+  final _searchCtrl  = TextEditingController();
+  final _scrollCtrl  = ScrollController();
+
+  // Browse
+  List   _listings        = [];
+  bool   _loadingListings = true;
+  bool   _hasMore         = true;
+  int    _offset          = 0;
+  bool   _paginating      = false;
+  String _filter          = 'all';
+  String _query           = '';
+
+  // My listings
+  List _myListings  = [];
+  bool _loadingMine = true;
+
+  // Brain AI suggestions
+  List _complementary = [];
 
   @override
   void initState() {
     super.initState();
-    _load();
+    _tab = TabController(length: 2, vsync: this);
+    _tab.addListener(() {
+      if (!_tab.indexIsChanging) return;
+      if (_tab.index == 1 && _myListings.isEmpty) _loadMyListings();
+    });
+    _scrollCtrl.addListener(_onScroll);
+    _loadListings(refresh: true);
+    _loadComplementary();
   }
 
   @override
   void dispose() {
+    _tab.dispose();
     _searchCtrl.dispose();
     _scrollCtrl.dispose();
-    _debounce?.cancel();
     super.dispose();
   }
 
-  Future<void> _load() async {
-    setState(() { _loading = true; _error = null; });
-    try {
-      final params = <String, dynamic>{};
-      if (_selectedCategory.isNotEmpty) params['category'] = _selectedCategory;
-      if (_searchQuery.isNotEmpty)      params['search']   = _searchQuery;
-
-      final res  = await api.get('/marketplace/items', queryParams: params);
-      final list = (res['items'] as List? ?? [])
-          .map((m) => _MarketItem.fromJson(m as Map))
-          .toList();
-
-      if (mounted) {
-        setState(() {
-          _items    = list;
-          _featured = list.where((i) => i.isFeatured).toList();
-          _loading  = false;
-        });
-      }
-    } catch (_) {
-      // Graceful fallback — show static sample data so the screen is never empty
-      final filtered = _kFallback.where((m) {
-        final catMatch  = _selectedCategory.isEmpty ||
-            m['category'] == _selectedCategory ||
-            (_selectedCategory == 'free' && m['is_free'] == true);
-        final qMatch    = _searchQuery.isEmpty ||
-            (m['title'] as String).toLowerCase().contains(_searchQuery.toLowerCase());
-        return catMatch && qMatch;
-      }).map((m) => _MarketItem.fromJson(m)).toList();
-
-      if (mounted) {
-        setState(() {
-          _items    = filtered;
-          _featured = filtered.where((i) => i.isFeatured).toList();
-          _loading  = false;
-          _error    = null; // hide error — fallback data is sufficient
-        });
-      }
+  void _onScroll() {
+    if (_scrollCtrl.position.pixels >=
+            _scrollCtrl.position.maxScrollExtent * 0.8 &&
+        !_paginating &&
+        _hasMore) {
+      _loadListings();
     }
   }
 
-  void _onSearchChanged(String q) {
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 400), () {
-      setState(() => _searchQuery = q);
-      _load();
-    });
-  }
+  // ── Data loaders ─────────────────────────────────────────────
 
-  void _setCategory(String cat) {
-    setState(() => _selectedCategory = cat);
-    _load();
-  }
-
-  List<_MarketItem> get _filteredItems {
-    if (_searchQuery.isEmpty && _selectedCategory.isEmpty) return _items;
-    return _items.where((item) {
-      final catOk = _selectedCategory.isEmpty ||
-          item.category == _selectedCategory ||
-          (_selectedCategory == 'free' && item.isFree);
-      final qOk   = _searchQuery.isEmpty ||
-          item.title.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-          item.description.toLowerCase().contains(_searchQuery.toLowerCase());
-      return catOk && qOk;
-    }).toList();
-  }
-
-  // ─────────────────────────────────────────────────────────────────
-  // BUILD
-  // ─────────────────────────────────────────────────────────────────
-
-  @override
-  Widget build(BuildContext context) {
-    if (_selectedItem != null) {
-      return _ItemDetailScreen(
-        item:   _selectedItem!,
-        onBack: () => setState(() => _selectedItem = null),
+  Future<void> _loadListings({bool refresh = false}) async {
+    if (_paginating && !refresh) return;
+    if (refresh) {
+      setState(() {
+        _offset          = 0;
+        _hasMore         = true;
+        _loadingListings = true;
+      });
+    }
+    setState(() => _paginating = true);
+    try {
+      final d = await api.getMarketplaceListings(
+        listingType: _filter == 'all' ? null : _filter,
+        search:      _query.isNotEmpty ? _query : null,
+        limit:       20,
+        offset:      _offset,
       );
-    }
-
-    final isDark   = Theme.of(context).brightness == Brightness.dark;
-    final bgColor  = isDark ? Colors.black : Colors.white;
-    final cardColor= isDark ? AppColors.bgCard : Colors.white;
-    final textColor= isDark ? Colors.white : Colors.black87;
-    final subColor = isDark ? Colors.white54 : Colors.black45;
-    final border   = isDark ? AppColors.bgSurface : Colors.grey.shade200;
-    final surface  = isDark ? AppColors.bgSurface : Colors.grey.shade100;
-
-    final displayed = _filteredItems;
-
-    return Scaffold(
-      backgroundColor: bgColor,
-      appBar: AppBar(
-        backgroundColor: cardColor,
-        elevation: 0,
-        surfaceTintColor: Colors.transparent,
-        title: Row(children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                  colors: [Color(0xFF6C63FF), Color(0xFF00CEC9)]),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: const Icon(Iconsax.shop, color: Colors.white, size: 18),
-          ),
-          const SizedBox(width: 10),
-          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('Marketplace',
-                style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold,
-                    color: textColor)),
-            Text('Tools, courses & templates',
-                style: TextStyle(fontSize: 11, color: subColor)),
-          ]),
-        ]),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(1),
-          child: Divider(height: 1, color: border),
-        ),
-      ),
-      body: _loading
-          ? _LoadingSkeleton(isDark: isDark)
-          : RefreshIndicator(
-              onRefresh: _load,
-              color: AppColors.primary,
-              child: CustomScrollView(
-                controller: _scrollCtrl,
-                slivers: [
-                  // ── Search bar ──────────────────────────────────
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                      child: TextField(
-                        controller: _searchCtrl,
-                        onChanged: _onSearchChanged,
-                        decoration: InputDecoration(
-                          hintText: 'Search courses, templates, tools…',
-                          prefixIcon: const Icon(Iconsax.search_normal_1, size: 20),
-                          suffixIcon: _searchCtrl.text.isNotEmpty
-                              ? IconButton(
-                                  icon: const Icon(Iconsax.close_circle, size: 18),
-                                  onPressed: () {
-                                    _searchCtrl.clear();
-                                    setState(() => _searchQuery = '');
-                                    _load();
-                                  })
-                              : null,
-                          filled: true,
-                          fillColor: surface,
-                          border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(14),
-                              borderSide: BorderSide.none),
-                          contentPadding: const EdgeInsets.symmetric(vertical: 12),
-                        ),
-                      ),
-                    ),
-                  ),
-
-                  // ── Category chips ──────────────────────────────
-                  SliverToBoxAdapter(
-                    child: SizedBox(
-                      height: 52,
-                      child: ListView.separated(
-                        scrollDirection: Axis.horizontal,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 8),
-                        itemCount: _kCategories.length,
-                        separatorBuilder: (_, __) => const SizedBox(width: 8),
-                        itemBuilder: (_, i) {
-                          final cat      = _kCategories[i];
-                          final selected = _selectedCategory == cat['id'];
-                          final color    = cat['color'] as Color;
-                          return FilterChip(
-                            label: Text(
-                              '${cat['emoji']}  ${cat['label']}',
-                              style: TextStyle(
-                                  fontSize: 12,
-                                  color: selected ? Colors.white : textColor,
-                                  fontWeight: selected
-                                      ? FontWeight.w600
-                                      : FontWeight.normal),
-                            ),
-                            selected:        selected,
-                            onSelected:      (_) => _setCategory(cat['id'] as String),
-                            backgroundColor: surface,
-                            selectedColor:   color,
-                            checkmarkColor:  Colors.white,
-                            side: BorderSide(
-                                color: selected ? color : border, width: 1),
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(20)),
-                            padding: const EdgeInsets.symmetric(horizontal: 4),
-                          );
-                        },
-                      ),
-                    ),
-                  ),
-
-                  // ── Featured banner ─────────────────────────────
-                  if (_featured.isNotEmpty && _searchQuery.isEmpty &&
-                      _selectedCategory.isEmpty)
-                    SliverToBoxAdapter(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                            child: Row(children: [
-                              const Text('⭐',
-                                  style: TextStyle(fontSize: 14)),
-                              const SizedBox(width: 6),
-                              Text('Featured',
-                                  style: TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w700,
-                                      color: textColor)),
-                            ]),
-                          ),
-                          SizedBox(
-                            height: 180,
-                            child: ListView.separated(
-                              scrollDirection: Axis.horizontal,
-                              padding: const EdgeInsets.symmetric(horizontal: 16),
-                              itemCount: _featured.length,
-                              separatorBuilder: (_, __) =>
-                                  const SizedBox(width: 12),
-                              itemBuilder: (_, i) => _FeaturedCard(
-                                item:   _featured[i],
-                                isDark: isDark,
-                                onTap:  () => setState(
-                                    () => _selectedItem = _featured[i]),
-                              ).animate().fadeIn(
-                                  duration: 300.ms, delay: (i * 80).ms),
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                        ],
-                      ),
-                    ),
-
-                  // ── Items count ─────────────────────────────────
-                  if (displayed.isNotEmpty)
-                    SliverToBoxAdapter(
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                        child: Row(children: [
-                          Text(
-                            _searchQuery.isNotEmpty
-                                ? 'Results for "$_searchQuery"'
-                                : _selectedCategory.isEmpty
-                                    ? 'All Items'
-                                    : (_kCategories.firstWhere(
-                                                (c) => c['id'] == _selectedCategory,
-                                                orElse: () => _kCategories[0])[
-                                            'label'] as String),
-                            style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w700,
-                                color: textColor),
-                          ),
-                          const Spacer(),
-                          Text('${displayed.length} items',
-                              style: TextStyle(
-                                  fontSize: 12,
-                                  color: AppColors.primary,
-                                  fontWeight: FontWeight.w600)),
-                        ]),
-                      ),
-                    ),
-
-                  // ── Items grid ──────────────────────────────────
-                  displayed.isEmpty
-                      ? SliverFillRemaining(
-                          child: _EmptyState(
-                              isDark: isDark, query: _searchQuery),
-                        )
-                      : SliverPadding(
-                          padding:
-                              const EdgeInsets.fromLTRB(16, 8, 16, 100),
-                          sliver: SliverList(
-                            delegate: SliverChildBuilderDelegate(
-                              (_, i) => _ItemCard(
-                                item:   displayed[i],
-                                isDark: isDark,
-                                onTap:  () => setState(
-                                    () => _selectedItem = displayed[i]),
-                              ).animate().fadeIn(
-                                  duration: 200.ms,
-                                  delay: Duration(
-                                      milliseconds:
-                                          (i * 40).clamp(0, 400))),
-                              childCount: displayed.length,
-                            ),
-                          ),
-                        ),
-                ],
-              ),
-            ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────
-// FEATURED CARD (horizontal scroll)
-// ─────────────────────────────────────────────────────────────────
-
-class _FeaturedCard extends StatelessWidget {
-  final _MarketItem item;
-  final bool        isDark;
-  final VoidCallback onTap;
-  const _FeaturedCard(
-      {required this.item, required this.isDark, required this.onTap});
-
-  static const _catColors = <String, List<Color>>{
-    'course':     [Color(0xFF3B82F6), Color(0xFF6366F1)],
-    'template':   [Color(0xFF10B981), Color(0xFF059669)],
-    'tool':       [Color(0xFFF59E0B), Color(0xFFD97706)],
-    'mentorship': [Color(0xFFEF4444), Color(0xFFDC2626)],
-  };
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = _catColors[item.category] ??
-        [AppColors.primary, AppColors.accent];
-
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 260,
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-              colors: colors,
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight),
-          borderRadius: BorderRadius.circular(18),
-        ),
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(children: [
-              Text(item.emoji, style: const TextStyle(fontSize: 28)),
-              const Spacer(),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.25),
-                    borderRadius: BorderRadius.circular(8)),
-                child: Text(
-                  item.isFree ? 'FREE' : '\$${item.price.toStringAsFixed(0)}',
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w800),
-                ),
-              ),
-            ]),
-            const SizedBox(height: 10),
-            Text(item.title,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    height: 1.3),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis),
-            const SizedBox(height: 6),
-            Text(item.description,
-                style:
-                    TextStyle(color: Colors.white.withOpacity(0.75), fontSize: 11),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis),
-            const Spacer(),
-            Row(children: [
-              const Icon(Icons.star_rounded, color: Colors.amber, size: 14),
-              const SizedBox(width: 3),
-              Text('${item.rating}',
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600)),
-              const SizedBox(width: 8),
-              Text('(${item.reviews})',
-                  style: TextStyle(
-                      color: Colors.white.withOpacity(0.6), fontSize: 11)),
-            ]),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────
-// ITEM CARD (list)
-// ─────────────────────────────────────────────────────────────────
-
-class _ItemCard extends StatelessWidget {
-  final _MarketItem item;
-  final bool        isDark;
-  final VoidCallback onTap;
-  const _ItemCard(
-      {required this.item, required this.isDark, required this.onTap});
-
-  static const _catColors = <String, Color>{
-    'course':     Color(0xFF3B82F6),
-    'template':   Color(0xFF10B981),
-    'tool':       Color(0xFFF59E0B),
-    'mentorship': Color(0xFFEF4444),
-  };
-
-  @override
-  Widget build(BuildContext context) {
-    final catColor =
-        _catColors[item.category] ?? AppColors.primary;
-    final bg = isDark ? AppColors.bgCard : Colors.white;
-    final border =
-        isDark ? AppColors.bgSurface : Colors.grey.shade200;
-    final textColor = isDark ? Colors.white : Colors.black87;
-    final subColor  = isDark ? Colors.white54 : Colors.black45;
-
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 10),
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: bg,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: border),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Emoji icon
-            Container(
-              width: 52,
-              height: 52,
-              decoration: BoxDecoration(
-                color: catColor.withOpacity(0.12),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Center(
-                child: Text(item.emoji,
-                    style: const TextStyle(fontSize: 24)),
-              ),
-            ),
-            const SizedBox(width: 12),
-            // Content
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Title row
-                  Row(children: [
-                    Expanded(
-                      child: Text(item.title,
-                          style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w700,
-                              color: textColor),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis),
-                    ),
-                    if (item.isFeatured)
-                      Container(
-                        margin: const EdgeInsets.only(left: 6),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 5, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: Colors.amber.withOpacity(0.15),
-                          borderRadius: BorderRadius.circular(5),
-                        ),
-                        child: const Text('⭐',
-                            style: TextStyle(fontSize: 10)),
-                      ),
-                  ]),
-                  const SizedBox(height: 3),
-                  // Category badge
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 7, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: catColor.withOpacity(0.12),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      item.category.toUpperCase(),
-                      style: TextStyle(
-                          fontSize: 9,
-                          fontWeight: FontWeight.w800,
-                          color: catColor),
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(item.description,
-                      style: TextStyle(
-                          fontSize: 12,
-                          color: subColor,
-                          height: 1.4),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis),
-                  const SizedBox(height: 8),
-                  // Footer row
-                  Row(children: [
-                    // Rating
-                    Icon(Icons.star_rounded,
-                        color: Colors.amber, size: 13),
-                    const SizedBox(width: 3),
-                    Text('${item.rating}',
-                        style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: textColor)),
-                    Text(' (${item.reviews})',
-                        style: TextStyle(
-                            fontSize: 11, color: subColor)),
-                    const Spacer(),
-                    // Price
-                    if (item.isFree)
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: AppColors.success.withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: const Text('FREE',
-                            style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w800,
-                                color: AppColors.success)),
-                      )
-                    else ...[
-                      if (item.originalPrice != null) ...[
-                        Text(
-                          '\$${item.originalPrice!.toStringAsFixed(0)}',
-                          style: TextStyle(
-                              fontSize: 11,
-                              color: subColor,
-                              decoration: TextDecoration.lineThrough),
-                        ),
-                        const SizedBox(width: 5),
-                      ],
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: AppColors.primary.withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          '\$${item.price.toStringAsFixed(0)}',
-                          style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w800,
-                              color: AppColors.primary),
-                        ),
-                      ),
-                    ],
-                  ]),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────
-// ITEM DETAIL SCREEN
-// ─────────────────────────────────────────────────────────────────
-
-class _ItemDetailScreen extends StatefulWidget {
-  final _MarketItem item;
-  final VoidCallback onBack;
-  const _ItemDetailScreen(
-      {required this.item, required this.onBack});
-
-  @override
-  State<_ItemDetailScreen> createState() => _ItemDetailScreenState();
-}
-
-class _ItemDetailScreenState extends State<_ItemDetailScreen> {
-  bool _purchasing = false;
-  bool _purchased  = false;
-
-  static const _catColors = <String, List<Color>>{
-    'course':     [Color(0xFF3B82F6), Color(0xFF6366F1)],
-    'template':   [Color(0xFF10B981), Color(0xFF059669)],
-    'tool':       [Color(0xFFF59E0B), Color(0xFFD97706)],
-    'mentorship': [Color(0xFFEF4444), Color(0xFFDC2626)],
-  };
-
-  Future<void> _purchase() async {
-    if (_purchasing) return;
-    HapticFeedback.mediumImpact();
-    setState(() => _purchasing = true);
-    try {
-      await api.post('/marketplace/items/${widget.item.id}/purchase', {});
+      final items = (d['listings'] as List?) ?? [];
       if (mounted) {
-        setState(() { _purchasing = false; _purchased = true; });
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(
-              widget.item.isFree
-                  ? '✅ Added to your library!'
-                  : '✅ Purchase successful! Check your library.'),
-          backgroundColor: AppColors.success,
-        ));
+        setState(() {
+          if (refresh) _listings = items;
+          else         _listings = [..._listings, ...items];
+          _offset          += items.length;
+          _hasMore          = items.length == 20;
+          _loadingListings  = false;
+          _paginating       = false;
+        });
       }
     } catch (_) {
-      if (mounted) {
-        setState(() => _purchasing = false);
-        // Graceful — show as if successful for demo purposes
-        setState(() => _purchased = true);
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('✅ Added to your library!'),
-          backgroundColor: AppColors.success,
-        ));
+      if (mounted) setState(() { _loadingListings = false; _paginating = false; });
+    }
+  }
+
+  Future<void> _loadMyListings() async {
+    setState(() => _loadingMine = true);
+    try {
+      final d = await api.getMyMarketplaceListings();
+      if (mounted) setState(() {
+        _myListings  = (d['listings'] as List?) ?? [];
+        _loadingMine = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loadingMine = false);
+    }
+  }
+
+  Future<void> _loadComplementary() async {
+    try {
+      final list = await api.getComplementaryUsers(limit: 3);
+      if (mounted) setState(() => _complementary = list);
+    } catch (_) {}
+  }
+
+  // ── Filter / Search ───────────────────────────────────────────
+
+  void _applyFilter(String f) {
+    if (_filter == f) return;
+    setState(() => _filter = f);
+    _loadListings(refresh: true);
+  }
+
+  void _applySearch(String q) {
+    setState(() => _query = q);
+    _loadListings(refresh: true);
+  }
+
+  // ── Inquiry ───────────────────────────────────────────────────
+
+  Future<void> _inquire(Map listing) async {
+    final ctrl   = TextEditingController();
+    final isDark  = Theme.of(context).brightness == Brightness.dark;
+    final sent = await showModalBottomSheet<bool>(
+      context:            context,
+      isScrollControlled: true,
+      backgroundColor:    isDark ? AppColors.bgCard : Colors.white,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (sh) => Padding(
+        padding: EdgeInsets.only(
+            bottom: MediaQuery.of(sh).viewInsets.bottom,
+            left: 20, right: 20, top: 20),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(
+            width: 36, height: 4,
+            margin: const EdgeInsets.only(bottom: 14),
+            decoration: BoxDecoration(
+                color: Colors.grey.withOpacity(0.3),
+                borderRadius: BorderRadius.circular(2)),
+          ),
+          Row(children: [
+            _TypeBadge(type: listing['listing_type']?.toString() ?? 'sell'),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                listing['title']?.toString() ?? 'Listing',
+                style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 15,
+                    color: isDark ? Colors.white : Colors.black87),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ]),
+          const SizedBox(height: 14),
+          TextField(
+            controller: ctrl,
+            maxLines:   4,
+            autofocus:  true,
+            style: TextStyle(color: isDark ? Colors.white : Colors.black87),
+            decoration: InputDecoration(
+              hintText:  'Write your message or offer…',
+              hintStyle: TextStyle(
+                  color: isDark ? Colors.white38 : Colors.black38),
+              filled:    true,
+              fillColor: isDark ? AppColors.bgSurface : Colors.grey.shade100,
+              border:    OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide.none),
+            ),
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12))),
+              onPressed: () => Navigator.pop(sh, true),
+              child: const Text('Send Message',
+                  style: TextStyle(
+                      color: Colors.white, fontWeight: FontWeight.w700)),
+            ),
+          ),
+          const SizedBox(height: 20),
+        ]),
+      ),
+    );
+
+    if (sent == true && ctrl.text.trim().isNotEmpty && mounted) {
+      try {
+        await api.inquireMarketplaceListing(
+            listing['id']?.toString() ?? '', ctrl.text.trim());
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content:         Text('Message sent! 🎉'),
+              backgroundColor: AppColors.success,
+              duration:        Duration(seconds: 2)));
+        }
+      } catch (_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content:         Text('Failed to send. Try again.'),
+              backgroundColor: AppColors.error,
+              duration:        Duration(seconds: 2)));
+        }
       }
+    }
+  }
+
+  // ── Delete my listing ─────────────────────────────────────────
+
+  Future<void> _delete(String id) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title:   const Text('Remove listing?'),
+        content: const Text('This cannot be undone.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Remove',
+                  style: TextStyle(color: Colors.white))),
+        ],
+      ),
+    );
+    if (ok == true) {
+      try {
+        await api.deleteMarketplaceListing(id);
+        if (mounted) {
+          setState(() {
+            _myListings.removeWhere((l) => l['id']?.toString() == id);
+            _listings.removeWhere((l) => l['id']?.toString() == id);
+          });
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Listing removed'),
+              duration: Duration(seconds: 2)));
+        }
+      } catch (_) {}
+    }
+  }
+
+  // ── Create listing ────────────────────────────────────────────
+
+  void _showCreate() {
+    showModalBottomSheet(
+      context:            context,
+      isScrollControlled: true,
+      backgroundColor:    Theme.of(context).brightness == Brightness.dark
+          ? AppColors.bgCard : Colors.white,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (_) => _CreateSheet(
+        onCreated: (listing) {
+          if (mounted) setState(() {
+            _listings.insert(0, listing);
+            _myListings.insert(0, listing);
+          });
+        },
+      ),
+    );
+  }
+
+  // ── Build ─────────────────────────────────────────────────────
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark  = Theme.of(context).brightness == Brightness.dark;
+    final bg      = isDark ? Colors.black : Colors.white;
+    final card    = isDark ? AppColors.bgCard : Colors.white;
+    final surface = isDark ? AppColors.bgSurface : Colors.grey.shade100;
+    final border  = isDark ? AppColors.bgSurface : Colors.grey.shade200;
+    final text    = isDark ? Colors.white : Colors.black87;
+    final sub     = isDark ? Colors.white54 : Colors.black45;
+
+    return Scaffold(
+      backgroundColor: bg,
+      appBar: AppBar(
+        backgroundColor:  card,
+        elevation:        0,
+        surfaceTintColor: Colors.transparent,
+        leading: IconButton(
+          icon: Icon(Iconsax.arrow_left, color: sub),
+          onPressed: () => context.pop(),
+        ),
+        title: const Text('Marketplace',
+            style: TextStyle(
+                fontSize:   18,
+                fontWeight: FontWeight.w800,
+                color:      AppColors.primary)),
+        actions: [
+          IconButton(
+            icon:    const Icon(Icons.add_circle_outline_rounded,
+                color: AppColors.primary, size: 24),
+            onPressed: _showCreate,
+            tooltip: 'Post a listing',
+          ),
+          const SizedBox(width: 4),
+        ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(49),
+          child: Column(children: [
+            TabBar(
+              controller:          _tab,
+              labelColor:          AppColors.primary,
+              unselectedLabelColor: sub,
+              indicatorColor:      AppColors.primary,
+              indicatorWeight:     2.5,
+              labelStyle: const TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.w600),
+              tabs: const [Tab(text: 'Browse'), Tab(text: 'My Listings')],
+            ),
+          ]),
+        ),
+      ),
+      body: TabBarView(controller: _tab, children: [
+
+        // ── 0: BROWSE ───────────────────────────────────────────
+        Column(children: [
+          // Search + filter
+          Container(
+            color: card,
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+            child: Column(children: [
+              // Search field
+              TextField(
+                controller: _searchCtrl,
+                style:      TextStyle(fontSize: 14, color: text),
+                onSubmitted: _applySearch,
+                onChanged:   (v) { if (v.isEmpty) _applySearch(''); },
+                decoration: InputDecoration(
+                  hintText:  'Search listings…',
+                  hintStyle: TextStyle(color: sub, fontSize: 13),
+                  filled:    true,
+                  fillColor: surface,
+                  border:    OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide:  BorderSide.none),
+                  prefixIcon: Icon(Iconsax.search_normal, color: sub, size: 18),
+                  suffixIcon: _query.isNotEmpty
+                      ? IconButton(
+                          icon: Icon(Icons.close, color: sub, size: 18),
+                          onPressed: () {
+                            _searchCtrl.clear();
+                            _applySearch('');
+                          })
+                      : null,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+              ),
+              const SizedBox(height: 10),
+              // Filter chips
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(children: [
+                  _FilterChip(label: '🏪 All',      active: _filter == 'all',     onTap: () => _applyFilter('all')),
+                  const SizedBox(width: 8),
+                  _FilterChip(label: '💰 Selling',  active: _filter == 'sell',    onTap: () => _applyFilter('sell')),
+                  const SizedBox(width: 8),
+                  _FilterChip(label: '🛒 Wanted',   active: _filter == 'buy',     onTap: () => _applyFilter('buy')),
+                  const SizedBox(width: 8),
+                  _FilterChip(label: '🔧 Services', active: _filter == 'service', onTap: () => _applyFilter('service')),
+                ]),
+              ),
+            ]),
+          ),
+          Divider(height: 1, color: border),
+
+          // Brain AI suggestions
+          if (_complementary.isNotEmpty) _BrainSuggestions(
+            users:  _complementary,
+            isDark: isDark,
+            text:   text,
+            sub:    sub,
+            card:   card,
+            border: border,
+          ),
+
+          // Listing content
+          Expanded(
+            child: _loadingListings
+                ? const Center(child: CircularProgressIndicator(
+                    color: AppColors.primary, strokeWidth: 2))
+                : _listings.isEmpty
+                    ? _EmptyBrowse(isDark: isDark, sub: sub, text: text,
+                        onPost:         _showCreate,
+                        onAiSearch:     () => context.push('/agent'),
+                        onWorkflow:     () => context.push('/workflow/new'),
+                        query:          _query)
+                    : RefreshIndicator(
+                        onRefresh: () => _loadListings(refresh: true),
+                        color: AppColors.primary,
+                        child: ListView.separated(
+                          controller:  _scrollCtrl,
+                          padding:     const EdgeInsets.all(16),
+                          itemCount:   _listings.length + (_hasMore ? 1 : 0),
+                          separatorBuilder: (_, __) => const SizedBox(height: 12),
+                          itemBuilder: (ctx, i) {
+                            if (i == _listings.length) {
+                              return const Center(
+                                child: Padding(
+                                  padding: EdgeInsets.all(16),
+                                  child: CircularProgressIndicator(
+                                      color: AppColors.primary, strokeWidth: 2),
+                                ),
+                              );
+                            }
+                            final item = _listings[i] as Map;
+                            return _ListingCard(
+                              listing:   item,
+                              isDark:    isDark,
+                              text:      text,
+                              sub:       sub,
+                              index:     i,
+                              onInquire: () => _inquire(item),
+                            );
+                          },
+                        ),
+                      ),
+          ),
+
+          // Can't find it banner
+          if (!_loadingListings && _query.isNotEmpty && _listings.isEmpty)
+            const SizedBox.shrink()
+          else if (!_loadingListings && !_hasMore && _listings.isNotEmpty)
+            _CantFindBanner(
+              isDark:     isDark,
+              sub:        sub,
+              onWorkflow: () => context.push('/workflow/new'),
+              onAgent:    () => context.push('/agent'),
+            ),
+        ]),
+
+        // ── 1: MY LISTINGS ──────────────────────────────────────
+        _loadingMine
+            ? const Center(child: CircularProgressIndicator(
+                color: AppColors.primary, strokeWidth: 2))
+            : _myListings.isEmpty
+                ? _EmptyMine(isDark: isDark, sub: sub, text: text,
+                    onPost: _showCreate)
+                : RefreshIndicator(
+                    onRefresh: _loadMyListings,
+                    color: AppColors.primary,
+                    child: ListView.separated(
+                      padding:      const EdgeInsets.all(16),
+                      itemCount:    _myListings.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 12),
+                      itemBuilder: (_, i) {
+                        final item = _myListings[i] as Map;
+                        return _ListingCard(
+                          listing:  item,
+                          isDark:   isDark,
+                          text:     text,
+                          sub:      sub,
+                          index:    i,
+                          isOwner:  true,
+                          onDelete: () => _delete(item['id']?.toString() ?? ''),
+                        );
+                      },
+                    ),
+                  ),
+      ]),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// LISTING CARD
+// ─────────────────────────────────────────────────────────────────
+
+class _ListingCard extends StatelessWidget {
+  final Map          listing;
+  final bool         isDark;
+  final Color        text, sub;
+  final int          index;
+  final bool         isOwner;
+  final VoidCallback? onInquire;
+  final VoidCallback? onDelete;
+
+  const _ListingCard({
+    required this.listing,
+    required this.isDark,
+    required this.text,
+    required this.sub,
+    required this.index,
+    this.isOwner  = false,
+    this.onInquire,
+    this.onDelete,
+  });
+
+  Color get _typeColor {
+    switch (listing['listing_type']?.toString()) {
+      case 'sell':    return AppColors.success;
+      case 'buy':     return AppColors.primary;
+      case 'service': return const Color(0xFF9B59B6);
+      default:        return AppColors.textMuted;
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final isDark    = Theme.of(context).brightness == Brightness.dark;
-    final bgColor   = isDark ? Colors.black : Colors.white;
-    final textColor = isDark ? Colors.white : Colors.black87;
-    final subColor  = isDark ? Colors.white54 : Colors.black45;
-    final surface   = isDark ? AppColors.bgSurface : Colors.grey.shade100;
-    final item      = widget.item;
-    final gradColors= _catColors[item.category] ??
-        [AppColors.primary, AppColors.accent];
-    final alreadyOwned = item.isPurchased || _purchased;
+    final title    = listing['title']?.toString() ?? '';
+    final desc     = listing['description']?.toString() ?? '';
+    final price    = listing['price']?.toString();
+    final currency = listing['currency']?.toString() ?? 'USD';
+    final country  = listing['country']?.toString() ?? '';
+    final tags     = (listing['tags'] as List?)?.cast<String>() ?? [];
+    final profile  = (listing['profiles'] as Map?)?.cast<String, dynamic>() ?? {};
+    final seller   = profile['full_name']?.toString()
+                  ?? listing['seller_name']?.toString()
+                  ?? 'RiseUp Member';
 
-    return Scaffold(
-      backgroundColor: bgColor,
-      body: CustomScrollView(
-        slivers: [
-          // ── Hero header ─────────────────────────────
-          SliverAppBar(
-            expandedHeight: 220,
-            pinned: true,
-            backgroundColor: gradColors[0],
-            leading: IconButton(
-              icon: const Icon(Iconsax.arrow_left, color: Colors.white),
-              onPressed: widget.onBack,
-            ),
-            flexibleSpace: FlexibleSpaceBar(
-              background: Container(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                      colors: gradColors,
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight),
+    return Container(
+      decoration: BoxDecoration(
+        color:  isDark ? AppColors.bgCard : const Color(0xFFF9F9F9),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: _typeColor.withOpacity(0.25)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        // ── Header ──────────────────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+          child: Row(children: [
+            _TypeBadge(type: listing['listing_type']?.toString() ?? 'sell'),
+            const Spacer(),
+            if (country.isNotEmpty)
+              Text(country, style: TextStyle(fontSize: 11, color: sub)),
+            if (isOwner) ...[
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: onDelete,
+                child: Icon(Iconsax.trash, size: 16, color: AppColors.error),
+              ),
+            ],
+          ]),
+        ),
+
+        // ── Title + description ──────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(title,
+                style: TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w700, color: text),
+                maxLines: 2, overflow: TextOverflow.ellipsis),
+            if (desc.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(desc,
+                  style: TextStyle(fontSize: 12, color: sub, height: 1.4),
+                  maxLines: 2, overflow: TextOverflow.ellipsis),
+            ],
+          ]),
+        ),
+
+        // ── Tags ─────────────────────────────────────────────────
+        if (tags.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            child: Wrap(spacing: 6, runSpacing: 4, children: [
+              for (final tag in tags.take(4))
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                      color: isDark ? AppColors.bgSurface : Colors.grey.shade200,
+                      borderRadius: BorderRadius.circular(6)),
+                  child: Text(tag,
+                      style: TextStyle(fontSize: 10, color: sub)),
                 ),
-                child: SafeArea(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const SizedBox(height: 40),
-                      Text(item.emoji,
-                          style: const TextStyle(fontSize: 56)),
-                      const SizedBox(height: 12),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 24),
-                        child: Text(item.title,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold)),
-                      ),
-                    ],
-                  ),
-                ),
+            ]),
+          ),
+        ],
+
+        // ── Price + seller + CTA ─────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+          child: Row(children: [
+            // Price
+            if (price != null && price.isNotEmpty)
+              Text('$currency $price',
+                  style: TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w800,
+                      color: _typeColor))
+            else
+              Text('Price on request',
+                  style: TextStyle(fontSize: 12, color: sub)),
+            const SizedBox(width: 8),
+
+            // Seller avatar + name
+            CircleAvatar(
+              radius: 10,
+              backgroundColor: _typeColor.withOpacity(0.15),
+              child: Text(
+                seller.isNotEmpty ? seller[0].toUpperCase() : '?',
+                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                    color: _typeColor),
               ),
             ),
-          ),
+            const SizedBox(width: 4),
+            Expanded(
+              child: Text(seller,
+                  style: TextStyle(fontSize: 11, color: sub),
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+            ),
 
-          // ── Body ────────────────────────────────────
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Price & rating row
-                  Row(children: [
-                    // Price
-                    if (item.isFree)
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: AppColors.success.withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: const Text('FREE',
-                            style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w900,
-                                color: AppColors.success)),
-                      )
-                    else ...[
-                      Text(
-                        '\$${item.price.toStringAsFixed(0)}',
-                        style: const TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.w900,
-                            color: AppColors.primary),
+            // CTA
+            if (!isOwner && onInquire != null)
+              GestureDetector(
+                onTap: () { HapticFeedback.mediumImpact(); onInquire!(); },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 8),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                        colors: [_typeColor, _typeColor.withOpacity(0.7)]),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: const Text('Contact',
+                      style: TextStyle(color: Colors.white, fontSize: 12,
+                          fontWeight: FontWeight.w700)),
+                ),
+              ),
+
+            if (isOwner)
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                    color: _typeColor.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(20)),
+                child: Text('Active',
+                    style: TextStyle(
+                        fontSize: 11, color: _typeColor,
+                        fontWeight: FontWeight.w600)),
+              ),
+          ]),
+        ),
+      ]),
+    ).animate().fadeIn(delay: Duration(milliseconds: index * 50));
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// TYPE BADGE
+// ─────────────────────────────────────────────────────────────────
+
+class _TypeBadge extends StatelessWidget {
+  final String type;
+  const _TypeBadge({required this.type});
+
+  Color get _color {
+    switch (type) {
+      case 'sell':    return AppColors.success;
+      case 'buy':     return AppColors.primary;
+      case 'service': return const Color(0xFF9B59B6);
+      default:        return AppColors.textMuted;
+    }
+  }
+
+  String get _label {
+    switch (type) {
+      case 'sell':    return '💰 FOR SALE';
+      case 'buy':     return '🛒 WANTED';
+      case 'service': return '🔧 SERVICE';
+      default:        return '📦 LISTING';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+          color: _color.withOpacity(0.12),
+          borderRadius: BorderRadius.circular(6)),
+      child: Text(_label,
+          style: TextStyle(
+              fontSize: 9, color: _color, fontWeight: FontWeight.w700)),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// FILTER CHIP
+// ─────────────────────────────────────────────────────────────────
+
+class _FilterChip extends StatelessWidget {
+  final String       label;
+  final bool         active;
+  final VoidCallback onTap;
+
+  const _FilterChip({
+    required this.label,
+    required this.active,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () { HapticFeedback.lightImpact(); onTap(); },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        decoration: BoxDecoration(
+          color: active
+              ? AppColors.primary
+              : AppColors.primary.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+              color: active
+                  ? AppColors.primary
+                  : AppColors.primary.withOpacity(0.2)),
+        ),
+        child: Text(label,
+            style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: active ? Colors.white : AppColors.primary)),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// BRAIN SUGGESTIONS BANNER
+// ─────────────────────────────────────────────────────────────────
+
+class _BrainSuggestions extends StatelessWidget {
+  final List  users;
+  final bool  isDark;
+  final Color text, sub, card, border;
+
+  const _BrainSuggestions({
+    required this.users,
+    required this.isDark,
+    required this.text,
+    required this.sub,
+    required this.card,
+    required this.border,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: card,
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.auto_awesome, color: AppColors.primary, size: 13),
+          const SizedBox(width: 6),
+          Text('AI matched for you',
+              style: const TextStyle(
+                  fontSize: 11, fontWeight: FontWeight.w600,
+                  color: AppColors.primary)),
+        ]),
+        const SizedBox(height: 8),
+        SizedBox(
+          height: 60,
+          child: ListView.separated(
+            scrollDirection:  Axis.horizontal,
+            itemCount:        users.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 10),
+            itemBuilder: (ctx, i) {
+              final u    = users[i] as Map;
+              final name = u['full_name']?.toString() ?? 'User';
+              final type = u['match_type']?.toString() ?? 'match';
+              final typeLabel = type == 'buyer' ? 'BUYER'
+                             : type == 'service_provider' ? 'SERVICE'
+                             : 'MATCH';
+              final typeColor = type == 'buyer' ? AppColors.success
+                              : type == 'service_provider' ? const Color(0xFF9B59B6)
+                              : AppColors.primary;
+              return GestureDetector(
+                onTap: () {
+                  if (u['user_id'] != null) {
+                    ctx.push('/user-profile/${u['user_id']}');
+                  }
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color:  typeColor.withOpacity(0.07),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: typeColor.withOpacity(0.2)),
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    CircleAvatar(
+                      radius: 14,
+                      backgroundColor: typeColor.withOpacity(0.15),
+                      child: Text(
+                        name.isNotEmpty ? name[0].toUpperCase() : '?',
+                        style: TextStyle(fontSize: 13,
+                            fontWeight: FontWeight.w800, color: typeColor),
                       ),
-                      if (item.originalPrice != null) ...[
-                        const SizedBox(width: 8),
-                        Text(
-                          '\$${item.originalPrice!.toStringAsFixed(0)}',
-                          style: TextStyle(
-                              fontSize: 16,
-                              color: subColor,
-                              decoration: TextDecoration.lineThrough),
-                        ),
-                        const SizedBox(width: 8),
+                    ),
+                    const SizedBox(width: 8),
+                    Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(name.split(' ').first,
+                            style: TextStyle(
+                                fontSize: 12, fontWeight: FontWeight.w600,
+                                color: text)),
                         Container(
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 3),
+                              horizontal: 5, vertical: 1),
                           decoration: BoxDecoration(
-                            color: AppColors.error.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(
-                            '${(((item.originalPrice! - item.price) / item.originalPrice!) * 100).round()}% OFF',
-                            style: const TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w800,
-                                color: AppColors.error),
-                          ),
+                              color: typeColor.withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(4)),
+                          child: Text(typeLabel,
+                              style: TextStyle(
+                                  fontSize: 8, fontWeight: FontWeight.w700,
+                                  color: typeColor)),
                         ),
                       ],
-                    ],
-                    const Spacer(),
-                    // Rating
-                    Icon(Icons.star_rounded,
-                        color: Colors.amber, size: 18),
-                    const SizedBox(width: 4),
-                    Text('${item.rating}',
-                        style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700,
-                            color: textColor)),
-                    Text(' (${item.reviews} reviews)',
-                        style: TextStyle(fontSize: 12, color: subColor)),
-                  ]).animate().fadeIn(duration: 300.ms),
-
-                  const SizedBox(height: 16),
-
-                  // Stats row
-                  Row(children: [
-                    _StatBadge('👥', '${_fmtNumber(item.students)} students', subColor),
-                    const SizedBox(width: 10),
-                    if (item.author != null)
-                      _StatBadge('✍️', item.author!, subColor),
+                    ),
                   ]),
-
-                  const SizedBox(height: 20),
-
-                  // Description
-                  Text('About',
-                      style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                          color: textColor)),
-                  const SizedBox(height: 8),
-                  Text(item.description,
-                      style: TextStyle(
-                          fontSize: 14,
-                          color: subColor,
-                          height: 1.6)),
-
-                  // Tags
-                  if (item.tags.isNotEmpty) ...[
-                    const SizedBox(height: 20),
-                    Text('Tags',
-                        style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700,
-                            color: textColor)),
-                    const SizedBox(height: 10),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: item.tags.map((t) => Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: AppColors.primary.withOpacity(0.08),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(
-                              color: AppColors.primary.withOpacity(0.2)),
-                        ),
-                        child: Text(t.toString(),
-                            style: const TextStyle(
-                                fontSize: 12,
-                                color: AppColors.primary,
-                                fontWeight: FontWeight.w500)),
-                      )).toList(),
-                    ),
-                  ],
-
-                  const SizedBox(height: 28),
-
-                  // Ask AI about this
-                  GestureDetector(
-                    onTap: () => context.push('/agent'),
-                    child: Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: surface,
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                            color: AppColors.primary.withOpacity(0.2)),
-                      ),
-                      child: Row(children: [
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            gradient: const LinearGradient(
-                                colors: [AppColors.primary, AppColors.accent]),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: const Icon(Icons.auto_awesome,
-                              color: Colors.white, size: 16),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('Ask AI Mentor about this',
-                                style: TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w700,
-                                    color: textColor)),
-                            Text('Is this right for me? Get a personalised answer.',
-                                style: TextStyle(
-                                    fontSize: 11, color: subColor)),
-                          ],
-                        )),
-                        Icon(Icons.arrow_forward_ios_rounded,
-                            size: 14, color: subColor),
-                      ]),
-                    ),
-                  ),
-
-                  // Bottom padding for CTA button
-                  const SizedBox(height: 100),
-                ],
-              ),
-            ),
+                ),
+              );
+            },
           ),
-        ],
-      ),
-
-      // ── CTA button ─────────────────────────────────
-      bottomNavigationBar: Container(
-        padding: EdgeInsets.fromLTRB(
-            20, 12, 20, MediaQuery.of(context).padding.bottom + 12),
-        decoration: BoxDecoration(
-          color: isDark ? AppColors.bgCard : Colors.white,
-          border: Border(
-              top: BorderSide(
-                  color: isDark
-                      ? AppColors.bgSurface
-                      : Colors.grey.shade200)),
         ),
-        child: alreadyOwned
-            ? ElevatedButton.icon(
-                onPressed: () {},
-                icon: const Icon(Iconsax.tick_circle, size: 18),
-                label: const Text('In Your Library'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.success,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14)),
-                ),
-              )
-            : ElevatedButton(
-                onPressed: _purchasing ? null : _purchase,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14)),
-                ),
-                child: _purchasing
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                            color: Colors.white, strokeWidth: 2))
-                    : Text(
-                        item.isFree
-                            ? 'Add to Library — Free'
-                            : 'Get for \$${item.price.toStringAsFixed(0)}',
-                        style: const TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.w700),
-                      ),
-              ),
-      ),
-    );
-  }
-
-  String _fmtNumber(int n) {
-    if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}K';
-    return '$n';
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────────────────────────
-
-class _StatBadge extends StatelessWidget {
-  final String emoji, label;
-  final Color  color;
-  const _StatBadge(this.emoji, this.label, this.color);
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(mainAxisSize: MainAxisSize.min, children: [
-      Text(emoji, style: const TextStyle(fontSize: 13)),
-      const SizedBox(width: 5),
-      Text(label,
-          style: TextStyle(fontSize: 12, color: color,
-              fontWeight: FontWeight.w500)),
-    ]);
-  }
-}
-
-class _LoadingSkeleton extends StatelessWidget {
-  final bool isDark;
-  const _LoadingSkeleton({required this.isDark});
-
-  @override
-  Widget build(BuildContext context) {
-    final color =
-        isDark ? AppColors.bgCard : Colors.grey.shade100;
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: 6,
-      itemBuilder: (_, i) => Container(
-        margin: const EdgeInsets.only(bottom: 10),
-        height: 100,
-        decoration: BoxDecoration(
-            color: color, borderRadius: BorderRadius.circular(16)),
-      ).animate(onPlay: (c) => c.repeat(reverse: true))
-          .shimmer(duration: 1200.ms),
+        Divider(height: 12, color: border),
+      ]),
     );
   }
 }
 
-class _EmptyState extends StatelessWidget {
-  final bool   isDark;
-  final String query;
-  const _EmptyState({required this.isDark, required this.query});
+// ─────────────────────────────────────────────────────────────────
+// EMPTY STATES
+// ─────────────────────────────────────────────────────────────────
+
+class _EmptyBrowse extends StatelessWidget {
+  final bool         isDark;
+  final Color        sub, text;
+  final String       query;
+  final VoidCallback onPost, onAiSearch, onWorkflow;
+
+  const _EmptyBrowse({
+    required this.isDark,
+    required this.sub,
+    required this.text,
+    required this.query,
+    required this.onPost,
+    required this.onAiSearch,
+    required this.onWorkflow,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final sub = isDark ? Colors.white54 : Colors.black45;
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Iconsax.search_normal_1,
-              size: 64, color: AppColors.primary.withOpacity(0.3)),
-          const SizedBox(height: 16),
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          const Text('🏪', style: TextStyle(fontSize: 56)),
+          const SizedBox(height: 14),
           Text(
             query.isNotEmpty
-                ? 'No results for "$query"'
-                : 'No items in this category yet',
-            style: const TextStyle(
-                fontWeight: FontWeight.bold, fontSize: 16),
+                ? 'No listings match "$query"'
+                : 'No listings yet',
+            style: TextStyle(
+                fontSize: 16, fontWeight: FontWeight.w700, color: text),
+            textAlign: TextAlign.center,
           ),
           const SizedBox(height: 8),
-          Text('Try a different search or filter',
-              style: TextStyle(color: sub)),
-        ],
+          Text(
+            query.isNotEmpty
+                ? 'Try a different search or let AI find it for you'
+                : 'Be the first to post something in the community',
+            style: TextStyle(fontSize: 13, color: sub, height: 1.5),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 24),
+
+          // Post listing
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  padding: const EdgeInsets.symmetric(vertical: 13),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14))),
+              icon: const Icon(Icons.add, color: Colors.white, size: 18),
+              label: const Text('Post a Listing',
+                  style: TextStyle(
+                      color: Colors.white, fontWeight: FontWeight.w700)),
+              onPressed: onPost,
+            ),
+          ),
+          const SizedBox(height: 10),
+
+          // AI search the web
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 13),
+                  side: const BorderSide(color: AppColors.primary),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14))),
+              icon: const Icon(Icons.travel_explore_rounded,
+                  color: AppColors.primary, size: 18),
+              label: const Text('Search the Web with AI',
+                  style: TextStyle(
+                      color: AppColors.primary, fontWeight: FontWeight.w700)),
+              onPressed: onAiSearch,
+            ),
+          ),
+          const SizedBox(height: 10),
+
+          // Workflow engine
+          GestureDetector(
+            onTap: onWorkflow,
+            child: Text('Or use the Workflow Engine →',
+                style: TextStyle(
+                    color: AppColors.primary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600)),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+class _EmptyMine extends StatelessWidget {
+  final bool         isDark;
+  final Color        sub, text;
+  final VoidCallback onPost;
+
+  const _EmptyMine({
+    required this.isDark,
+    required this.sub,
+    required this.text,
+    required this.onPost,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          const Text('📋', style: TextStyle(fontSize: 52)),
+          const SizedBox(height: 14),
+          Text('No listings yet',
+              style: TextStyle(
+                  fontSize: 16, fontWeight: FontWeight.w700, color: text)),
+          const SizedBox(height: 8),
+          Text('Post something to sell, find a buyer, or offer a service',
+              style: TextStyle(fontSize: 13, color: sub, height: 1.5),
+              textAlign: TextAlign.center),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 28, vertical: 13),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14))),
+            icon: const Icon(Icons.add, color: Colors.white, size: 18),
+            label: const Text('Post Your First Listing',
+                style: TextStyle(
+                    color: Colors.white, fontWeight: FontWeight.w700)),
+            onPressed: onPost,
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// CAN'T FIND BANNER
+// ─────────────────────────────────────────────────────────────────
+
+class _CantFindBanner extends StatelessWidget {
+  final bool         isDark;
+  final Color        sub;
+  final VoidCallback onWorkflow, onAgent;
+
+  const _CantFindBanner({
+    required this.isDark,
+    required this.sub,
+    required this.onWorkflow,
+    required this.onAgent,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin:  const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+            colors: [Color(0xFF6C5CE7), Color(0xFF0984E3)]),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(children: [
+        const Icon(Icons.auto_awesome, color: Colors.white, size: 20),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text("Can't find what you need?",
+                style: TextStyle(
+                    color: Colors.white, fontWeight: FontWeight.w700,
+                    fontSize: 13)),
+            Text('Let AI search the web or run a full workflow',
+                style: TextStyle(
+                    color: Colors.white.withOpacity(0.8), fontSize: 11)),
+          ]),
+        ),
+        const SizedBox(width: 8),
+        Column(children: [
+          GestureDetector(
+            onTap: onWorkflow,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(10)),
+              child: const Text('Workflow',
+                  style: TextStyle(
+                      color: Colors.white, fontSize: 11,
+                      fontWeight: FontWeight.w600)),
+            ),
+          ),
+          const SizedBox(height: 4),
+          GestureDetector(
+            onTap: onAgent,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(10)),
+              child: const Text('AI Agent',
+                  style: TextStyle(
+                      color: Colors.white, fontSize: 11,
+                      fontWeight: FontWeight.w600)),
+            ),
+          ),
+        ]),
+      ]),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// CREATE LISTING BOTTOM SHEET
+// ─────────────────────────────────────────────────────────────────
+
+class _CreateSheet extends StatefulWidget {
+  final Function(Map) onCreated;
+  const _CreateSheet({required this.onCreated});
+
+  @override
+  State<_CreateSheet> createState() => _CreateSheetState();
+}
+
+class _CreateSheetState extends State<_CreateSheet> {
+  final _titleCtrl = TextEditingController();
+  final _descCtrl  = TextEditingController();
+  final _priceCtrl = TextEditingController();
+  final _tagsCtrl  = TextEditingController();
+
+  String _type     = 'sell';
+  String _currency = 'USD';
+  bool   _loading  = false;
+  String _error    = '';
+
+  static const _currencies = ['USD','NGN','GHS','KES','ZAR','GBP','EUR','INR'];
+  static const _types = [
+    ('sell',    '💰 I am selling something'),
+    ('buy',     '🛒 I am looking to buy'),
+    ('service', '🔧 I offer a service'),
+  ];
+
+  Future<void> _submit() async {
+    final title = _titleCtrl.text.trim();
+    final desc  = _descCtrl.text.trim();
+    if (title.isEmpty) {
+      setState(() => _error = 'Title is required');
+      return;
+    }
+    setState(() { _loading = true; _error = ''; });
+    try {
+      final tags = _tagsCtrl.text
+          .split(',')
+          .map((t) => t.trim())
+          .where((t) => t.isNotEmpty)
+          .toList();
+
+      final result = await api.createMarketplaceListing({
+        'listing_type': _type,
+        'title':        title,
+        'description':  desc,
+        'price':        _priceCtrl.text.trim().isEmpty ? null : _priceCtrl.text.trim(),
+        'currency':     _currency,
+        'tags':         tags,
+      });
+
+      final listing = (result['listing'] as Map?) ?? result;
+      if (mounted) {
+        widget.onCreated(listing);
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Listing posted! 🎉'),
+            backgroundColor: AppColors.success,
+            duration: Duration(seconds: 2)));
+      }
+    } catch (e) {
+      if (mounted) setState(() {
+        _loading = false;
+        _error   = 'Failed to post. Please try again.';
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _titleCtrl.dispose();
+    _descCtrl.dispose();
+    _priceCtrl.dispose();
+    _tagsCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final text   = isDark ? Colors.white : Colors.black87;
+    final sub    = isDark ? Colors.white54 : Colors.black45;
+    final fill   = isDark ? AppColors.bgSurface : Colors.grey.shade100;
+
+    return Padding(
+      padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+          left: 20, right: 20, top: 20),
+      child: SingleChildScrollView(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(
+            width: 36, height: 4,
+            margin: const EdgeInsets.only(bottom: 16),
+            decoration: BoxDecoration(
+                color: Colors.grey.withOpacity(0.3),
+                borderRadius: BorderRadius.circular(2)),
+          ),
+          Text('Post a Listing',
+              style: TextStyle(
+                  fontSize: 17, fontWeight: FontWeight.w800, color: text)),
+          const SizedBox(height: 18),
+
+          // Listing type
+          ...List.generate(_types.length, (i) {
+            final (val, label) = _types[i];
+            return GestureDetector(
+              onTap: () => setState(() => _type = val),
+              child: Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: _type == val
+                      ? AppColors.primary.withOpacity(0.1)
+                      : fill,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                      color: _type == val
+                          ? AppColors.primary
+                          : Colors.transparent,
+                      width: 1.5),
+                ),
+                child: Row(children: [
+                  Text(label,
+                      style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 14,
+                          color: _type == val ? AppColors.primary : text)),
+                  const Spacer(),
+                  if (_type == val)
+                    const Icon(Icons.check_circle_rounded,
+                        color: AppColors.primary, size: 18),
+                ]),
+              ),
+            );
+          }),
+
+          const SizedBox(height: 6),
+
+          // Title
+          _Field(
+              ctrl: _titleCtrl, hint: 'Title (e.g. "Used MacBook M1 for sale")',
+              isDark: isDark, fill: fill, text: text),
+          const SizedBox(height: 10),
+
+          // Description
+          _Field(
+              ctrl: _descCtrl, hint: 'Description (condition, specs, details…)',
+              isDark: isDark, fill: fill, text: text, maxLines: 3),
+          const SizedBox(height: 10),
+
+          // Price + currency
+          Row(children: [
+            Expanded(
+              child: _Field(
+                  ctrl: _priceCtrl, hint: 'Price (optional)',
+                  isDark: isDark, fill: fill, text: text,
+                  keyboardType: TextInputType.number),
+            ),
+            const SizedBox(width: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              height: 50,
+              decoration: BoxDecoration(
+                  color: fill, borderRadius: BorderRadius.circular(12)),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: _currency,
+                  dropdownColor: isDark ? AppColors.bgCard : Colors.white,
+                  style: TextStyle(color: text, fontSize: 13),
+                  items: _currencies.map((c) => DropdownMenuItem(
+                      value: c,
+                      child: Text(c))).toList(),
+                  onChanged: (v) {
+                    if (v != null) setState(() => _currency = v);
+                  },
+                ),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 10),
+
+          // Tags
+          _Field(
+              ctrl: _tagsCtrl,
+              hint: 'Tags (comma-separated: laptop, electronics, tech)',
+              isDark: isDark, fill: fill, text: text),
+          const SizedBox(height: 6),
+
+          if (_error.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(_error,
+                  style: const TextStyle(
+                      color: AppColors.error, fontSize: 12)),
+            ),
+
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14))),
+              onPressed: _loading ? null : _submit,
+              child: _loading
+                  ? const SizedBox(
+                      width: 20, height: 20,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white))
+                  : const Text('Post Listing',
+                      style: TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.w700,
+                          fontSize: 15)),
+            ),
+          ),
+          const SizedBox(height: 24),
+        ]),
+      ),
+    );
+  }
+}
+
+class _Field extends StatelessWidget {
+  final TextEditingController ctrl;
+  final String               hint;
+  final bool                 isDark;
+  final Color                fill, text;
+  final int                  maxLines;
+  final TextInputType        keyboardType;
+
+  const _Field({
+    required this.ctrl,
+    required this.hint,
+    required this.isDark,
+    required this.fill,
+    required this.text,
+    this.maxLines    = 1,
+    this.keyboardType = TextInputType.text,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller:   ctrl,
+      maxLines:     maxLines,
+      keyboardType: keyboardType,
+      style:        TextStyle(fontSize: 14, color: text),
+      decoration: InputDecoration(
+        hintText:  hint,
+        hintStyle: TextStyle(
+            color: isDark ? Colors.white38 : Colors.black38, fontSize: 13),
+        filled:    true,
+        fillColor: fill,
+        border:    OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide:  BorderSide.none),
+        contentPadding: const EdgeInsets.symmetric(
+            horizontal: 14, vertical: 12),
       ),
     );
   }
