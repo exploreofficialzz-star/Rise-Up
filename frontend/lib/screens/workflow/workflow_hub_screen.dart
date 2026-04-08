@@ -342,7 +342,7 @@ final incomeTypeConfigs = {
     emoji: '₿',
     color: const Color(0xFFF39C12),
     label: 'Crypto Trading',
-    icon: Iconsax.coin_1, // ✅ FIXED: was Iconsax.bitcoin (invalid)
+    icon: Iconsax.coin_1, // ✅ FIXED: was Iconsax.coin_1 (invalid)
   ),
   'remote_job': IncomeTypeConfig(
     emoji: '🏠',
@@ -456,7 +456,12 @@ class _WorkflowHubScreenState extends ConsumerState<WorkflowHubScreen> {
                   isDark: isDark,
                 ),
               )
-            else
+            else ...[
+              // ── Brain AI suggestion banner ────────────────────────────────
+              SliverToBoxAdapter(
+                child: _BrainSuggestionsPanel(isDark: isDark),
+              ),
+              // ─────────────────────────────────────────────────────────────
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 100),
                 sliver: SliverList(
@@ -470,6 +475,7 @@ class _WorkflowHubScreenState extends ConsumerState<WorkflowHubScreen> {
                   ),
                 ),
               ),
+            ],
           ],
         ),
       ),
@@ -1277,5 +1283,120 @@ class _NoResultsState extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// BRAIN SUGGESTIONS PANEL
+// Fetches complementary users from adaptive brain and shows them
+// as a horizontal strip above the workflow list.
+// ─────────────────────────────────────────────────────────────────
+
+class _BrainSuggestionsPanel extends StatefulWidget {
+  final bool isDark;
+  const _BrainSuggestionsPanel({required this.isDark});
+
+  @override
+  State<_BrainSuggestionsPanel> createState() => _BrainSuggestionsPanelState();
+}
+
+class _BrainSuggestionsPanelState extends State<_BrainSuggestionsPanel> {
+  List  _suggestions = [];
+  bool  _loaded      = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final list = await api.getComplementaryUsers(limit: 4);
+      if (mounted) setState(() { _suggestions = list; _loaded = true; });
+    } catch (_) {
+      if (mounted) setState(() => _loaded = true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_loaded || _suggestions.isEmpty) return const SizedBox.shrink();
+    final isDark  = widget.isDark;
+    final card    = isDark ? AppColors.bgCard : Colors.white;
+    final border  = isDark ? AppColors.bgSurface : Colors.grey.shade200;
+    final text    = isDark ? Colors.white : Colors.black87;
+    final sub     = isDark ? Colors.white54 : Colors.black45;
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [AppColors.primary.withOpacity(0.08), AppColors.accent.withOpacity(0.06)],
+        ),
+        borderRadius: AppRadius.lg,
+        border: Border.all(color: AppColors.primary.withOpacity(0.2)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.auto_awesome, color: AppColors.primary, size: 13),
+          const SizedBox(width: 6),
+          Text('Brain matched for your goals',
+              style: const TextStyle(
+                  color: AppColors.primary, fontSize: 11, fontWeight: FontWeight.w600)),
+          const Spacer(),
+          GestureDetector(
+            onTap: () => context.push('/marketplace'),
+            child: Text('See Marketplace →',
+                style: TextStyle(fontSize: 10, color: AppColors.primary.withOpacity(0.7))),
+          ),
+        ]),
+        const SizedBox(height: 10),
+        SizedBox(
+          height: 56,
+          child: ListView.separated(
+            scrollDirection:  Axis.horizontal,
+            itemCount:        _suggestions.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 10),
+            itemBuilder: (ctx, i) {
+              final u    = _suggestions[i] as Map;
+              final name = u['full_name']?.toString() ?? 'User';
+              final type = u['match_type']?.toString() ?? 'match';
+              final typeColor = type == 'buyer'           ? AppColors.success
+                              : type == 'service_provider'? const Color(0xFF9B59B6)
+                              : AppColors.primary;
+              return GestureDetector(
+                onTap: () {
+                  if (u['user_id'] != null) ctx.push('/user-profile/${u['user_id']}');
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color:  typeColor.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: typeColor.withOpacity(0.2)),
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    CircleAvatar(
+                      radius: 13, backgroundColor: typeColor.withOpacity(0.15),
+                      child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: typeColor)),
+                    ),
+                    const SizedBox(width: 7),
+                    Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(name.split(' ').first,
+                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: text)),
+                      Text(type == 'buyer' ? 'BUYER' : type == 'service_provider' ? 'SERVICE' : 'MATCH',
+                          style: TextStyle(fontSize: 8, fontWeight: FontWeight.w700, color: typeColor)),
+                    ]),
+                  ]),
+                ),
+              );
+            },
+          ),
+        ),
+      ]),
+    ).animate().fadeIn(delay: 200.ms);
   }
 }
