@@ -498,7 +498,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
     }
 
     if (now.isNotEmpty)     { buf.writeln('⚡ **Do this now:** $now'); buf.writeln(); }
-    if (insight.isNotEmpty) { buf.writeln('_$insight_'); }
+    if (insight.isNotEmpty) { buf.writeln('_${insight}_'); }
     if (plan['warning']?.toString().isNotEmpty == true) {
       buf.writeln('\n⚠️ ${plan['warning']}');
     }
