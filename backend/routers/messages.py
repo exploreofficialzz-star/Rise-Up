@@ -1,11 +1,16 @@
 """
-routers/messages.py — RiseUp Messaging System (Production v8)
+routers/messages.py — RiseUp Messaging System (Production v9)
 
-v8 fixes:
-  • Added GET /ai-conversation — gets or creates the dedicated user↔AI
-    conversation in the messages system so the Flutter AI chat screen
-    always reads/writes from the same table as peer DMs.
-  • All other v7 fixes retained.
+v9 fixes:
+  • _ensure_ai_user_exists: inserts into `users` FIRST, then `profiles`.
+    Previous version only touched `profiles`, causing FK violations:
+      "Key (id)=(...) is not present in table 'users'"
+    which cascaded to a 500 on every /ai-conversation call.
+  • Both inserts are guarded individually so a partial previous run
+    (users row exists, profiles row missing) is also recovered.
+  • get_or_create_ai_conversation: mode column removed from INSERT
+    (not in schema); greeting text personalisation placeholder kept.
+  • All v8 features retained unchanged.
 """
 
 import logging
@@ -19,7 +24,6 @@ from pydantic import BaseModel
 from services.supabase_service import supabase_service
 from utils.auth import get_current_user
 
-# Defensive AI service import — router must load even if ai_service is broken
 try:
     from services.ai_service import ai_service as _ai_service
     _AI_AVAILABLE = True
@@ -38,7 +42,6 @@ WINDOW_HOURS           = 4
 MAX_AD_UNLOCKS_PER_DAY = 5
 ONLINE_THRESHOLD_SECS  = 120
 
-# Deterministic UUID for the AI system user
 AI_USER_ID    = str(uuid.uuid5(uuid.NAMESPACE_DNS, "riseup.ai.system"))
 AI_USER_EMAIL = "ai@riseup.system"
 
@@ -64,25 +67,63 @@ def _db():
 # ── AI User Bootstrap ─────────────────────────────────────────────────────────
 
 def _ensure_ai_user_exists(db) -> None:
-    """Idempotent: create the AI system profile row if absent."""
+    """
+    Idempotent bootstrap for the AI system account.
+
+    FK chain that must be respected:
+        users (id)  ←─  profiles (id)  ←─  conversation_members (user_id)
+
+    We therefore insert into `users` first, then `profiles`.
+    Each step is guarded independently so a partial previous run
+    (e.g. `users` row exists but `profiles` row is missing) is healed.
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # ── Step 1: ensure row in `users` ────────────────────────────────────────
     try:
-        existing = db.table("profiles").select("id").eq("id", AI_USER_ID).execute().data
-        if existing:
-            return
-        db.table("profiles").insert({
-            "id":         AI_USER_ID,
-            "email":      AI_USER_EMAIL,
-            "full_name":  "RiseUp AI",
-            "username":   "riseup_ai",
-            "avatar_url": None,
-            "is_online":  True,
-            "last_seen":  datetime.now(timezone.utc).isoformat(),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).execute()
-        logger.info(f"Created AI system user: {AI_USER_ID}")
+        users_existing = (
+            db.table("users")
+            .select("id")
+            .eq("id", AI_USER_ID)
+            .execute()
+            .data
+        )
+        if not users_existing:
+            db.table("users").insert({
+                "id":         AI_USER_ID,
+                "email":      AI_USER_EMAIL,
+                "created_at": now_iso,
+                "updated_at": now_iso,
+            }).execute()
+            logger.info(f"[AI bootstrap] Inserted AI row into users: {AI_USER_ID}")
     except Exception as e:
-        logger.warning(f"AI user upsert skipped (may already exist): {e}")
+        # Row may already exist (race condition / duplicate call) — safe to continue.
+        logger.warning(f"[AI bootstrap] users insert skipped: {e}")
+
+    # ── Step 2: ensure row in `profiles` (requires users row to exist) ────────
+    try:
+        profiles_existing = (
+            db.table("profiles")
+            .select("id")
+            .eq("id", AI_USER_ID)
+            .execute()
+            .data
+        )
+        if not profiles_existing:
+            db.table("profiles").insert({
+                "id":         AI_USER_ID,
+                "email":      AI_USER_EMAIL,
+                "full_name":  "RiseUp AI",
+                "username":   "riseup_ai",
+                "avatar_url": None,
+                "is_online":  True,
+                "last_seen":  now_iso,
+                "created_at": now_iso,
+                "updated_at": now_iso,
+            }).execute()
+            logger.info(f"[AI bootstrap] Inserted AI row into profiles: {AI_USER_ID}")
+    except Exception as e:
+        logger.warning(f"[AI bootstrap] profiles insert skipped: {e}")
 
 
 # ── Online helper ─────────────────────────────────────────────────────────────
@@ -126,17 +167,19 @@ async def clear_presence(user: dict = Depends(get_current_user)):
     return {"online": False}
 
 
-# ── AI CONVERSATION (dedicated 1:1 with the AI mentor) ────────────────────────
+# ── AI CONVERSATION ───────────────────────────────────────────────────────────
 
 @router.get("/ai-conversation")
 async def get_or_create_ai_conversation(user: dict = Depends(get_current_user)):
     """
     Returns the conversation_id for the user's private chat with RiseUp AI.
-    Creates the conversation (and sends the welcome message) on first call.
+    Creates the conversation and sends the welcome message on first call.
     Idempotent — safe to call on every app open.
     """
     try:
         db = _db()
+
+        # Bootstrap AI user BEFORE any FK-dependent inserts.
         _ensure_ai_user_exists(db)
 
         # ── Find an existing direct conversation shared by user + AI ──────────
@@ -182,24 +225,36 @@ async def get_or_create_ai_conversation(user: dict = Depends(get_current_user)):
 
         convo_id = convo_res.data[0]["id"]
 
-        # Add both members
+        # Add both members — AI row in users+profiles guaranteed to exist now.
         db.table("conversation_members").insert([
             {"conversation_id": convo_id, "user_id": user["id"]},
             {"conversation_id": convo_id, "user_id": AI_USER_ID},
         ]).execute()
 
-        # Send the initial AI greeting so history is never empty
+        # Fetch user's first name for a personalised greeting.
+        try:
+            profile_res  = db.table("profiles").select("full_name").eq("id", user["id"]).single().execute()
+            full_name    = (profile_res.data or {}).get("full_name") or ""
+            first_name   = full_name.strip().split()[0] if full_name.strip() else "there"
+        except Exception:
+            first_name = "there"
+
+        greeting = (
+            f"Hey {first_name} 👋 Nice meeting you!\n\n"
+            "I'm your RiseUp AI Mentor — here to help you build wealth, "
+            "grow income, and level up your financial game. 😊\n\n"
+            "Ask me anything about investing, side hustles, money mindset, "
+            "or how to reach your next income goal."
+        )
+
         db.table("messages").insert({
             "conversation_id": convo_id,
             "sender_id":       AI_USER_ID,
             "user_id":         AI_USER_ID,
-            "content": (
-                "Hey! 👋 I'm your RiseUp AI mentor. Ask me anything about "
-                "wealth-building, side hustles, investing, or personal growth!"
-            ),
-            "sender_type": "ai",
-            "is_read":     True,
-            "created_at":  datetime.now(timezone.utc).isoformat(),
+            "content":         greeting,
+            "sender_type":     "ai",
+            "is_read":         True,
+            "created_at":      datetime.now(timezone.utc).isoformat(),
         }).execute()
 
         db.table("conversations").update({
@@ -265,8 +320,7 @@ async def get_conversations(user: dict = Depends(get_current_user)):
                 (m for m in members if m.get("user_id") != user["id"]), None
             )
 
-            # Skip AI-only conversations (don't show in DM list — they have
-            # their own pinned tile in the UI).
+            # Skip AI-only conversations (shown as pinned tile in the UI).
             if other and other.get("user_id") == AI_USER_ID:
                 continue
 
@@ -422,7 +476,7 @@ async def get_messages(
                 }
             msgs.append(row)
 
-        # Mark messages as read
+        # Mark as read
         try:
             db.table("messages") \
                 .update({"is_read": True}) \
@@ -557,11 +611,10 @@ async def send_ai_message(
                         if ads_today >= MAX_AD_UNLOCKS_PER_DAY:
                             midnight = (now + timedelta(days=1)).replace(
                                 hour=0, minute=0, second=0, microsecond=0)
-                            wait_seconds = int((midnight - now).total_seconds())
                             raise HTTPException(429, detail={
                                 "code":        "daily_limit",
                                 "message":     "Daily AI message limit reached. Resets at midnight.",
-                                "retry_after": wait_seconds,
+                                "retry_after": int((midnight - now).total_seconds()),
                                 "upgrade_url": "/premium",
                             })
                         raise HTTPException(402, detail={
@@ -572,7 +625,7 @@ async def send_ai_message(
                             "max_ads_day": MAX_AD_UNLOCKS_PER_DAY,
                         })
 
-        # Build message history for AI context (last 20 messages from DB)
+        # Build AI context from DB history (last 20 messages)
         history_res = (
             db.table("messages")
             .select("sender_type, content")
@@ -589,13 +642,10 @@ async def send_ai_message(
             }
             for h in raw_history
         ]
-        # Append the new user message to give full context
         ai_messages.append({"role": "user", "content": req.content})
 
         try:
-            profile_res  = (
-                db.table("profiles").select("*").eq("id", user["id"]).single().execute()
-            )
+            profile_res  = db.table("profiles").select("*").eq("id", user["id"]).single().execute()
             user_profile = profile_res.data or {}
         except Exception:
             user_profile = {}
@@ -605,17 +655,13 @@ async def send_ai_message(
         model_used = "ai"
 
         try:
-            result     = await _ai_service.mentor_chat(
-                messages=ai_messages, user_profile=user_profile
-            )
+            result     = await _ai_service.mentor_chat(messages=ai_messages, user_profile=user_profile)
             ai_content = result.get("content")
             model_used = result.get("model", "ai")
         except Exception as mentor_err:
             logger.warning(f"mentor_chat failed ({mentor_err}), trying chat fallback")
             try:
-                result     = await _ai_service.chat(
-                    ai_messages, system=None, max_tokens=800
-                )
+                result     = await _ai_service.chat(ai_messages, system=None, max_tokens=800)
                 ai_content = result.get("content")
                 model_used = result.get("model", "ai")
             except Exception as chat_err:
@@ -627,10 +673,10 @@ async def send_ai_message(
                 "connectivity issue. Please try again in a moment. 🔄"
             )
 
-        # Persist user message then AI reply
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        db.table("messages").insert({
+        # Persist user message
+        user_msg_res = db.table("messages").insert({
             "conversation_id": conversation_id,
             "sender_id":       user["id"],
             "user_id":         user["id"],
@@ -639,7 +685,9 @@ async def send_ai_message(
             "is_read":         True,
             "created_at":      now_iso,
         }).execute()
+        user_msg_id = (user_msg_res.data or [{}])[0].get("id")
 
+        # Persist AI reply
         ai_msg = db.table("messages").insert({
             "conversation_id": conversation_id,
             "sender_id":       AI_USER_ID,
@@ -662,9 +710,11 @@ async def send_ai_message(
             _save_quota(db, user["id"], quota)
 
         return {
-            "message": ai_msg,
-            "content": ai_content,
-            "model":   model_used,
+            "message":         ai_msg,
+            "content":         ai_content,
+            "model":           model_used,
+            # Flutter uses user_message_id to replace the optimistic bubble UUID
+            "user_message_id": user_msg_id,
             "quota": {
                 "free_used":      quota.get("free_used", 0),
                 "free_remaining": max(0, FREE_MSGS_PER_WINDOW - quota.get("free_used", 0)),
@@ -680,7 +730,7 @@ async def send_ai_message(
         raise HTTPException(500, str(e))
 
 
-# ── AI IN DM ──────────────────────────────────────────────────────────────────
+# ── INVITE AI ─────────────────────────────────────────────────────────────────
 
 @router.post("/conversations/{conversation_id}/invite-ai")
 async def invite_ai_to_conversation(
@@ -690,6 +740,7 @@ async def invite_ai_to_conversation(
     try:
         db = _db()
         _assert_member(db, conversation_id, user["id"])
+        # Ensure AI user exists in users+profiles before adding to members.
         _ensure_ai_user_exists(db)
 
         convo_res = (
@@ -724,7 +775,7 @@ async def invite_ai_to_conversation(
             "sender_id":       AI_USER_ID,
             "user_id":         AI_USER_ID,
             "sender_type":     "system",
-            "content":         "RiseUp AI has joined. Use @ai to ask questions.",
+            "content":         "🤖 RiseUp AI has joined. Use **@ai** followed by your question to get wealth advice.",
             "is_read":         True,
             "created_at":      datetime.now(timezone.utc).isoformat(),
         }).execute()
@@ -827,10 +878,7 @@ async def get_ai_quota(user: dict = Depends(get_current_user)):
         "is_premium":         is_premium,
         "free_used":          quota.get("free_used", 0),
         "free_total":         FREE_MSGS_PER_WINDOW,
-        "free_remaining":     (
-            max(0, FREE_MSGS_PER_WINDOW - quota.get("free_used", 0))
-            if not in_window else 999
-        ),
+        "free_remaining":     max(0, FREE_MSGS_PER_WINDOW - quota.get("free_used", 0)) if not in_window else 999,
         "in_unlocked_window": in_window,
         "window_expires":     window_exp,
         "ads_today":          ads_today,
