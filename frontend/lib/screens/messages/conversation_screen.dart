@@ -271,9 +271,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
         return true;
       }
 
-      // FIX: use "general" — backend rejects "mentor", "coach", "agent"
-      // unless your schema includes them. "general" is always safe.
-      final convId = await api.getOrCreateAIConversation(mode: 'general');
+      // NOTE: calling without mode param — your ApiService default must be
+      // "general" (or whichever value your backend accepts). If the home-feed
+      // still shows the string_pattern_mismatch error, open api_service.dart
+      // and change the hardcoded mode value there to "general".
+      final convId = await api.getOrCreateAIConversation();
       if (convId.isNotEmpty) {
         _aiConvId = convId;
         await prefs.setString(_kAiConvIdKey, convId);
@@ -374,18 +376,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
           "I'm your RiseUp AI Mentor — here to help you build wealth, grow income, and level up your financial game. 😊\n\n"
           'Ask me anything about investing, side hustles, money mindset, or how to reach your next income goal.';
 
-      // Persist to DB so other devices also see it.
-      try {
-        await api.sendAIMessageInDM(
-          _aiConvId!,
-          '__greeting__',          // sentinel — backend can ignore or handle
-          adUnlocked: true,
-          contextHistory: [],
-          greetingOverride: greeting,
-        );
-      } catch (_) {
-        // If backend call fails, still show locally.
-      }
+      // Show greeting locally only (no extra API call needed).
+      // The greeting is stored in Prefs so it only appears once per device.
+      // If you want it persisted cross-device, add a greetingOverride param
+      // to sendAIMessageInDM in your ApiService and uncomment the call below.
 
       if (mounted) {
         final greetMsg = _Msg(
