@@ -1046,8 +1046,18 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  Future<List<dynamic>> getDMMessages(String conversationId,
-      {int limit = 50, String? since}) async {
+  /// Load messages for a conversation, with optional incremental polling.
+  ///
+  /// [since] — ISO 8601 timestamp; when provided, only messages created
+  ///           after this timestamp are returned (used by the poller).
+  /// Response must be either:
+  ///   { "messages": [...] }   ← preferred
+  ///   [...]                   ← flat list also accepted
+  Future<List<Map<String, dynamic>>> getDMMessages(
+    String conversationId, {
+    int limit = 50,
+    String? since,
+  }) async {
     try {
       final r = await _dio.get(
         '/messages/conversations/$conversationId/messages',
@@ -1056,10 +1066,25 @@ class ApiService {
           if (since != null) 'since': since,
         },
       );
-      return (r.data['messages'] as List?) ?? [];
+      final data = r.data;
+      if (data is List) {
+        return data.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      }
+      if (data is Map) {
+        final list = data['messages'] as List?;
+        if (list != null) {
+          return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+        }
+      }
+      return [];
     } catch (e) { throw _handleError(e); }
   }
 
+  /// Send a peer-to-peer DM.
+  ///
+  /// Response must include the created message's UUID in one of:
+  ///   { "message": { "id": "<uuid>", ... } }   ← preferred
+  ///   { "id": "<uuid>", ... }                   ← flat also accepted
   Future<Map<String, dynamic>> sendDMMessage(
       String conversationId, String content) async {
     try {
@@ -1070,21 +1095,71 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
+  /// Send a message to the AI mentor inside a messages-system conversation.
+  ///
+  /// [contextHistory] — the last N turns of the conversation passed as
+  ///   [{role: 'user'|'assistant', content: '...'}] so the AI has memory
+  ///   even if the backend doesn't query DB history on its own.
+  ///
+  /// Response must include at minimum:
+  ///   { "content": "<AI reply text>", ... }
+  /// Optionally:
+  ///   { "content": "...", "quota": {...}, "user_message_id": "<uuid>" }
   Future<Map<String, dynamic>> sendAIMessageInDM(
-      String conversationId, String content,
-      {bool adUnlocked = false}) async {
+    String conversationId,
+    String content, {
+    bool adUnlocked = false,
+    List<Map<String, String>> contextHistory = const [],
+  }) async {
     try {
       final r = await _dio.post(
-          '/messages/conversations/$conversationId/ai-message',
-          data: {'content': content, 'ad_unlocked': adUnlocked});
+        '/messages/conversations/$conversationId/ai-message',
+        data: {
+          'content':     content,
+          'ad_unlocked': adUnlocked,
+          // Provides the AI with full conversation memory on every call.
+          // The backend can use this directly or ignore it if it already
+          // queries DB history — sending it is always safe.
+          if (contextHistory.isNotEmpty) 'context_history': contextHistory,
+        },
+      );
       return r.data as Map<String, dynamic>;
     } catch (e) { throw _handleError(e); }
   }
 
+  /// Get / sync the AI quota for the current user.
+  ///
+  /// Response shape:
+  ///   { "free_used": int, "ads_today": int, "is_premium": bool,
+  ///     "window_expires": "ISO8601"|null }
   Future<Map<String, dynamic>> getAIQuota() async {
     try {
       final r = await _dio.get('/messages/ai-quota');
       return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Gets (or creates) the dedicated user ↔ AI conversation in the
+  /// messages system. Idempotent — safe to call on every screen open.
+  ///
+  /// Tries GET first; falls back to POST if not found (404).
+  /// Response must include: { "conversation_id": "<uuid>" }
+  Future<String> getOrCreateAIConversation() async {
+    try {
+      // Prefer GET — cheap, idempotent, works when conv already exists.
+      final r = await _dio.get('/messages/ai-conversation');
+      final id = (r.data['conversation_id'] as String?) ?? '';
+      if (id.isNotEmpty) return id;
+      throw ApiException('Empty conversation_id');
+    } on DioException catch (e) {
+      // 404 means the conversation doesn't exist yet — create it.
+      if (e.response?.statusCode == 404) {
+        try {
+          final r = await _dio.post('/messages/ai-conversation', data: {});
+          return (r.data['conversation_id'] as String?) ?? '';
+        } catch (inner) { throw _handleError(inner); }
+      }
+      throw _handleError(e);
     } catch (e) { throw _handleError(e); }
   }
 
@@ -1112,20 +1187,6 @@ class ApiService {
           '/messages/conversations/$conversationId/ai-status');
       return r.data as Map<String, dynamic>;
     } catch (e) { throw _handleError(e); }
-  }
-
-  // ── FIX: getOrCreateAIConversation — was dangling outside class in
-  //         api_service_additions.dart; now correctly inside ApiService.
-  /// Gets (or creates) the dedicated user↔AI conversation in the messages
-  /// system. Returns the conversation UUID. Idempotent — safe to call on
-  /// every AI chat screen open.
-  Future<String> getOrCreateAIConversation() async {
-    try {
-      final r = await _dio.get('/messages/ai-conversation');
-      return (r.data['conversation_id'] as String?) ?? '';
-    } catch (e) {
-      throw _handleError(e);
-    }
   }
 
   // ── Groups ────────────────────────────────────────────────────────────────
@@ -1434,11 +1495,9 @@ class ApiService {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // ── METHODS BRAIN ──────────────────────────────────────────────────────────
+  // ── METHODS BRAIN
   // ══════════════════════════════════════════════════════════════════════════
 
-  /// Brain-aware AI mentor chat — searches RiseUp internally before responding.
-  /// Returns reply + escalation signals (needs_external, methods, marketplace).
   Future<Map<String, dynamic>> brainMentorChat({
     required String message,
     String?  sessionId,
@@ -1456,7 +1515,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Search only within RiseUp: methods, marketplace, service providers.
   Future<Map<String, dynamic>> brainInternalSearch(
       String query, {int limit = 5}) async {
     try {
@@ -1468,7 +1526,6 @@ class ApiService {
 
   // ── Income Methods Library ────────────────────────────────────────────────
 
-  /// Browse the 10,000 income methods with optional filters.
   Future<Map<String, dynamic>> getBrainMethods({
     String? investmentTier,
     String? category,
@@ -1496,7 +1553,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Search income methods by keyword.
   Future<Map<String, dynamic>> searchBrainMethods(
       String query, {int limit = 20}) async {
     try {
@@ -1506,7 +1562,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Get a single method's full detail.
   Future<Map<String, dynamic>> getBrainMethod(String methodId) async {
     try {
       final r = await _dio.get('/brain/methods/$methodId');
@@ -1514,7 +1569,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Get featured methods.
   Future<Map<String, dynamic>> getFeaturedMethods({int limit = 10}) async {
     try {
       final r = await _dio.get('/brain/methods/featured',
@@ -1523,7 +1577,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Get stats about the methods library.
   Future<Map<String, dynamic>> getMethodsStats() async {
     try {
       final r = await _dio.get('/brain/methods/stats');
@@ -1531,7 +1584,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Get all investment tier definitions.
   Future<Map<String, dynamic>> getMethodTiers() async {
     try {
       final r = await _dio.get('/brain/methods/tiers');
@@ -1539,7 +1591,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Track or update a method for this user.
   Future<Map<String, dynamic>> trackMethod(
       String methodId, {String status = 'exploring', String? notes}) async {
     try {
@@ -1549,7 +1600,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Get all methods the user is tracking.
   Future<Map<String, dynamic>> getTrackedMethods({String? status}) async {
     try {
       final r = await _dio.get('/brain/methods/my/tracked',
@@ -1560,7 +1610,6 @@ class ApiService {
 
   // ── Positioning Quiz ──────────────────────────────────────────────────────
 
-  /// Save user positioning quiz answers and get personalised method recommendations.
   Future<Map<String, dynamic>> savePositioning(
       Map<String, dynamic> data) async {
     try {
@@ -1569,7 +1618,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Get current positioning and recommended methods.
   Future<Map<String, dynamic>> getMyPositioning() async {
     try {
       final r = await _dio.get('/brain/methods/positioning/me');
@@ -1579,7 +1627,6 @@ class ApiService {
 
   // ── Marketplace ───────────────────────────────────────────────────────────
 
-  /// Browse marketplace listings with filters.
   Future<Map<String, dynamic>> getMarketplaceListings({
     String? listingType,
     String? country,
@@ -1603,7 +1650,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Create a new marketplace listing.
   Future<Map<String, dynamic>> createMarketplaceListing(
       Map<String, dynamic> data) async {
     try {
@@ -1612,9 +1658,9 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Send an inquiry on a marketplace listing.
   Future<Map<String, dynamic>> inquireMarketplaceListing(
-      String listingId, String message, {Map<String, dynamic>? contactInfo}) async {
+      String listingId, String message,
+      {Map<String, dynamic>? contactInfo}) async {
     try {
       final r = await _dio.post('/brain/marketplace/$listingId/inquire',
           data: {'message': message, 'contact_info': contactInfo ?? {}});
@@ -1622,7 +1668,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Get the current user's marketplace listings.
   Future<Map<String, dynamic>> getMyMarketplaceListings(
       {String? status}) async {
     try {
@@ -1632,7 +1677,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Delete / cancel a marketplace listing.
   Future<Map<String, dynamic>> deleteMarketplaceListing(
       String listingId) async {
     try {
@@ -1643,7 +1687,6 @@ class ApiService {
 
   // ── Agentic Tasks ─────────────────────────────────────────────────────────
 
-  /// Create an agentic task (find buyers, sellers, service providers, etc.).
   Future<Map<String, dynamic>> createAgenticTask({
     required String title,
     required String description,
@@ -1663,7 +1706,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Get a single agentic task with steps and discovered contacts.
   Future<Map<String, dynamic>> getAgenticTask(String taskId) async {
     try {
       final r = await _dio.get('/brain/task/$taskId');
@@ -1671,7 +1713,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// List all agentic tasks for the current user.
   Future<Map<String, dynamic>> listAgenticTasks(
       {String? status, String? taskType, int limit = 20}) async {
     try {
@@ -1684,23 +1725,22 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Approve external web search for an agentic task.
   Future<Map<String, dynamic>> approveExternalSearch(String taskId) async {
     try {
-      final r = await _dio.post('/brain/task/$taskId/approve-external', data: {});
+      final r = await _dio.post(
+          '/brain/task/$taskId/approve-external', data: {});
       return r.data as Map<String, dynamic>;
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Approve full agentic execution ("handle everything").
   Future<Map<String, dynamic>> approveAgenticExecution(String taskId) async {
     try {
-      final r = await _dio.post('/brain/task/$taskId/approve-execute', data: {});
+      final r = await _dio.post(
+          '/brain/task/$taskId/approve-execute', data: {});
       return r.data as Map<String, dynamic>;
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Cancel an agentic task.
   Future<Map<String, dynamic>> cancelAgenticTask(String taskId) async {
     try {
       final r = await _dio.delete('/brain/task/$taskId');
@@ -1708,7 +1748,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Get contacts discovered by an agentic task.
   Future<Map<String, dynamic>> getTaskContacts(
       String taskId, {String? contactType, int minScore = 0}) async {
     try {
@@ -1720,7 +1759,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Update a contact's status or notes.
   Future<Map<String, dynamic>> updateAgenticContact(
       String contactId, Map<String, dynamic> data) async {
     try {
@@ -1730,12 +1768,9 @@ class ApiService {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // ── ADAPTIVE BRAIN SIGNALS ─────────────────────────────────────────────────
+  // ── ADAPTIVE BRAIN SIGNALS
   // ══════════════════════════════════════════════════════════════════════════
 
-  /// Record a post-creation signal into the adaptive brain.
-  /// Fire-and-forget — call after createPost() succeeds.
-  /// Returns economic signals + marketplace suggestions (may be null on error).
   Future<Map<String, dynamic>?> recordPostSignal({
     required String postId,
     required String content,
@@ -1749,14 +1784,12 @@ class ApiService {
       });
       return r.data as Map<String, dynamic>?;
     } catch (_) {
-      return null; // Signal collection is best-effort — never throws
+      return null;
     }
   }
 
-  /// Record a like / save / share interaction signal.
-  /// Fire-and-forget — call after interaction is confirmed by server.
   Future<void> recordInteractionSignal({
-    required String action,       // 'like' | 'save' | 'share'
+    required String action,
     required String postId,
     required String postContent,
   }) async {
@@ -1768,12 +1801,9 @@ class ApiService {
             ? postContent.substring(0, 200)
             : postContent,
       });
-    } catch (_) {
-      // Silent — signal collection never blocks the UI
-    }
+    } catch (_) {}
   }
 
-  /// Get the adaptive economic profile the brain has learned about this user.
   Future<Map<String, dynamic>> getAdaptiveProfile() async {
     try {
       final r = await _dio.get('/ai/adaptive-profile');
@@ -1782,8 +1812,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Find RiseUp users whose economic needs complement this user.
-  /// E.g. if user wants to sell a laptop, returns users looking to buy laptops.
   Future<List<dynamic>> getComplementaryUsers({int limit = 5}) async {
     try {
       final r = await _dio.get('/ai/complementary-users',
