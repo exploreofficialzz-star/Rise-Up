@@ -1,7 +1,10 @@
 // frontend/lib/screens/agent/agent_screen.dart
 //
-// APEX Agent — Clean, centered interface matching the reference design
-// Adaptive to system theme (light/dark) with exact colors from image
+// APEX Agent — v6.0
+// • Claude AI-style live task execution preview (expandable steps card)
+// • Twinkling / pulsing star ⭐ while task is running
+// • Quota + ad-credit + premium limits all wired up
+// • Simple, focused interface matching Claude AI mobile feel
 
 import 'dart:async';
 import 'dart:convert';
@@ -20,17 +23,16 @@ import '../../services/ad_manager.dart';
 import '../../services/currency_service.dart';
 
 // ─────────────────────────────────────────────────────
-// Message model
+// Models
 // ─────────────────────────────────────────────────────
 
-enum _Role { user, agent, thinking, tool, action, error, system }
+enum _Role { user, agent, action, error, system }
 
 class _Msg {
   final _Role   role;
   final String  text;
   final String? toolName;
   final String? toolCategory;
-  final bool    isCollapsed;
   final String? metadata;
   final String? modelTier;
 
@@ -39,20 +41,24 @@ class _Msg {
     required this.text,
     this.toolName,
     this.toolCategory,
-    this.isCollapsed = false,
     this.metadata,
     this.modelTier,
   });
+}
 
-  _Msg copyWith({bool? isCollapsed, String? text}) => _Msg(
-        role:         role,
-        text:         text ?? this.text,
-        toolName:     toolName,
-        toolCategory: toolCategory,
-        isCollapsed:  isCollapsed ?? this.isCollapsed,
-        metadata:     metadata,
-        modelTier:    modelTier,
-      );
+/// A single step inside the live execution preview card.
+class _Step {
+  final String tool;
+  final String label;
+  final String category;
+  bool isDone;
+
+  _Step({
+    required this.tool,
+    required this.label,
+    required this.category,
+    this.isDone = false,
+  });
 }
 
 // ─────────────────────────────────────────────────────
@@ -68,37 +74,71 @@ class AgentScreen extends ConsumerStatefulWidget {
   ConsumerState<AgentScreen> createState() => _AgentScreenState();
 }
 
-class _AgentScreenState extends ConsumerState<AgentScreen> {
+class _AgentScreenState extends ConsumerState<AgentScreen>
+    with SingleTickerProviderStateMixin {
+  // Controllers
   final _inputCtrl  = TextEditingController();
   final _scrollCtrl = ScrollController();
   final _inputFocus = FocusNode();
 
-  List<_Msg> _msgs        = [];
-  bool       _isStreaming  = false;
-  bool       _inputEnabled = true;
-  String?    _workflowId;
-  String?    _sessionId;
-  int        _thinkIdx    = -1;
-  bool       _showSidebar = false;
-  bool       _hasStartedChat = false;
+  // Star twinkle animation
+  late final AnimationController _starCtrl;
+  late final Animation<double>   _starScale;
+  late final Animation<double>   _starGlow;
+
+  // Messages & live execution state
+  List<_Msg>  _msgs              = [];
+  List<_Step> _liveSteps         = [];
+  String      _currentThought    = '';
+  bool        _executionExpanded = false;
+
+  // Chat state
+  bool    _isStreaming    = false;
+  bool    _inputEnabled   = true;
+  String? _workflowId;
+  String? _sessionId;
+  bool    _showSidebar    = false;
+  bool    _hasStartedChat = false;
 
   @override
   void initState() {
     super.initState();
     _workflowId = widget.workflowId;
     _sessionId  = widget.sessionId;
+
+    _starCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
+    _starScale = Tween<double>(begin: 0.88, end: 1.18).animate(
+      CurvedAnimation(parent: _starCtrl, curve: Curves.easeInOut),
+    );
+    _starGlow = Tween<double>(begin: 0.25, end: 0.65).animate(
+      CurvedAnimation(parent: _starCtrl, curve: Curves.easeInOut),
+    );
+
     WidgetsBinding.instance.addPostFrameCallback((_) => _init());
   }
 
   @override
   void dispose() {
+    _starCtrl.dispose();
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     _inputFocus.dispose();
     super.dispose();
   }
 
-  // ── Initialize ─────────────────────────────────────
+  void _startStar() {
+    if (!_starCtrl.isAnimating) _starCtrl.repeat(reverse: true);
+  }
+
+  void _stopStar() {
+    _starCtrl.stop();
+    _starCtrl.animateTo(0, duration: const Duration(milliseconds: 300));
+  }
+
+  // ── Initialise ─────────────────────────────────────
   void _init() async {
     if (_sessionId != null) {
       await _loadSession(_sessionId!);
@@ -111,11 +151,11 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     try {
       final response = await api.get('/agent/chat/sessions/$sessionId');
       final messages = response['recent_messages'] as List? ?? [];
-
       setState(() {
         _msgs = messages
+            .where((m) => ['user', 'assistant'].contains(m['role']))
             .map((m) => _Msg(
-                  role:      _parseRole(m['role']),
+                  role:      m['role'] == 'user' ? _Role.user : _Role.agent,
                   text:      m['content'] ?? '',
                   modelTier: m['metadata']?['model_tier'],
                 ))
@@ -123,22 +163,10 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
         _sessionId = sessionId;
       });
       _scrollDown();
-    } catch (e) {
-      // Silent fail - show empty state
-    }
+    } catch (_) {}
   }
 
-  _Role _parseRole(String? role) {
-    return switch (role) {
-      'user'      => _Role.user,
-      'assistant' => _Role.agent,
-      'tool'      => _Role.tool,
-      'system'    => _Role.system,
-      _           => _Role.agent,
-    };
-  }
-
-  // ── Submit message ──────────────────────────────────
+  // ── Submit ──────────────────────────────────────────
   Future<void> _submit() async {
     final text = _inputCtrl.text.trim();
     if (text.isEmpty || _isStreaming) return;
@@ -148,18 +176,25 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
 
     setState(() {
       _msgs.add(_Msg(role: _Role.user, text: text));
-      _isStreaming  = true;
-      _inputEnabled = false;
-      _hasStartedChat = true;
+      _isStreaming       = true;
+      _inputEnabled      = false;
+      _hasStartedChat    = true;
+      _liveSteps         = [];
+      _currentThought    = 'Understanding your goal...';
+      _executionExpanded = false;
     });
+    _startStar();
     _scrollDown();
 
     if (!adManager.canUseAgent) {
       _showLimitDialog();
       setState(() {
-        _isStreaming  = false;
-        _inputEnabled = true;
+        _isStreaming    = false;
+        _inputEnabled   = true;
+        _currentThought = '';
+        _liveSteps      = [];
       });
+      _stopStar();
       return;
     }
     adManager.recordAgentUse();
@@ -178,13 +213,6 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
 
   // ── Full agent run (SSE streaming) ──────────────────
   Future<void> _agentRun(String task, String currCode) async {
-    setState(() {
-      _thinkIdx = _msgs.length;
-      _msgs.add(const _Msg(
-          role: _Role.thinking, text: 'Understanding your goal...'));
-    });
-    _scrollDown();
-
     try {
       final profile = ref.read(profileProvider).valueOrNull ?? {};
       final stream  = api.streamPost('/agent/run-stream', {
@@ -204,20 +232,19 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
         if (!mounted) break;
         _onEvent(event);
       }
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
       setState(() {
-        if (_thinkIdx >= 0 && _thinkIdx < _msgs.length) {
-          _msgs.removeAt(_thinkIdx);
-          _thinkIdx = -1;
-        }
-        _msgs.removeWhere((m) => m.role == _Role.tool);
+        _liveSteps      = [];
+        _currentThought = '';
         _msgs.add(const _Msg(
-            role: _Role.error,
-            text: 'Connection issue. Please try again.'));
+          role: _Role.error,
+          text: 'Connection issue. Please try again.',
+        ));
         _isStreaming  = false;
         _inputEnabled = true;
       });
+      _stopStar();
     }
   }
 
@@ -227,34 +254,29 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
         case 'quota_check':
           break;
 
+        case 'brain_context':
+          // Internal RiseUp context loaded — silent
+          break;
+
         case 'thinking':
           final thought = event.data['thought']?.toString() ?? '';
-          if (_thinkIdx >= 0 && _thinkIdx < _msgs.length) {
-            _msgs[_thinkIdx] = _Msg(
-              role:      _Role.thinking,
-              text:      thought.isEmpty ? 'Thinking...' : thought,
-              modelTier: event.data['tier']?.toString(),
-            );
-          }
+          _currentThought = thought.isEmpty ? 'Thinking...' : thought;
 
         case 'tool_call':
           final tool = event.data['tool']?.toString() ?? '';
           final cat  = event.data['category']?.toString() ?? 'thinking';
-          _msgs.add(_Msg(
-            role:         _Role.tool,
-            text:         _toolLabel(tool),
-            toolName:     tool,
-            toolCategory: cat,
-            modelTier:    event.data['tier']?.toString(),
+          _liveSteps.add(_Step(
+            tool:     tool,
+            label:    _toolLabel(tool),
+            category: cat,
           ));
-          _scrollDown();
+          _currentThought = '${_toolLabel(tool)}...';
 
         case 'tool_result':
           final tool = event.data['tool']?.toString() ?? '';
-          for (int i = _msgs.length - 1; i >= 0; i--) {
-            if (_msgs[i].role == _Role.tool &&
-                _msgs[i].toolName == tool) {
-              _msgs[i] = _msgs[i].copyWith(isCollapsed: true);
+          for (final step in _liveSteps.reversed) {
+            if (step.tool == tool && !step.isDone) {
+              step.isDone = true;
               break;
             }
           }
@@ -262,8 +284,10 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
         case 'action_done':
           final tool   = event.data['tool']?.toString() ?? '';
           final result = event.data['result'] as Map? ?? {};
-          final ok =
-              result['posted'] == true || result['sent'] == true;
+          final ok = result['posted'] == true || result['sent'] == true;
+          for (final step in _liveSteps.reversed) {
+            if (step.tool == tool) { step.isDone = true; break; }
+          }
           _msgs.add(_Msg(
             role:         _Role.action,
             text:         ok
@@ -272,52 +296,35 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
             toolName:     tool,
             toolCategory: 'action',
             metadata:     jsonEncode(result),
-            modelTier:    event.data['tier']?.toString(),
           ));
-          _scrollDown();
 
         case 'finalizing':
-          if (_thinkIdx >= 0 && _thinkIdx < _msgs.length) {
-            _msgs[_thinkIdx] = const _Msg(
-                role: _Role.thinking, text: '', isCollapsed: true);
-          }
+          _currentThought = 'Writing your complete plan...';
 
         case 'complete':
-          if (_thinkIdx >= 0 && _thinkIdx < _msgs.length) {
-            _msgs.removeAt(_thinkIdx);
-            _thinkIdx = -1;
-          }
-          _msgs.removeWhere((m) => m.role == _Role.tool);
-
-          _workflowId =
-              event.data['workflow_id']?.toString() ?? _workflowId;
-          _sessionId =
-              event.data['session_id']?.toString() ?? _sessionId;
-
+          _workflowId = event.data['workflow_id']?.toString() ?? _workflowId;
+          _sessionId  = event.data['session_id']?.toString()  ?? _sessionId;
           _msgs.add(_Msg(
             role:      _Role.agent,
-            text:      _buildResponse(
-                Map<String, dynamic>.from(event.data)),
+            text:      _buildResponse(Map<String, dynamic>.from(event.data)),
             metadata:  jsonEncode(event.data),
             modelTier: event.data['model_tier']?.toString() ?? 'free',
           ));
-          _isStreaming  = false;
-          _inputEnabled = true;
-          _scrollDown();
+          _liveSteps      = [];
+          _currentThought = '';
+          _isStreaming     = false;
+          _inputEnabled    = true;
 
         case 'error':
-          if (_thinkIdx >= 0 && _thinkIdx < _msgs.length) {
-            _msgs.removeAt(_thinkIdx);
-            _thinkIdx = -1;
-          }
-          _msgs.removeWhere((m) => m.role == _Role.tool);
+          _liveSteps      = [];
+          _currentThought = '';
           final errMsg = event.data['message']?.toString() ?? '';
           if (errMsg.contains('limit')) {
             _msgs.add(const _Msg(
               role: _Role.system,
-              text: '**Daily limit reached** 🔒\n\nYou\'ve used all your '
-                  'free runs today. Watch an ad for 1 more, or upgrade to '
-                  'Premium for unlimited access.',
+              text: '**Daily limit reached** 🔒\n\nYou\'ve used all your free '
+                  'runs today. Watch an ad for 1 more, or upgrade to Premium '
+                  'for unlimited access.',
             ));
           } else {
             _msgs.add(const _Msg(
@@ -329,14 +336,16 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
           _inputEnabled = true;
       }
     });
+
+    if (!_isStreaming) _stopStar();
     _scrollDown();
   }
 
   // ── Follow-up chat ──────────────────────────────────
   Future<void> _chatRound(String message) async {
     setState(() {
-      _thinkIdx = _msgs.length;
-      _msgs.add(const _Msg(role: _Role.thinking, text: ''));
+      _liveSteps      = [];
+      _currentThought = 'Thinking...';
     });
     _scrollDown();
 
@@ -349,12 +358,8 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
       });
 
       _sessionId = r['session_id']?.toString() ?? _sessionId;
-
       setState(() {
-        if (_thinkIdx >= 0 && _thinkIdx < _msgs.length) {
-          _msgs.removeAt(_thinkIdx);
-          _thinkIdx = -1;
-        }
+        _currentThought = '';
         _msgs.add(_Msg(
           role:      _Role.agent,
           text:      r['content']?.toString() ?? '...',
@@ -365,10 +370,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
       });
     } catch (_) {
       setState(() {
-        if (_thinkIdx >= 0 && _thinkIdx < _msgs.length) {
-          _msgs.removeAt(_thinkIdx);
-          _thinkIdx = -1;
-        }
+        _currentThought = '';
         _msgs.add(const _Msg(
           role: _Role.error,
           text: 'Connection issue. Please try again.',
@@ -377,6 +379,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
         _inputEnabled = true;
       });
     }
+    _stopStar();
     _scrollDown();
   }
 
@@ -385,7 +388,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
       if (_scrollCtrl.hasClients) {
         _scrollCtrl.animateTo(
           _scrollCtrl.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 250),
+          duration: const Duration(milliseconds: 300),
           curve: Curves.easeOut,
         );
       }
@@ -394,14 +397,17 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
 
   void _newChat() {
     setState(() {
-      _msgs         = [];
-      _workflowId   = null;
-      _sessionId    = null;
-      _isStreaming  = false;
-      _inputEnabled = true;
-      _thinkIdx     = -1;
-      _hasStartedChat = false;
+      _msgs              = [];
+      _liveSteps         = [];
+      _currentThought    = '';
+      _workflowId        = null;
+      _sessionId         = null;
+      _isStreaming        = false;
+      _inputEnabled       = true;
+      _hasStartedChat     = false;
+      _executionExpanded  = false;
     });
+    _stopStar();
     _inputFocus.requestFocus();
   }
 
@@ -410,13 +416,12 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
+      isScrollControlled: true,
       builder: (_) => _LimitSheet(
         isDark: isDark,
         onWatchAd: () {
           Navigator.pop(context);
-          adManager
-              .watchAdForAgentUse(context)
-              .then((ok) {
+          adManager.watchAdForAgentUse(context).then((ok) {
             if (ok && mounted) _submit();
           });
         },
@@ -424,27 +429,26 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     );
   }
 
-  // ── Build natural language response from agent data ─
+  // ── Build natural language response ────────────────
   String _buildResponse(Map<String, dynamic> data) {
     final buf     = StringBuffer();
-    final resp    = data['agent_response']?.toString()       ?? '';
-    final plan    = data['plan']                  as Map?  ?? {};
-    final steps   = data['steps']                as List? ?? [];
-    final tools   = data['free_tools']           as List? ?? [];
-    final opps    = data['opportunities_found']  as List? ?? [];
-    final docs    = data['documents_generated']  as List? ?? [];
-    final msgs    = data['outreach_messages']    as List? ?? [];
-    final posts   = data['social_posts']         as List? ?? [];
-    final now     = data['immediate_action']?.toString()     ?? '';
-    final insight = data['wealth_insight']?.toString()       ?? '';
+    final resp    = data['agent_response']?.toString()      ?? '';
+    final plan    = data['plan']                 as Map?  ?? {};
+    final steps   = data['steps']               as List? ?? [];
+    final tools   = data['free_tools']          as List? ?? [];
+    final opps    = data['opportunities_found'] as List? ?? [];
+    final docs    = data['documents_generated'] as List? ?? [];
+    final msgs    = data['outreach_messages']   as List? ?? [];
+    final posts   = data['social_posts']        as List? ?? [];
+    final now     = data['immediate_action']?.toString()    ?? '';
+    final insight = data['wealth_insight']?.toString()      ?? '';
 
     if (resp.isNotEmpty) { buf.writeln(resp); buf.writeln(); }
 
     if (plan['title'] != null) {
       buf.writeln('**${plan['title']}**');
       final r   = plan['income_range'] as Map? ?? {};
-      final sym = _getCurrencySymbol(
-          r['currency']?.toString() ?? currency.code);
+      final sym = _getCurrencySymbol(r['currency']?.toString() ?? currency.code);
       if ((r['max'] ?? 0) > 0) {
         buf.writeln(
             '$sym${_fmt(r['min'] ?? 0)} – $sym${_fmt(r['max'] ?? 0)}/mo  ·  '
@@ -472,70 +476,43 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
       buf.writeln('**${opps.length} real opportunities found:**');
       for (final o in opps.take(4)) {
         final opp = o as Map;
-        final fit = opp['fit_score'] != null
-            ? ' (${opp['fit_score']}% fit)'
-            : '';
-        buf.writeln(
-            '• **${opp['title']}** — ${opp['platform'] ?? ''}$fit');
-        if (opp['url']?.toString().isNotEmpty == true) {
-          buf.writeln('  ${opp['url']}');
-        }
+        final fit = opp['fit_score'] != null ? ' (${opp['fit_score']}% fit)' : '';
+        buf.writeln('• **${opp['title']}** — ${opp['platform'] ?? ''}$fit');
+        if (opp['url']?.toString().isNotEmpty == true) buf.writeln('  ${opp['url']}');
       }
       buf.writeln();
     }
 
     if (docs.isNotEmpty) {
-      buf.writeln('**Documents generated:** '
-          '${docs.map((d) => (d as Map)['type']).join(', ')}');
+      buf.writeln('**Documents generated:** ${docs.map((d) => (d as Map)['type']).join(', ')}');
       buf.writeln('_View in Workflow tab_');
       buf.writeln();
     }
 
-    if (msgs.isNotEmpty) {
-      buf.writeln(
-          '**${msgs.length} outreach message(s)** ready to send.');
-      buf.writeln();
-    }
-
-    if (posts.isNotEmpty) {
-      buf.writeln('**${posts.length} social post(s)** drafted.');
-      buf.writeln();
-    }
+    if (msgs.isNotEmpty) { buf.writeln('**${msgs.length} outreach message(s)** ready to send.'); buf.writeln(); }
+    if (posts.isNotEmpty) { buf.writeln('**${posts.length} social post(s)** drafted.'); buf.writeln(); }
 
     if (tools.isNotEmpty) {
-      buf.writeln('**Free tools:** '
-          '${tools.take(5).map((t) => (t as Map)['name']).join(' · ')}');
+      buf.writeln('**Free tools:** ${tools.take(5).map((t) => (t as Map)['name']).join(' · ')}');
       buf.writeln();
     }
 
-    if (now.isNotEmpty) {
-      buf.writeln('⚡ **Do this now:** $now');
-      buf.writeln();
-    }
-
-    if (insight.isNotEmpty) {
-      buf.writeln('_$insight');
-    }
-
+    if (now.isNotEmpty)     { buf.writeln('⚡ **Do this now:** $now'); buf.writeln(); }
+    if (insight.isNotEmpty) { buf.writeln('_$insight_'); }
     if (plan['warning']?.toString().isNotEmpty == true) {
-      buf.writeln();
-      buf.writeln('⚠️ ${plan['warning']}');
+      buf.writeln('\n⚠️ ${plan['warning']}');
     }
 
     return buf.toString().trim();
   }
 
-  // Safe currency symbol extraction
-  String _getCurrencySymbol(String currencyCode) {
+  String _getCurrencySymbol(String code) {
     try {
-      final formatted = NumberFormat.simpleCurrency(name: currencyCode)
-          .format(0);
-      return formatted
+      return NumberFormat.simpleCurrency(name: code)
+          .format(0)
           .replaceAll(RegExp(r'[\d,. ]'), '')
           .trim();
-    } catch (e) {
-      return currencyCode;
-    }
+    } catch (_) { return code; }
   }
 
   String _fmt(dynamic v) {
@@ -571,10 +548,10 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
       'generate_pitch_deck':       'Generating pitch deck',
       'scrape_live_opportunities': 'Finding live opportunities',
       'score_opportunity':         'Scoring opportunity',
-      'analyze_market_trends':     'Analyzing market trends',
+      'analyze_market_trends':     'Analysing market trends',
       'create_daily_action_plan':  'Creating action plan',
       'create_follow_up_plan':     'Creating follow-up plan',
-      'track_earnings_insight':    'Analyzing earnings',
+      'track_earnings_insight':    'Analysing earnings',
       'growth_milestone_check':    'Checking milestones',
     };
     return map[tool] ?? tool.replaceAll('_', ' ');
@@ -587,27 +564,25 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    
-    // Exact colors from the image - blue/purple gradient
-    final gradientColors = isDark 
-        ? [const Color(0xFF4A90D9), const Color(0xFF7B68EE)]  // Dark mode: brighter blue to purple
-        : [const Color(0xFF5B7FFF), const Color(0xFF8B5CF6)]; // Light mode: blue to violet
+    final gc     = isDark
+        ? [const Color(0xFF4A90D9), const Color(0xFF7B68EE)]
+        : [const Color(0xFF5B7FFF), const Color(0xFF8B5CF6)];
 
     return Scaffold(
       backgroundColor: isDark ? Colors.black : Colors.white,
       body: Row(
         children: [
-          if (_showSidebar) _buildSidebar(isDark, gradientColors),
+          if (_showSidebar) _buildSidebar(isDark, gc),
           Expanded(
             child: Column(
               children: [
-                _buildAppBar(isDark, gradientColors),
+                _buildAppBar(isDark, gc),
                 Expanded(
                   child: _hasStartedChat || _msgs.isNotEmpty
-                      ? _buildMessages(isDark, gradientColors)
-                      : _buildEmptyState(isDark, gradientColors),
+                      ? _buildMessages(isDark, gc)
+                      : _buildEmptyState(isDark, gc),
                 ),
-                _buildInput(isDark, gradientColors),
+                _buildInput(isDark, gc),
               ],
             ),
           ),
@@ -616,9 +591,10 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     );
   }
 
-  PreferredSizeWidget _buildAppBar(bool isDark, List<Color> gradientColors) {
-    final runsRemaining = adManager.agentUsesRemaining;
-    final isPremium     = adManager.isPremium;
+  // ── App Bar ─────────────────────────────────────────
+  PreferredSizeWidget _buildAppBar(bool isDark, List<Color> gc) {
+    final runsLeft  = adManager.agentUsesRemaining;
+    final isPremium = adManager.isPremium;
 
     return AppBar(
       backgroundColor: isDark ? Colors.black : Colors.white,
@@ -627,7 +603,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
       centerTitle: true,
       leading: IconButton(
         icon: Icon(
-          _showSidebar ? Iconsax.close_square : Iconsax.menu_1,
+          _showSidebar ? Icons.close_rounded : Iconsax.menu_1,
           color: isDark ? Colors.white : Colors.black87,
           size: 24,
         ),
@@ -636,26 +612,37 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
       title: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Star icon with gradient background - exact style from image
-          Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: gradientColors,
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: const Icon(
-              Icons.star_rounded,
-              color: Colors.white,
-              size: 18,
-            ),
+          // Twinkling star
+          AnimatedBuilder(
+            animation: _starCtrl,
+            builder: (_, __) {
+              final scale = _isStreaming ? _starScale.value : 1.0;
+              final glow  = _isStreaming ? _starGlow.value  : 0.3;
+              return Transform.scale(
+                scale: scale,
+                child: Container(
+                  width: 32, height: 32,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: gc,
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    borderRadius: BorderRadius.circular(8),
+                    boxShadow: [
+                      BoxShadow(
+                        color: gc[0].withOpacity(glow),
+                        blurRadius: 12,
+                        spreadRadius: 1,
+                      ),
+                    ],
+                  ),
+                  child: const Icon(Icons.star_rounded, color: Colors.white, size: 18),
+                ),
+              );
+            },
           ),
           const SizedBox(width: 10),
-          // APEX text - bigger and thicker as requested
           Text(
             'APEX',
             style: TextStyle(
@@ -668,41 +655,66 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
         ],
       ),
       actions: [
+        // Runs remaining badge
         if (!isPremium)
-          Container(
-            margin: const EdgeInsets.only(right: 8),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: runsRemaining > 0
-                  ? Colors.green.withOpacity(0.12)
-                  : Colors.red.withOpacity(0.12),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Text(
-              '$runsRemaining',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: runsRemaining > 0
-                    ? Colors.green
-                    : Colors.red,
+          GestureDetector(
+            onTap: runsLeft == 0 ? _showLimitDialog : null,
+            child: Container(
+              margin: const EdgeInsets.only(right: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: runsLeft > 1
+                    ? Colors.green.withOpacity(0.12)
+                    : runsLeft == 1
+                        ? Colors.orange.withOpacity(0.12)
+                        : Colors.red.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: runsLeft > 1
+                      ? Colors.green.withOpacity(0.25)
+                      : runsLeft == 1
+                          ? Colors.orange.withOpacity(0.25)
+                          : Colors.red.withOpacity(0.25),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    runsLeft > 0 ? Icons.bolt_rounded : Icons.lock_outline_rounded,
+                    size: 12,
+                    color: runsLeft > 1
+                        ? Colors.green
+                        : runsLeft == 1
+                            ? Colors.orange
+                            : Colors.red,
+                  ),
+                  const SizedBox(width: 3),
+                  Text(
+                    runsLeft > 0 ? '$runsLeft left' : 'Limit',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: runsLeft > 1
+                          ? Colors.green
+                          : runsLeft == 1
+                              ? Colors.orange
+                              : Colors.red,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
         IconButton(
-          icon: Icon(Icons.add_rounded, 
-            color: isDark ? Colors.white : Colors.black87, 
-            size: 24),
+          icon: Icon(Icons.add_rounded,
+              color: isDark ? Colors.white : Colors.black87, size: 24),
           tooltip: 'New conversation',
           onPressed: _newChat,
         ),
         if (_workflowId != null)
           IconButton(
-            icon: Icon(
-              Iconsax.flash,
-              color: gradientColors[0],
-              size: 20,
-            ),
+            icon: Icon(Iconsax.flash, color: gc[0], size: 20),
             tooltip: 'View Workflow',
             onPressed: () => context.push('/workflow/$_workflowId'),
           ),
@@ -710,53 +722,59 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     );
   }
 
-  Widget _buildSidebar(bool isDark, List<Color> gradientColors) {
+  // ── Sidebar ─────────────────────────────────────────
+  Widget _buildSidebar(bool isDark, List<Color> gc) {
     return Container(
-      width: 280,
-      color: isDark ? const Color(0xFF111111) : const Color(0xFFF8F8F8),
+      width: 272,
+      color: isDark ? const Color(0xFF0D0D0D) : const Color(0xFFF7F7F8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: GestureDetector(
-              onTap: _newChat,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 12),
-                decoration: BoxDecoration(
-                  color: isDark
-                      ? Colors.white.withOpacity(0.05)
-                      : Colors.white,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                    color: isDark 
-                        ? Colors.white.withOpacity(0.1) 
-                        : Colors.black.withOpacity(0.08),
+          SafeArea(
+            bottom: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+              child: GestureDetector(
+                onTap: _newChat,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: isDark ? Colors.white.withOpacity(0.05) : Colors.white,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: isDark
+                          ? Colors.white.withOpacity(0.09)
+                          : Colors.black.withOpacity(0.08),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.add, size: 18,
+                          color: isDark ? Colors.white.withOpacity(0.7) : Colors.black54),
+                      const SizedBox(width: 10),
+                      Text(
+                        'New chat',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                          color: isDark ? Colors.white.withOpacity(0.9) : Colors.black87,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.add,
-                      size: 20,
-                      color: isDark
-                          ? Colors.white.withOpacity(0.7)
-                          : Colors.black54,
-                    ),
-                    const SizedBox(width: 10),
-                    Text(
-                      'New chat',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                        color: isDark
-                            ? Colors.white.withOpacity(0.9)
-                            : Colors.black87,
-                      ),
-                    ),
-                  ],
-                ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
+            child: Text(
+              'Recent',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.6,
+                color: isDark ? Colors.white.withOpacity(0.35) : Colors.black.withOpacity(0.35),
               ),
             ),
           ),
@@ -767,86 +785,69 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
                 if (!snapshot.hasData) {
                   return Center(
                     child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: gradientColors[0],
-                    ),
+                        strokeWidth: 2, color: gc[0]),
                   );
                 }
-
-                final sessions =
-                    snapshot.data?['sessions'] as List? ?? [];
-
+                final sessions = snapshot.data?['sessions'] as List? ?? [];
                 if (sessions.isEmpty) {
                   return Center(
                     child: Text(
                       'No conversations yet',
                       style: TextStyle(
                         fontSize: 13,
-                        color: isDark 
-                            ? Colors.white.withOpacity(0.4) 
-                            : Colors.black.withOpacity(0.4),
+                        color: isDark
+                            ? Colors.white.withOpacity(0.3)
+                            : Colors.black.withOpacity(0.3),
                       ),
                     ),
                   );
                 }
-
                 return ListView.builder(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
                   itemCount: sessions.length,
-                  itemBuilder: (context, index) {
-                    final session  = sessions[index];
-                    final isActive = session['id'] == _sessionId;
-
+                  itemBuilder: (_, i) {
+                    final sess     = sessions[i];
+                    final isActive = sess['id'] == _sessionId;
                     return ListTile(
                       dense: true,
                       selected: isActive,
-                      selectedTileColor:
-                          gradientColors[0].withOpacity(0.1),
+                      selectedTileColor: gc[0].withOpacity(0.08),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8)),
                       leading: Icon(
                         Iconsax.message_text,
-                        size: 20,
+                        size: 18,
                         color: isActive
-                            ? gradientColors[0]
+                            ? gc[0]
                             : (isDark
-                                ? Colors.white.withOpacity(0.5)
-                                : Colors.black45),
+                                ? Colors.white.withOpacity(0.45)
+                                : Colors.black38),
                       ),
                       title: Text(
-                        session['title'] ?? 'Untitled',
+                        sess['title'] ?? 'Untitled',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: isActive
-                              ? FontWeight.w600
-                              : FontWeight.normal,
-                          color: isDark
-                              ? Colors.white
-                              : Colors.black87,
+                          fontSize: 13,
+                          fontWeight:
+                              isActive ? FontWeight.w600 : FontWeight.normal,
+                          color: isDark ? Colors.white : Colors.black87,
                         ),
                       ),
                       subtitle: Text(
-                        _formatDate(session['updated_at']),
+                        _formatDate(sess['updated_at']),
                         style: TextStyle(
                           fontSize: 11,
                           color: isDark
-                              ? Colors.white.withOpacity(0.4)
+                              ? Colors.white.withOpacity(0.35)
                               : Colors.black38,
                         ),
                       ),
                       onTap: () {
                         setState(() => _showSidebar = false);
-                        _loadSession(session['id']);
+                        _loadSession(sess['id']);
+                        setState(() => _hasStartedChat = true);
                       },
-                      trailing: isActive
-                          ? Container(
-                              width: 6,
-                              height: 6,
-                              decoration: BoxDecoration(
-                                color: gradientColors[0],
-                                shape: BoxShape.circle,
-                              ),
-                            )
-                          : null,
                     );
                   },
                 );
@@ -858,161 +859,185 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     );
   }
 
-  String _formatDate(String? dateStr) {
-    if (dateStr == null) return '';
-    final date = DateTime.tryParse(dateStr);
-    if (date == null) return '';
-    final diff = DateTime.now().difference(date);
+  String _formatDate(String? s) {
+    if (s == null) return '';
+    final d = DateTime.tryParse(s);
+    if (d == null) return '';
+    final diff = DateTime.now().difference(d);
     if (diff.inDays == 0) return 'Today';
     if (diff.inDays == 1) return 'Yesterday';
-    if (diff.inDays < 7)  return '${diff.inDays} days ago';
-    return '${date.day}/${date.month}/${date.year}';
+    if (diff.inDays < 7)  return '${diff.inDays}d ago';
+    return '${d.day}/${d.month}';
   }
 
-  // Empty state matching the image exactly
-  Widget _buildEmptyState(bool isDark, List<Color> gradientColors) {
-    final profile = ref.read(profileProvider).valueOrNull ?? {};
-    final name    = (profile['full_name']?.toString() ?? '').split(' ').first;
-
+  // ── Empty state ─────────────────────────────────────
+  Widget _buildEmptyState(bool isDark, List<Color> gc) {
     return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          // Large gradient glow behind APEX
-          Container(
-            width: 200,
-            height: 200,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: RadialGradient(
-                colors: [
-                  gradientColors[0].withOpacity(0.3),
-                  gradientColors[1].withOpacity(0.1),
-                  Colors.transparent,
-                ],
-                stops: const [0.0, 0.5, 1.0],
-              ),
-            ),
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Star icon - larger version
-                  Container(
-                    width: 56,
-                    height: 56,
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: gradientColors,
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // Large glowing star badge
+            AnimatedBuilder(
+              animation: _starCtrl,
+              builder: (_, __) {
+                return Container(
+                  width: 72, height: 72,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: gc,
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: [
+                      BoxShadow(
+                        color: gc[0].withOpacity(0.4),
+                        blurRadius: 28,
+                        spreadRadius: 2,
                       ),
-                      borderRadius: BorderRadius.circular(14),
-                      boxShadow: [
-                        BoxShadow(
-                          color: gradientColors[0].withOpacity(0.4),
-                          blurRadius: 20,
-                          spreadRadius: 2,
-                        ),
-                      ],
-                    ),
-                    child: const Icon(
-                      Icons.star_rounded,
-                      color: Colors.white,
-                      size: 32,
-                    ),
+                    ],
                   ),
-                  const SizedBox(height: 24),
-                  // APEX text - much bigger and thicker
-                  Text(
-                    'APEX',
-                    style: TextStyle(
-                      fontSize: 56,
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: 4,
-                      color: isDark ? Colors.white : Colors.black,
-                      height: 1,
-                    ),
+                  child: const Icon(
+                    Icons.star_rounded,
+                    color: Colors.white,
+                    size: 40,
                   ),
-                ],
+                );
+              },
+            ),
+            const SizedBox(height: 28),
+            Text(
+              'APEX',
+              style: TextStyle(
+                fontSize: 48,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 5,
+                color: isDark ? Colors.white : Colors.black,
+                height: 1,
               ),
             ),
-          ),
-          const SizedBox(height: 48),
-          // Hey with wave
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                'Hey',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w500,
-                  color: isDark ? Colors.white : Colors.black87,
+            const SizedBox(height: 8),
+            Text(
+              'Your autonomous wealth agent',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w400,
+                color: isDark
+                    ? Colors.white.withOpacity(0.4)
+                    : Colors.black.withOpacity(0.4),
+                letterSpacing: 0.3,
+              ),
+            ),
+            const SizedBox(height: 48),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  'How can I help you today?',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w500,
+                    color: isDark ? Colors.white : Colors.black87,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              const Text(
-                '👋',
-                style: TextStyle(fontSize: 24),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          // Subtitle
-          Text(
-            'What can I help you with today?',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w400,
-              color: isDark 
-                  ? Colors.white.withOpacity(0.6) 
-                  : Colors.black.withOpacity(0.5),
+              ],
             ),
-          ),
-        ],
+            const SizedBox(height: 32),
+            // Suggested prompts
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              alignment: WrapAlignment.center,
+              children: [
+                _SuggestionChip(
+                  label: '💰 Find income opportunities',
+                  isDark: isDark,
+                  gc: gc,
+                  onTap: () {
+                    _inputCtrl.text = 'Find real income opportunities for my skills';
+                    _submit();
+                  },
+                ),
+                _SuggestionChip(
+                  label: '📋 Write a proposal',
+                  isDark: isDark,
+                  gc: gc,
+                  onTap: () {
+                    _inputCtrl.text = 'Write me a professional business proposal';
+                    _submit();
+                  },
+                ),
+                _SuggestionChip(
+                  label: '📈 Grow my freelance income',
+                  isDark: isDark,
+                  gc: gc,
+                  onTap: () {
+                    _inputCtrl.text = 'Help me grow my freelance income this month';
+                    _submit();
+                  },
+                ),
+                _SuggestionChip(
+                  label: '🔍 Research a niche market',
+                  isDark: isDark,
+                  gc: gc,
+                  onTap: () {
+                    _inputCtrl.text = 'Research a profitable niche market for me';
+                    _submit();
+                  },
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
-    ).animate().fadeIn(duration: 600.ms).scale(
-      begin: const Offset(0.95, 0.95),
-      end: const Offset(1, 1),
-      duration: 600.ms,
+    ).animate().fadeIn(duration: 500.ms).slideY(
+      begin: 0.04,
+      end: 0,
+      duration: 500.ms,
       curve: Curves.easeOut,
     );
   }
 
-  Widget _buildMessages(bool isDark, List<Color> gradientColors) {
+  // ── Message list ─────────────────────────────────────
+  Widget _buildMessages(bool isDark, List<Color> gc) {
+    final showLiveCard =
+        _isStreaming && (_liveSteps.isNotEmpty || _currentThought.isNotEmpty);
+
     return ListView.builder(
       controller: _scrollCtrl,
-      padding: const EdgeInsets.fromLTRB(0, 8, 0, 16),
-      itemCount: _msgs.length,
+      padding: const EdgeInsets.fromLTRB(0, 8, 0, 20),
+      itemCount: _msgs.length + (showLiveCard ? 1 : 0),
       itemBuilder: (_, i) {
+        if (showLiveCard && i == _msgs.length) {
+          return _LiveExecutionCard(
+            steps:          _liveSteps,
+            currentThought: _currentThought,
+            isDark:         isDark,
+            gc:             gc,
+            isExpanded:     _executionExpanded,
+            onToggle: () =>
+                setState(() => _executionExpanded = !_executionExpanded),
+          );
+        }
         final msg = _msgs[i];
         return switch (msg.role) {
-          _Role.user     => _UserBubble(msg: msg, gradientColors: gradientColors),
-          _Role.agent    => _AgentBubble(
+          _Role.user   => _UserBubble(msg: msg, gc: gc),
+          _Role.agent  => _AgentBubble(
               msg:        msg,
               isDark:     isDark,
-              gradientColors: gradientColors,
+              gc:         gc,
               onWorkflow: _workflowId != null
                   ? () => context.push('/workflow/$_workflowId')
                   : null,
             ),
-          _Role.thinking => _ThinkingBubble(
-              msg: msg, 
-              isDark: isDark,
-              gradientColors: gradientColors,
-            ),
-          _Role.tool     => _ToolLine(
-              msg: msg, 
-              isDark: isDark,
-              gradientColors: gradientColors,
-            ),
-          _Role.action   => _ActionLine(msg: msg),
-          _Role.error    => _ErrorLine(msg: msg),
-          _Role.system   => _SystemMsg(
+          _Role.action => _ActionLine(msg: msg),
+          _Role.error  => _ErrorLine(msg: msg),
+          _Role.system => _SystemMsg(
               msg:       msg,
               isDark:    isDark,
-              gradientColors: gradientColors,
+              gc:        gc,
               onUpgrade: () => context.push('/premium'),
               onWatchAd: () => adManager
                   .watchAdForAgentUse(context)
@@ -1025,27 +1050,24 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
     );
   }
 
-  Widget _buildInput(bool isDark, List<Color> gradientColors) {
+  // ── Input bar ────────────────────────────────────────
+  Widget _buildInput(bool isDark, List<Color> gc) {
     final hintColor = isDark
-        ? Colors.white.withOpacity(0.35)
-        : Colors.black.withOpacity(0.35);
-    final disabledIconColor = isDark
-        ? Colors.white.withOpacity(0.2)
-        : Colors.black.withOpacity(0.2);
-    final inputBg = isDark 
-        ? const Color(0xFF1A1A1A) 
-        : const Color(0xFFF5F5F7);
+        ? Colors.white.withOpacity(0.32)
+        : Colors.black.withOpacity(0.32);
+    final inputBg =
+        isDark ? const Color(0xFF1A1A1A) : const Color(0xFFF4F4F6);
 
     return SafeArea(
       top: false,
       child: Container(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
         decoration: BoxDecoration(
           color: isDark ? Colors.black : Colors.white,
           border: Border(
             top: BorderSide(
-              color: isDark 
-                  ? Colors.white.withOpacity(0.08) 
+              color: isDark
+                  ? Colors.white.withOpacity(0.07)
                   : Colors.black.withOpacity(0.06),
               width: 0.5,
             ),
@@ -1056,14 +1078,14 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
           children: [
             Expanded(
               child: Container(
-                constraints: const BoxConstraints(maxHeight: 200),
+                constraints: const BoxConstraints(maxHeight: 180),
                 decoration: BoxDecoration(
                   color: inputBg,
-                  borderRadius: BorderRadius.circular(24),
+                  borderRadius: BorderRadius.circular(22),
                   border: Border.all(
-                    color: isDark 
-                        ? Colors.white.withOpacity(0.1) 
-                        : Colors.black.withOpacity(0.08),
+                    color: isDark
+                        ? Colors.white.withOpacity(0.09)
+                        : Colors.black.withOpacity(0.07),
                   ),
                 ),
                 child: TextField(
@@ -1075,57 +1097,66 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
                   textInputAction: TextInputAction.newline,
                   style: TextStyle(
                     fontSize: 16,
-                    color:    isDark ? Colors.white : Colors.black87,
-                    height:   1.4,
+                    color: isDark ? Colors.white : Colors.black87,
+                    height: 1.4,
                   ),
                   decoration: InputDecoration(
-                    hintText:       'Ask anything...',
-                    hintStyle:      TextStyle(
-                      fontSize: 16,
-                      color:    hintColor,
-                    ),
+                    hintText: _isStreaming
+                        ? 'APEX is working...'
+                        : 'Ask APEX anything...',
+                    hintStyle: TextStyle(fontSize: 16, color: hintColor),
                     border:         InputBorder.none,
-                    contentPadding: const EdgeInsets.fromLTRB(
-                        20, 16, 20, 16),
+                    contentPadding: const EdgeInsets.fromLTRB(18, 14, 18, 14),
                   ),
                 ),
               ),
             ),
-            const SizedBox(width: 12),
-            GestureDetector(
-              onTap: _isStreaming ? null : _submit,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                width:  48,
-                height: 48,
-                decoration: BoxDecoration(
-                  gradient: _isStreaming
-                      ? null
-                      : LinearGradient(
-                          colors: gradientColors,
-                          begin: Alignment.topLeft,
-                          end:   Alignment.bottomRight,
-                        ),
-                  color: _isStreaming
-                      ? (isDark
-                          ? Colors.white.withOpacity(0.1)
-                          : Colors.black.withOpacity(0.1))
-                      : null,
-                  borderRadius: BorderRadius.circular(24),
-                  boxShadow: _isStreaming ? null : [
-                    BoxShadow(
-                      color: gradientColors[0].withOpacity(0.3),
-                      blurRadius: 8,
-                      offset: const Offset(0, 2),
+            const SizedBox(width: 10),
+            AnimatedBuilder(
+              animation: _starCtrl,
+              builder: (_, __) {
+                final active = !_isStreaming;
+                return GestureDetector(
+                  onTap: active ? _submit : null,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    width: 46, height: 46,
+                    decoration: BoxDecoration(
+                      gradient: active
+                          ? LinearGradient(
+                              colors: gc,
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                            )
+                          : null,
+                      color: active
+                          ? null
+                          : (isDark
+                              ? Colors.white.withOpacity(0.08)
+                              : Colors.black.withOpacity(0.08)),
+                      borderRadius: BorderRadius.circular(23),
+                      boxShadow: active
+                          ? [
+                              BoxShadow(
+                                color: gc[0].withOpacity(0.3),
+                                blurRadius: 10,
+                                offset: const Offset(0, 3),
+                              ),
+                            ]
+                          : null,
                     ),
-                  ],
-                ),
-                child: Icon(
-                  Icons.arrow_upward_rounded,
-                  color: _isStreaming ? disabledIconColor : Colors.white,
-                  size: 22,
-                ),
-              ),
+                    child: Icon(
+                      Icons.arrow_upward_rounded,
+                      color: active
+                          ? Colors.white
+                          : (isDark
+                              ? Colors.white.withOpacity(0.2)
+                              : Colors.black.withOpacity(0.2)),
+                      size: 20,
+                    ),
+                  ),
+                );
+              },
             ),
           ],
         ),
@@ -1135,24 +1166,292 @@ class _AgentScreenState extends ConsumerState<AgentScreen> {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Bubble widgets
+// Suggestion chip
+// ─────────────────────────────────────────────────────────────────
+
+class _SuggestionChip extends StatelessWidget {
+  final String     label;
+  final bool       isDark;
+  final List<Color> gc;
+  final VoidCallback onTap;
+
+  const _SuggestionChip({
+    required this.label,
+    required this.isDark,
+    required this.gc,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: isDark
+              ? Colors.white.withOpacity(0.05)
+              : Colors.black.withOpacity(0.04),
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(
+            color: isDark
+                ? Colors.white.withOpacity(0.1)
+                : Colors.black.withOpacity(0.08),
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 13,
+            color: isDark ? Colors.white.withOpacity(0.8) : Colors.black87,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Live execution card — Claude AI-style task preview
+// ─────────────────────────────────────────────────────────────────
+
+class _LiveExecutionCard extends StatefulWidget {
+  final List<_Step>   steps;
+  final String        currentThought;
+  final bool          isDark;
+  final List<Color>   gc;
+  final bool          isExpanded;
+  final VoidCallback  onToggle;
+
+  const _LiveExecutionCard({
+    required this.steps,
+    required this.currentThought,
+    required this.isDark,
+    required this.gc,
+    required this.isExpanded,
+    required this.onToggle,
+  });
+
+  @override
+  State<_LiveExecutionCard> createState() => _LiveExecutionCardState();
+}
+
+class _LiveExecutionCardState extends State<_LiveExecutionCard>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _dotCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _dotCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1100),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _dotCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sub = widget.isDark
+        ? Colors.white.withOpacity(0.48)
+        : Colors.black.withOpacity(0.48);
+    final bgColor = widget.isDark
+        ? const Color(0xFF111111)
+        : const Color(0xFFF5F5F7);
+    final borderColor = widget.isDark
+        ? Colors.white.withOpacity(0.07)
+        : Colors.black.withOpacity(0.06);
+    final textColor = widget.isDark ? Colors.white : Colors.black87;
+    final doneCount  = widget.steps.where((s) => s.isDone).length;
+    final totalCount = widget.steps.length;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 6, 80, 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // APEX label row
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 28, height: 28,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(colors: widget.gc),
+                    borderRadius: BorderRadius.circular(7),
+                  ),
+                  child: const Icon(Icons.star_rounded,
+                      color: Colors.white, size: 14),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  'APEX',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1,
+                    color: textColor,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // The card itself
+          GestureDetector(
+            onTap: totalCount > 0 ? widget.onToggle : null,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 250),
+              curve: Curves.easeInOut,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: bgColor,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: borderColor),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Header row
+                  Row(
+                    children: [
+                      if (totalCount == 0) ...[
+                        _Dots(controller: _dotCtrl, color: widget.gc[0]),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            widget.currentThought.isEmpty
+                                ? 'Working...'
+                                : widget.currentThought,
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: sub,
+                              fontStyle: FontStyle.italic,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ] else ...[
+                        _Dots(controller: _dotCtrl, color: widget.gc[0]),
+                        const SizedBox(width: 10),
+                        Text(
+                          '$doneCount of $totalCount steps done',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: widget.gc[0],
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const Spacer(),
+                        Icon(
+                          widget.isExpanded
+                              ? Icons.keyboard_arrow_up_rounded
+                              : Icons.keyboard_arrow_down_rounded,
+                          size: 18,
+                          color: sub,
+                        ),
+                      ],
+                    ],
+                  ),
+                  // Current thought below step count
+                  if (widget.currentThought.isNotEmpty && totalCount > 0) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      widget.currentThought,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: sub,
+                        fontStyle: FontStyle.italic,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                  // Expanded steps list
+                  if (widget.isExpanded && totalCount > 0) ...[
+                    const SizedBox(height: 12),
+                    Divider(height: 1, color: borderColor),
+                    const SizedBox(height: 10),
+                    ...widget.steps.map((step) {
+                      final catIcon = switch (step.category) {
+                        'research'  => '🔍',
+                        'action'    => '⚡',
+                        'document'  => '📄',
+                        'thinking'  => '💭',
+                        _           => '●',
+                      };
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 20,
+                              child: step.isDone
+                                  ? Icon(Icons.check_circle_outline_rounded,
+                                      size: 16, color: widget.gc[0])
+                                  : SizedBox(
+                                      width: 14, height: 14,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 1.5,
+                                        color: widget.gc[0],
+                                      ),
+                                    ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                '$catIcon ${step.label}',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: step.isDone ? sub : textColor,
+                                  fontWeight: step.isDone
+                                      ? FontWeight.normal
+                                      : FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    ).animate().fadeIn(duration: 200.ms);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Message bubbles
 // ─────────────────────────────────────────────────────────────────
 
 class _UserBubble extends StatelessWidget {
-  final _Msg msg;
-  final List<Color> gradientColors;
-  const _UserBubble({required this.msg, required this.gradientColors});
+  final _Msg        msg;
+  final List<Color> gc;
+  const _UserBubble({required this.msg, required this.gc});
 
   @override
   Widget build(BuildContext context) {
     return Align(
       alignment: Alignment.centerRight,
       child: Container(
-        margin:  const EdgeInsets.fromLTRB(80, 4, 16, 4),
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        margin:  const EdgeInsets.fromLTRB(72, 4, 16, 4),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
         decoration: BoxDecoration(
           gradient: LinearGradient(
-            colors: gradientColors,
+            colors: gc,
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
@@ -1166,87 +1465,79 @@ class _UserBubble extends StatelessWidget {
         child: Text(
           msg.text,
           style: const TextStyle(
-            color:    Colors.white,
-            fontSize: 16,
-            height:   1.45,
-          ),
+            color: Colors.white, fontSize: 16, height: 1.45),
         ),
       ),
-    ).animate().fadeIn(duration: 180.ms).slideY(
-        begin: 0.08, curve: Curves.easeOut);
+    ).animate().fadeIn(duration: 160.ms).slideY(
+        begin: 0.06, end: 0, duration: 160.ms, curve: Curves.easeOut);
   }
 }
 
 class _AgentBubble extends StatelessWidget {
   final _Msg         msg;
   final bool         isDark;
-  final List<Color>  gradientColors;
+  final List<Color>  gc;
   final VoidCallback? onWorkflow;
 
   const _AgentBubble({
     required this.msg,
     required this.isDark,
-    required this.gradientColors,
+    required this.gc,
     this.onWorkflow,
   });
 
   @override
   Widget build(BuildContext context) {
     final textColor = isDark ? Colors.white : Colors.black87;
-    final subColor = isDark
-        ? Colors.white.withOpacity(0.5)
-        : Colors.black.withOpacity(0.5);
+    final subColor  = isDark
+        ? Colors.white.withOpacity(0.45)
+        : Colors.black.withOpacity(0.45);
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 80, 8),
+      padding: const EdgeInsets.fromLTRB(16, 8, 64, 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Label row
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
-                  width: 28,
-                  height: 28,
+                  width: 28, height: 28,
                   decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: gradientColors,
-                    ),
+                    gradient: LinearGradient(colors: gc),
                     borderRadius: BorderRadius.circular(7),
                   ),
-                  child: const Icon(
-                    Icons.star_rounded,
-                    color: Colors.white,
-                    size: 14,
-                  ),
+                  child: const Icon(Icons.star_rounded,
+                      color: Colors.white, size: 14),
                 ),
                 const SizedBox(width: 10),
                 Text(
                   'APEX',
                   style: TextStyle(
-                    fontSize:      14,
-                    fontWeight:    FontWeight.w800,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
                     letterSpacing: 1,
-                    color:         textColor,
+                    color: textColor,
                   ),
                 ),
                 if (msg.modelTier != null) ...[
                   const SizedBox(width: 8),
                   Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 3),
+                        horizontal: 7, vertical: 3),
                     decoration: BoxDecoration(
                       color: msg.modelTier == 'premium'
-                          ? Colors.amber.withOpacity(0.15)
-                          : Colors.grey.withOpacity(0.15),
-                      borderRadius: BorderRadius.circular(6),
+                          ? Colors.amber.withOpacity(0.13)
+                          : Colors.grey.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(5),
                     ),
                     child: Text(
                       msg.modelTier!.toUpperCase(),
                       style: TextStyle(
-                        fontSize:   10,
+                        fontSize: 10,
                         fontWeight: FontWeight.w700,
                         color: msg.modelTier == 'premium'
                             ? Colors.amber
@@ -1258,16 +1549,15 @@ class _AgentBubble extends StatelessWidget {
               ],
             ),
           ),
-          _MdText(text: msg.text, isDark: isDark, accentColor: gradientColors[1]),
-          const SizedBox(height: 12),
+          _MdText(text: msg.text, isDark: isDark, accentColor: gc[1]),
+          const SizedBox(height: 10),
           Row(
             children: [
               _IconBtn(
                 icon:  Icons.copy_outlined,
                 color: subColor,
                 onTap: () {
-                  Clipboard.setData(
-                      ClipboardData(text: msg.text));
+                  Clipboard.setData(ClipboardData(text: msg.text));
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
                       content:  Text('Copied to clipboard'),
@@ -1283,14 +1573,13 @@ class _AgentBubble extends StatelessWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Iconsax.flash,
-                          size: 16, color: gradientColors[0]),
-                      const SizedBox(width: 6),
+                      Icon(Iconsax.flash, size: 15, color: gc[0]),
+                      const SizedBox(width: 5),
                       Text(
                         'View Workflow',
                         style: TextStyle(
-                          fontSize:   13,
-                          color:      gradientColors[0],
+                          fontSize: 13,
+                          color:      gc[0],
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -1302,159 +1591,9 @@ class _AgentBubble extends StatelessWidget {
           ),
         ],
       ),
-    ).animate().fadeIn(duration: 280.ms).slideY(
-        begin: 0.05, curve: Curves.easeOut);
+    ).animate().fadeIn(duration: 260.ms).slideY(
+        begin: 0.04, end: 0, duration: 260.ms, curve: Curves.easeOut);
   }
-}
-
-class _ThinkingBubble extends StatefulWidget {
-  final _Msg msg;
-  final bool isDark;
-  final List<Color> gradientColors;
-  const _ThinkingBubble({
-    required this.msg, 
-    required this.isDark,
-    required this.gradientColors,
-  });
-
-  @override
-  State<_ThinkingBubble> createState() => _ThinkingBubbleState();
-}
-
-class _ThinkingBubbleState extends State<_ThinkingBubble>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(vsync: this, duration: 1200.ms)
-      ..repeat();
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final sub = widget.isDark
-        ? Colors.white.withOpacity(0.5)
-        : Colors.black.withOpacity(0.5);
-    final empty =
-        widget.msg.text.isEmpty || widget.msg.isCollapsed;
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 6, 80, 6),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Container(
-            width: 28,
-            height: 28,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: widget.gradientColors,
-              ),
-              borderRadius: BorderRadius.circular(7),
-            ),
-            child: const Icon(
-              Icons.star_rounded,
-              color: Colors.white,
-              size: 14,
-            ),
-          ),
-          const SizedBox(width: 12),
-          if (!empty)
-            Expanded(
-              child: Text(
-                widget.msg.text,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize:   14,
-                  color:      sub,
-                  fontStyle:  FontStyle.italic,
-                  height:     1.4,
-                ),
-              ),
-            ),
-          if (!empty) const SizedBox(width: 8),
-          _Dots(controller: _ctrl, color: widget.gradientColors[0]),
-        ],
-      ),
-    ).animate().fadeIn(duration: 200.ms);
-  }
-}
-
-class _ToolLine extends StatelessWidget {
-  final _Msg msg;
-  final bool isDark;
-  final List<Color> gradientColors;
-  const _ToolLine({
-    required this.msg, 
-    required this.isDark,
-    required this.gradientColors,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    if (msg.isCollapsed) return const SizedBox.shrink();
-
-    final color = _categoryColor(msg.toolCategory);
-    final icon  = _categoryIcon(msg.toolCategory);
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(54, 2, 80, 2),
-      child: Row(
-        children: [
-          Container(
-            width: 2,
-            height: 12,
-            decoration: BoxDecoration(
-              color:        color.withOpacity(0.4),
-              borderRadius: BorderRadius.circular(1),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Text(
-            '$icon ${msg.text}',
-            style: TextStyle(
-              fontSize: 13,
-              color:    color.withOpacity(0.8),
-            ),
-          ),
-          const SizedBox(width: 8),
-          SizedBox(
-            width:  10,
-            height: 10,
-            child: CircularProgressIndicator(
-              strokeWidth: 1.5,
-              color:       color.withOpacity(0.5),
-            ),
-          ),
-        ],
-      ),
-    ).animate().fadeIn(duration: 150.ms);
-  }
-
-  Color _categoryColor(String? cat) => switch (cat) {
-        'research' => Colors.blue,
-        'action'   => Colors.green,
-        'document' => Colors.amber,
-        'thinking' => Colors.purple,
-        _          => Colors.purple,
-      };
-
-  String _categoryIcon(String? cat) => switch (cat) {
-        'research' => '🔍',
-        'action'   => '⚡',
-        'document' => '📄',
-        'thinking' => '💭',
-        _          => '●',
-      };
 }
 
 class _ActionLine extends StatelessWidget {
@@ -1464,12 +1603,12 @@ class _ActionLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(54, 2, 80, 2),
+      padding: const EdgeInsets.fromLTRB(56, 2, 80, 2),
       child: Text(
         msg.text,
         style: const TextStyle(
-          fontSize:   13,
-          color:      Colors.green,
+          fontSize: 13,
+          color: Colors.green,
           fontWeight: FontWeight.w500,
         ),
       ),
@@ -1484,23 +1623,17 @@ class _ErrorLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 6, 80, 6),
+      padding: const EdgeInsets.fromLTRB(16, 6, 64, 6),
       child: Container(
-        padding: const EdgeInsets.symmetric(
-            horizontal: 16, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
-          color:        Colors.red.withOpacity(0.08),
+          color:        Colors.red.withOpacity(0.07),
           borderRadius: BorderRadius.circular(12),
-          border:       Border.all(
-              color: Colors.red.withOpacity(0.2)),
+          border:       Border.all(color: Colors.red.withOpacity(0.18)),
         ),
         child: Text(
           msg.text,
-          style: const TextStyle(
-            fontSize: 15,
-            color:    Colors.red,
-            height:   1.4,
-          ),
+          style: const TextStyle(fontSize: 15, color: Colors.red, height: 1.45),
         ),
       ),
     ).animate().fadeIn();
@@ -1510,14 +1643,14 @@ class _ErrorLine extends StatelessWidget {
 class _SystemMsg extends StatelessWidget {
   final _Msg         msg;
   final bool         isDark;
-  final List<Color>  gradientColors;
+  final List<Color>  gc;
   final VoidCallback onUpgrade;
   final VoidCallback onWatchAd;
 
   const _SystemMsg({
     required this.msg,
     required this.isDark,
-    required this.gradientColors,
+    required this.gc,
     required this.onUpgrade,
     required this.onWatchAd,
   });
@@ -1530,19 +1663,19 @@ class _SystemMsg extends StatelessWidget {
         padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
           color: isDark
-              ? const Color(0xFF1A1A1A)
+              ? const Color(0xFF151515)
               : const Color(0xFFF5F5F7),
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
             color: isDark
-                ? Colors.white.withOpacity(0.08)
+                ? Colors.white.withOpacity(0.07)
                 : Colors.black.withOpacity(0.06),
           ),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _MdText(text: msg.text, isDark: isDark, accentColor: gradientColors[1]),
+            _MdText(text: msg.text, isDark: isDark, accentColor: gc[1]),
             const SizedBox(height: 16),
             Row(
               children: [
@@ -1550,18 +1683,17 @@ class _SystemMsg extends StatelessWidget {
                   child: OutlinedButton(
                     onPressed: onWatchAd,
                     style: OutlinedButton.styleFrom(
-                      side: BorderSide(color: gradientColors[0]),
+                      side: BorderSide(color: gc[0]),
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(10)),
-                      padding: const EdgeInsets.symmetric(
-                          vertical: 12),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
                     child: Text(
                       'Watch Ad',
                       style: TextStyle(
-                        color:      gradientColors[0],
+                        color: gc[0],
                         fontWeight: FontWeight.w600,
-                        fontSize:   14,
+                        fontSize: 14,
                       ),
                     ),
                   ),
@@ -1571,18 +1703,17 @@ class _SystemMsg extends StatelessWidget {
                   child: ElevatedButton(
                     onPressed: onUpgrade,
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: gradientColors[0],
+                      backgroundColor: gc[0],
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(10)),
-                      padding: const EdgeInsets.symmetric(
-                          vertical: 12),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
                     child: const Text(
                       'Upgrade',
                       style: TextStyle(
-                        color:      Colors.white,
+                        color: Colors.white,
                         fontWeight: FontWeight.w600,
-                        fontSize:   14,
+                        fontSize: 14,
                       ),
                     ),
                   ),
@@ -1597,7 +1728,7 @@ class _SystemMsg extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Helper widgets
+// Markdown text renderer
 // ─────────────────────────────────────────────────────────────────
 
 class _MdText extends StatelessWidget {
@@ -1610,9 +1741,8 @@ class _MdText extends StatelessWidget {
   Widget build(BuildContext context) {
     final base  = isDark ? Colors.white : Colors.black87;
     final muted = isDark
-        ? Colors.white.withOpacity(0.6)
-        : Colors.black.withOpacity(0.6);
-
+        ? Colors.white.withOpacity(0.55)
+        : Colors.black.withOpacity(0.55);
     final spans = <TextSpan>[];
     final lines = text.split('\n');
 
@@ -1624,11 +1754,7 @@ class _MdText extends StatelessWidget {
         spans.add(TextSpan(
           text: '  ${line.substring(2)}',
           style: TextStyle(
-            color:      muted,
-            fontSize:   14,
-            height:     1.5,
-            fontStyle:  FontStyle.italic,
-          ),
+            color: muted, fontSize: 14, height: 1.5, fontStyle: FontStyle.italic),
         ));
         continue;
       }
@@ -1640,34 +1766,26 @@ class _MdText extends StatelessWidget {
         if (m.start > last) {
           spans.add(TextSpan(
             text:  line.substring(last, m.start),
-            style: TextStyle(
-              color: base, fontSize: 16, height: 1.5),
+            style: TextStyle(color: base, fontSize: 16, height: 1.5),
           ));
         }
-
         if (m.group(1) != null) {
           spans.add(TextSpan(
-            text:  m.group(1),
+            text: m.group(1),
             style: TextStyle(
-              color:      base,
-              fontSize:   16,
-              height:     1.5,
-              fontWeight: FontWeight.w700,
-            ),
+                color: base, fontSize: 16, height: 1.5,
+                fontWeight: FontWeight.w700),
           ));
         } else if (m.group(2) != null) {
           spans.add(TextSpan(
-            text:  m.group(2),
+            text: m.group(2),
             style: TextStyle(
-              color:     muted,
-              fontSize:  15,
-              height:    1.5,
-              fontStyle: FontStyle.italic,
-            ),
+                color: muted, fontSize: 15, height: 1.5,
+                fontStyle: FontStyle.italic),
           ));
         } else if (m.group(3) != null) {
           spans.add(TextSpan(
-            text:  m.group(3),
+            text: m.group(3),
             style: TextStyle(
               color:           accentColor,
               fontSize:        14,
@@ -1685,8 +1803,7 @@ class _MdText extends StatelessWidget {
       if (last < line.length) {
         spans.add(TextSpan(
           text:  line.substring(last),
-          style: TextStyle(
-            color: base, fontSize: 16, height: 1.5),
+          style: TextStyle(color: base, fontSize: 16, height: 1.5),
         ));
       }
     }
@@ -1695,9 +1812,13 @@ class _MdText extends StatelessWidget {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Animated dots indicator
+// ─────────────────────────────────────────────────────────────────
+
 class _Dots extends StatelessWidget {
   final AnimationController controller;
-  final Color color;
+  final Color               color;
   const _Dots({required this.controller, required this.color});
 
   @override
@@ -1708,15 +1829,10 @@ class _Dots extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: List.generate(3, (i) {
           final phase = (controller.value + i / 3.0) % 1.0;
-          final op    = 0.2 +
-              0.8 *
-                  (phase < 0.5
-                      ? phase * 2
-                      : (1 - phase) * 2);
+          final op    = 0.2 + 0.8 * (phase < 0.5 ? phase * 2 : (1 - phase) * 2);
           return Container(
             margin: const EdgeInsets.only(right: 4),
-            width:  6,
-            height: 6,
+            width: 6, height: 6,
             decoration: BoxDecoration(
               color: color.withOpacity(op),
               shape: BoxShape.circle,
@@ -1728,89 +1844,87 @@ class _Dots extends StatelessWidget {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Icon button
+// ─────────────────────────────────────────────────────────────────
+
 class _IconBtn extends StatelessWidget {
   final IconData     icon;
   final Color        color;
   final VoidCallback onTap;
-
-  const _IconBtn({
-    required this.icon,
-    required this.color,
-    required this.onTap,
-  });
+  const _IconBtn({required this.icon, required this.color, required this.onTap});
 
   @override
   Widget build(BuildContext context) => GestureDetector(
         onTap:  onTap,
-        child: Icon(icon, size: 20, color: color),
+        child: Icon(icon, size: 19, color: color),
       );
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Limit bottom sheet
+// ─────────────────────────────────────────────────────────────────
 
 class _LimitSheet extends StatelessWidget {
   final bool         isDark;
   final VoidCallback onWatchAd;
-
-  const _LimitSheet({
-    required this.isDark,
-    required this.onWatchAd,
-  });
+  const _LimitSheet({required this.isDark, required this.onWatchAd});
 
   @override
   Widget build(BuildContext context) {
     final handleColor = isDark
-        ? Colors.white.withOpacity(0.2)
+        ? Colors.white.withOpacity(0.18)
         : Colors.black.withOpacity(0.1);
     final subColor = isDark
-        ? Colors.white.withOpacity(0.6)
-        : Colors.black.withOpacity(0.6);
-
-    // Blue/purple gradient matching the design
-    final gradientColors = isDark 
+        ? Colors.white.withOpacity(0.55)
+        : Colors.black.withOpacity(0.55);
+    final gc = isDark
         ? [const Color(0xFF4A90D9), const Color(0xFF7B68EE)]
         : [const Color(0xFF5B7FFF), const Color(0xFF8B5CF6)];
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+      padding: EdgeInsets.fromLTRB(
+          24, 16, 24, 28 + MediaQuery.of(context).viewInsets.bottom),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF111111) : Colors.white,
-        borderRadius: const BorderRadius.vertical(
-          top: Radius.circular(24),
-        ),
+        color:        isDark ? const Color(0xFF0F0F0F) : Colors.white,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width:  36,
-            height: 4,
+            width: 36, height: 4,
             decoration: BoxDecoration(
-              color:        handleColor,
+              color: handleColor,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
           const SizedBox(height: 24),
-          Icon(Iconsax.lock_1,
-              size: 48, color: gradientColors[0]),
+          Container(
+            width: 56, height: 56,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(colors: gc),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: const Icon(Icons.lock_outline_rounded,
+                color: Colors.white, size: 28),
+          ),
           const SizedBox(height: 16),
           Text(
             'Daily limit reached',
             style: TextStyle(
-              fontSize:   20,
+              fontSize: 20,
               fontWeight: FontWeight.w700,
-              color:      isDark ? Colors.white : Colors.black,
+              color: isDark ? Colors.white : Colors.black,
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
           Text(
             'You\'ve used all your free runs today.\n'
-            'Watch an ad for 1 more, or upgrade to Premium '
-            'for unlimited access.',
+            'Watch a short ad for 1 more run, or upgrade\n'
+            'to Premium for unlimited access.',
             textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 15,
-              height:   1.5,
-              color:    subColor,
-            ),
+            style: TextStyle(fontSize: 15, height: 1.55, color: subColor),
           ),
           const SizedBox(height: 24),
           Row(
@@ -1819,16 +1933,15 @@ class _LimitSheet extends StatelessWidget {
                 child: OutlinedButton(
                   onPressed: onWatchAd,
                   style: OutlinedButton.styleFrom(
-                    side: BorderSide(color: gradientColors[0]),
+                    side: BorderSide(color: gc[0]),
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12)),
-                    padding: const EdgeInsets.symmetric(
-                        vertical: 14),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
                   ),
                   child: Text(
                     'Watch Ad',
                     style: TextStyle(
-                      color:      gradientColors[0],
+                      color:      gc[0],
                       fontWeight: FontWeight.w600,
                       fontSize:   15,
                     ),
@@ -1843,11 +1956,10 @@ class _LimitSheet extends StatelessWidget {
                     context.push('/premium');
                   },
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: gradientColors[0],
+                    backgroundColor: gc[0],
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12)),
-                    padding: const EdgeInsets.symmetric(
-                        vertical: 14),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
                   ),
                   child: const Text(
                     'Upgrade',
