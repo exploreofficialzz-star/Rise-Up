@@ -1,16 +1,19 @@
 """
-routers/messages.py — RiseUp Messaging System (Production v10)
+routers/messages.py — RiseUp Messaging System (Production v11)
 
-v10 fixes vs v9:
-  • _ensure_ai_user_exists: REMOVED all writes to `public.users` (that table
-    does not exist in Supabase — users live in auth.users).
-    Now uses auth.admin.create_user() via the service-role client to seed
-    the AI bot into auth.users, then upserts only into `profiles`.
-    Permanently fixes the cascade:
-      PGRST205 → 23503 (profiles) → 23503 (conversation_members) → 500
-  • _admin() helper: supabase_service.client is already the service-role
-    client (SUPABASE_SERVICE_ROLE_KEY) — reused directly, no new attribute.
-  • Everything else is identical to v9.
+v11 fixes vs v10:
+  • _ensure_ai_user_exists: handles the case where ai@riseup.system was
+    previously registered in auth.users under a DIFFERENT UUID than AI_USER_ID.
+    Now looks up the existing auth user by email when create_user fails, and
+    caches the real UUID in _RESOLVED_AI_ID so all inserts use the correct ID.
+  • profiles upsert: email column removed — it was hitting a unique constraint
+    ("profiles_email_key") because the pre-existing profiles row was created
+    under a different id. Upsert now conflicts only on `id`.
+  • _ai_id() helper: always returns the resolved (real) AI user UUID.
+    All conversation_members / messages inserts use _ai_id() instead of the
+    module-level constant so the correct UUID is used even after a mismatched
+    prior bootstrap run.
+  • Everything else identical to v10.
 """
 
 import logging
@@ -43,8 +46,14 @@ WINDOW_HOURS           = 4
 MAX_AD_UNLOCKS_PER_DAY = 5
 ONLINE_THRESHOLD_SECS  = 120
 
+# Deterministic UUID we WANT to use for the AI bot.
 AI_USER_ID    = str(uuid.uuid5(uuid.NAMESPACE_DNS, "riseup.ai.system"))
 AI_USER_EMAIL = "ai@riseup.system"
+
+# Cache for the UUID actually in use after bootstrap resolution.
+# May differ from AI_USER_ID if the email was previously registered
+# under a different UUID (e.g. from an earlier migration attempt).
+_RESOLVED_AI_ID: Optional[str] = None
 
 
 # ── Pydantic Models ───────────────────────────────────────────────────────────
@@ -67,38 +76,54 @@ def _db():
 
 def _admin():
     """
-    Returns the service-role client.
-    supabase_service.client is already initialised with SUPABASE_SERVICE_ROLE_KEY
-    so it has permission to call auth.admin.* endpoints.
+    Service-role client — has permission for auth.admin.* calls.
+    supabase_service.client is initialised with SUPABASE_SERVICE_ROLE_KEY.
     """
     return supabase_service.client
 
 
+def _ai_id() -> str:
+    """
+    Returns the resolved AI user UUID (cached after first bootstrap).
+    Falls back to AI_USER_ID if bootstrap hasn't run yet.
+    """
+    return _RESOLVED_AI_ID or AI_USER_ID
+
+
 # ── AI User Bootstrap ─────────────────────────────────────────────────────────
 
-def _ensure_ai_user_exists(db) -> None:
+def _ensure_ai_user_exists(db) -> str:
     """
     Idempotent bootstrap for the AI system account.
+    Returns the UUID actually used for the AI user (may differ from
+    AI_USER_ID if a prior run created auth + profiles under a different UUID).
 
-    Supabase has NO public.users table — users live in auth.users.
-    The v9 approach of inserting into public.users caused:
-        PGRST205 "Could not find the table 'public.users' in the schema cache"
-    which cascaded to FK violations on every downstream insert.
-
-    Correct FK chain:
-        auth.users (id)  <--  profiles (id)  <--  conversation_members (user_id)
-
-    Steps:
-      1. Create the AI bot in auth.users via admin API (idempotent).
-      2. Upsert its row in profiles.
+    Strategy:
+      1. Try get_user_by_id(AI_USER_ID) — happy path, our UUID is already
+         registered in auth.
+      2. If not found, try create_user with AI_USER_ID.
+      3. If create fails (email already taken by a different UUID), search
+         auth.admin.list_users() to find the real UUID for AI_USER_EMAIL,
+         and adopt it.
+      4. Upsert into profiles using the resolved UUID.
+         Email is intentionally omitted to avoid the profiles_email_key
+         unique constraint (the existing row may have the email under a
+         different id).
     """
-    now_iso = datetime.now(timezone.utc).isoformat()
+    global _RESOLVED_AI_ID
+    now_iso   = datetime.now(timezone.utc).isoformat()
+    actual_id = AI_USER_ID   # tentative — may be overridden below
 
-    # ── Step 1: ensure AI bot exists in auth.users ────────────────────────────
+    # ── Step 1: resolve the real auth UUID ───────────────────────────────────
+    auth_user_found = False
     try:
         _admin().auth.admin.get_user_by_id(AI_USER_ID)
-        logger.debug(f"[AI bootstrap] auth user already exists: {AI_USER_ID}")
+        auth_user_found = True
+        logger.debug(f"[AI bootstrap] auth user exists with expected UUID: {AI_USER_ID}")
     except Exception:
+        pass   # not found under our UUID — try to create or find
+
+    if not auth_user_found:
         try:
             _admin().auth.admin.create_user({
                 "user_id":       AI_USER_ID,
@@ -107,15 +132,40 @@ def _ensure_ai_user_exists(db) -> None:
                 "email_confirm": True,
                 "user_metadata": {"is_ai": True, "full_name": "RiseUp AI"},
             })
-            logger.info(f"[AI bootstrap] Created AI user in auth.users: {AI_USER_ID}")
-        except Exception as e:
-            logger.warning(f"[AI bootstrap] auth.admin.create_user skipped: {e}")
+            logger.info(f"[AI bootstrap] Created AI auth user: {AI_USER_ID}")
+            auth_user_found = True
+        except Exception as create_err:
+            # Email already registered under a DIFFERENT UUID — look it up.
+            logger.warning(
+                f"[AI bootstrap] create_user failed ({create_err}), "
+                "searching for existing auth user by email …"
+            )
+            try:
+                # supabase-py v2: list_users() returns a list of User objects.
+                all_users = _admin().auth.admin.list_users()
+                for u in (all_users or []):
+                    email_attr = getattr(u, "email", None)
+                    if email_attr == AI_USER_EMAIL:
+                        found_id = str(u.id)
+                        logger.info(
+                            f"[AI bootstrap] Found existing auth user for {AI_USER_EMAIL}: "
+                            f"{found_id} (expected {AI_USER_ID})"
+                        )
+                        actual_id = found_id
+                        auth_user_found = True
+                        break
+                if not auth_user_found:
+                    logger.warning(
+                        "[AI bootstrap] Could not locate auth user by email — "
+                        "proceeding with AI_USER_ID; profiles insert may fail."
+                    )
+            except Exception as list_err:
+                logger.warning(f"[AI bootstrap] list_users failed: {list_err}")
 
-    # ── Step 2: upsert row in profiles (FK → auth.users) ─────────────────────
+    # ── Step 2: upsert profiles (NO email field → avoids unique constraint) ──
     try:
         db.table("profiles").upsert({
-            "id":         AI_USER_ID,
-            "email":      AI_USER_EMAIL,
+            "id":         actual_id,
             "full_name":  "RiseUp AI",
             "username":   "riseup_ai",
             "avatar_url": None,
@@ -124,9 +174,13 @@ def _ensure_ai_user_exists(db) -> None:
             "created_at": now_iso,
             "updated_at": now_iso,
         }, on_conflict="id").execute()
-        logger.debug(f"[AI bootstrap] profiles upserted: {AI_USER_ID}")
+        logger.info(f"[AI bootstrap] profiles upserted for UUID: {actual_id}")
     except Exception as e:
         logger.warning(f"[AI bootstrap] profiles upsert skipped: {e}")
+
+    # Cache resolved ID for the lifetime of this process.
+    _RESOLVED_AI_ID = actual_id
+    return actual_id
 
 
 # ── Online helper ─────────────────────────────────────────────────────────────
@@ -182,10 +236,10 @@ async def get_or_create_ai_conversation(user: dict = Depends(get_current_user)):
     try:
         db = _db()
 
-        # Bootstrap AI user BEFORE any FK-dependent inserts.
-        _ensure_ai_user_exists(db)
+        # Bootstrap and resolve actual AI UUID before any FK-dependent work.
+        ai_user_id = _ensure_ai_user_exists(db)
 
-        # ── Find an existing direct conversation shared by user + AI ──────────
+        # ── Find existing direct conversation shared by user + AI ─────────────
         my_res = (
             db.table("conversation_members")
             .select("conversation_id")
@@ -198,7 +252,7 @@ async def get_or_create_ai_conversation(user: dict = Depends(get_current_user)):
             ai_res = (
                 db.table("conversation_members")
                 .select("conversation_id")
-                .eq("user_id", AI_USER_ID)
+                .eq("user_id", ai_user_id)
                 .in_("conversation_id", my_ids)
                 .execute()
             )
@@ -228,13 +282,12 @@ async def get_or_create_ai_conversation(user: dict = Depends(get_current_user)):
 
         convo_id = convo_res.data[0]["id"]
 
-        # Add both members — AI row in auth.users + profiles guaranteed now.
         db.table("conversation_members").insert([
             {"conversation_id": convo_id, "user_id": user["id"]},
-            {"conversation_id": convo_id, "user_id": AI_USER_ID},
+            {"conversation_id": convo_id, "user_id": ai_user_id},
         ]).execute()
 
-        # Fetch user's first name for a personalised greeting.
+        # Personalised greeting.
         try:
             profile_res = (
                 db.table("profiles")
@@ -258,8 +311,8 @@ async def get_or_create_ai_conversation(user: dict = Depends(get_current_user)):
 
         db.table("messages").insert({
             "conversation_id": convo_id,
-            "sender_id":       AI_USER_ID,
-            "user_id":         AI_USER_ID,
+            "sender_id":       ai_user_id,
+            "user_id":         ai_user_id,
             "content":         greeting,
             "sender_type":     "ai",
             "is_read":         True,
@@ -322,7 +375,9 @@ async def get_conversations(user: dict = Depends(get_current_user)):
             logger.error(f"get_conversations fetch failed: {e}")
             return {"conversations": []}
 
-        enriched = []
+        ai_user_id = _ai_id()
+        enriched   = []
+
         for c in convos:
             members = c.get("conversation_members") or []
             other   = next(
@@ -330,7 +385,7 @@ async def get_conversations(user: dict = Depends(get_current_user)):
             )
 
             # Skip AI-only conversations (shown as pinned tile in the UI).
-            if other and other.get("user_id") == AI_USER_ID:
+            if other and other.get("user_id") == ai_user_id:
                 continue
 
             other_profile = None
@@ -471,21 +526,22 @@ async def get_messages(
         if since:
             q = q.gt("created_at", since)
 
-        msgs_raw = q.execute().data or []
+        msgs_raw   = q.execute().data or []
+        ai_user_id = _ai_id()
+        msgs       = []
 
-        msgs = []
         for m in msgs_raw:
             row = dict(m)
-            if row.get("sender_id") == AI_USER_ID or row.get("sender_type") in ("ai", "system"):
+            if row.get("sender_id") == ai_user_id or row.get("sender_type") in ("ai", "system"):
                 row["profiles"] = {
-                    "id":         AI_USER_ID,
+                    "id":         ai_user_id,
                     "full_name":  "RiseUp AI",
                     "avatar_url": None,
                     "is_ai":      True,
                 }
             msgs.append(row)
 
-        # Mark messages as read.
+        # Mark as read.
         try:
             db.table("messages") \
                 .update({"is_read": True}) \
@@ -538,7 +594,8 @@ async def send_message(
 
         # Notify other human members.
         try:
-            members = (
+            ai_user_id = _ai_id()
+            members    = (
                 db.table("conversation_members")
                 .select("user_id")
                 .eq("conversation_id", conversation_id)
@@ -556,7 +613,7 @@ async def send_message(
             )
             sender_name = (profile_row or {}).get("full_name") or "Someone"
             for m in members:
-                if m["user_id"] == AI_USER_ID:
+                if m["user_id"] == ai_user_id:
                     continue
                 try:
                     db.table("notifications").insert({
@@ -592,9 +649,9 @@ async def send_ai_message(
         raise HTTPException(503, "AI service is temporarily unavailable")
 
     try:
-        db = _db()
+        db         = _db()
         _assert_member(db, conversation_id, user["id"])
-        _ensure_ai_user_exists(db)
+        ai_user_id = _ensure_ai_user_exists(db)
 
         quota      = _get_or_create_quota(db, user["id"])
         is_premium = _is_premium(db, user["id"])
@@ -699,8 +756,8 @@ async def send_ai_message(
         # Persist AI reply.
         ai_msg = db.table("messages").insert({
             "conversation_id": conversation_id,
-            "sender_id":       AI_USER_ID,
-            "user_id":         AI_USER_ID,
+            "sender_id":       ai_user_id,
+            "user_id":         ai_user_id,
             "content":         ai_content,
             "sender_type":     "ai",
             "is_read":         True,
@@ -746,9 +803,9 @@ async def invite_ai_to_conversation(
     user: dict = Depends(get_current_user),
 ):
     try:
-        db = _db()
+        db         = _db()
         _assert_member(db, conversation_id, user["id"])
-        _ensure_ai_user_exists(db)
+        ai_user_id = _ensure_ai_user_exists(db)
 
         convo_res = (
             db.table("conversations")
@@ -764,7 +821,7 @@ async def invite_ai_to_conversation(
             db.table("conversation_members")
             .select("user_id")
             .eq("conversation_id", conversation_id)
-            .eq("user_id", AI_USER_ID)
+            .eq("user_id", ai_user_id)
             .execute()
             .data
         )
@@ -773,14 +830,14 @@ async def invite_ai_to_conversation(
 
         db.table("conversation_members").insert({
             "conversation_id": conversation_id,
-            "user_id":         AI_USER_ID,
+            "user_id":         ai_user_id,
             "joined_at":       datetime.now(timezone.utc).isoformat(),
         }).execute()
 
         db.table("messages").insert({
             "conversation_id": conversation_id,
-            "sender_id":       AI_USER_ID,
-            "user_id":         AI_USER_ID,
+            "sender_id":       ai_user_id,
+            "user_id":         ai_user_id,
             "sender_type":     "system",
             "content":         "🤖 RiseUp AI has joined. Use **@ai** followed by your question to get wealth advice.",
             "is_read":         True,
@@ -807,14 +864,15 @@ async def get_ai_status(
     user: dict = Depends(get_current_user),
 ):
     try:
-        db = _db()
+        db         = _db()
         _assert_member(db, conversation_id, user["id"])
+        ai_user_id = _ai_id()
 
         ai_member = (
             db.table("conversation_members")
             .select("user_id")
             .eq("conversation_id", conversation_id)
-            .eq("user_id", AI_USER_ID)
+            .eq("user_id", ai_user_id)
             .execute()
             .data
         )
@@ -838,15 +896,16 @@ async def search_users(
     try:
         if len(q.strip()) < 2:
             return {"users": []}
-        db  = _db()
-        now = datetime.now(timezone.utc)
+        db         = _db()
+        now        = datetime.now(timezone.utc)
+        ai_user_id = _ai_id()
 
         res = (
             db.table("profiles")
             .select("id, full_name, username, avatar_url, stage, last_seen, is_online")
             .ilike("full_name", f"%{q}%")
             .neq("id", user["id"])
-            .neq("id", AI_USER_ID)
+            .neq("id", ai_user_id)
             .limit(limit)
             .execute()
         )
