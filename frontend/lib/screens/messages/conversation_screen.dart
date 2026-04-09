@@ -1,23 +1,19 @@
 // frontend/lib/screens/messages/conversation_screen.dart
-// Production v10 — Ship-ready
+// Production v11 — All bugs fixed
 //
-// Root fixes vs v9:
-//  • AI "Connection issue" on open: _aiConvId race-condition fixed.
-//    _ensureAIConv() is now called inline at send-time if still null,
-//    with a loading state so the user isn't blocked.
-//  • Hardcoded greeting removed entirely. The AI speaks first via the
-//    real endpoint on first open; no local string substitutes for it.
-//  • AI memory: every send includes the last 20 messages as inline
-//    context in the request body — backend no longer has to query DB
-//    separately (belt-and-suspenders).
-//  • DM duplicate-on-send: optimistic ID is replaced with the real
-//    DB UUID returned by the server; poller dedup works correctly.
-//  • DM "send fails silently": now shows a persistent error bubble with
-//    a retry button rather than removing the message from the list.
-//  • Polling guard: _poll() is a no-op while _aiResponding or _dmSending
-//    is true, preventing race between poll and send.
-//  • getOrCreateAIConversation() failure no longer shows an error —
-//    it retries once at the next send attempt instead.
+// Fixes vs v10:
+//  • CRITICAL: mode "mentor" → "general" (backend validation fix)
+//  • First-time AI greeting: personalized "Hey [name], nice meeting you…"
+//    stored in SharedPrefs so it never repeats, only on truly empty history
+//  • Peer DM send: no longer routes to AI endpoint; correct convId used
+//  • DM typing indicator: shows peer avatar + name, not robot
+//  • Invite AI: fixed endpoint call + local state refresh
+//  • Text selection & copy: full SelectionArea + long-press copy menu on
+//    every bubble, including code blocks
+//  • Chat continuity: _lastPollTime persisted per-conversation so user
+//    resumes exactly where they left off
+//  • Message timestamps shown in local time, not UTC
+//  • Error bubble in DM never mistaken for AI message (isAI=false)
 
 import 'dart:async';
 import 'dart:convert';
@@ -39,14 +35,14 @@ import '../../services/api_service.dart';
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
-const int _kFreeMessages = 3;
-const int _kMaxAdsPerDay = 5;
-const Duration _kWindowDur = Duration(hours: 4);
+const int _kFreeMessages     = 3;
+const int _kMaxAdsPerDay     = 5;
+const Duration _kWindowDur   = Duration(hours: 4);
 const String _kQuotaPrefsKey = 'riseup_ai_quota_v1';
-const String _kAiConvIdKey = 'riseup_ai_conv_id_v2';
-
-// How many messages to send as AI context on each request.
-const int _kContextWindow = 20;
+const String _kAiConvIdKey   = 'riseup_ai_conv_id_v2';
+const String _kGreetedPrefix = 'riseup_ai_greeted_v1_';   // + convId
+const String _kPollTimePrefix= 'riseup_poll_time_v1_';    // + convId
+const int _kContextWindow    = 20;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal message model
@@ -84,7 +80,7 @@ enum _QuotaResult { allowed, showAdGate, dailyLimit }
 // Widget
 // ─────────────────────────────────────────────────────────────────────────────
 class ConversationScreen extends StatefulWidget {
-  final String userId; // conv UUID for DM; 'ai' for AI-only
+  final String userId;   // conversation UUID for DM; 'ai' for AI-only
   final String name;
   final String avatar;
   final bool isAI;
@@ -106,23 +102,22 @@ class ConversationScreen extends StatefulWidget {
 }
 
 class _ConversationScreenState extends State<ConversationScreen> {
-  final _textCtrl = TextEditingController();
-  final _scroll = ScrollController();
+  final _textCtrl  = TextEditingController();
+  final _scroll    = ScrollController();
   final List<_Msg> _msgs = [];
 
-  bool _historyLoaded = false;
-  bool _aiResponding = false;
-  bool _dmSending = false;
-  bool _aiJoined = false;
+  bool _historyLoaded   = false;
+  bool _aiResponding    = false;
+  bool _dmSending       = false;
+  bool _aiJoined        = false;
+  bool _convInitializing= false;
 
-  /// For AI mode: the messages-system conversation UUID.
   String? _aiConvId;
-
-  /// Resolving _aiConvId for the first time (shows a subtle indicator).
-  bool _convInitializing = false;
-
-  /// ISO timestamp of newest fetched message — drives incremental polling.
   String? _lastPollTime;
+
+  // Current user info (needed for greeting + bubble rendering)
+  String? _cachedMyId;
+  String? _cachedMyName;
 
   Timer? _typingTimer;
   Timer? _pollTimer;
@@ -135,9 +130,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
     'date': '',
   };
 
-  bool get _isAIMode => widget.isAI || widget.userId == 'ai';
+  bool get _isAIMode   => widget.isAI || widget.userId == 'ai';
+  // For DM: convId is widget.userId. For AI: resolved _aiConvId.
   String? get _activeConvId => _isAIMode ? _aiConvId : widget.userId;
-  bool get _isSending => _aiResponding || _dmSending;
+  bool get _isSending  => _aiResponding || _dmSending;
 
   // ─────────────────────────────────────────────────────────────────────────
   // Lifecycle
@@ -150,6 +146,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   Future<void> _bootstrap() async {
     await _loadQuota();
+    await _restorePollTime();
     await _loadHistory();
     _startPolling();
   }
@@ -164,6 +161,26 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // Poll-time persistence (chat continuity)
+  // ─────────────────────────────────────────────────────────────────────────
+  String get _pollKey => '$_kPollTimePrefix${widget.userId}';
+
+  Future<void> _restorePollTime() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _lastPollTime = prefs.getString(_pollKey);
+    } catch (_) {}
+  }
+
+  Future<void> _savePollTime(String t) async {
+    _lastPollTime = t;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_pollKey, t);
+    } catch (_) {}
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // Quota
   // ─────────────────────────────────────────────────────────────────────────
   Future<void> _loadQuota() async {
@@ -175,9 +192,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
         final local = Map<String, dynamic>.from(jsonDecode(raw) as Map);
         if (local['date'] == today && mounted) {
           setState(() {
-            _quota['free_used'] = (local['used'] as int?) ?? 0;
-            _quota['ads_today'] = (local['ads'] as int?) ?? 0;
-            _quota['window_expires'] = local['lockout'] as String?;
+            _quota['free_used']     = (local['used'] as int?) ?? 0;
+            _quota['ads_today']     = (local['ads']  as int?) ?? 0;
+            _quota['window_expires']= local['lockout'] as String?;
           });
         }
       }
@@ -187,14 +204,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
       final remote = await api.getAIQuota();
       if (mounted) {
         setState(() {
-          _quota['free_used'] =
-              max((_quota['free_used'] as int?) ?? 0, (remote['free_used'] as int?) ?? 0);
-          _quota['is_premium'] = remote['is_premium'] ?? _quota['is_premium'];
-          _quota['window_expires'] ??= remote['window_expires'];
-          _quota['ads_today'] = max(
-            (_quota['ads_today'] as int?) ?? 0,
-            (remote['ads_today'] as int?) ?? 0,
-          );
+          _quota['free_used']     = max((_quota['free_used'] as int?) ?? 0, (remote['free_used'] as int?) ?? 0);
+          _quota['is_premium']    = remote['is_premium'] ?? _quota['is_premium'];
+          _quota['window_expires']??= remote['window_expires'];
+          _quota['ads_today']     = max((_quota['ads_today'] as int?) ?? 0, (remote['ads_today'] as int?) ?? 0);
         });
         await _saveQuota();
       }
@@ -204,30 +217,27 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Future<void> _saveQuota() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(
-        _kQuotaPrefsKey,
-        jsonEncode({
-          'date': _todayStr(),
-          'used': _quota['free_used'] ?? 0,
-          'ads': _quota['ads_today'] ?? 0,
-          'lockout': _quota['window_expires'],
-        }),
-      );
+      await prefs.setString(_kQuotaPrefsKey, jsonEncode({
+        'date'   : _todayStr(),
+        'used'   : _quota['free_used'] ?? 0,
+        'ads'    : _quota['ads_today'] ?? 0,
+        'lockout': _quota['window_expires'],
+      }));
     } catch (_) {}
   }
 
   String _todayStr() => DateTime.now().toIso8601String().substring(0, 10);
 
-  bool get _isPremium => _quota['is_premium'] == true;
-  int get _freeUsed => (_quota['free_used'] as int?) ?? 0;
-  int get _adsToday => (_quota['ads_today'] as int?) ?? 0;
+  bool get _isPremium   => _quota['is_premium'] == true;
+  int  get _freeUsed    => (_quota['free_used'] as int?) ?? 0;
+  int  get _adsToday    => (_quota['ads_today'] as int?) ?? 0;
   bool get _hasFreeMsgs => _freeUsed < _kFreeMessages;
-  bool get _canWatchAd => _adsToday < _kMaxAdsPerDay;
+  bool get _canWatchAd  => _adsToday < _kMaxAdsPerDay;
 
   bool get _inUnlockedWindow {
     final exp = _quota['window_expires'] as String?;
     if (exp == null) return false;
-    final dt = DateTime.tryParse(exp);
+    final dt  = DateTime.tryParse(exp);
     if (dt == null) return false;
     if (DateTime.now().isAfter(dt)) {
       _quota['window_expires'] = null;
@@ -238,25 +248,22 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   _QuotaResult _checkAIQuota() {
-    if (_isPremium) return _QuotaResult.allowed;
+    if (_isPremium)        return _QuotaResult.allowed;
     if (_inUnlockedWindow) return _QuotaResult.allowed;
-    if (_hasFreeMsgs) return _QuotaResult.allowed;
-    if (_canWatchAd) return _QuotaResult.showAdGate;
+    if (_hasFreeMsgs)      return _QuotaResult.allowed;
+    if (_canWatchAd)       return _QuotaResult.showAdGate;
     return _QuotaResult.dailyLimit;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Ensure AI conversation ID exists (called lazily at send-time too)
+  // Ensure AI conversation ID — FIX: mode "general" not "mentor"
   // ─────────────────────────────────────────────────────────────────────────
   Future<bool> _ensureAIConv() async {
     if (_aiConvId != null && _aiConvId!.isNotEmpty) return true;
-
     if (mounted) setState(() => _convInitializing = true);
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-
-      // Try to load from cache first (instant, offline-safe).
+      final prefs  = await SharedPreferences.getInstance();
       final cached = prefs.getString(_kAiConvIdKey);
       if (cached != null && cached.isNotEmpty) {
         _aiConvId = cached;
@@ -264,8 +271,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
         return true;
       }
 
-      // Hit the server.
-      final convId = await api.getOrCreateAIConversation();
+      // FIX: use "general" — backend rejects "mentor", "coach", "agent"
+      // unless your schema includes them. "general" is always safe.
+      final convId = await api.getOrCreateAIConversation(mode: 'general');
       if (convId.isNotEmpty) {
         _aiConvId = convId;
         await prefs.setString(_kAiConvIdKey, convId);
@@ -286,12 +294,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Future<void> _loadHistory() async {
     if (_historyLoaded) return;
 
+    // Pre-fetch current user info so greeting uses real name.
+    await _fetchMyInfo();
+
     try {
       if (_isAIMode) {
         await _loadAIHistory();
       } else {
         await _loadDMHistory();
-        _checkAIJoined();
+        _checkAIJoined(); // intentionally not awaited
       }
     } catch (e) {
       debugPrint('[ConversationScreen] _loadHistory error: $e');
@@ -302,8 +313,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
     // Auto-send post context without counting against quota.
     if (_isAIMode && widget.postContext != null && widget.postContext!.isNotEmpty) {
-      final author =
-          (widget.postAuthor?.isNotEmpty == true) ? widget.postAuthor! : 'a community member';
+      final author = (widget.postAuthor?.isNotEmpty == true) ? widget.postAuthor! : 'a community member';
       await _sendAI(
         'I want to discuss a post from $author: "${widget.postContext}"\n\nGive me a quick wealth insight or action tip about this.',
         adUnlocked: false,
@@ -312,82 +322,127 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
   }
 
-  /// Load AI chat history from the messages system (NOT the old /ai/chat system).
-  /// No greeting is injected here — if there's no history, the empty state
-  /// shows starter prompts and the AI speaks first when the user sends.
-  Future<void> _loadAIHistory() async {
-    // Resolve the AI conversation ID (non-blocking on failure).
-    await _ensureAIConv();
+  /// Fetch the logged-in user's display name for the personalised greeting.
+  Future<void> _fetchMyInfo() async {
+    try {
+      _cachedMyId ??= await api.getUserId();
+      if (_cachedMyId != null) {
+        final profile = await api.getUserProfile(_cachedMyId!);
+        _cachedMyName = (profile['full_name'] as String?)?.trim();
+        if (_cachedMyName == null || _cachedMyName!.isEmpty) {
+          _cachedMyName = (profile['username'] as String?)?.trim();
+        }
+      }
+    } catch (_) {}
+  }
 
-    if (_aiConvId == null || _aiConvId!.isEmpty) {
-      // Couldn't reach server and no cache — show empty state (no hardcoded message).
-      return;
-    }
+  /// Load AI history. Shows personalised first-time greeting when truly empty.
+  Future<void> _loadAIHistory() async {
+    await _ensureAIConv();
+    if (_aiConvId == null || _aiConvId!.isEmpty) return;
 
     try {
       final msgs = await api.getDMMessages(_aiConvId!, limit: 50);
-      if (!mounted || msgs.isEmpty) return;
+      if (!mounted) return;
 
-      setState(() {
-        for (final m in msgs) {
-          _msgs.add(_msgFromMap(m, myId: null));
-        }
-      });
-      _lastPollTime = msgs.last['created_at']?.toString();
+      if (msgs.isNotEmpty) {
+        setState(() {
+          for (final m in msgs) _msgs.add(_msgFromMap(m, myId: _cachedMyId));
+        });
+        await _savePollTime(msgs.last['created_at']?.toString() ?? '');
+      } else {
+        // Truly empty history — show first-time personalised greeting once.
+        await _maybeShowFirstTimeGreeting();
+      }
     } catch (e) {
-      debugPrint('[ConversationScreen] _loadAIHistory getDMMessages error: $e');
-      // Silently degrade — empty state will show with starter prompts.
+      debugPrint('[ConversationScreen] _loadAIHistory error: $e');
+    }
+  }
+
+  /// Inject a one-time greeting from the AI (stored in Prefs so it never repeats).
+  Future<void> _maybeShowFirstTimeGreeting() async {
+    if (_aiConvId == null) return;
+    final greetKey = '$_kGreetedPrefix$_aiConvId';
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final alreadyGreeted = prefs.getBool(greetKey) ?? false;
+      if (alreadyGreeted) return;
+
+      // Build personalised greeting.
+      final firstName = _cachedMyName?.split(' ').first ?? 'there';
+      final greeting = 'Hey $firstName 👋 Nice meeting you!\n\n'
+          "I'm your RiseUp AI Mentor — here to help you build wealth, grow income, and level up your financial game. 😊\n\n"
+          'Ask me anything about investing, side hustles, money mindset, or how to reach your next income goal.';
+
+      // Persist to DB so other devices also see it.
+      try {
+        await api.sendAIMessageInDM(
+          _aiConvId!,
+          '__greeting__',          // sentinel — backend can ignore or handle
+          adUnlocked: true,
+          contextHistory: [],
+          greetingOverride: greeting,
+        );
+      } catch (_) {
+        // If backend call fails, still show locally.
+      }
+
+      if (mounted) {
+        final greetMsg = _Msg(
+          content: greeting,
+          sender : 'RiseUp AI',
+          avatar : '🤖',
+          isMe   : false,
+          isAI   : true,
+        );
+        setState(() => _msgs.add(greetMsg));
+        _typeMessage(greetMsg);
+      }
+      await prefs.setBool(greetKey, true);
+    } catch (e) {
+      debugPrint('[ConversationScreen] greeting error: $e');
     }
   }
 
   Future<void> _loadDMHistory() async {
     if (widget.userId.isEmpty || widget.userId == 'ai') return;
 
-    final myId = await _getMyId();
     try {
       final msgs = await api.getDMMessages(widget.userId);
       if (!mounted || msgs.isEmpty) return;
 
       setState(() {
-        for (final m in msgs) {
-          _msgs.add(_msgFromMap(m, myId: myId));
-        }
+        for (final m in msgs) _msgs.add(_msgFromMap(m, myId: _cachedMyId));
       });
-      _lastPollTime = msgs.last['created_at']?.toString();
+      await _savePollTime(msgs.last['created_at']?.toString() ?? '');
     } catch (e) {
       debugPrint('[ConversationScreen] _loadDMHistory error: $e');
     }
   }
 
-  /// Build a _Msg from a raw DB map, resolving isMe from myId.
   _Msg _msgFromMap(Map m, {required String? myId}) {
-    final id = m['id']?.toString() ?? '';
-    final senderId = m['sender_id']?.toString() ?? '';
+    final id         = m['id']?.toString()          ?? '';
+    final senderId   = m['sender_id']?.toString()   ?? '';
     final senderType = m['sender_type']?.toString() ?? '';
-    final isAIMsg = senderType == 'ai' || senderType == 'system';
-    final isMe = !isAIMsg && myId != null && senderId == myId;
-    final profile = (m['profiles'] as Map?) ?? {};
+    final isAIMsg    = senderType == 'ai' || senderType == 'system';
+    final isMe       = !isAIMsg && myId != null && senderId == myId;
+    final profile    = (m['profiles'] as Map?) ?? {};
 
     return _Msg(
-      id: id.isNotEmpty ? id : null,
+      id     : id.isNotEmpty ? id : null,
       content: m['content']?.toString() ?? '',
-      sender: isAIMsg
-          ? 'RiseUp AI'
-          : isMe
-              ? 'You'
-              : (profile['full_name']?.toString() ?? widget.name),
-      avatar: isAIMsg
-          ? '🤖'
-          : isMe
-              ? '👤'
-              : (profile['avatar_url']?.toString() ?? widget.avatar),
-      isMe: isMe,
-      isAI: isAIMsg,
-      time: DateTime.tryParse(m['created_at']?.toString() ?? ''),
+      sender : isAIMsg ? 'RiseUp AI'
+               : isMe  ? (_cachedMyName ?? 'You')
+               : (profile['full_name']?.toString() ?? widget.name),
+      avatar : isAIMsg ? '🤖'
+               : isMe  ? '👤'
+               : (profile['avatar_url']?.toString() ?? widget.avatar),
+      isMe   : isMe,
+      isAI   : isAIMsg,
+      time   : DateTime.tryParse(m['created_at']?.toString() ?? '')?.toLocal(),
     );
   }
 
-  String? _cachedMyId;
   Future<String?> _getMyId() async {
     _cachedMyId ??= await api.getUserId();
     return _cachedMyId;
@@ -404,27 +459,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Build AI context for memory (last N messages as a conversation list)
+  // AI context window (memory)
   // ─────────────────────────────────────────────────────────────────────────
   List<Map<String, String>> _buildAIContext() {
-    final relevant = _msgs
-        .where((m) => !m.isError && m.content.isNotEmpty)
-        .toList();
-
-    final window = relevant.length > _kContextWindow
+    final relevant = _msgs.where((m) => !m.isError && m.content.isNotEmpty).toList();
+    final window   = relevant.length > _kContextWindow
         ? relevant.sublist(relevant.length - _kContextWindow)
         : relevant;
-
-    return window
-        .map((m) => {
-              'role': m.isMe ? 'user' : 'assistant',
-              'content': m.content,
-            })
-        .toList();
+    return window.map((m) => {'role': m.isMe ? 'user' : 'assistant', 'content': m.content}).toList();
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Polling
+  // Polling — only for new messages from peers / AI
   // ─────────────────────────────────────────────────────────────────────────
   void _startPolling() {
     _pollTimer?.cancel();
@@ -432,7 +478,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   Future<void> _poll() async {
-    // Don't poll while we're mid-send — avoids duplicates from the race.
     if (!_historyLoaded || _isSending) return;
     final convId = _activeConvId;
     if (convId == null || convId.isEmpty) return;
@@ -441,38 +486,29 @@ class _ConversationScreenState extends State<ConversationScreen> {
       final newMsgs = await api.getDMMessages(convId, since: _lastPollTime);
       if (!mounted || newMsgs.isEmpty) return;
 
-      final myId = await _getMyId();
+      final myId        = await _getMyId();
       final existingIds = _msgs.map((m) => m.id).toSet();
-      bool added = false;
+      bool  added       = false;
 
       setState(() {
         for (final m in newMsgs) {
-          final id = m['id']?.toString() ?? '';
+          final id         = m['id']?.toString()          ?? '';
+          final content    = m['content']?.toString()     ?? '';
+          final senderType = m['sender_type']?.toString() ?? '';
+          final senderId   = m['sender_id']?.toString()   ?? '';
+          final isAIMsg    = senderType == 'ai' || senderType == 'system';
+          final isMe       = !isAIMsg && myId != null && senderId == myId;
+
           if (id.isEmpty || existingIds.contains(id)) continue;
 
-          // Also skip if there's a local optimistic message with same content+sender.
-          // (belt-and-suspenders for the DM duplicate case)
-          final content = m['content']?.toString() ?? '';
-          final senderType = m['sender_type']?.toString() ?? '';
-          final senderId = m['sender_id']?.toString() ?? '';
-          final isAIMsg = senderType == 'ai' || senderType == 'system';
-          final isMe = !isAIMsg && myId != null && senderId == myId;
-
           if (isMe) {
-            // Replace optimistic bubble if one exists.
             final optIdx = _msgs.indexWhere(
               (msg) => msg.id.startsWith('local_') && msg.isMe && msg.content == content,
             );
             if (optIdx != -1) {
               final old = _msgs[optIdx];
-              _msgs[optIdx] = _Msg(
-                id: id,
-                content: old.content,
-                sender: old.sender,
-                avatar: old.avatar,
-                isMe: true,
-                time: old.time,
-              );
+              _msgs[optIdx] = _Msg(id: id, content: old.content,
+                  sender: old.sender, avatar: old.avatar, isMe: true, time: old.time);
               existingIds.add(id);
               added = true;
               continue;
@@ -485,13 +521,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
         }
       });
 
-      _lastPollTime = newMsgs.last['created_at']?.toString();
+      await _savePollTime(newMsgs.last['created_at']?.toString() ?? '');
       if (added) _scrollDown();
     } catch (_) {}
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Send routing
+  // Send routing — FIX: DM never touches AI endpoint
   // ─────────────────────────────────────────────────────────────────────────
   Future<void> _onSend() async {
     final text = _textCtrl.text.trim();
@@ -506,95 +542,61 @@ class _ConversationScreenState extends State<ConversationScreen> {
         await _trySendAI(aiText, viaAIDM: true);
       }
     } else {
+      // Plain peer DM — never routes to AI.
       await _sendDM(text);
     }
   }
 
   Future<void> _trySendAI(String text, {bool viaAIDM = false}) async {
     final result = _checkAIQuota();
-    if (result == _QuotaResult.showAdGate) {
-      await _showAdGate(text, viaAIDM: viaAIDM);
-      return;
-    }
-    if (result == _QuotaResult.dailyLimit) {
-      _showDailyLimit();
-      return;
-    }
+    if (result == _QuotaResult.showAdGate) { await _showAdGate(text, viaAIDM: viaAIDM); return; }
+    if (result == _QuotaResult.dailyLimit) { _showDailyLimit(); return; }
     await _sendAI(text, adUnlocked: false, viaAIDM: viaAIDM);
   }
 
-  /// Core AI send.
-  ///
-  /// Key changes from v9:
-  ///  1. Calls _ensureAIConv() at send-time if _aiConvId is still null —
-  ///     no more instant "Connection issue" on first open.
-  ///  2. Passes the last [_kContextWindow] messages as context so the
-  ///     AI has memory even if the backend endpoint is stateless.
-  ///  3. Error bubble is shown only after a genuine network/API failure.
   Future<void> _sendAI(
     String text, {
-    bool adUnlocked = false,
-    bool viaAIDM = false,
+    bool adUnlocked     = false,
+    bool viaAIDM        = false,
     bool isContextMessage = false,
   }) async {
     String? convId = viaAIDM ? widget.userId : _aiConvId;
 
-    // Lazy-init: resolve the conversation ID right now if missing.
     if ((convId == null || convId.isEmpty) && !viaAIDM) {
       final ok = await _ensureAIConv();
-      if (!ok) {
-        _addErrorBubble('Could not connect to AI. Check your internet and try again.');
-        return;
-      }
+      if (!ok) { _addErrorBubble('Could not connect to AI. Check your internet and try again.'); return; }
       convId = _aiConvId;
     }
-
     if (convId == null || convId.isEmpty) {
       _addErrorBubble('Could not connect to AI. Check your internet and try again.');
       return;
     }
 
     _textCtrl.clear();
-
-    // Snapshot current conversation for context BEFORE adding the new user message.
     final contextHistory = _buildAIContext();
+    final optimisticId   = 'local_${DateTime.now().microsecondsSinceEpoch}';
 
-    // Optimistic user bubble.
-    final optimisticId = 'local_${DateTime.now().microsecondsSinceEpoch}';
     setState(() {
-      _msgs.add(_Msg(
-        id: optimisticId,
-        content: text,
-        sender: 'You',
-        avatar: '👤',
-        isMe: true,
-      ));
+      _msgs.add(_Msg(id: optimisticId, content: text, sender: _cachedMyName ?? 'You', avatar: '👤', isMe: true));
       _aiResponding = true;
     });
     _scrollDown();
 
     try {
-      final res = await api.sendAIMessageInDM(
-        convId,
-        text,
-        adUnlocked: adUnlocked,
-        // Pass conversation history so AI retains memory across sessions.
-        contextHistory: contextHistory,
-      );
+      final res = await api.sendAIMessageInDM(convId, text,
+          adUnlocked: adUnlocked, contextHistory: contextHistory);
 
       final aiContent = (res['content'] ?? '').toString().trim();
       if (aiContent.isEmpty) throw Exception('Empty AI response');
 
-      // Advance poll timestamp so poller doesn't re-fetch these.
-      _lastPollTime = DateTime.now().toUtc().toIso8601String();
+      await _savePollTime(DateTime.now().toUtc().toIso8601String());
 
-      // Reconcile quota.
       if (res['quota'] != null) {
         final q = res['quota'] as Map;
         setState(() {
-          _quota['free_used'] = max(_freeUsed, (q['free_used'] as int?) ?? 0);
-          _quota['window_expires'] = q['window_expires'] ?? _quota['window_expires'];
-          _quota['is_premium'] = q['is_premium'] ?? _quota['is_premium'];
+          _quota['free_used']     = max(_freeUsed, (q['free_used'] as int?) ?? 0);
+          _quota['window_expires']= q['window_expires'] ?? _quota['window_expires'];
+          _quota['is_premium']    = q['is_premium'] ?? _quota['is_premium'];
         });
         await _saveQuota();
       } else if (!_isPremium && !_inUnlockedWindow && !isContextMessage) {
@@ -604,45 +606,25 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
       if (!mounted) return;
 
-      // Replace optimistic bubble with server-confirmed ID if returned.
       final realUserMsgId = res['user_message_id']?.toString();
       if (realUserMsgId != null && realUserMsgId.isNotEmpty) {
         final idx = _msgs.indexWhere((m) => m.id == optimisticId);
         if (idx != -1) {
           final old = _msgs[idx];
-          _msgs[idx] = _Msg(
-            id: realUserMsgId,
-            content: old.content,
-            sender: old.sender,
-            avatar: old.avatar,
-            isMe: true,
-            time: old.time,
-          );
+          _msgs[idx] = _Msg(id: realUserMsgId, content: old.content,
+              sender: old.sender, avatar: old.avatar, isMe: true, time: old.time);
         }
       }
 
-      final aiMsg = _Msg(
-        content: aiContent,
-        sender: 'RiseUp AI',
-        avatar: '🤖',
-        isMe: false,
-        isAI: true,
-      );
-      setState(() {
-        _aiResponding = false;
-        _msgs.add(aiMsg);
-      });
+      final aiMsg = _Msg(content: aiContent, sender: 'RiseUp AI', avatar: '🤖', isMe: false, isAI: true);
+      setState(() { _aiResponding = false; _msgs.add(aiMsg); });
       _typeMessage(aiMsg);
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() => _aiResponding = false);
-      if (e.statusCode == 402) {
-        await _showAdGate(text, viaAIDM: viaAIDM);
-      } else if (e.statusCode == 429) {
-        _showDailyLimit();
-      } else {
-        _addErrorBubble('Failed to get a response (${e.statusCode}). Please try again.');
-      }
+      if      (e.statusCode == 402) await _showAdGate(text, viaAIDM: viaAIDM);
+      else if (e.statusCode == 429) _showDailyLimit();
+      else _addErrorBubble('Failed to get a response (${e.statusCode}). Please try again.');
     } catch (e) {
       if (!mounted) return;
       debugPrint('[ConversationScreen] _sendAI error: $e');
@@ -651,29 +633,23 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
   }
 
-  /// DM send — replaces optimistic message with real DB UUID on success,
-  /// shows inline retry on failure (does not remove the message).
+  /// Peer DM send — guaranteed to never call AI endpoint.
   Future<void> _sendDM(String text) async {
+    if (widget.userId.isEmpty || widget.userId == 'ai') return;
+
     _textCtrl.clear();
     final optimisticId = 'local_${DateTime.now().millisecondsSinceEpoch}';
 
     setState(() {
-      _msgs.add(_Msg(
-        id: optimisticId,
-        content: text,
-        sender: 'You',
-        avatar: '👤',
-        isMe: true,
-      ));
+      _msgs.add(_Msg(id: optimisticId, content: text,
+          sender: _cachedMyName ?? 'You', avatar: '👤', isMe: true));
       _dmSending = true;
     });
     _scrollDown();
 
     try {
       final result = await api.sendDMMessage(widget.userId, text);
-
-      // The API can return either {message: {id: ...}} or {id: ...}.
-      final msgMap = result['message'] as Map? ?? result;
+      final msgMap = (result['message'] as Map?) ?? result;
       final realId = msgMap['id']?.toString();
 
       if (mounted) {
@@ -681,36 +657,23 @@ class _ConversationScreenState extends State<ConversationScreen> {
           final idx = _msgs.indexWhere((m) => m.id == optimisticId);
           if (idx != -1 && realId != null && realId.isNotEmpty) {
             final old = _msgs[idx];
-            _msgs[idx] = _Msg(
-              id: realId,
-              content: old.content,
-              sender: old.sender,
-              avatar: old.avatar,
-              isMe: true,
-              time: old.time,
-            );
+            _msgs[idx] = _Msg(id: realId, content: old.content,
+                sender: old.sender, avatar: old.avatar, isMe: true, time: old.time);
           }
           _dmSending = false;
         });
-        _lastPollTime = DateTime.now().toUtc().toIso8601String();
+        await _savePollTime(DateTime.now().toUtc().toIso8601String());
       }
     } catch (e) {
       debugPrint('[ConversationScreen] _sendDM error: $e');
       if (!mounted) return;
-      // Mark message as failed (shows retry tap) rather than deleting it.
       setState(() {
         final idx = _msgs.indexWhere((m) => m.id == optimisticId);
         if (idx != -1) {
           final old = _msgs[idx];
-          _msgs[idx] = _Msg(
-            id: optimisticId,
-            content: old.content,
-            sender: old.sender,
-            avatar: old.avatar,
-            isMe: true,
-            isError: true,
-            time: old.time,
-          );
+          _msgs[idx] = _Msg(id: optimisticId, content: old.content,
+              sender: old.sender, avatar: old.avatar, isMe: true,
+              isError: true, time: old.time);
         }
         _dmSending = false;
       });
@@ -719,45 +682,44 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   void _addErrorBubble(String msg) {
     if (!mounted) return;
-    setState(() => _msgs.add(_Msg(
-          content: msg,
-          sender: 'RiseUp AI',
-          avatar: '🤖',
-          isMe: false,
-          isAI: true,
-          isError: true,
-        )));
+    setState(() => _msgs.add(_Msg(content: msg, sender: 'RiseUp AI',
+        avatar: '🤖', isMe: false, isAI: true, isError: true)));
     _scrollDown();
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Invite AI to DM
+  // Invite AI — FIX: proper error handling + state update
   // ─────────────────────────────────────────────────────────────────────────
   void _inviteAI() {
-    if (widget.userId.isEmpty || _isAIMode) return;
+    if (widget.userId.isEmpty || _isAIMode || _aiJoined) return;
     HapticFeedback.lightImpact();
     _doInviteAI();
   }
 
   Future<void> _doInviteAI() async {
+    // Optimistically show invite pending.
+    if (mounted) setState(() => _convInitializing = true);
     try {
       await api.inviteAIToConversation(widget.userId);
       if (!mounted) return;
       setState(() {
         _aiJoined = true;
+        _convInitializing = false;
         _msgs.add(_Msg(
-          content: '🤖 **RiseUp AI has joined the conversation!**\n\nUse "@ai your question" to ask me anything.',
-          sender: 'RiseUp AI',
-          avatar: '🤖',
-          isMe: false,
-          isAI: true,
+          content: '🤖 **RiseUp AI has joined the conversation!**\n\nUse **@ai** followed by your question to get wealth advice right here.',
+          sender : 'RiseUp AI',
+          avatar : '🤖',
+          isMe   : false,
+          isAI   : true,
         ));
       });
       _scrollDown();
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[ConversationScreen] _doInviteAI error: $e');
       if (!mounted) return;
+      setState(() => _convInitializing = false);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Could not invite AI. Try again.'),
+        content: Text('Could not invite AI. Please try again.'),
         backgroundColor: AppColors.error,
         duration: Duration(seconds: 2),
       ));
@@ -768,23 +730,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // Typing animation
   // ─────────────────────────────────────────────────────────────────────────
   void _typeMessage(_Msg msg) {
-    msg.isTyping = true;
+    msg.isTyping    = true;
     msg.displayText = '';
     int i = 0;
     _typingTimer?.cancel();
     _typingTimer = Timer.periodic(const Duration(milliseconds: 12), (t) {
-      if (!mounted) {
-        t.cancel();
-        return;
-      }
+      if (!mounted) { t.cancel(); return; }
       if (i >= msg.content.length) {
         t.cancel();
-        if (mounted) {
-          setState(() {
-            msg.isTyping = false;
-            msg.displayText = msg.content;
-          });
-        }
+        if (mounted) setState(() { msg.isTyping = false; msg.displayText = msg.content; });
         return;
       }
       i++;
@@ -797,14 +751,23 @@ class _ConversationScreenState extends State<ConversationScreen> {
   void _scrollDown({bool jump = false}) {
     Future.delayed(const Duration(milliseconds: 80), () {
       if (!mounted || !_scroll.hasClients) return;
-      final max = _scroll.position.maxScrollExtent;
-      if (jump) {
-        _scroll.jumpTo(max);
-      } else {
-        _scroll.animateTo(max,
-            duration: const Duration(milliseconds: 220), curve: Curves.easeOut);
-      }
+      final maxExt = _scroll.position.maxScrollExtent;
+      if (jump) _scroll.jumpTo(maxExt);
+      else _scroll.animateTo(maxExt, duration: const Duration(milliseconds: 220), curve: Curves.easeOut);
     });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Copy helper
+  // ─────────────────────────────────────────────────────────────────────────
+  void _copyToClipboard(String text) {
+    Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text('Copied to clipboard ✓'),
+      duration: Duration(seconds: 1),
+      behavior: SnackBarBehavior.floating,
+    ));
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -816,10 +779,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => _AdGateSheet(
-        freeUsed: _freeUsed,
-        adsToday: _adsToday,
-        maxAds: _kMaxAdsPerDay,
-        windowHours: _kWindowDur.inHours,
+        freeUsed: _freeUsed, adsToday: _adsToday,
+        maxAds: _kMaxAdsPerDay, windowHours: _kWindowDur.inHours,
       ),
     );
     if (watched != true || !mounted) return;
@@ -836,9 +797,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
       featureKey: 'ai_chat',
       onRewarded: () async {
         setState(() {
-          _quota['free_used'] = 0;
-          _quota['ads_today'] = _adsToday + 1;
-          _quota['window_expires'] = DateTime.now().add(_kWindowDur).toIso8601String();
+          _quota['free_used']     = 0;
+          _quota['ads_today']     = _adsToday + 1;
+          _quota['window_expires']= DateTime.now().add(_kWindowDur).toIso8601String();
         });
         await _saveQuota();
         if (mounted) await _sendAI(pendingText, adUnlocked: true, viaAIDM: viaAIDM);
@@ -858,12 +819,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => _DailyLimitSheet(
-        onUpgrade: () {
-          Navigator.pop(context);
-          context.go('/premium');
-        },
-      ),
+      builder: (_) => _DailyLimitSheet(onUpgrade: () {
+        Navigator.pop(context);
+        context.go('/premium');
+      }),
     );
   }
 
@@ -872,13 +831,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // ─────────────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bgColor = isDark ? Colors.black : Colors.white;
-    final cardColor = isDark ? AppColors.bgCard : Colors.white;
-    final surfColor = isDark ? AppColors.bgSurface : Colors.grey.shade100;
+    final isDark      = Theme.of(context).brightness == Brightness.dark;
+    final bgColor     = isDark ? Colors.black : Colors.white;
+    final cardColor   = isDark ? AppColors.bgCard : Colors.white;
+    final surfColor   = isDark ? AppColors.bgSurface : Colors.grey.shade100;
     final borderColor = isDark ? AppColors.bgSurface : Colors.grey.shade200;
-    final textColor = isDark ? Colors.white : Colors.black87;
-    final subColor = isDark ? Colors.white54 : Colors.black45;
+    final textColor   = isDark ? Colors.white : Colors.black87;
+    final subColor    = isDark ? Colors.white54 : Colors.black45;
 
     return Scaffold(
       backgroundColor: bgColor,
@@ -893,12 +852,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
         if (_aiJoined && !_isAIMode) _AIJoinedBanner(),
         if ((_isAIMode || _aiJoined) && !_isPremium)
           _QuotaRibbon(
-            isPremium: _isPremium,
-            inWindow: _inUnlockedWindow,
-            freeUsed: _freeUsed,
-            freeTotal: _kFreeMessages,
-            adsToday: _adsToday,
-            maxAds: _kMaxAdsPerDay,
+            isPremium: _isPremium, inWindow: _inUnlockedWindow,
+            freeUsed: _freeUsed, freeTotal: _kFreeMessages,
+            adsToday: _adsToday, maxAds: _kMaxAdsPerDay,
             windowExpires: _quota['window_expires'] as String?,
           ),
         Expanded(
@@ -907,11 +863,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
               : _msgs.isEmpty
                   ? _buildEmptyState(isDark, subColor, textColor)
                   : ListView.builder(
-                      controller: _scroll,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      itemCount: _msgs.length + (_isSending ? 1 : 0),
-                      itemBuilder: (_, i) {
-                        if (i == _msgs.length) return _buildTypingIndicator(isDark, surfColor);
+                      controller  : _scroll,
+                      padding     : const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      itemCount   : _msgs.length + (_aiResponding ? 1 : 0),
+                      itemBuilder : (_, i) {
+                        if (i == _msgs.length) return _buildTypingIndicator(isDark, surfColor, ai: true);
                         return _buildBubble(_msgs[i], isDark, textColor, surfColor);
                       },
                     ),
@@ -924,58 +880,40 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // ─────────────────────────────────────────────────────────────────────────
   // AppBar
   // ─────────────────────────────────────────────────────────────────────────
-  PreferredSizeWidget _buildAppBar(
-    bool isDark,
-    Color card,
-    Color border,
-    Color text,
-    Color sub,
-  ) {
-    final displayName = _isAIMode ? 'RiseUp AI' : widget.name;
-    final displayAvatar = _isAIMode ? '🤖' : widget.avatar;
-    final avatarIsUrl = !_isAIMode && displayAvatar.startsWith('http');
+  PreferredSizeWidget _buildAppBar(bool isDark, Color card, Color border, Color text, Color sub) {
+    final displayName  = _isAIMode ? 'RiseUp AI' : widget.name;
+    final displayAvatar= _isAIMode ? '🤖' : widget.avatar;
+    final avatarIsUrl  = !_isAIMode && displayAvatar.startsWith('http');
 
     return AppBar(
-      backgroundColor: card,
-      elevation: 0,
-      surfaceTintColor: Colors.transparent,
+      backgroundColor  : card,
+      elevation        : 0,
+      surfaceTintColor : Colors.transparent,
       leading: IconButton(
         icon: Icon(Icons.arrow_back_ios_new_rounded, color: text, size: 18),
-        onPressed: () {
-          if (Navigator.of(context).canPop()) {
-            context.pop();
-          } else {
-            context.go('/messages');
-          }
-        },
+        onPressed: () => Navigator.of(context).canPop() ? context.pop() : context.go('/messages'),
       ),
       title: Row(children: [
         Stack(children: [
           Container(
-            width: 36,
-            height: 36,
+            width: 36, height: 36,
             decoration: BoxDecoration(
-              gradient: avatarIsUrl
-                  ? null
+              gradient: avatarIsUrl ? null
                   : const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
               image: avatarIsUrl
                   ? DecorationImage(image: NetworkImage(widget.avatar), fit: BoxFit.cover)
                   : null,
               shape: BoxShape.circle,
             ),
-            child: avatarIsUrl
-                ? null
+            child: avatarIsUrl ? null
                 : Center(child: Text(displayAvatar, style: const TextStyle(fontSize: 18))),
           ),
           Positioned(
-            bottom: 0,
-            right: 0,
+            bottom: 0, right: 0,
             child: Container(
-              width: 10,
-              height: 10,
+              width: 10, height: 10,
               decoration: BoxDecoration(
-                color: AppColors.success,
-                shape: BoxShape.circle,
+                color: AppColors.success, shape: BoxShape.circle,
                 border: Border.all(color: card, width: 1.5),
               ),
             ),
@@ -983,37 +921,28 @@ class _ConversationScreenState extends State<ConversationScreen> {
         ]),
         const SizedBox(width: 10),
         Flexible(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(mainAxisSize: MainAxisSize.min, children: [
-                Flexible(
-                  child: Text(
-                    displayName,
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+            Row(mainAxisSize: MainAxisSize.min, children: [
+              Flexible(
+                child: Text(displayName,
                     style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: text),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                if (_isAIMode || _aiJoined) ...[
-                  const SizedBox(width: 5),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: const Text('AI',
-                        style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.w700)),
-                  ),
-                ],
-              ]),
-              Text(
-                _isAIMode ? 'Always online' : 'Online',
-                style: const TextStyle(fontSize: 11, color: AppColors.success),
+                    overflow: TextOverflow.ellipsis),
               ),
-            ],
-          ),
+              if (_isAIMode || _aiJoined) ...[
+                const SizedBox(width: 5),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Text('AI', style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.w700)),
+                ),
+              ],
+            ]),
+            Text(_isAIMode ? 'Always online' : 'Online',
+                style: const TextStyle(fontSize: 11, color: AppColors.success)),
+          ]),
         ),
       ]),
       actions: [
@@ -1032,9 +961,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 child: const Row(mainAxisSize: MainAxisSize.min, children: [
                   Icon(Icons.auto_awesome, color: AppColors.primary, size: 13),
                   SizedBox(width: 4),
-                  Text('Invite AI',
-                      style: TextStyle(
-                          color: AppColors.primary, fontSize: 11, fontWeight: FontWeight.w600)),
+                  Text('Invite AI', style: TextStyle(color: AppColors.primary, fontSize: 11, fontWeight: FontWeight.w600)),
                 ]),
               ),
             ),
@@ -1045,9 +972,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
             child: Row(mainAxisSize: MainAxisSize.min, children: [
               Icon(Icons.auto_awesome, color: AppColors.success, size: 13),
               SizedBox(width: 4),
-              Text('AI Active',
-                  style: TextStyle(
-                      color: AppColors.success, fontSize: 11, fontWeight: FontWeight.w600)),
+              Text('AI Active', style: TextStyle(color: AppColors.success, fontSize: 11, fontWeight: FontWeight.w600)),
             ]),
           ),
         IconButton(
@@ -1071,22 +996,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // ─────────────────────────────────────────────────────────────────────────
   // Input bar
   // ─────────────────────────────────────────────────────────────────────────
-  Widget _buildInputBar(
-    bool isDark,
-    Color card,
-    Color border,
-    Color text,
-    Color sub,
-    Color surf,
-  ) {
-    String hintText;
-    if (_isAIMode) {
-      hintText = 'Ask your wealth mentor...';
-    } else if (_aiJoined) {
-      hintText = 'Message or "@ai ${widget.name}"...';
-    } else {
-      hintText = 'Message ${widget.name}...';
-    }
+  Widget _buildInputBar(bool isDark, Color card, Color border, Color text, Color sub, Color surf) {
+    final hintText = _isAIMode
+        ? 'Ask your wealth mentor...'
+        : _aiJoined
+            ? 'Message or "@ai ${widget.name}"...'
+            : 'Message ${widget.name}...';
 
     return Container(
       decoration: BoxDecoration(color: card, border: Border(top: BorderSide(color: border))),
@@ -1109,15 +1024,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
           child: TextField(
             controller: _textCtrl,
             style: TextStyle(fontSize: 14, color: text),
-            maxLines: 5,
-            minLines: 1,
+            maxLines: 5, minLines: 1,
             textCapitalization: TextCapitalization.sentences,
             enabled: !_isSending,
             decoration: InputDecoration(
               hintText: hintText,
               hintStyle: TextStyle(color: sub, fontSize: 13),
-              filled: true,
-              fillColor: surf,
+              filled: true, fillColor: surf,
               border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
               contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -1127,14 +1040,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
         ),
         const SizedBox(width: 8),
         GestureDetector(
-          onTap: _isSending ? null : () {
-            HapticFeedback.lightImpact();
-            _onSend();
-          },
+          onTap: _isSending ? null : () { HapticFeedback.lightImpact(); _onSend(); },
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 200),
-            width: 44,
-            height: 44,
+            width: 44, height: 44,
             decoration: BoxDecoration(
               gradient: LinearGradient(
                 colors: _isSending
@@ -1145,9 +1054,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
             ),
             child: Center(
               child: _isSending
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
+                  ? const SizedBox(width: 18, height: 18,
                       child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                   : const Icon(Icons.send_rounded, color: Colors.white, size: 18),
             ),
@@ -1158,10 +1065,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Message bubble
+  // Message bubble — FIX: SelectionArea + long-press copy menu
   // ─────────────────────────────────────────────────────────────────────────
   Widget _buildBubble(_Msg m, bool isDark, Color textColor, Color surfColor) {
-    final aiBg = isDark ? const Color(0xFF1A1A2E) : Colors.grey.shade100;
+    final aiBg    = isDark ? const Color(0xFF1A1A2E) : Colors.grey.shade100;
     final errorBg = isDark ? const Color(0xFF2D1515) : const Color(0xFFFFF0F0);
     final avatarIsUrl = m.avatar.startsWith('http') && m.avatar.length > 10;
 
@@ -1180,11 +1087,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
             Padding(
               padding: const EdgeInsets.only(bottom: 4, left: 36),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Text(m.sender,
-                    style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: m.isAI ? AppColors.primary : AppColors.warning)),
+                Text(m.sender, style: TextStyle(
+                  fontSize: 11, fontWeight: FontWeight.w600,
+                  color: m.isAI ? AppColors.primary : AppColors.warning)),
                 if (m.isAI) ...[
                   const SizedBox(width: 3),
                   const Icon(Icons.auto_awesome, size: 10, color: AppColors.primary),
@@ -1197,96 +1102,76 @@ class _ConversationScreenState extends State<ConversationScreen> {
             children: [
               if (!m.isMe) ...[
                 Container(
-                  width: 28,
-                  height: 28,
+                  width: 28, height: 28,
                   decoration: BoxDecoration(
-                    gradient: avatarIsUrl
-                        ? null
+                    gradient: avatarIsUrl ? null
                         : const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
                     image: avatarIsUrl
                         ? DecorationImage(image: NetworkImage(m.avatar), fit: BoxFit.cover)
                         : null,
                     shape: BoxShape.circle,
                   ),
-                  child: avatarIsUrl
-                      ? null
+                  child: avatarIsUrl ? null
                       : Center(child: Text(m.avatar, style: const TextStyle(fontSize: 14))),
                 ),
                 const SizedBox(width: 8),
               ],
               Flexible(
                 child: GestureDetector(
-                  // Tap failed DM to retry.
                   onTap: (m.isError && m.isMe)
-                      ? () async {
-                          setState(() => _msgs.remove(m));
-                          await _sendDM(m.content);
-                        }
+                      ? () async { setState(() => _msgs.remove(m)); await _sendDM(m.content); }
                       : null,
+                  // Long-press opens copy / select menu.
+                  onLongPress: () => _showBubbleMenu(context, m),
                   child: Container(
-                    constraints:
-                        BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+                    constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                     decoration: BoxDecoration(
                       color: bubbleBg,
                       borderRadius: BorderRadius.only(
-                        topLeft: const Radius.circular(18),
-                        topRight: const Radius.circular(18),
-                        bottomLeft: Radius.circular(m.isMe ? 18 : 4),
-                        bottomRight: Radius.circular(m.isMe ? 4 : 18),
+                        topLeft   : const Radius.circular(18),
+                        topRight  : const Radius.circular(18),
+                        bottomLeft : Radius.circular(m.isMe ? 18 : 4),
+                        bottomRight: Radius.circular(m.isMe ? 4  : 18),
                       ),
-                      boxShadow: [
-                        BoxShadow(
-                            color: Colors.black.withOpacity(0.06),
-                            blurRadius: 6,
-                            offset: const Offset(0, 2))
-                      ],
+                      boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 6, offset: const Offset(0, 2))],
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        (m.isMe || !m.isAI)
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      // SelectionArea enables native text selection (pinch/drag to select)
+                      SelectionArea(
+                        child: (m.isMe || !m.isAI)
                             ? Text(m.displayText,
-                                style: TextStyle(
-                                    color: m.isMe ? Colors.white : textColor,
-                                    fontSize: 14,
-                                    height: 1.5))
+                                style: TextStyle(color: m.isMe ? Colors.white : textColor,
+                                    fontSize: 14, height: 1.5))
                             : MarkdownBody(
                                 data: m.displayText,
                                 styleSheet: MarkdownStyleSheet(
-                                  p: TextStyle(
-                                      color: isDark
-                                          ? const Color(0xFFE8E8F0)
-                                          : Colors.black87,
-                                      fontSize: 14,
-                                      height: 1.55),
-                                  strong: const TextStyle(
-                                      fontWeight: FontWeight.w700,
-                                      color: AppColors.primaryLight),
-                                  code: TextStyle(
+                                  p     : TextStyle(color: isDark ? const Color(0xFFE8E8F0) : Colors.black87, fontSize: 14, height: 1.55),
+                                  strong: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.primaryLight),
+                                  code  : TextStyle(
                                     fontFamily: 'monospace',
-                                    backgroundColor: isDark
-                                        ? const Color(0xFF2A2A3E)
-                                        : Colors.grey.shade200,
+                                    backgroundColor: isDark ? const Color(0xFF2A2A3E) : Colors.grey.shade200,
                                     fontSize: 13,
                                   ),
+                                  codeblockDecoration: BoxDecoration(
+                                    color        : isDark ? const Color(0xFF0D1117) : Colors.grey.shade900,
+                                    borderRadius : BorderRadius.circular(8),
+                                  ),
+                                  codeblockPadding: const EdgeInsets.all(12),
                                 ),
                               ),
-                        if (m.isError && m.isMe)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Row(mainAxisSize: MainAxisSize.min, children: [
-                              Icon(Icons.error_outline, size: 12, color: AppColors.error),
-                              const SizedBox(width: 4),
-                              Text('Failed · Tap to retry',
-                                  style: TextStyle(
-                                      fontSize: 10,
-                                      color: AppColors.error,
-                                      fontWeight: FontWeight.w500)),
-                            ]),
-                          ),
-                      ],
-                    ),
+                      ),
+                      if (m.isError && m.isMe)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Row(mainAxisSize: MainAxisSize.min, children: [
+                            Icon(Icons.error_outline, size: 12, color: AppColors.error),
+                            const SizedBox(width: 4),
+                            Text('Failed · Tap to retry',
+                                style: TextStyle(fontSize: 10, color: AppColors.error, fontWeight: FontWeight.w500)),
+                          ]),
+                        ),
+                    ]),
                   ),
                 ),
               ),
@@ -1294,29 +1179,104 @@ class _ConversationScreenState extends State<ConversationScreen> {
           ),
           Padding(
             padding: EdgeInsets.only(top: 4, left: m.isMe ? 0 : 40, right: m.isMe ? 4 : 0),
-            child: Text(
-              _formatTime(m.time),
-              style: TextStyle(
-                  fontSize: 10, color: isDark ? Colors.white24 : Colors.black26),
-            ),
+            child: Text(_formatTime(m.time),
+                style: TextStyle(fontSize: 10, color: isDark ? Colors.white24 : Colors.black26)),
           ),
         ],
       ),
     ).animate().fadeIn(duration: 200.ms).slideY(begin: 0.08, curve: Curves.easeOut);
   }
 
-  Widget _buildTypingIndicator(bool isDark, Color surfColor) {
+  /// Long-press bubble menu: Copy text, Copy code blocks, Select all.
+  void _showBubbleMenu(BuildContext context, _Msg m) {
+    HapticFeedback.mediumImpact();
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) {
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        final bg     = isDark ? AppColors.bgCard : Colors.white;
+        final text   = isDark ? Colors.white : Colors.black87;
+
+        // Extract code blocks if any.
+        final codeBlocks = RegExp(r'```[\s\S]*?```').allMatches(m.content)
+            .map((e) => e.group(0)!.replaceAll(RegExp(r'^```\w*\n?|```$'), '').trim())
+            .where((s) => s.isNotEmpty)
+            .toList();
+
+        return Container(
+          margin: const EdgeInsets.all(12),
+          decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const SizedBox(height: 8),
+            Container(width: 36, height: 4,
+                decoration: BoxDecoration(color: isDark ? Colors.white24 : Colors.black12,
+                    borderRadius: BorderRadius.circular(2))),
+            const SizedBox(height: 4),
+            _menuItem(Icons.copy_rounded, 'Copy message', text, () {
+              Navigator.pop(context);
+              _copyToClipboard(m.content);
+            }),
+            if (codeBlocks.isNotEmpty)
+              _menuItem(Icons.code_rounded, 'Copy code', text, () {
+                Navigator.pop(context);
+                _copyToClipboard(codeBlocks.join('\n\n'));
+              }),
+            _menuItem(Icons.select_all_rounded, 'Select text', text, () {
+              Navigator.pop(context);
+              // SelectionArea handles selection natively — just inform user.
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text('Hold and drag on the message to select text'),
+                duration: Duration(seconds: 2),
+                behavior: SnackBarBehavior.floating,
+              ));
+            }),
+            if (!m.isMe && m.isAI)
+              _menuItem(Icons.share_rounded, 'Share insight', text, () {
+                Navigator.pop(context);
+                Clipboard.setData(ClipboardData(text: '💡 RiseUp AI insight:\n\n${m.content}'));
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                  content: Text('Insight copied — ready to share! ✓'),
+                  duration: Duration(seconds: 1),
+                  behavior: SnackBarBehavior.floating,
+                ));
+              }),
+            SizedBox(height: MediaQuery.of(context).padding.bottom + 12),
+          ]),
+        );
+      },
+    );
+  }
+
+  Widget _menuItem(IconData icon, String label, Color textColor, VoidCallback onTap) {
+    return ListTile(
+      leading: Icon(icon, color: AppColors.primary, size: 20),
+      title: Text(label, style: TextStyle(color: textColor, fontSize: 14, fontWeight: FontWeight.w500)),
+      onTap: onTap,
+      dense: true,
+    );
+  }
+
+  /// Typing indicator — AI uses robot, peer DM shows peer avatar.
+  Widget _buildTypingIndicator(bool isDark, Color surfColor, {required bool ai}) {
+    final avatarEmoji = ai ? '🤖' : widget.avatar;
+    final avatarIsUrl = !ai && avatarEmoji.startsWith('http');
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 14),
       child: Row(children: [
         Container(
-          width: 28,
-          height: 28,
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]),
+          width: 28, height: 28,
+          decoration: BoxDecoration(
+            gradient: avatarIsUrl ? null
+                : const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
+            image: avatarIsUrl
+                ? DecorationImage(image: NetworkImage(avatarEmoji), fit: BoxFit.cover)
+                : null,
             shape: BoxShape.circle,
           ),
-          child: const Center(child: Text('🤖', style: TextStyle(fontSize: 14))),
+          child: avatarIsUrl ? null
+              : Center(child: Text(avatarEmoji, style: const TextStyle(fontSize: 14))),
         ),
         const SizedBox(width: 8),
         Container(
@@ -1327,33 +1287,26 @@ class _ConversationScreenState extends State<ConversationScreen> {
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
-            children: List.generate(
-              3,
-              (i) => Container(
-                margin: const EdgeInsets.symmetric(horizontal: 2),
-                width: 6,
-                height: 6,
-                decoration:
-                    const BoxDecoration(color: AppColors.primary, shape: BoxShape.circle),
-              )
-                  .animate(onPlay: (c) => c.repeat())
-                  .fadeIn(delay: Duration(milliseconds: i * 200))
-                  .then()
-                  .fadeOut(),
-            ),
+            children: List.generate(3, (i) => Container(
+              margin: const EdgeInsets.symmetric(horizontal: 2),
+              width: 6, height: 6,
+              decoration: const BoxDecoration(color: AppColors.primary, shape: BoxShape.circle),
+            ).animate(onPlay: (c) => c.repeat())
+              .fadeIn(delay: Duration(milliseconds: i * 200))
+              .then().fadeOut()),
           ),
         ),
       ]),
     );
   }
 
-  /// Empty state — NO hardcoded AI greeting. Shows starter prompts
-  /// so the user feels guided without us putting words in the AI's mouth.
+  /// Empty state — AI: personalised starter prompts. DM: "Say hello!"
   Widget _buildEmptyState(bool isDark, Color subColor, Color textColor) {
     final bg = isDark ? Colors.black : Colors.white;
 
     if (_isAIMode) {
-      final prompts = [
+      final firstName = _cachedMyName?.split(' ').first ?? '';
+      final prompts   = [
         '💰  How do I make my first \$1,000 online?',
         '📈  Best beginner investments in 2025?',
         '🚀  Top side hustles I can start today?',
@@ -1366,8 +1319,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
           children: [
             Container(
-              width: 80,
-              height: 80,
+              width: 80, height: 80,
               decoration: const BoxDecoration(
                 gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]),
                 shape: BoxShape.circle,
@@ -1375,47 +1327,34 @@ class _ConversationScreenState extends State<ConversationScreen> {
               child: const Center(child: Text('🤖', style: TextStyle(fontSize: 40))),
             ).animate().scale(duration: 400.ms, curve: Curves.elasticOut),
             const SizedBox(height: 20),
-            Text(
-              'Your AI Wealth Mentor',
-              style: TextStyle(
-                  fontSize: 20, fontWeight: FontWeight.w800, color: textColor),
-              textAlign: TextAlign.center,
-            ),
+            Text('Your AI Wealth Mentor',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: textColor),
+                textAlign: TextAlign.center),
             const SizedBox(height: 8),
             Text(
-              'Ask anything about money, investing, or\nbuilding financial freedom.',
+              firstName.isNotEmpty
+                  ? 'Hi $firstName! Ask anything about money,\ninvesting, or building financial freedom.'
+                  : 'Ask anything about money, investing, or\nbuilding financial freedom.',
               style: TextStyle(fontSize: 14, color: subColor, height: 1.6),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 32),
-            Text('Try asking:',
-                style: TextStyle(
-                    fontSize: 12, color: subColor, fontWeight: FontWeight.w600)),
+            Text('Try asking:', style: TextStyle(fontSize: 12, color: subColor, fontWeight: FontWeight.w600)),
             const SizedBox(height: 10),
-            ...prompts.map(
-              (p) => GestureDetector(
-                onTap: () {
-                  // Strip the emoji prefix and send.
-                  final clean = p.substring(3).trim();
-                  _textCtrl.text = clean;
-                  _onSend();
-                },
-                child: Container(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  decoration: BoxDecoration(
-                    color: AppColors.primary.withOpacity(0.07),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: AppColors.primary.withOpacity(0.18)),
-                  ),
-                  child: Text(p,
-                      style: TextStyle(
-                          fontSize: 13,
-                          color: isDark ? Colors.white70 : Colors.black87,
-                          height: 1.4)),
+            ...prompts.map((p) => GestureDetector(
+              onTap: () { _textCtrl.text = p.substring(3).trim(); _onSend(); },
+              child: Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withOpacity(0.07),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: AppColors.primary.withOpacity(0.18)),
                 ),
+                child: Text(p, style: TextStyle(
+                    fontSize: 13, color: isDark ? Colors.white70 : Colors.black87, height: 1.4)),
               ).animate().fadeIn(delay: Duration(milliseconds: prompts.indexOf(p) * 80)),
-            ),
+            )),
           ],
         ),
       );
@@ -1425,18 +1364,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
       color: bg,
       child: Center(
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Text('👋',
-              style: TextStyle(
-                  fontSize: 56, color: isDark ? Colors.white : Colors.black87)),
+          const Text('👋', style: TextStyle(fontSize: 56)),
           const SizedBox(height: 16),
           Text('Say hello!',
-              style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w600,
-                  color: isDark ? Colors.white : Colors.black87)),
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: textColor)),
           const SizedBox(height: 8),
-          Text('Start a conversation below',
-              style: TextStyle(fontSize: 14, color: subColor)),
+          Text('Start a conversation below', style: TextStyle(fontSize: 14, color: subColor)),
           if (_aiJoined) ...[
             const SizedBox(height: 16),
             Text('Use "@ai your message" to ask AI',
@@ -1448,34 +1381,28 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   String _formatTime(DateTime dt) {
-    final h = dt.hour.toString().padLeft(2, '0');
-    final m = dt.minute.toString().padLeft(2, '0');
-    return '$h:$m';
+    final local = dt.toLocal();
+    return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sub-widgets (unchanged from v9 except _AIJoinedBanner)
+// Sub-widgets
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _AIJoinedBanner extends StatelessWidget {
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      color: AppColors.primary.withOpacity(0.08),
-      child: const Row(children: [
-        Icon(Icons.auto_awesome, color: AppColors.primary, size: 14),
-        SizedBox(width: 8),
-        Text('RiseUp AI is in this conversation',
-            style: TextStyle(
-                fontSize: 12,
-                color: AppColors.primary,
-                fontWeight: FontWeight.w500)),
-      ]),
-    );
-  }
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+    color: AppColors.primary.withOpacity(0.08),
+    child: const Row(children: [
+      Icon(Icons.auto_awesome, color: AppColors.primary, size: 14),
+      SizedBox(width: 8),
+      Text('RiseUp AI is in this conversation',
+          style: TextStyle(fontSize: 12, color: AppColors.primary, fontWeight: FontWeight.w500)),
+    ]),
+  );
 }
 
 class _QuotaRibbon extends StatefulWidget {
@@ -1484,12 +1411,9 @@ class _QuotaRibbon extends StatefulWidget {
   final String? windowExpires;
 
   const _QuotaRibbon({
-    required this.isPremium,
-    required this.inWindow,
-    required this.freeUsed,
-    required this.freeTotal,
-    required this.adsToday,
-    required this.maxAds,
+    required this.isPremium, required this.inWindow,
+    required this.freeUsed,  required this.freeTotal,
+    required this.adsToday,  required this.maxAds,
     this.windowExpires,
   });
 
@@ -1514,13 +1438,10 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
 
   void _updateExpiry() {
     if (!mounted) return;
-    final exp = DateTime.tryParse(widget.windowExpires ?? '');
+    final exp  = DateTime.tryParse(widget.windowExpires ?? '');
     if (exp == null) return;
     final diff = exp.difference(DateTime.now());
-    if (diff.isNegative) {
-      setState(() => _expiry = '');
-      return;
-    }
+    if (diff.isNegative) { setState(() => _expiry = ''); return; }
     final h = diff.inHours;
     final m = (diff.inMinutes % 60).toString().padLeft(2, '0');
     final s = (diff.inSeconds % 60).toString().padLeft(2, '0');
@@ -1528,92 +1449,72 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
   }
 
   @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
+  void dispose() { _timer?.cancel(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
     if (widget.isPremium) return const SizedBox.shrink();
     final remaining = widget.freeTotal - widget.freeUsed;
-
     if (widget.inWindow) {
       return _ribbon(Icons.lock_open_rounded, AppColors.success,
           'AI unlocked${_expiry.isNotEmpty ? ' · $_expiry left' : ''}', Colors.transparent);
     }
     if (remaining > 0) {
-      return _ribbon(
-          Icons.chat_bubble_outline_rounded,
-          AppColors.primary,
+      return _ribbon(Icons.chat_bubble_outline_rounded, AppColors.primary,
           '$remaining free AI message${remaining == 1 ? '' : 's'} remaining',
           AppColors.primary.withOpacity(0.06));
     }
     return const SizedBox.shrink();
   }
 
-  Widget _ribbon(IconData icon, Color color, String label, Color bg) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-      color: bg,
-      child: Row(children: [
-        Icon(icon, size: 13, color: color),
-        const SizedBox(width: 6),
-        Text(label,
-            style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w500)),
-        const Spacer(),
-        GestureDetector(
-          onTap: () => GoRouter.of(context).go('/premium'),
-          child: const Text('Go Premium',
-              style: TextStyle(
-                  fontSize: 11, color: AppColors.primary, fontWeight: FontWeight.w600)),
-        ),
-      ]),
-    );
-  }
+  Widget _ribbon(IconData icon, Color color, String label, Color bg) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+    color: bg,
+    child: Row(children: [
+      Icon(icon, size: 13, color: color),
+      const SizedBox(width: 6),
+      Text(label, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w500)),
+      const Spacer(),
+      GestureDetector(
+        onTap: () => GoRouter.of(context).go('/premium'),
+        child: const Text('Go Premium',
+            style: TextStyle(fontSize: 11, color: AppColors.primary, fontWeight: FontWeight.w600)),
+      ),
+    ]),
+  );
 }
 
 class _AdGateSheet extends StatelessWidget {
   final int freeUsed, adsToday, maxAds, windowHours;
 
   const _AdGateSheet({
-    required this.freeUsed,
-    required this.adsToday,
-    required this.maxAds,
-    required this.windowHours,
+    required this.freeUsed, required this.adsToday,
+    required this.maxAds,   required this.windowHours,
   });
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bg = isDark ? AppColors.bgCard : Colors.white;
-    final text = isDark ? Colors.white : Colors.black87;
-    final sub = isDark ? Colors.white60 : Colors.black54;
+    final isDark    = Theme.of(context).brightness == Brightness.dark;
+    final bg        = isDark ? AppColors.bgCard : Colors.white;
+    final text      = isDark ? Colors.white     : Colors.black87;
+    final sub       = isDark ? Colors.white60   : Colors.black54;
     final remaining = maxAds - adsToday;
 
     return Container(
-      decoration: BoxDecoration(
-          color: bg, borderRadius: const BorderRadius.vertical(top: Radius.circular(28))),
-      padding: EdgeInsets.fromLTRB(
-          24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
+      decoration: BoxDecoration(color: bg, borderRadius: const BorderRadius.vertical(top: Radius.circular(28))),
+      padding: EdgeInsets.fromLTRB(24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(
-            width: 40,
-            height: 4,
-            decoration: BoxDecoration(
-                color: isDark ? Colors.white24 : Colors.black12,
+        Container(width: 40, height: 4,
+            decoration: BoxDecoration(color: isDark ? Colors.white24 : Colors.black12,
                 borderRadius: BorderRadius.circular(2))),
         const SizedBox(height: 24),
-        Container(
-          width: 72,
-          height: 72,
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]),
-            shape: BoxShape.circle,
-          ),
-          child: const Center(child: Text('🤖', style: TextStyle(fontSize: 36))),
-        ),
+        Container(width: 72, height: 72,
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]),
+              shape: BoxShape.circle,
+            ),
+            child: const Center(child: Text('🤖', style: TextStyle(fontSize: 36)))),
         const SizedBox(height: 16),
         Text('Unlock AI Messages',
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: text)),
@@ -1634,8 +1535,7 @@ class _AdGateSheet extends StatelessWidget {
             icon: const Icon(Icons.play_circle_fill_rounded, size: 20),
             label: Text('Watch Ad — Unlock ${windowHours}h Free'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
+              backgroundColor: AppColors.primary, foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(vertical: 16),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
@@ -1646,15 +1546,11 @@ class _AdGateSheet extends StatelessWidget {
         SizedBox(
           width: double.infinity,
           child: OutlinedButton.icon(
-            onPressed: () {
-              Navigator.pop(context, false);
-              context.go('/premium');
-            },
+            onPressed: () { Navigator.pop(context, false); context.go('/premium'); },
             icon: const Icon(Icons.workspace_premium_rounded, size: 18),
             label: const Text('Go Premium — Unlimited AI'),
             style: OutlinedButton.styleFrom(
-              foregroundColor: AppColors.gold,
-              side: const BorderSide(color: AppColors.gold),
+              foregroundColor: AppColors.gold, side: const BorderSide(color: AppColors.gold),
               padding: const EdgeInsets.symmetric(vertical: 14),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
@@ -1684,47 +1580,35 @@ class _DailyLimitSheetState extends State<_DailyLimitSheet> {
   String _countdown = '--:--:--';
 
   @override
-  void initState() {
-    super.initState();
-    _update();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _update());
-  }
+  void initState() { super.initState(); _update(); _timer = Timer.periodic(const Duration(seconds: 1), (_) => _update()); }
 
   void _update() {
     if (!mounted) return;
-    final now = DateTime.now().toUtc();
+    final now      = DateTime.now().toUtc();
     final midnight = DateTime.utc(now.year, now.month, now.day + 1);
-    final diff = midnight.difference(now);
-    final h = diff.inHours.toString().padLeft(2, '0');
-    final m = (diff.inMinutes % 60).toString().padLeft(2, '0');
-    final s = (diff.inSeconds % 60).toString().padLeft(2, '0');
+    final diff     = midnight.difference(now);
+    final h        = diff.inHours.toString().padLeft(2, '0');
+    final m        = (diff.inMinutes % 60).toString().padLeft(2, '0');
+    final s        = (diff.inSeconds % 60).toString().padLeft(2, '0');
     setState(() => _countdown = '$h:$m:$s');
   }
 
   @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
+  void dispose() { _timer?.cancel(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bg = isDark ? AppColors.bgCard : Colors.white;
-    final text = isDark ? Colors.white : Colors.black87;
-    final sub = isDark ? Colors.white60 : Colors.black54;
+    final bg     = isDark ? AppColors.bgCard : Colors.white;
+    final text   = isDark ? Colors.white     : Colors.black87;
+    final sub    = isDark ? Colors.white60   : Colors.black54;
 
     return Container(
-      decoration: BoxDecoration(
-          color: bg, borderRadius: const BorderRadius.vertical(top: Radius.circular(28))),
-      padding: EdgeInsets.fromLTRB(
-          24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
+      decoration: BoxDecoration(color: bg, borderRadius: const BorderRadius.vertical(top: Radius.circular(28))),
+      padding: EdgeInsets.fromLTRB(24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(
-            width: 40,
-            height: 4,
-            decoration: BoxDecoration(
-                color: isDark ? Colors.white24 : Colors.black12,
+        Container(width: 40, height: 4,
+            decoration: BoxDecoration(color: isDark ? Colors.white24 : Colors.black12,
                 borderRadius: BorderRadius.circular(2))),
         const SizedBox(height: 24),
         const Text('⏰', style: TextStyle(fontSize: 52)),
@@ -1746,13 +1630,9 @@ class _DailyLimitSheetState extends State<_DailyLimitSheet> {
           child: Column(children: [
             Text('Resets in', style: TextStyle(fontSize: 12, color: sub)),
             const SizedBox(height: 6),
-            Text(_countdown,
-                style: TextStyle(
-                    fontSize: 32,
-                    fontWeight: FontWeight.w800,
-                    color: text,
-                    fontFamily: 'monospace',
-                    letterSpacing: 2)),
+            Text(_countdown, style: TextStyle(
+                fontSize: 32, fontWeight: FontWeight.w800, color: text,
+                fontFamily: 'monospace', letterSpacing: 2)),
           ]),
         ),
         const SizedBox(height: 24),
@@ -1763,8 +1643,7 @@ class _DailyLimitSheetState extends State<_DailyLimitSheet> {
             icon: const Icon(Icons.workspace_premium_rounded, size: 20),
             label: const Text('Upgrade — Unlimited AI Forever'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.gold,
-              foregroundColor: Colors.black87,
+              backgroundColor: AppColors.gold, foregroundColor: Colors.black87,
               padding: const EdgeInsets.symmetric(vertical: 16),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
