@@ -1,10 +1,12 @@
 // frontend/lib/screens/agent/agent_screen.dart
 //
-// APEX Agent — v6.0
-// • Claude AI-style live task execution preview (expandable steps card)
-// • Twinkling / pulsing star ⭐ while task is running
-// • Quota + ad-credit + premium limits all wired up
-// • Simple, focused interface matching Claude AI mobile feel
+// APEX Agent — v6.1
+// • Sidebar overlays content (no layout shift / resize)
+// • Simple empty state: greeting only, no suggestion chips
+// • Star ⭐ on send button twinkles while streaming
+// • Input always rounded (no focus-border flash)
+// • Contextual wealth tip shown after task completes
+// • All quota / ad-credit / premium limits enforced
 
 import 'dart:async';
 import 'dart:convert';
@@ -35,6 +37,8 @@ class _Msg {
   final String? toolCategory;
   final String? metadata;
   final String? modelTier;
+  /// Contextual wealth tip extracted from agent response data.
+  final String? contextualTip;
 
   const _Msg({
     required this.role,
@@ -43,10 +47,11 @@ class _Msg {
     this.toolCategory,
     this.metadata,
     this.modelTier,
+    this.contextualTip,
   });
 }
 
-/// A single step inside the live execution preview card.
+/// One live execution step shown inside the task-preview card.
 class _Step {
   final String tool;
   final String label;
@@ -76,17 +81,17 @@ class AgentScreen extends ConsumerStatefulWidget {
 
 class _AgentScreenState extends ConsumerState<AgentScreen>
     with SingleTickerProviderStateMixin {
-  // Controllers
+
   final _inputCtrl  = TextEditingController();
   final _scrollCtrl = ScrollController();
   final _inputFocus = FocusNode();
 
-  // Star twinkle animation
+  // Star pulse animation
   late final AnimationController _starCtrl;
   late final Animation<double>   _starScale;
   late final Animation<double>   _starGlow;
 
-  // Messages & live execution state
+  // Message & live execution state
   List<_Msg>  _msgs              = [];
   List<_Step> _liveSteps         = [];
   String      _currentThought    = '';
@@ -110,10 +115,10 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     );
-    _starScale = Tween<double>(begin: 0.88, end: 1.18).animate(
+    _starScale = Tween<double>(begin: 0.85, end: 1.20).animate(
       CurvedAnimation(parent: _starCtrl, curve: Curves.easeInOut),
     );
-    _starGlow = Tween<double>(begin: 0.25, end: 0.65).animate(
+    _starGlow = Tween<double>(begin: 0.20, end: 0.70).animate(
       CurvedAnimation(parent: _starCtrl, curve: Curves.easeInOut),
     );
 
@@ -135,10 +140,10 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
 
   void _stopStar() {
     _starCtrl.stop();
-    _starCtrl.animateTo(0, duration: const Duration(milliseconds: 300));
+    _starCtrl.animateTo(0, duration: const Duration(milliseconds: 350));
   }
 
-  // ── Initialise ─────────────────────────────────────
+  // ── Init ───────────────────────────────────────────
   void _init() async {
     if (_sessionId != null) {
       await _loadSession(_sessionId!);
@@ -146,7 +151,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
     }
   }
 
-  // ── Load existing session ───────────────────────────
+  // ── Load session ────────────────────────────────────
   Future<void> _loadSession(String sessionId) async {
     try {
       final response = await api.get('/agent/chat/sessions/$sessionId');
@@ -173,6 +178,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
 
     _inputCtrl.clear();
     HapticFeedback.lightImpact();
+    if (_showSidebar) setState(() => _showSidebar = false);
 
     setState(() {
       _msgs.add(_Msg(role: _Role.user, text: text));
@@ -211,7 +217,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
     }
   }
 
-  // ── Full agent run (SSE streaming) ──────────────────
+  // ── Full agent run (SSE) ────────────────────────────
   Future<void> _agentRun(String task, String currCode) async {
     try {
       final profile = ref.read(profileProvider).valueOrNull ?? {};
@@ -252,10 +258,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
     setState(() {
       switch (event.type) {
         case 'quota_check':
-          break;
-
         case 'brain_context':
-          // Internal RiseUp context loaded — silent
           break;
 
         case 'thinking':
@@ -304,11 +307,13 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
         case 'complete':
           _workflowId = event.data['workflow_id']?.toString() ?? _workflowId;
           _sessionId  = event.data['session_id']?.toString()  ?? _sessionId;
+          final data  = Map<String, dynamic>.from(event.data);
           _msgs.add(_Msg(
-            role:      _Role.agent,
-            text:      _buildResponse(Map<String, dynamic>.from(event.data)),
-            metadata:  jsonEncode(event.data),
-            modelTier: event.data['model_tier']?.toString() ?? 'free',
+            role:          _Role.agent,
+            text:          _buildResponse(data),
+            metadata:      jsonEncode(data),
+            modelTier:     data['model_tier']?.toString() ?? 'free',
+            contextualTip: _buildContextualTip(data),
           ));
           _liveSteps      = [];
           _currentThought = '';
@@ -356,7 +361,6 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
         'workflow_id': _workflowId,
         'stream':      false,
       });
-
       _sessionId = r['session_id']?.toString() ?? _sessionId;
       setState(() {
         _currentThought = '';
@@ -406,6 +410,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
       _inputEnabled       = true;
       _hasStartedChat     = false;
       _executionExpanded  = false;
+      _showSidebar        = false;
     });
     _stopStar();
     _inputFocus.requestFocus();
@@ -429,26 +434,53 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
     );
   }
 
-  // ── Build natural language response ────────────────
-  String _buildResponse(Map<String, dynamic> data) {
-    final buf     = StringBuffer();
-    final resp    = data['agent_response']?.toString()      ?? '';
-    final plan    = data['plan']                 as Map?  ?? {};
-    final steps   = data['steps']               as List? ?? [];
-    final tools   = data['free_tools']          as List? ?? [];
+  // ── Contextual tip from agent data ──────────────────
+  String? _buildContextualTip(Map<String, dynamic> data) {
+    final now     = data['immediate_action']?.toString() ?? '';
+    final insight = data['wealth_insight']?.toString()   ?? '';
+    final plan    = data['plan']                as Map?  ?? {};
     final opps    = data['opportunities_found'] as List? ?? [];
-    final docs    = data['documents_generated'] as List? ?? [];
-    final msgs    = data['outreach_messages']   as List? ?? [];
-    final posts   = data['social_posts']        as List? ?? [];
-    final now     = data['immediate_action']?.toString()    ?? '';
-    final insight = data['wealth_insight']?.toString()      ?? '';
+    final range   = plan['income_range']        as Map?  ?? {};
+    final sym     = _getCurrencySymbol(
+        range['currency']?.toString() ?? currency.code);
+
+    if (opps.isNotEmpty) {
+      final opp      = opps.first as Map;
+      final platform = opp['platform']?.toString() ?? '';
+      final title    = opp['title']?.toString()    ?? '';
+      if (platform.isNotEmpty && title.isNotEmpty) {
+        return '💡 You could earn from "$title" on $platform — want me to help you apply?';
+      }
+    }
+    if ((range['max'] ?? 0) > 0) {
+      final max      = _fmt(range['max']);
+      final timeline = plan['timeline']?.toString() ?? 'soon';
+      return '💡 This plan could earn you up to $sym$max/mo in $timeline — want a full breakdown?';
+    }
+    if (now.isNotEmpty)     return '⚡ $now — want help getting started right now?';
+    if (insight.isNotEmpty) return '💡 $insight';
+    return null;
+  }
+
+  // ── Build response text ─────────────────────────────
+  String _buildResponse(Map<String, dynamic> data) {
+    final buf   = StringBuffer();
+    final resp  = data['agent_response']?.toString()      ?? '';
+    final plan  = data['plan']                as Map?  ?? {};
+    final steps = data['steps']               as List? ?? [];
+    final tools = data['free_tools']          as List? ?? [];
+    final opps  = data['opportunities_found'] as List? ?? [];
+    final docs  = data['documents_generated'] as List? ?? [];
+    final msgs  = data['outreach_messages']   as List? ?? [];
+    final posts = data['social_posts']        as List? ?? [];
 
     if (resp.isNotEmpty) { buf.writeln(resp); buf.writeln(); }
 
     if (plan['title'] != null) {
       buf.writeln('**${plan['title']}**');
       final r   = plan['income_range'] as Map? ?? {};
-      final sym = _getCurrencySymbol(r['currency']?.toString() ?? currency.code);
+      final sym = _getCurrencySymbol(
+          r['currency']?.toString() ?? currency.code);
       if ((r['max'] ?? 0) > 0) {
         buf.writeln(
             '$sym${_fmt(r['min'] ?? 0)} – $sym${_fmt(r['max'] ?? 0)}/mo  ·  '
@@ -476,29 +508,39 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
       buf.writeln('**${opps.length} real opportunities found:**');
       for (final o in opps.take(4)) {
         final opp = o as Map;
-        final fit = opp['fit_score'] != null ? ' (${opp['fit_score']}% fit)' : '';
+        final fit = opp['fit_score'] != null
+            ? ' (${opp['fit_score']}% fit)'
+            : '';
         buf.writeln('• **${opp['title']}** — ${opp['platform'] ?? ''}$fit');
-        if (opp['url']?.toString().isNotEmpty == true) buf.writeln('  ${opp['url']}');
+        if (opp['url']?.toString().isNotEmpty == true) {
+          buf.writeln('  ${opp['url']}');
+        }
       }
       buf.writeln();
     }
 
     if (docs.isNotEmpty) {
-      buf.writeln('**Documents generated:** ${docs.map((d) => (d as Map)['type']).join(', ')}');
+      buf.writeln('**Documents generated:** '
+          '${docs.map((d) => (d as Map)['type']).join(', ')}');
       buf.writeln('_View in Workflow tab_');
       buf.writeln();
     }
 
-    if (msgs.isNotEmpty) { buf.writeln('**${msgs.length} outreach message(s)** ready to send.'); buf.writeln(); }
-    if (posts.isNotEmpty) { buf.writeln('**${posts.length} social post(s)** drafted.'); buf.writeln(); }
-
-    if (tools.isNotEmpty) {
-      buf.writeln('**Free tools:** ${tools.take(5).map((t) => (t as Map)['name']).join(' · ')}');
+    if (msgs.isNotEmpty) {
+      buf.writeln('**${msgs.length} outreach message(s)** ready to send.');
+      buf.writeln();
+    }
+    if (posts.isNotEmpty) {
+      buf.writeln('**${posts.length} social post(s)** drafted.');
       buf.writeln();
     }
 
-    if (now.isNotEmpty)     { buf.writeln('⚡ **Do this now:** $now'); buf.writeln(); }
-    if (insight.isNotEmpty) { buf.writeln('_${insight}_'); }
+    if (tools.isNotEmpty) {
+      buf.writeln('**Free tools:** '
+          '${tools.take(5).map((t) => (t as Map)['name']).join(' · ')}');
+      buf.writeln();
+    }
+
     if (plan['warning']?.toString().isNotEmpty == true) {
       buf.writeln('\n⚠️ ${plan['warning']}');
     }
@@ -570,22 +612,33 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
 
     return Scaffold(
       backgroundColor: isDark ? Colors.black : Colors.white,
-      body: Row(
+      // Stack: main content always full-width, sidebar overlays on top
+      body: Stack(
         children: [
-          if (_showSidebar) _buildSidebar(isDark, gc),
-          Expanded(
-            child: Column(
-              children: [
-                _buildAppBar(isDark, gc),
-                Expanded(
-                  child: _hasStartedChat || _msgs.isNotEmpty
-                      ? _buildMessages(isDark, gc)
-                      : _buildEmptyState(isDark, gc),
-                ),
-                _buildInput(isDark, gc),
-              ],
-            ),
+          // Main content — never resized
+          Column(
+            children: [
+              _buildAppBar(isDark, gc),
+              Expanded(
+                child: _hasStartedChat || _msgs.isNotEmpty
+                    ? _buildMessages(isDark, gc)
+                    : _buildEmptyState(isDark, gc),
+              ),
+              _buildInput(isDark, gc),
+            ],
           ),
+
+          // Sidebar overlay (dim + slide-in panel)
+          if (_showSidebar) ...[
+            GestureDetector(
+              onTap: () => setState(() => _showSidebar = false),
+              child: Container(color: Colors.black.withOpacity(0.45)),
+            ),
+            Positioned(
+              left: 0, top: 0, bottom: 0,
+              child: _buildSidebar(isDark, gc),
+            ),
+          ],
         ],
       ),
     );
@@ -612,12 +665,12 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
       title: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Twinkling star
+          // Twinkling star badge
           AnimatedBuilder(
             animation: _starCtrl,
             builder: (_, __) {
               final scale = _isStreaming ? _starScale.value : 1.0;
-              final glow  = _isStreaming ? _starGlow.value  : 0.3;
+              final glow  = _isStreaming ? _starGlow.value  : 0.28;
               return Transform.scale(
                 scale: scale,
                 child: Container(
@@ -632,12 +685,13 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
                     boxShadow: [
                       BoxShadow(
                         color: gc[0].withOpacity(glow),
-                        blurRadius: 12,
+                        blurRadius: 14,
                         spreadRadius: 1,
                       ),
                     ],
                   ),
-                  child: const Icon(Icons.star_rounded, color: Colors.white, size: 18),
+                  child: const Icon(Icons.star_rounded,
+                      color: Colors.white, size: 18),
                 ),
               );
             },
@@ -655,13 +709,13 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
         ],
       ),
       actions: [
-        // Runs remaining badge
         if (!isPremium)
           GestureDetector(
             onTap: runsLeft == 0 ? _showLimitDialog : null,
             child: Container(
               margin: const EdgeInsets.only(right: 6),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
                 color: runsLeft > 1
                     ? Colors.green.withOpacity(0.12)
@@ -681,7 +735,9 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(
-                    runsLeft > 0 ? Icons.bolt_rounded : Icons.lock_outline_rounded,
+                    runsLeft > 0
+                        ? Icons.bolt_rounded
+                        : Icons.lock_outline_rounded,
                     size: 12,
                     color: runsLeft > 1
                         ? Colors.green
@@ -722,24 +778,38 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
     );
   }
 
-  // ── Sidebar ─────────────────────────────────────────
+  // ── Sidebar (overlay panel) ──────────────────────────
   Widget _buildSidebar(bool isDark, List<Color> gc) {
-    return Container(
-      width: 272,
-      color: isDark ? const Color(0xFF0D0D0D) : const Color(0xFFF7F7F8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SafeArea(
-            bottom: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+    return SafeArea(
+      right: false,
+      child: Container(
+        width: 272,
+        decoration: BoxDecoration(
+          color: isDark
+              ? const Color(0xFF0D0D0D)
+              : const Color(0xFFF7F7F8),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.3),
+              blurRadius: 20,
+              offset: const Offset(4, 0),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 16, 12, 8),
               child: GestureDetector(
                 onTap: _newChat,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 12),
                   decoration: BoxDecoration(
-                    color: isDark ? Colors.white.withOpacity(0.05) : Colors.white,
+                    color: isDark
+                        ? Colors.white.withOpacity(0.05)
+                        : Colors.white,
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(
                       color: isDark
@@ -750,14 +820,18 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
                   child: Row(
                     children: [
                       Icon(Icons.add, size: 18,
-                          color: isDark ? Colors.white.withOpacity(0.7) : Colors.black54),
+                          color: isDark
+                              ? Colors.white.withOpacity(0.7)
+                              : Colors.black54),
                       const SizedBox(width: 10),
                       Text(
                         'New chat',
                         style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w500,
-                          color: isDark ? Colors.white.withOpacity(0.9) : Colors.black87,
+                          color: isDark
+                              ? Colors.white.withOpacity(0.9)
+                              : Colors.black87,
                         ),
                       ),
                     ],
@@ -765,96 +839,100 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
                 ),
               ),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
-            child: Text(
-              'Recent',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 0.6,
-                color: isDark ? Colors.white.withOpacity(0.35) : Colors.black.withOpacity(0.35),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
+              child: Text(
+                'Recent',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.6,
+                  color: isDark
+                      ? Colors.white.withOpacity(0.32)
+                      : Colors.black.withOpacity(0.32),
+                ),
               ),
             ),
-          ),
-          Expanded(
-            child: FutureBuilder(
-              future: api.get('/agent/chat/sessions'),
-              builder: (context, snapshot) {
-                if (!snapshot.hasData) {
-                  return Center(
-                    child: CircularProgressIndicator(
-                        strokeWidth: 2, color: gc[0]),
-                  );
-                }
-                final sessions = snapshot.data?['sessions'] as List? ?? [];
-                if (sessions.isEmpty) {
-                  return Center(
-                    child: Text(
-                      'No conversations yet',
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: isDark
-                            ? Colors.white.withOpacity(0.3)
-                            : Colors.black.withOpacity(0.3),
-                      ),
-                    ),
-                  );
-                }
-                return ListView.builder(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  itemCount: sessions.length,
-                  itemBuilder: (_, i) {
-                    final sess     = sessions[i];
-                    final isActive = sess['id'] == _sessionId;
-                    return ListTile(
-                      dense: true,
-                      selected: isActive,
-                      selectedTileColor: gc[0].withOpacity(0.08),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8)),
-                      leading: Icon(
-                        Iconsax.message_text,
-                        size: 18,
-                        color: isActive
-                            ? gc[0]
-                            : (isDark
-                                ? Colors.white.withOpacity(0.45)
-                                : Colors.black38),
-                      ),
-                      title: Text(
-                        sess['title'] ?? 'Untitled',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+            Expanded(
+              child: FutureBuilder(
+                future: api.get('/agent/chat/sessions'),
+                builder: (context, snapshot) {
+                  if (!snapshot.hasData) {
+                    return Center(
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: gc[0]),
+                    );
+                  }
+                  final sessions =
+                      snapshot.data?['sessions'] as List? ?? [];
+                  if (sessions.isEmpty) {
+                    return Center(
+                      child: Text(
+                        'No conversations yet',
                         style: TextStyle(
                           fontSize: 13,
-                          fontWeight:
-                              isActive ? FontWeight.w600 : FontWeight.normal,
-                          color: isDark ? Colors.white : Colors.black87,
-                        ),
-                      ),
-                      subtitle: Text(
-                        _formatDate(sess['updated_at']),
-                        style: TextStyle(
-                          fontSize: 11,
                           color: isDark
-                              ? Colors.white.withOpacity(0.35)
-                              : Colors.black38,
+                              ? Colors.white.withOpacity(0.28)
+                              : Colors.black.withOpacity(0.28),
                         ),
                       ),
-                      onTap: () {
-                        setState(() => _showSidebar = false);
-                        _loadSession(sess['id']);
-                        setState(() => _hasStartedChat = true);
-                      },
                     );
-                  },
-                );
-              },
+                  }
+                  return ListView.builder(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    itemCount: sessions.length,
+                    itemBuilder: (_, i) {
+                      final sess     = sessions[i];
+                      final isActive = sess['id'] == _sessionId;
+                      return ListTile(
+                        dense: true,
+                        selected: isActive,
+                        selectedTileColor: gc[0].withOpacity(0.08),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8)),
+                        leading: Icon(
+                          Iconsax.message_text,
+                          size: 18,
+                          color: isActive
+                              ? gc[0]
+                              : (isDark
+                                  ? Colors.white.withOpacity(0.4)
+                                  : Colors.black38),
+                        ),
+                        title: Text(
+                          sess['title'] ?? 'Untitled',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: isActive
+                                ? FontWeight.w600
+                                : FontWeight.normal,
+                            color: isDark ? Colors.white : Colors.black87,
+                          ),
+                        ),
+                        subtitle: Text(
+                          _formatDate(sess['updated_at']),
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: isDark
+                                ? Colors.white.withOpacity(0.32)
+                                : Colors.black38,
+                          ),
+                        ),
+                        onTap: () {
+                          setState(() => _showSidebar = false);
+                          _loadSession(sess['id']);
+                          setState(() => _hasStartedChat = true);
+                        },
+                      );
+                    },
+                  );
+                },
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -870,40 +948,42 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
     return '${d.day}/${d.month}';
   }
 
-  // ── Empty state ─────────────────────────────────────
+  // ── Empty state — simple greeting only ──────────────
   Widget _buildEmptyState(bool isDark, List<Color> gc) {
+    final profile = ref.read(profileProvider).valueOrNull ?? {};
+    final name    = (profile['full_name']?.toString() ?? '').split(' ').first;
+    final greeting = name.isNotEmpty ? 'Hey $name 👋' : 'Hey there 👋';
+
     return Center(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 32),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // Large glowing star badge
+            // Glowing star icon
             AnimatedBuilder(
               animation: _starCtrl,
               builder: (_, __) {
+                final glow = _isStreaming ? _starGlow.value : 0.35;
                 return Container(
-                  width: 72, height: 72,
+                  width: 76, height: 76,
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
                       colors: gc,
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                     ),
-                    borderRadius: BorderRadius.circular(20),
+                    borderRadius: BorderRadius.circular(22),
                     boxShadow: [
                       BoxShadow(
-                        color: gc[0].withOpacity(0.4),
-                        blurRadius: 28,
-                        spreadRadius: 2,
+                        color: gc[0].withOpacity(glow),
+                        blurRadius: 32,
+                        spreadRadius: 3,
                       ),
                     ],
                   ),
-                  child: const Icon(
-                    Icons.star_rounded,
-                    color: Colors.white,
-                    size: 40,
-                  ),
+                  child: const Icon(Icons.star_rounded,
+                      color: Colors.white, size: 42),
                 );
               },
             ),
@@ -911,92 +991,49 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
             Text(
               'APEX',
               style: TextStyle(
-                fontSize: 48,
+                fontSize: 52,
                 fontWeight: FontWeight.w900,
                 letterSpacing: 5,
                 color: isDark ? Colors.white : Colors.black,
                 height: 1,
               ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             Text(
               'Your autonomous wealth agent',
               style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w400,
+                fontSize: 13,
                 color: isDark
-                    ? Colors.white.withOpacity(0.4)
-                    : Colors.black.withOpacity(0.4),
-                letterSpacing: 0.3,
+                    ? Colors.white.withOpacity(0.38)
+                    : Colors.black.withOpacity(0.38),
+                letterSpacing: 0.2,
               ),
             ),
-            const SizedBox(height: 48),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  'How can I help you today?',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w500,
-                    color: isDark ? Colors.white : Colors.black87,
-                  ),
-                ),
-              ],
+            const SizedBox(height: 52),
+            Text(
+              greeting,
+              style: TextStyle(
+                fontSize: 26,
+                fontWeight: FontWeight.w600,
+                color: isDark ? Colors.white : Colors.black87,
+              ),
             ),
-            const SizedBox(height: 32),
-            // Suggested prompts
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              alignment: WrapAlignment.center,
-              children: [
-                _SuggestionChip(
-                  label: '💰 Find income opportunities',
-                  isDark: isDark,
-                  gc: gc,
-                  onTap: () {
-                    _inputCtrl.text = 'Find real income opportunities for my skills';
-                    _submit();
-                  },
-                ),
-                _SuggestionChip(
-                  label: '📋 Write a proposal',
-                  isDark: isDark,
-                  gc: gc,
-                  onTap: () {
-                    _inputCtrl.text = 'Write me a professional business proposal';
-                    _submit();
-                  },
-                ),
-                _SuggestionChip(
-                  label: '📈 Grow my freelance income',
-                  isDark: isDark,
-                  gc: gc,
-                  onTap: () {
-                    _inputCtrl.text = 'Help me grow my freelance income this month';
-                    _submit();
-                  },
-                ),
-                _SuggestionChip(
-                  label: '🔍 Research a niche market',
-                  isDark: isDark,
-                  gc: gc,
-                  onTap: () {
-                    _inputCtrl.text = 'Research a profitable niche market for me';
-                    _submit();
-                  },
-                ),
-              ],
+            const SizedBox(height: 10),
+            Text(
+              'How can I help you today?',
+              style: TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w400,
+                color: isDark
+                    ? Colors.white.withOpacity(0.48)
+                    : Colors.black.withOpacity(0.48),
+              ),
             ),
           ],
         ),
       ),
     ).animate().fadeIn(duration: 500.ms).slideY(
-      begin: 0.04,
-      end: 0,
-      duration: 500.ms,
-      curve: Curves.easeOut,
+      begin: 0.04, end: 0, duration: 500.ms, curve: Curves.easeOut,
     );
   }
 
@@ -1031,6 +1068,14 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
               onWorkflow: _workflowId != null
                   ? () => context.push('/workflow/$_workflowId')
                   : null,
+              onTip: msg.contextualTip != null
+                  ? () {
+                      _inputCtrl.text = msg.contextualTip!
+                          .replaceAll(RegExp(r'^[💡⚡]\s*'), '')
+                          .replaceAll(RegExp(r' — want.*$'), '');
+                      _inputFocus.requestFocus();
+                    }
+                  : null,
             ),
           _Role.action => _ActionLine(msg: msg),
           _Role.error  => _ErrorLine(msg: msg),
@@ -1041,9 +1086,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
               onUpgrade: () => context.push('/premium'),
               onWatchAd: () => adManager
                   .watchAdForAgentUse(context)
-                  .then((ok) {
-                if (ok && mounted) _submit();
-              }),
+                  .then((ok) { if (ok && mounted) _submit(); }),
             ),
         };
       },
@@ -1053,10 +1096,13 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
   // ── Input bar ────────────────────────────────────────
   Widget _buildInput(bool isDark, List<Color> gc) {
     final hintColor = isDark
-        ? Colors.white.withOpacity(0.32)
-        : Colors.black.withOpacity(0.32);
+        ? Colors.white.withOpacity(0.30)
+        : Colors.black.withOpacity(0.30);
     final inputBg =
-        isDark ? const Color(0xFF1A1A1A) : const Color(0xFFF4F4F6);
+        isDark ? const Color(0xFF191919) : const Color(0xFFF3F3F5);
+    final borderColor = isDark
+        ? Colors.white.withOpacity(0.08)
+        : Colors.black.withOpacity(0.07);
 
     return SafeArea(
       top: false,
@@ -1067,8 +1113,8 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
           border: Border(
             top: BorderSide(
               color: isDark
-                  ? Colors.white.withOpacity(0.07)
-                  : Colors.black.withOpacity(0.06),
+                  ? Colors.white.withOpacity(0.06)
+                  : Colors.black.withOpacity(0.05),
               width: 0.5,
             ),
           ),
@@ -1076,83 +1122,96 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
+            // Always-rounded text field
             Expanded(
               child: Container(
                 constraints: const BoxConstraints(maxHeight: 180),
                 decoration: BoxDecoration(
-                  color: inputBg,
-                  borderRadius: BorderRadius.circular(22),
-                  border: Border.all(
-                    color: isDark
-                        ? Colors.white.withOpacity(0.09)
-                        : Colors.black.withOpacity(0.07),
-                  ),
+                  color:        inputBg,
+                  borderRadius: BorderRadius.circular(24),
+                  border:       Border.all(color: borderColor),
                 ),
-                child: TextField(
-                  controller:      _inputCtrl,
-                  focusNode:       _inputFocus,
-                  enabled:         _inputEnabled,
-                  maxLines:        null,
-                  minLines:        1,
-                  textInputAction: TextInputAction.newline,
-                  style: TextStyle(
-                    fontSize: 16,
-                    color: isDark ? Colors.white : Colors.black87,
-                    height: 1.4,
-                  ),
-                  decoration: InputDecoration(
-                    hintText: _isStreaming
-                        ? 'APEX is working...'
-                        : 'Ask APEX anything...',
-                    hintStyle: TextStyle(fontSize: 16, color: hintColor),
-                    border:         InputBorder.none,
-                    contentPadding: const EdgeInsets.fromLTRB(18, 14, 18, 14),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(24),
+                  child: TextField(
+                    controller:      _inputCtrl,
+                    focusNode:       _inputFocus,
+                    enabled:         _inputEnabled,
+                    maxLines:        null,
+                    minLines:        1,
+                    textInputAction: TextInputAction.newline,
+                    style: TextStyle(
+                      fontSize: 16,
+                      color:    isDark ? Colors.white : Colors.black87,
+                      height:   1.4,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: _isStreaming
+                          ? 'APEX is working...'
+                          : 'Ask APEX anything...',
+                      hintStyle: TextStyle(fontSize: 16, color: hintColor),
+                      // All border states removed — container handles visuals
+                      border:         InputBorder.none,
+                      enabledBorder:  InputBorder.none,
+                      focusedBorder:  InputBorder.none,
+                      disabledBorder: InputBorder.none,
+                      contentPadding: const EdgeInsets.fromLTRB(
+                          18, 14, 18, 14),
+                    ),
                   ),
                 ),
               ),
             ),
             const SizedBox(width: 10),
+            // Send button — twinkling star while streaming
             AnimatedBuilder(
               animation: _starCtrl,
               builder: (_, __) {
+                final scale  = _isStreaming ? _starScale.value : 1.0;
+                final glow   = _isStreaming ? _starGlow.value  : 0.0;
                 final active = !_isStreaming;
                 return GestureDetector(
                   onTap: active ? _submit : null,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    width: 46, height: 46,
-                    decoration: BoxDecoration(
-                      gradient: active
-                          ? LinearGradient(
-                              colors: gc,
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                            )
-                          : null,
-                      color: active
-                          ? null
-                          : (isDark
-                              ? Colors.white.withOpacity(0.08)
-                              : Colors.black.withOpacity(0.08)),
-                      borderRadius: BorderRadius.circular(23),
-                      boxShadow: active
-                          ? [
-                              BoxShadow(
-                                color: gc[0].withOpacity(0.3),
-                                blurRadius: 10,
-                                offset: const Offset(0, 3),
-                              ),
-                            ]
-                          : null,
-                    ),
-                    child: Icon(
-                      Icons.arrow_upward_rounded,
-                      color: active
-                          ? Colors.white
-                          : (isDark
-                              ? Colors.white.withOpacity(0.2)
-                              : Colors.black.withOpacity(0.2)),
-                      size: 20,
+                  child: Transform.scale(
+                    scale: scale,
+                    child: Container(
+                      width: 46, height: 46,
+                      decoration: BoxDecoration(
+                        gradient: active
+                            ? LinearGradient(
+                                colors: gc,
+                                begin: Alignment.topLeft,
+                                end:   Alignment.bottomRight,
+                              )
+                            : null,
+                        color: active
+                            ? null
+                            : (isDark
+                                ? Colors.white.withOpacity(0.07)
+                                : Colors.black.withOpacity(0.07)),
+                        borderRadius: BorderRadius.circular(23),
+                        boxShadow: (active || _isStreaming)
+                            ? [
+                                BoxShadow(
+                                  color: gc[0].withOpacity(
+                                      active ? 0.30 : glow),
+                                  blurRadius: 12,
+                                  offset: const Offset(0, 3),
+                                ),
+                              ]
+                            : null,
+                      ),
+                      child: Icon(
+                        _isStreaming
+                            ? Icons.star_rounded
+                            : Icons.arrow_upward_rounded,
+                        color: active || _isStreaming
+                            ? Colors.white
+                            : (isDark
+                                ? Colors.white.withOpacity(0.18)
+                                : Colors.black.withOpacity(0.18)),
+                        size: 20,
+                      ),
                     ),
                   ),
                 );
@@ -1166,63 +1225,16 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Suggestion chip
-// ─────────────────────────────────────────────────────────────────
-
-class _SuggestionChip extends StatelessWidget {
-  final String     label;
-  final bool       isDark;
-  final List<Color> gc;
-  final VoidCallback onTap;
-
-  const _SuggestionChip({
-    required this.label,
-    required this.isDark,
-    required this.gc,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: isDark
-              ? Colors.white.withOpacity(0.05)
-              : Colors.black.withOpacity(0.04),
-          borderRadius: BorderRadius.circular(22),
-          border: Border.all(
-            color: isDark
-                ? Colors.white.withOpacity(0.1)
-                : Colors.black.withOpacity(0.08),
-          ),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 13,
-            color: isDark ? Colors.white.withOpacity(0.8) : Colors.black87,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────
-// Live execution card — Claude AI-style task preview
+// Live execution card (Claude AI-style task preview)
 // ─────────────────────────────────────────────────────────────────
 
 class _LiveExecutionCard extends StatefulWidget {
-  final List<_Step>   steps;
-  final String        currentThought;
-  final bool          isDark;
-  final List<Color>   gc;
-  final bool          isExpanded;
-  final VoidCallback  onToggle;
+  final List<_Step>  steps;
+  final String       currentThought;
+  final bool         isDark;
+  final List<Color>  gc;
+  final bool         isExpanded;
+  final VoidCallback onToggle;
 
   const _LiveExecutionCard({
     required this.steps,
@@ -1259,11 +1271,11 @@ class _LiveExecutionCardState extends State<_LiveExecutionCard>
   @override
   Widget build(BuildContext context) {
     final sub = widget.isDark
-        ? Colors.white.withOpacity(0.48)
-        : Colors.black.withOpacity(0.48);
+        ? Colors.white.withOpacity(0.46)
+        : Colors.black.withOpacity(0.46);
     final bgColor = widget.isDark
         ? const Color(0xFF111111)
-        : const Color(0xFFF5F5F7);
+        : const Color(0xFFF4F4F6);
     final borderColor = widget.isDark
         ? Colors.white.withOpacity(0.07)
         : Colors.black.withOpacity(0.06);
@@ -1292,19 +1304,17 @@ class _LiveExecutionCardState extends State<_LiveExecutionCard>
                       color: Colors.white, size: 14),
                 ),
                 const SizedBox(width: 10),
-                Text(
-                  'APEX',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 1,
-                    color: textColor,
-                  ),
-                ),
+                Text('APEX',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1,
+                      color: textColor,
+                    )),
               ],
             ),
           ),
-          // The card itself
+          // Card body
           GestureDetector(
             onTap: totalCount > 0 ? widget.onToggle : null,
             child: AnimatedContainer(
@@ -1312,19 +1322,18 @@ class _LiveExecutionCardState extends State<_LiveExecutionCard>
               curve: Curves.easeInOut,
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: bgColor,
+                color:        bgColor,
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: borderColor),
+                border:       Border.all(color: borderColor),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Header row
                   Row(
                     children: [
-                      if (totalCount == 0) ...[
-                        _Dots(controller: _dotCtrl, color: widget.gc[0]),
-                        const SizedBox(width: 10),
+                      _Dots(controller: _dotCtrl, color: widget.gc[0]),
+                      const SizedBox(width: 10),
+                      if (totalCount == 0)
                         Expanded(
                           child: Text(
                             widget.currentThought.isEmpty
@@ -1338,10 +1347,8 @@ class _LiveExecutionCardState extends State<_LiveExecutionCard>
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                           ),
-                        ),
-                      ] else ...[
-                        _Dots(controller: _dotCtrl, color: widget.gc[0]),
-                        const SizedBox(width: 10),
+                        )
+                      else ...[
                         Text(
                           '$doneCount of $totalCount steps done',
                           style: TextStyle(
@@ -1361,8 +1368,8 @@ class _LiveExecutionCardState extends State<_LiveExecutionCard>
                       ],
                     ],
                   ),
-                  // Current thought below step count
-                  if (widget.currentThought.isNotEmpty && totalCount > 0) ...[
+                  if (widget.currentThought.isNotEmpty &&
+                      totalCount > 0) ...[
                     const SizedBox(height: 6),
                     Text(
                       widget.currentThought,
@@ -1375,18 +1382,17 @@ class _LiveExecutionCardState extends State<_LiveExecutionCard>
                       overflow: TextOverflow.ellipsis,
                     ),
                   ],
-                  // Expanded steps list
                   if (widget.isExpanded && totalCount > 0) ...[
                     const SizedBox(height: 12),
                     Divider(height: 1, color: borderColor),
                     const SizedBox(height: 10),
                     ...widget.steps.map((step) {
                       final catIcon = switch (step.category) {
-                        'research'  => '🔍',
-                        'action'    => '⚡',
-                        'document'  => '📄',
-                        'thinking'  => '💭',
-                        _           => '●',
+                        'research' => '🔍',
+                        'action'   => '⚡',
+                        'document' => '📄',
+                        'thinking' => '💭',
+                        _          => '●',
                       };
                       return Padding(
                         padding: const EdgeInsets.only(bottom: 8),
@@ -1395,8 +1401,11 @@ class _LiveExecutionCardState extends State<_LiveExecutionCard>
                             SizedBox(
                               width: 20,
                               child: step.isDone
-                                  ? Icon(Icons.check_circle_outline_rounded,
-                                      size: 16, color: widget.gc[0])
+                                  ? Icon(
+                                      Icons.check_circle_outline_rounded,
+                                      size: 16,
+                                      color: widget.gc[0],
+                                    )
                                   : SizedBox(
                                       width: 14, height: 14,
                                       child: CircularProgressIndicator(
@@ -1453,7 +1462,7 @@ class _UserBubble extends StatelessWidget {
           gradient: LinearGradient(
             colors: gc,
             begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
+            end:   Alignment.bottomRight,
           ),
           borderRadius: const BorderRadius.only(
             topLeft:     Radius.circular(20),
@@ -1465,7 +1474,7 @@ class _UserBubble extends StatelessWidget {
         child: Text(
           msg.text,
           style: const TextStyle(
-            color: Colors.white, fontSize: 16, height: 1.45),
+              color: Colors.white, fontSize: 16, height: 1.45),
         ),
       ),
     ).animate().fadeIn(duration: 160.ms).slideY(
@@ -1478,20 +1487,22 @@ class _AgentBubble extends StatelessWidget {
   final bool         isDark;
   final List<Color>  gc;
   final VoidCallback? onWorkflow;
+  final VoidCallback? onTip;
 
   const _AgentBubble({
     required this.msg,
     required this.isDark,
     required this.gc,
     this.onWorkflow,
+    this.onTip,
   });
 
   @override
   Widget build(BuildContext context) {
     final textColor = isDark ? Colors.white : Colors.black87;
     final subColor  = isDark
-        ? Colors.white.withOpacity(0.45)
-        : Colors.black.withOpacity(0.45);
+        ? Colors.white.withOpacity(0.42)
+        : Colors.black.withOpacity(0.42);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 64, 8),
@@ -1514,15 +1525,13 @@ class _AgentBubble extends StatelessWidget {
                       color: Colors.white, size: 14),
                 ),
                 const SizedBox(width: 10),
-                Text(
-                  'APEX',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 1,
-                    color: textColor,
-                  ),
-                ),
+                Text('APEX',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1,
+                      color: textColor,
+                    )),
                 if (msg.modelTier != null) ...[
                   const SizedBox(width: 8),
                   Container(
@@ -1530,8 +1539,8 @@ class _AgentBubble extends StatelessWidget {
                         horizontal: 7, vertical: 3),
                     decoration: BoxDecoration(
                       color: msg.modelTier == 'premium'
-                          ? Colors.amber.withOpacity(0.13)
-                          : Colors.grey.withOpacity(0.12),
+                          ? Colors.amber.withOpacity(0.12)
+                          : Colors.grey.withOpacity(0.11),
                       borderRadius: BorderRadius.circular(5),
                     ),
                     child: Text(
@@ -1550,6 +1559,52 @@ class _AgentBubble extends StatelessWidget {
             ),
           ),
           _MdText(text: msg.text, isDark: isDark, accentColor: gc[1]),
+
+          // Contextual wealth tip card
+          if (msg.contextualTip != null) ...[
+            const SizedBox(height: 14),
+            GestureDetector(
+              onTap: onTip,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      gc[0].withOpacity(0.10),
+                      gc[1].withOpacity(0.10),
+                    ],
+                    begin: Alignment.centerLeft,
+                    end:   Alignment.centerRight,
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: gc[0].withOpacity(0.25)),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        msg.contextualTip!,
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: isDark
+                              ? Colors.white.withOpacity(0.85)
+                              : Colors.black87,
+                          height: 1.45,
+                        ),
+                      ),
+                    ),
+                    if (onTip != null) ...[
+                      const SizedBox(width: 8),
+                      Icon(Icons.arrow_forward_ios_rounded,
+                          size: 13, color: gc[0]),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ],
+
           const SizedBox(height: 10),
           Row(
             children: [
@@ -1607,10 +1662,7 @@ class _ActionLine extends StatelessWidget {
       child: Text(
         msg.text,
         style: const TextStyle(
-          fontSize: 13,
-          color: Colors.green,
-          fontWeight: FontWeight.w500,
-        ),
+          fontSize: 13, color: Colors.green, fontWeight: FontWeight.w500),
       ),
     ).animate().fadeIn();
   }
@@ -1633,7 +1685,8 @@ class _ErrorLine extends StatelessWidget {
         ),
         child: Text(
           msg.text,
-          style: const TextStyle(fontSize: 15, color: Colors.red, height: 1.45),
+          style: const TextStyle(
+              fontSize: 15, color: Colors.red, height: 1.45),
         ),
       ),
     ).animate().fadeIn();
@@ -1663,7 +1716,7 @@ class _SystemMsg extends StatelessWidget {
         padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
           color: isDark
-              ? const Color(0xFF151515)
+              ? const Color(0xFF141414)
               : const Color(0xFFF5F5F7),
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
@@ -1688,14 +1741,12 @@ class _SystemMsg extends StatelessWidget {
                           borderRadius: BorderRadius.circular(10)),
                       padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
-                    child: Text(
-                      'Watch Ad',
-                      style: TextStyle(
-                        color: gc[0],
-                        fontWeight: FontWeight.w600,
-                        fontSize: 14,
-                      ),
-                    ),
+                    child: Text('Watch Ad',
+                        style: TextStyle(
+                          color: gc[0],
+                          fontWeight: FontWeight.w600,
+                          fontSize: 14,
+                        )),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -1708,14 +1759,12 @@ class _SystemMsg extends StatelessWidget {
                           borderRadius: BorderRadius.circular(10)),
                       padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
-                    child: const Text(
-                      'Upgrade',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 14,
-                      ),
-                    ),
+                    child: const Text('Upgrade',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 14,
+                        )),
                   ),
                 ),
               ],
@@ -1735,14 +1784,15 @@ class _MdText extends StatelessWidget {
   final String text;
   final bool   isDark;
   final Color  accentColor;
-  const _MdText({required this.text, required this.isDark, required this.accentColor});
+  const _MdText(
+      {required this.text, required this.isDark, required this.accentColor});
 
   @override
   Widget build(BuildContext context) {
     final base  = isDark ? Colors.white : Colors.black87;
     final muted = isDark
-        ? Colors.white.withOpacity(0.55)
-        : Colors.black.withOpacity(0.55);
+        ? Colors.white.withOpacity(0.52)
+        : Colors.black.withOpacity(0.52);
     final spans = <TextSpan>[];
     final lines = text.split('\n');
 
@@ -1754,7 +1804,8 @@ class _MdText extends StatelessWidget {
         spans.add(TextSpan(
           text: '  ${line.substring(2)}',
           style: TextStyle(
-            color: muted, fontSize: 14, height: 1.5, fontStyle: FontStyle.italic),
+            color: muted, fontSize: 14, height: 1.5,
+            fontStyle: FontStyle.italic),
         ));
         continue;
       }
@@ -1813,7 +1864,7 @@ class _MdText extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Animated dots indicator
+// Animated dots
 // ─────────────────────────────────────────────────────────────────
 
 class _Dots extends StatelessWidget {
@@ -1829,7 +1880,8 @@ class _Dots extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: List.generate(3, (i) {
           final phase = (controller.value + i / 3.0) % 1.0;
-          final op    = 0.2 + 0.8 * (phase < 0.5 ? phase * 2 : (1 - phase) * 2);
+          final op    =
+              0.2 + 0.8 * (phase < 0.5 ? phase * 2 : (1 - phase) * 2);
           return Container(
             margin: const EdgeInsets.only(right: 4),
             width: 6, height: 6,
@@ -1852,17 +1904,16 @@ class _IconBtn extends StatelessWidget {
   final IconData     icon;
   final Color        color;
   final VoidCallback onTap;
-  const _IconBtn({required this.icon, required this.color, required this.onTap});
+  const _IconBtn(
+      {required this.icon, required this.color, required this.onTap});
 
   @override
-  Widget build(BuildContext context) => GestureDetector(
-        onTap:  onTap,
-        child: Icon(icon, size: 19, color: color),
-      );
+  Widget build(BuildContext context) =>
+      GestureDetector(onTap: onTap, child: Icon(icon, size: 19, color: color));
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Limit bottom sheet
+// Daily limit sheet
 // ─────────────────────────────────────────────────────────────────
 
 class _LimitSheet extends StatelessWidget {
@@ -1876,8 +1927,8 @@ class _LimitSheet extends StatelessWidget {
         ? Colors.white.withOpacity(0.18)
         : Colors.black.withOpacity(0.1);
     final subColor = isDark
-        ? Colors.white.withOpacity(0.55)
-        : Colors.black.withOpacity(0.55);
+        ? Colors.white.withOpacity(0.52)
+        : Colors.black.withOpacity(0.52);
     final gc = isDark
         ? [const Color(0xFF4A90D9), const Color(0xFF7B68EE)]
         : [const Color(0xFF5B7FFF), const Color(0xFF8B5CF6)];
@@ -1895,16 +1946,16 @@ class _LimitSheet extends StatelessWidget {
           Container(
             width: 36, height: 4,
             decoration: BoxDecoration(
-              color: handleColor,
+              color:        handleColor,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
           const SizedBox(height: 24),
           Container(
-            width: 56, height: 56,
+            width: 58, height: 58,
             decoration: BoxDecoration(
               gradient: LinearGradient(colors: gc),
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(16),
             ),
             child: const Icon(Icons.lock_outline_rounded,
                 color: Colors.white, size: 28),
@@ -1924,7 +1975,8 @@ class _LimitSheet extends StatelessWidget {
             'Watch a short ad for 1 more run, or upgrade\n'
             'to Premium for unlimited access.',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 15, height: 1.55, color: subColor),
+            style: TextStyle(
+                fontSize: 15, height: 1.55, color: subColor),
           ),
           const SizedBox(height: 24),
           Row(
@@ -1938,14 +1990,12 @@ class _LimitSheet extends StatelessWidget {
                         borderRadius: BorderRadius.circular(12)),
                     padding: const EdgeInsets.symmetric(vertical: 14),
                   ),
-                  child: Text(
-                    'Watch Ad',
-                    style: TextStyle(
-                      color:      gc[0],
-                      fontWeight: FontWeight.w600,
-                      fontSize:   15,
-                    ),
-                  ),
+                  child: Text('Watch Ad',
+                      style: TextStyle(
+                        color: gc[0],
+                        fontWeight: FontWeight.w600,
+                        fontSize: 15,
+                      )),
                 ),
               ),
               const SizedBox(width: 12),
@@ -1961,14 +2011,12 @@ class _LimitSheet extends StatelessWidget {
                         borderRadius: BorderRadius.circular(12)),
                     padding: const EdgeInsets.symmetric(vertical: 14),
                   ),
-                  child: const Text(
-                    'Upgrade',
-                    style: TextStyle(
-                      color:      Colors.white,
-                      fontWeight: FontWeight.w600,
-                      fontSize:   15,
-                    ),
-                  ),
+                  child: const Text('Upgrade',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 15,
+                      )),
                 ),
               ),
             ],
