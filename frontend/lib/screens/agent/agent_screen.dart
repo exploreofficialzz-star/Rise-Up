@@ -11,6 +11,9 @@
 //  • Sidebar overlays content — no layout shift
 //  • Contextual wealth tip card after task completes
 //  • Quota / ad-credit / premium limits enforced
+//
+// Fixed in v6.1.1:
+//  • Dart string interpolation bug: `_$insight_` → `_${insight}_`
 
 import 'dart:async';
 import 'dart:convert';
@@ -144,14 +147,10 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
   }
 
   // ── Load full session history ─────────────────────
-  // Calls the messages endpoint (limit=100) so the entire
-  // conversation is loaded — not just the 20 recent_messages
-  // returned by the session detail endpoint.
   Future<void> _loadSession(String sessionId) async {
     if (!mounted) return;
     setState(() => _historyLoading = true);
     try {
-      // Try the dedicated messages endpoint first (returns full history)
       final response = await api.get(
           '/agent/chat/sessions/$sessionId/messages?limit=100&offset=0');
       final messages = response['messages'] as List?
@@ -175,7 +174,6 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
         _scrollDown(jump: true);
       }
     } catch (_) {
-      // Fallback: try the session summary endpoint
       try {
         final response = await api.get('/agent/chat/sessions/$sessionId');
         final messages = response['recent_messages'] as List? ?? [];
@@ -221,7 +219,6 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
     _startStar();
     _scrollDown();
 
-    // Quota check
     if (!adManager.canUseAgent) {
       _showLimitDialog();
       setState(() {
@@ -239,8 +236,6 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
     final currCode = profile['currency']?.toString() ?? 'USD';
     currency.init(currCode);
 
-    // First user message with no session → full SSE agent run
-    // All follow-ups → chat endpoint
     final userCount = _msgs.where((m) => m.role == _Role.user).length;
     if (userCount == 1 && _sessionId == null) {
       await _agentRun(text, currCode, profile);
@@ -294,7 +289,6 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
 
         case 'quota_check':
         case 'brain_context':
-          // Silent — internal events
           break;
 
         case 'thinking':
@@ -304,7 +298,6 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
         case 'tool_call':
           final tool = event.data['tool']?.toString() ?? '';
           final cat  = event.data['category']?.toString() ?? 'thinking';
-          // Avoid duplicates if the same tool fires twice
           final alreadyRunning = _liveSteps.any(
               (s) => s.tool == tool && !s.isDone);
           if (!alreadyRunning) {
@@ -344,7 +337,6 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
 
         case 'finalizing':
           _currentThought = 'Writing your complete plan...';
-          // Mark all remaining steps as done
           for (final s in _liveSteps) { s.isDone = true; }
 
         case 'complete':
@@ -359,7 +351,6 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
             modelTier:     data['model_tier']?.toString() ?? 'free',
             contextualTip: _buildContextualTip(data),
           ));
-          // Clear the live card after a short delay so user can see all done
           _liveSteps      = [];
           _currentThought = '';
           _isStreaming     = false;
@@ -593,7 +584,10 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
       buf.writeln();
     }
     if (now.isNotEmpty) { buf.writeln('⚡ **Do this now:** $now'); buf.writeln(); }
-    if (insight.isNotEmpty) buf.writeln('_$insight_');
+
+    // ✅ Fixed: was `_$insight_` (invalid getter) → `_${insight}_`
+    if (insight.isNotEmpty) buf.writeln('_${insight}_');
+
     if (plan['warning']?.toString().isNotEmpty == true) {
       buf.writeln('\n⚠️ ${plan['warning']}');
     }
@@ -741,7 +735,6 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
         )),
       ]),
       actions: [
-        // Runs remaining badge
         if (!isPremium)
           GestureDetector(
             onTap: runsLeft == 0 ? _showLimitDialog : null,
@@ -780,13 +773,11 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
               ]),
             ),
           ),
-        // New chat
         IconButton(
           icon: Icon(Icons.add_rounded, color: isDark ? Colors.white : Colors.black87, size: 24),
           tooltip: 'New conversation',
           onPressed: _newChat,
         ),
-        // Workflow link
         if (_workflowId != null)
           IconButton(
             icon: Icon(Iconsax.flash, color: gc[0], size: 20),
@@ -809,7 +800,6 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
             color: Colors.black.withOpacity(0.3), blurRadius: 20, offset: const Offset(4, 0))],
         ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // New chat button
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 16, 12, 8),
             child: GestureDetector(
@@ -840,7 +830,6 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
               color: isDark ? Colors.white.withOpacity(0.32) : Colors.black.withOpacity(0.32),
             )),
           ),
-          // Session list
           Expanded(
             child: FutureBuilder(
               future: api.get('/agent/chat/sessions'),
@@ -966,7 +955,6 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
       padding: const EdgeInsets.fromLTRB(0, 8, 0, 20),
       itemCount: _msgs.length + (showLiveCard ? 1 : 0),
       itemBuilder: (_, i) {
-        // Live execution card appears after all messages while streaming
         if (showLiveCard && i == _msgs.length) {
           return _LiveExecutionCard(
             steps:          _liveSteps,
@@ -989,7 +977,6 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
                   : null,
               onTip: msg.contextualTip != null
                   ? () {
-                      // Pre-fill input with contextual follow-up
                       final tip = msg.contextualTip!
                           .replaceAll(RegExp(r'^[💡⚡]\s*'), '')
                           .replaceAll(RegExp(r' — want.*$'), '');
@@ -1062,7 +1049,6 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
             ),
           ),
           const SizedBox(width: 10),
-          // Send / streaming star button
           AnimatedBuilder(
             animation: _starCtrl,
             builder: (_, __) {
@@ -1102,9 +1088,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
 }
 
 // ─────────────────────────────────────────────────────────────────
-// LIVE EXECUTION CARD — Claude AI-style collapsible task preview
-// Shows in real-time what APEX is doing step-by-step.
-// Tapping the card header collapses/expands the step list.
+// LIVE EXECUTION CARD
 // ─────────────────────────────────────────────────────────────────
 
 class _LiveExecutionCard extends StatefulWidget {
@@ -1143,8 +1127,12 @@ class _LiveExecutionCardState extends State<_LiveExecutionCard>
   void dispose() { _dotCtrl.dispose(); super.dispose(); }
 
   String get _categoryIcon {
-    // Icon for the most recent in-progress step
-    final current = widget.steps.lastWhere((s) => !s.isDone, orElse: () => widget.steps.isEmpty ? _Step(tool: '', label: '', category: 'thinking') : widget.steps.last);
+    final current = widget.steps.lastWhere(
+      (s) => !s.isDone,
+      orElse: () => widget.steps.isEmpty
+          ? _Step(tool: '', label: '', category: 'thinking')
+          : widget.steps.last,
+    );
     return switch (current.category) {
       'research' => '🔍',
       'action'   => '⚡',
@@ -1167,7 +1155,6 @@ class _LiveExecutionCardState extends State<_LiveExecutionCard>
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 6, 80, 6),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // APEX label row
         Padding(
           padding: const EdgeInsets.only(bottom: 8),
           child: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -1186,7 +1173,6 @@ class _LiveExecutionCardState extends State<_LiveExecutionCard>
           ]),
         ),
 
-        // Card body — tap header to toggle
         GestureDetector(
           onTap: totalCount > 0 ? widget.onToggle : null,
           child: AnimatedContainer(
@@ -1199,20 +1185,17 @@ class _LiveExecutionCardState extends State<_LiveExecutionCard>
             ),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
 
-              // Header row: dots + step count or thought
               Row(children: [
                 _Dots(controller: _dotCtrl, color: widget.gc[0]),
                 const SizedBox(width: 10),
 
                 if (totalCount == 0)
-                  // No steps yet — show plain thought text
                   Expanded(child: Text(
                     widget.currentThought.isEmpty ? 'Working...' : widget.currentThought,
                     style: TextStyle(fontSize: 14, color: sub, fontStyle: FontStyle.italic),
                     maxLines: 2, overflow: TextOverflow.ellipsis,
                   ))
                 else ...[
-                  // Step count summary
                   Text(
                     totalCount == doneCount
                         ? '✓  All $totalCount steps complete'
@@ -1223,7 +1206,6 @@ class _LiveExecutionCardState extends State<_LiveExecutionCard>
                     ),
                   ),
                   const Spacer(),
-                  // Collapse / expand chevron
                   Icon(
                     widget.isExpanded
                         ? Icons.keyboard_arrow_up_rounded
@@ -1233,7 +1215,6 @@ class _LiveExecutionCardState extends State<_LiveExecutionCard>
                 ],
               ]),
 
-              // Current thought (shown below step count when steps exist)
               if (widget.currentThought.isNotEmpty && totalCount > 0) ...[
                 const SizedBox(height: 6),
                 Text(
@@ -1243,7 +1224,6 @@ class _LiveExecutionCardState extends State<_LiveExecutionCard>
                 ),
               ],
 
-              // Step list (only when expanded)
               if (widget.isExpanded && totalCount > 0) ...[
                 const SizedBox(height: 12),
                 Divider(height: 1, color: border),
@@ -1273,7 +1253,6 @@ class _LiveExecutionCardState extends State<_LiveExecutionCard>
                           fontSize: 13,
                           color:      step.isDone ? sub : textColor,
                           fontWeight: step.isDone ? FontWeight.normal : FontWeight.w500,
-                          decoration: step.isDone ? TextDecoration.none : null,
                         ),
                       )),
                     ]),
@@ -1343,7 +1322,6 @@ class _AgentBubble extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 64, 8),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // Label row
         Padding(
           padding: const EdgeInsets.only(bottom: 8),
           child: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -1375,10 +1353,8 @@ class _AgentBubble extends StatelessWidget {
           ]),
         ),
 
-        // Markdown text
         _MdText(text: msg.text, isDark: isDark, accentColor: gc[1]),
 
-        // Contextual wealth tip card
         if (msg.contextualTip != null) ...[
           const SizedBox(height: 14),
           GestureDetector(
@@ -1410,7 +1386,6 @@ class _AgentBubble extends StatelessWidget {
 
         const SizedBox(height: 10),
 
-        // Action bar
         Row(children: [
           _IconBtn(
             icon: Icons.copy_outlined, color: subColor,
@@ -1549,7 +1524,6 @@ class _MdText extends StatelessWidget {
       if (li > 0) spans.add(const TextSpan(text: '\n'));
       final line = lines[li];
 
-      // Blockquote
       if (line.startsWith('> ')) {
         spans.add(TextSpan(
           text: '  ${line.substring(2)}',
@@ -1558,7 +1532,6 @@ class _MdText extends StatelessWidget {
         continue;
       }
 
-      // Inline markdown: **bold**, _italic_, `code`
       final re   = RegExp(r'\*\*(.*?)\*\*|_(.*?)_|`(.*?)`');
       int   last = 0;
 
