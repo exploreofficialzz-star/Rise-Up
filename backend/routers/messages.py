@@ -315,6 +315,7 @@ async def get_or_create_ai_conversation(user: dict = Depends(get_current_user)):
             "user_id":         ai_user_id,
             "content":         greeting,
             "sender_type":     "ai",
+            "role":            "assistant",     # ✅ FIX: Added required role column
             "is_read":         True,
             "created_at":      datetime.now(timezone.utc).isoformat(),
         }).execute()
@@ -578,6 +579,7 @@ async def send_message(
             "content":         req.content,
             "is_read":         False,
             "sender_type":     "user",
+            "role":            "user",          # ✅ FIX: Added required role column
         }
         if req.media_url:
             data["media_url"] = req.media_url
@@ -750,6 +752,7 @@ async def send_ai_message(
             "sender_type":     "user",
             "is_read":         True,
             "created_at":      now_iso,
+            "role":            "user",          # ✅ FIX: Added required role column
         }).execute()
         user_msg_id = (user_msg_res.data or [{}])[0].get("id")
 
@@ -760,6 +763,7 @@ async def send_ai_message(
             "user_id":         ai_user_id,
             "content":         ai_content,
             "sender_type":     "ai",
+            "role":            "assistant",     # ✅ FIX: Added required role column
             "is_read":         True,
         }).execute().data[0]
 
@@ -839,6 +843,7 @@ async def invite_ai_to_conversation(
             "sender_id":       ai_user_id,
             "user_id":         ai_user_id,
             "sender_type":     "system",
+            "role":            "system",        # ✅ FIX: Added required role column
             "content":         "🤖 RiseUp AI has joined. Use **@ai** followed by your question to get wealth advice.",
             "is_read":         True,
             "created_at":      datetime.now(timezone.utc).isoformat(),
