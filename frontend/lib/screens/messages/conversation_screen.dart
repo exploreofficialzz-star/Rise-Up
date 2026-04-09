@@ -418,19 +418,31 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
 
     try {
-      // FIXED: Removed unsupported 'before' parameter - use offset-based pagination instead
-      // Calculate page offset based on current message count
-      final currentCount = _msgs.length;
-      final page = (currentCount / _kHistoryPageSize).ceil();
+      // FIXED: Use 'since' parameter with the oldest message time to get messages before it
+      // The API will return messages after 'since', so we need to handle this differently
+      // For now, we disable load-more since the API doesn't support 'before' or 'offset'
+      // This is a limitation of the current API - you'll need to add backend support
+      // for proper pagination with 'before' or 'offset' parameters
       
+      // TEMPORARY: Disable load-more since API doesn't support it
+      // Once backend supports 'before' or 'offset', re-enable this:
+      /*
       final older = await api.getDMMessages(
         convId,
         limit : _kHistoryPageSize,
-        offset: page * _kHistoryPageSize,
+        since: oldestTime, // This gets messages AFTER since, not before
       );
-
-      if (!mounted) return;
-
+      */
+      
+      // For now, just mark as no more history since we can't fetch older messages
+      // with the current API limitations
+      setState(() {
+        _hasMoreHistory = false;
+        _loadingMore    = false;
+      });
+      
+      /* 
+      // Original implementation when API supports proper pagination:
       if (older.isEmpty) {
         setState(() {
           _hasMoreHistory = false;
@@ -457,6 +469,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         final newExtent = _scroll.position.maxScrollExtent;
         _scroll.jumpTo(_scroll.offset + (newExtent - prevExtent));
       });
+      */
     } catch (e) {
       debugPrint('[ConversationScreen] _loadMoreHistory error: $e');
       if (mounted) setState(() => _loadingMore = false);
@@ -1903,72 +1916,72 @@ class _DailyLimitSheetState extends State<_DailyLimitSheet> {
     final text   = isDark ? Colors.white     : Colors.black87;
     final sub    = isDark ? Colors.white60   : Colors.black54;
 
-       return Container(
-     decoration: BoxDecoration(
-         color: bg,
-         borderRadius:
-             const BorderRadius.vertical(top: Radius.circular(28))),
-     padding: EdgeInsets.fromLTRB(
-         24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
-     child: Column(mainAxisSize: MainAxisSize.min, children: [
-       Container(width: 40, height: 4,
-           decoration: BoxDecoration(
-               color: isDark ? Colors.white24 : Colors.black12,
-               borderRadius: BorderRadius.circular(2))),
-       const SizedBox(height: 24),
-       const Text('⏰', style: TextStyle(fontSize: 52)),
-       const SizedBox(height: 12),
-       Text('Daily Limit Reached',
-           style: TextStyle(
-               fontSize: 20, fontWeight: FontWeight.w800, color: text)),
-       const SizedBox(height: 8),
-       Text(
-         "You've used all your free AI unlocks for today.\n"
-         'Your limit resets at midnight UTC.',
-         style: TextStyle(fontSize: 14, color: sub, height: 1.5),
-         textAlign: TextAlign.center,
-       ),
-       const SizedBox(height: 24),
-       Container(
-         padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
-         decoration: BoxDecoration(
-             color: AppColors.primary.withOpacity(0.08),
-             borderRadius: BorderRadius.circular(16)),
-         child: Column(children: [
-           Text('Resets in', style: TextStyle(fontSize: 12, color: sub)),
-           const SizedBox(height: 6),
-           Text(_countdown,
-               style: TextStyle(
-                   fontSize: 32, fontWeight: FontWeight.w800, color: text,
-                   fontFamily: 'monospace', letterSpacing: 2)),
-         ]),
-       ),
-       const SizedBox(height: 24),
-       SizedBox(
-         width: double.infinity,
-         child: ElevatedButton.icon(
-           onPressed: widget.onUpgrade,
-           icon: const Icon(Icons.workspace_premium_rounded, size: 20),
-           label: const Text('Upgrade — Unlimited AI Forever'),
-           style: ElevatedButton.styleFrom(
-             backgroundColor: AppColors.gold,
-             foregroundColor: Colors.black87,
-             padding: const EdgeInsets.symmetric(vertical: 16),
-             shape: RoundedRectangleBorder(
-                 borderRadius: BorderRadius.circular(14)),
-             textStyle: const TextStyle(
-                 fontSize: 15, fontWeight: FontWeight.w700),
-           ),
-         ),
-       ),
-       const SizedBox(height: 12),
-       TextButton(
-         onPressed: () => Navigator.pop(context),
-         child: Text('Come back later',
-             style: TextStyle(color: sub, fontSize: 13)),
-       ),
-     ]),
-   );
- }
+    return Container(
+      decoration: BoxDecoration(
+          color: bg,
+          borderRadius:
+              const BorderRadius.vertical(top: Radius.circular(28))),
+      padding: EdgeInsets.fromLTRB(
+          24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Container(width: 40, height: 4,
+            decoration: BoxDecoration(
+                color: isDark ? Colors.white24 : Colors.black12,
+                borderRadius: BorderRadius.circular(2))),
+        const SizedBox(height: 24),
+        const Text('⏰', style: TextStyle(fontSize: 52)),
+        const SizedBox(height: 12),
+        Text('Daily Limit Reached',
+            style: TextStyle(
+                fontSize: 20, fontWeight: FontWeight.w800, color: text)),
+        const SizedBox(height: 8),
+        Text(
+          "You've used all your free AI unlocks for today.\n"
+          'Your limit resets at midnight UTC.',
+          style: TextStyle(fontSize: 14, color: sub, height: 1.5),
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 24),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
+          decoration: BoxDecoration(
+              color: AppColors.primary.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(16)),
+          child: Column(children: [
+            Text('Resets in', style: TextStyle(fontSize: 12, color: sub)),
+            const SizedBox(height: 6),
+            Text(_countdown,
+                style: TextStyle(
+                    fontSize: 32, fontWeight: FontWeight.w800, color: text,
+                    fontFamily: 'monospace', letterSpacing: 2)),
+          ]),
+        ),
+        const SizedBox(height: 24),
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            onPressed: widget.onUpgrade,
+            icon: const Icon(Icons.workspace_premium_rounded, size: 20),
+            label: const Text('Upgrade — Unlimited AI Forever'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.gold,
+              foregroundColor: Colors.black87,
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14)),
+              textStyle: const TextStyle(
+                  fontSize: 15, fontWeight: FontWeight.w700),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text('Come back later',
+              style: TextStyle(color: sub, fontSize: 13)),
+        ),
+      ]),
+    );
+  }
 }
 
