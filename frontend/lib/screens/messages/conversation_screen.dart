@@ -1,18 +1,18 @@
 // ignore_for_file: deprecated_member_use
 // frontend/lib/screens/messages/conversation_screen.dart
-// Production v12 — Full history persistence + load-more pagination
+// Production v13 — Quota v3 · Scroll-lock · Smart copy · In-app links · Dedup · DM isolation · Invite AI fix
 //
-// Changes vs v11:
-//  • History now loads _kHistoryPageSize (100) messages, not 50
-//  • Load-more triggered by scrolling to the TOP — fetches older pages
-//  • _kContextWindow raised 20 → 50: AI remembers far more of the convo
-//  • First-time AI greeting persisted to backend via sendAIMessageInDM
-//    (uses isSystemGreeting flag so it doesn't count against quota)
-//  • _lastPollTime now initialised from the very first history load so
-//    polling never re-delivers messages already shown
-//  • _poll guards against running while history is still loading
-//  • DM load-more works identically to AI load-more (scroll-up pagination)
-//  • All other v11 fixes preserved unchanged
+// Changes vs v12:
+//  • QUOTA v3: 2 ads per cycle → 3 messages; after 30 ad-messages → 4hr lockout → reset
+//  • SCROLL LOCK: while AI is typing the list is NeverScrollable (no jitter/hang)
+//  • SMART COPY: detects code blocks, URLs, lists, articles, contact info per message
+//  • IN-APP LINKS: MarkdownBody onTapLink opens url_launcher inAppBrowserView
+//  • DEDUP FIX: fingerprint (role+content hash) prevents greeting / poll duplicates;
+//               greeting no longer calls sendAIMessageInDM (primary dupe source)
+//  • DM ISOLATION: poll skips AI sender_type messages when !_aiJoined
+//  • AI CONV VALIDATION: clears cached AI conv ID if no AI messages found (>5 msgs)
+//  • INVITE AI: retry action on error, poll-time advanced after join message
+//  • _lastPollTime advanced immediately after greeting so greeting never polled back
 
 import 'dart:async';
 import 'dart:convert';
@@ -26,6 +26,7 @@ import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../config/app_constants.dart';
 import '../../services/ad_service.dart';
@@ -34,18 +35,19 @@ import '../../services/api_service.dart';
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
-const int _kFreeMessages     = 3;
-const int _kMaxAdsPerDay     = 5;
-const Duration _kWindowDur   = Duration(hours: 4);
-const String _kQuotaPrefsKey = 'riseup_ai_quota_v1';
-const String _kAiConvIdKey   = 'riseup_ai_conv_id_v2';
-const String _kGreetedPrefix = 'riseup_ai_greeted_v1_';   // + convId
-const String _kPollTimePrefix= 'riseup_poll_time_v1_';    // + convId
+const int _kFreeMessages   = 3;   // initial free AI messages
+const int _kAdsPerCycle    = 2;   // ads user must watch per unlock cycle
+const int _kMsgsPerCycle   = 3;   // AI messages unlocked per cycle
+const int _kMaxAdMessages  = 30;  // cap before 4-hour lockout
+const Duration _kLockoutDur = Duration(hours: 4);
 
-// CHANGED: larger context window so AI remembers more of the conversation
-const int _kContextWindow    = 50;
-// CHANGED: page size for initial history load
-const int _kHistoryPageSize  = 100;
+const String _kQuotaPrefsKey  = 'riseup_ai_quota_v3';
+const String _kAiConvIdKey    = 'riseup_ai_conv_id_v2';
+const String _kGreetedPrefix  = 'riseup_ai_greeted_v2_'; // bumped to clear old flags
+const String _kPollTimePrefix = 'riseup_poll_time_v1_';
+
+const int _kContextWindow   = 50;
+const int _kHistoryPageSize = 100;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal message model
@@ -68,25 +70,28 @@ class _Msg {
     required this.sender,
     required this.avatar,
     required this.isMe,
-    this.isAI = false,
+    this.isAI    = false,
     this.isError = false,
     DateTime? time,
-  })  : id = id ?? 'local_${DateTime.now().microsecondsSinceEpoch}',
+  })  : id          = id ?? 'local_${DateTime.now().microsecondsSinceEpoch}',
         displayText = content,
-        isTyping = false,
-        time = time ?? DateTime.now();
+        isTyping    = false,
+        time        = time ?? DateTime.now();
+
+  /// Role-prefixed content hash for dedup across optimistic↔server transitions.
+  String get fingerprint => '${isMe ? "u" : "a"}:${content.trim().hashCode}';
 }
 
-enum _QuotaResult { allowed, showAdGate, dailyLimit }
+enum _QuotaResult { allowed, showAdGate, hardLockout }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Widget
+// ConversationScreen widget
 // ─────────────────────────────────────────────────────────────────────────────
 class ConversationScreen extends StatefulWidget {
-  final String userId;   // conversation UUID for DM; 'ai' for AI-only
+  final String userId;   // DM conversation UUID, or 'ai' for AI-only
   final String name;
   final String avatar;
-  final bool isAI;
+  final bool   isAI;
   final String? postContext;
   final String? postAuthor;
 
@@ -95,9 +100,9 @@ class ConversationScreen extends StatefulWidget {
     required this.userId,
     required this.name,
     required this.avatar,
-    this.isAI = false,
-    this.postContext,
-    this.postAuthor,
+    this.isAI        = false,
+    this.postContext  = null,
+    this.postAuthor   = null,
   });
 
   @override
@@ -105,8 +110,8 @@ class ConversationScreen extends StatefulWidget {
 }
 
 class _ConversationScreenState extends State<ConversationScreen> {
-  final _textCtrl  = TextEditingController();
-  final _scroll    = ScrollController();
+  final _textCtrl = TextEditingController();
+  final _scroll   = ScrollController();
   final List<_Msg> _msgs = [];
 
   bool _historyLoaded    = false;
@@ -114,31 +119,67 @@ class _ConversationScreenState extends State<ConversationScreen> {
   bool _dmSending        = false;
   bool _aiJoined         = false;
   bool _convInitializing = false;
-
-  // CHANGED: pagination state
-  bool _loadingMore    = false;
-  bool _hasMoreHistory = true;
+  bool _scrollLocked     = false; // true while AI message is typing
+  bool _loadingMore      = false;
+  bool _hasMoreHistory   = true;
 
   String? _aiConvId;
   String? _lastPollTime;
-
   String? _cachedMyId;
   String? _cachedMyName;
 
   Timer? _typingTimer;
   Timer? _pollTimer;
 
+  // ── Quota state ────────────────────────────────────────────────────────────
+  // Persisted in SharedPrefs under _kQuotaPrefsKey.
+  //   free_used     – messages consumed from the 3-free allocation
+  //   cycle_ads     – ads watched in current cycle (0 → _kAdsPerCycle)
+  //   cycle_msgs    – ad-messages sent in current cycle (0 → _kMsgsPerCycle)
+  //   total_ad_msgs – lifetime ad-message count (resets after lockout clears)
+  //   lockout_until – ISO-8601 string; null = not locked
+  //   is_premium    – boolean
   Map<String, dynamic> _quota = {
-    'free_used': 0,
-    'ads_today': 0,
-    'window_expires': null,
-    'is_premium': false,
-    'date': '',
+    'free_used'    : 0,
+    'cycle_ads'    : 0,
+    'cycle_msgs'   : 0,
+    'total_ad_msgs': 0,
+    'lockout_until': null,
+    'is_premium'   : false,
   };
 
-  bool get _isAIMode   => widget.isAI || widget.userId == 'ai';
+  // ── Computed quota helpers ─────────────────────────────────────────────────
+  bool get _isAIMode    => widget.isAI || widget.userId == 'ai';
+  bool get _isSending   => _aiResponding || _dmSending;
   String? get _activeConvId => _isAIMode ? _aiConvId : widget.userId;
-  bool get _isSending  => _aiResponding || _dmSending;
+
+  bool get _isPremium    => _quota['is_premium'] == true;
+  int  get _freeUsed     => (_quota['free_used']     as int?) ?? 0;
+  int  get _cycleAds     => (_quota['cycle_ads']     as int?) ?? 0;
+  int  get _cycleMsgs    => (_quota['cycle_msgs']    as int?) ?? 0;
+  int  get _totalAdMsgs  => (_quota['total_ad_msgs'] as int?) ?? 0;
+
+  /// Returns true if a 4-hour lockout is active. Auto-resets when it expires.
+  bool get _inLockout {
+    final exp = _quota['lockout_until'] as String?;
+    if (exp == null) return false;
+    final dt = DateTime.tryParse(exp);
+    if (dt == null) return false;
+    if (DateTime.now().isAfter(dt)) {
+      // Lockout expired — reset all ad counters so user can watch ads again
+      _quota['lockout_until']  = null;
+      _quota['total_ad_msgs']  = 0;
+      _quota['cycle_ads']      = 0;
+      _quota['cycle_msgs']     = 0;
+      _saveQuota();
+      return false;
+    }
+    return true;
+  }
+
+  /// True when the user has completed the 2-ad cycle and still has messages left.
+  bool get _cycleActive =>
+      _cycleAds >= _kAdsPerCycle && _cycleMsgs < _kMsgsPerCycle;
 
   // ─────────────────────────────────────────────────────────────────────────
   // Lifecycle
@@ -147,7 +188,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
   void initState() {
     super.initState();
     _bootstrap();
-    // CHANGED: attach scroll listener for load-more (scroll to top = older msgs)
     _scroll.addListener(_onScroll);
   }
 
@@ -168,9 +208,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
     super.dispose();
   }
 
-  // CHANGED: trigger load-more when user scrolls near the top
   void _onScroll() {
-    if (!_scroll.hasClients) return;
+    if (!_scroll.hasClients || _scrollLocked) return;
     if (_scroll.position.pixels <= 120 &&
         !_loadingMore &&
         _hasMoreHistory &&
@@ -200,35 +239,32 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Quota
+  // Quota — load / save / check
   // ─────────────────────────────────────────────────────────────────────────
   Future<void> _loadQuota() async {
-    final today = _todayStr();
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_kQuotaPrefsKey);
+      final raw   = prefs.getString(_kQuotaPrefsKey);
       if (raw != null) {
         final local = Map<String, dynamic>.from(jsonDecode(raw) as Map);
-        if (local['date'] == today && mounted) {
+        if (mounted) {
           setState(() {
-            _quota['free_used']     = (local['used']    as int?) ?? 0;
-            _quota['ads_today']     = (local['ads']     as int?) ?? 0;
-            _quota['window_expires']= local['lockout']  as String?;
+            _quota['free_used']     = (local['free_used']     as int?) ?? 0;
+            _quota['cycle_ads']     = (local['cycle_ads']     as int?) ?? 0;
+            _quota['cycle_msgs']    = (local['cycle_msgs']    as int?) ?? 0;
+            _quota['total_ad_msgs'] = (local['total_ad_msgs'] as int?) ?? 0;
+            _quota['lockout_until'] =  local['lockout_until'] as String?;
           });
         }
       }
     } catch (_) {}
-
+    // Sync premium status from remote
     try {
       final remote = await api.getAIQuota();
       if (mounted) {
         setState(() {
-          _quota['free_used']     = max((_quota['free_used'] as int?) ?? 0,
-                                        (remote['free_used'] as int?) ?? 0);
-          _quota['is_premium']    = remote['is_premium'] ?? _quota['is_premium'];
-          _quota['window_expires']??= remote['window_expires'];
-          _quota['ads_today']     = max((_quota['ads_today'] as int?) ?? 0,
-                                        (remote['ads_today'] as int?) ?? 0);
+          _quota['free_used']  = max(_freeUsed, (remote['free_used'] as int?) ?? 0);
+          _quota['is_premium'] = remote['is_premium'] ?? _quota['is_premium'];
         });
         await _saveQuota();
       }
@@ -239,41 +275,40 @@ class _ConversationScreenState extends State<ConversationScreen> {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_kQuotaPrefsKey, jsonEncode({
-        'date'   : _todayStr(),
-        'used'   : _quota['free_used'] ?? 0,
-        'ads'    : _quota['ads_today'] ?? 0,
-        'lockout': _quota['window_expires'],
+        'free_used'    : _freeUsed,
+        'cycle_ads'    : _cycleAds,
+        'cycle_msgs'   : _cycleMsgs,
+        'total_ad_msgs': _totalAdMsgs,
+        'lockout_until': _quota['lockout_until'],
       }));
     } catch (_) {}
   }
 
-  String _todayStr() => DateTime.now().toIso8601String().substring(0, 10);
-
-  bool get _isPremium   => _quota['is_premium'] == true;
-  int  get _freeUsed    => (_quota['free_used'] as int?) ?? 0;
-  int  get _adsToday    => (_quota['ads_today'] as int?) ?? 0;
-  bool get _hasFreeMsgs => _freeUsed < _kFreeMessages;
-  bool get _canWatchAd  => _adsToday < _kMaxAdsPerDay;
-
-  bool get _inUnlockedWindow {
-    final exp = _quota['window_expires'] as String?;
-    if (exp == null) return false;
-    final dt  = DateTime.tryParse(exp);
-    if (dt == null) return false;
-    if (DateTime.now().isAfter(dt)) {
-      _quota['window_expires'] = null;
-      _saveQuota();
-      return false;
-    }
-    return true;
+  _QuotaResult _checkAIQuota() {
+    if (_isPremium)  return _QuotaResult.allowed;
+    if (_inLockout)  return _QuotaResult.hardLockout;
+    if (_freeUsed < _kFreeMessages) return _QuotaResult.allowed;
+    if (_cycleActive)               return _QuotaResult.allowed;
+    return _QuotaResult.showAdGate;
   }
 
-  _QuotaResult _checkAIQuota() {
-    if (_isPremium)        return _QuotaResult.allowed;
-    if (_inUnlockedWindow) return _QuotaResult.allowed;
-    if (_hasFreeMsgs)      return _QuotaResult.allowed;
-    if (_canWatchAd)       return _QuotaResult.showAdGate;
-    return _QuotaResult.dailyLimit;
+  /// Consume one ad-unlocked message slot; triggers lockout if 30 cap reached.
+  Future<void> _consumeAdMessage() async {
+    final newCycleMsgs   = _cycleMsgs + 1;
+    final newTotalAdMsgs = _totalAdMsgs + 1;
+    final cycleExhausted = newCycleMsgs >= _kMsgsPerCycle;
+    final hitCap         = newTotalAdMsgs >= _kMaxAdMessages;
+
+    setState(() {
+      _quota['cycle_msgs']    = cycleExhausted ? 0 : newCycleMsgs;
+      _quota['cycle_ads']     = cycleExhausted ? 0 : _cycleAds;
+      _quota['total_ad_msgs'] = newTotalAdMsgs;
+      if (hitCap) {
+        _quota['lockout_until'] =
+            DateTime.now().add(_kLockoutDur).toIso8601String();
+      }
+    });
+    await _saveQuota();
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -300,7 +335,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         return true;
       }
     } catch (e) {
-      debugPrint('[ConversationScreen] _ensureAIConv error: $e');
+      debugPrint('[Conv] _ensureAIConv error: $e');
     }
 
     if (mounted) setState(() => _convInitializing = false);
@@ -312,7 +347,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // ─────────────────────────────────────────────────────────────────────────
   Future<void> _loadHistory() async {
     if (_historyLoaded) return;
-
     await _fetchMyInfo();
 
     try {
@@ -323,18 +357,22 @@ class _ConversationScreenState extends State<ConversationScreen> {
         _checkAIJoined();
       }
     } catch (e) {
-      debugPrint('[ConversationScreen] _loadHistory error: $e');
+      debugPrint('[Conv] _loadHistory error: $e');
     } finally {
       if (mounted) setState(() => _historyLoaded = true);
       _scrollDown(jump: true);
     }
 
-    if (_isAIMode && widget.postContext != null && widget.postContext!.isNotEmpty) {
-      final author = (widget.postAuthor?.isNotEmpty == true) ? widget.postAuthor! : 'a community member';
+    if (_isAIMode &&
+        widget.postContext != null &&
+        widget.postContext!.isNotEmpty) {
+      final author = (widget.postAuthor?.isNotEmpty == true)
+          ? widget.postAuthor!
+          : 'a community member';
       await _sendAI(
         'I want to discuss a post from $author: "${widget.postContext}"\n\n'
         'Give me a quick wealth insight or action tip about this.',
-        adUnlocked: false,
+        adUnlocked      : false,
         isContextMessage: true,
       );
     }
@@ -344,16 +382,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
     try {
       _cachedMyId ??= await api.getUserId();
       if (_cachedMyId != null) {
-        final profile = await api.getUserProfile(_cachedMyId!);
-        _cachedMyName = (profile['full_name'] as String?)?.trim();
+        final p   = await api.getUserProfile(_cachedMyId!);
+        _cachedMyName = (p['full_name']  as String?)?.trim();
         if (_cachedMyName == null || _cachedMyName!.isEmpty) {
-          _cachedMyName = (profile['username'] as String?)?.trim();
+          _cachedMyName = (p['username'] as String?)?.trim();
         }
       }
     } catch (_) {}
   }
 
-  // CHANGED: load _kHistoryPageSize messages; set _hasMoreHistory accordingly
   Future<void> _loadAIHistory() async {
     await _ensureAIConv();
     if (_aiConvId == null || _aiConvId!.isEmpty) return;
@@ -363,33 +400,58 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (!mounted) return;
 
       if (msgs.isNotEmpty) {
+        // ── AI conversation validation ────────────────────────────────────
+        // If we have more than 5 messages but none are from an AI sender,
+        // the cached conv ID is probably a user DM — reset and create fresh.
+        final hasAIMsg = msgs.any((m) {
+          final st = (m['sender_type'] as String?) ?? '';
+          return st == 'ai' || st == 'system';
+        });
+        if (msgs.length > 5 && !hasAIMsg) {
+          debugPrint('[Conv] AI conv validation failed — resetting cached ID');
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.remove(_kAiConvIdKey);
+          _aiConvId = null;
+          final ok = await _ensureAIConv();
+          if (!ok || !mounted) return;
+          // Retry with the fresh conversation
+          final fresh = await api.getDMMessages(_aiConvId!, limit: _kHistoryPageSize);
+          if (!mounted) return;
+          if (fresh.isEmpty) {
+            _hasMoreHistory = false;
+            await _maybeShowFirstTimeGreeting();
+          } else {
+            setState(() {
+              _msgs.clear();
+              for (final m in fresh) _msgs.add(_msgFromMap(m, myId: _cachedMyId));
+              _hasMoreHistory = fresh.length >= _kHistoryPageSize;
+            });
+            await _savePollTime(fresh.last['created_at']?.toString() ?? '');
+          }
+          return;
+        }
+        // ── Normal load ───────────────────────────────────────────────────
         setState(() {
           _msgs.clear();
           for (final m in msgs) _msgs.add(_msgFromMap(m, myId: _cachedMyId));
-          // CHANGED: if we got a full page there are likely older messages
           _hasMoreHistory = msgs.length >= _kHistoryPageSize;
         });
-        // CHANGED: initialise poll-time from the very last loaded message
         await _savePollTime(msgs.last['created_at']?.toString() ?? '');
       } else {
         _hasMoreHistory = false;
         await _maybeShowFirstTimeGreeting();
       }
     } catch (e) {
-      debugPrint('[ConversationScreen] _loadAIHistory error: $e');
+      debugPrint('[Conv] _loadAIHistory error: $e');
     }
   }
 
-  // CHANGED: same page-size treatment for DM history
   Future<void> _loadDMHistory() async {
     if (widget.userId.isEmpty || widget.userId == 'ai') return;
 
     try {
       final msgs = await api.getDMMessages(widget.userId, limit: _kHistoryPageSize);
-      if (!mounted || msgs.isEmpty) {
-        _hasMoreHistory = false;
-        return;
-      }
+      if (!mounted || msgs.isEmpty) { _hasMoreHistory = false; return; }
 
       setState(() {
         _msgs.clear();
@@ -398,105 +460,39 @@ class _ConversationScreenState extends State<ConversationScreen> {
       });
       await _savePollTime(msgs.last['created_at']?.toString() ?? '');
     } catch (e) {
-      debugPrint('[ConversationScreen] _loadDMHistory error: $e');
+      debugPrint('[Conv] _loadDMHistory error: $e');
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // CHANGED: load-more (older messages) triggered by scroll-to-top
-  // ─────────────────────────────────────────────────────────────────────────
   Future<void> _loadMoreHistory() async {
     if (_loadingMore || !_hasMoreHistory || _msgs.isEmpty) return;
     if (mounted) setState(() => _loadingMore = true);
-
-    // The oldest message currently in the list gives us our "before" cursor.
-    final oldestTime = _msgs.first.time.toUtc().toIso8601String();
-    final convId     = _activeConvId;
-    if (convId == null || convId.isEmpty) {
-      if (mounted) setState(() => _loadingMore = false);
-      return;
-    }
-
-    try {
-      // FIXED: Use 'since' parameter with the oldest message time to get messages before it
-      // The API will return messages after 'since', so we need to handle this differently
-      // For now, we disable load-more since the API doesn't support 'before' or 'offset'
-      // This is a limitation of the current API - you'll need to add backend support
-      // for proper pagination with 'before' or 'offset' parameters
-      
-      // TEMPORARY: Disable load-more since API doesn't support it
-      // Once backend supports 'before' or 'offset', re-enable this:
-      /*
-      final older = await api.getDMMessages(
-        convId,
-        limit : _kHistoryPageSize,
-        since: oldestTime, // This gets messages AFTER since, not before
-      );
-      */
-      
-      // For now, just mark as no more history since we can't fetch older messages
-      // with the current API limitations
-      setState(() {
-        _hasMoreHistory = false;
-        _loadingMore    = false;
-      });
-      
-      /* 
-      // Original implementation when API supports proper pagination:
-      if (older.isEmpty) {
-        setState(() {
-          _hasMoreHistory = false;
-          _loadingMore    = false;
-        });
-        return;
-      }
-
-      // Remember scroll position so the view doesn't jump.
-      final prevExtent = _scroll.hasClients ? _scroll.position.maxScrollExtent : 0.0;
-
-      setState(() {
-        final newMsgs = older
-            .map((m) => _msgFromMap(m, myId: _cachedMyId))
-            .toList();
-        _msgs.insertAll(0, newMsgs);
-        _hasMoreHistory = older.length >= _kHistoryPageSize;
-        _loadingMore    = false;
-      });
-
-      // Restore scroll position after the new items are inserted at the top.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!_scroll.hasClients) return;
-        final newExtent = _scroll.position.maxScrollExtent;
-        _scroll.jumpTo(_scroll.offset + (newExtent - prevExtent));
-      });
-      */
-    } catch (e) {
-      debugPrint('[ConversationScreen] _loadMoreHistory error: $e');
-      if (mounted) setState(() => _loadingMore = false);
-    }
+    // Backend load-more (offset/before) not yet implemented — disable gracefully
+    if (mounted) setState(() { _hasMoreHistory = false; _loadingMore = false; });
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // CHANGED: first-time greeting is stored to the backend so it persists
-  //          across devices and reinstalls.
+  // First-time greeting — LOCAL ONLY (no backend call → no dupe)
   // ─────────────────────────────────────────────────────────────────────────
   Future<void> _maybeShowFirstTimeGreeting() async {
     if (_aiConvId == null) return;
     final greetKey = '$_kGreetedPrefix$_aiConvId';
     try {
-      final prefs        = await SharedPreferences.getInstance();
-      final alreadyLocal = prefs.getBool(greetKey) ?? false;
-      if (alreadyLocal) return;
+      final prefs       = await SharedPreferences.getInstance();
+      final alreadyDone = prefs.getBool(greetKey) ?? false;
+      if (alreadyDone) return;
+
+      // Save flag FIRST to prevent double-greeting on fast re-entry
+      await prefs.setBool(greetKey, true);
 
       final firstName = _cachedMyName?.split(' ').first ?? 'there';
       final greeting  =
-          'Hey $firstName 👋 Nice meeting you!\n\n'
-          "I'm your RiseUp AI Mentor — here to help you build wealth, grow income, "
-          'and level up your financial game. 😊\n\n'
+          'Hey $firstName 👋 Welcome to RiseUp!\n\n'
+          "I'm your AI Wealth Mentor — here to help you build wealth, grow income, "
+          'and level up your financial game. 💰\n\n'
           'Ask me anything about investing, side hustles, money mindset, or '
-          'how to reach your next income goal.';
+          'how to reach your next income goal. Let\'s get started! 🚀';
 
-      // Show locally immediately so the user sees it right away.
       if (mounted) {
         final greetMsg = _Msg(
           content: greeting,
@@ -509,29 +505,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
         _typeMessage(greetMsg);
       }
 
-      // Persist to backend in the background (isSystemGreeting skips quota).
-      // If your backend doesn't support this flag yet, wrap in try/catch
-      // so the local greeting still shows even if the API call fails.
-      try {
-        // FIXED: Removed unsupported 'isSystemGreeting' parameter
-        await api.sendAIMessageInDM(
-          _aiConvId!,
-          greeting,
-          adUnlocked      : false,
-          contextHistory  : [],
-        );
-      } catch (_) {
-        // Backend persistence failed — greeting is still shown locally.
-        // On next open from a fresh device it will show again until the
-        // backend call succeeds once.
-      }
-
-      await prefs.setBool(greetKey, true);
+      // Advance poll time so this greeting is never fetched back from the server
+      await _savePollTime(DateTime.now().toUtc().toIso8601String());
     } catch (e) {
-      debugPrint('[ConversationScreen] greeting error: $e');
+      debugPrint('[Conv] greeting error: $e');
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Message helpers
+  // ─────────────────────────────────────────────────────────────────────────
   _Msg _msgFromMap(Map m, {required String? myId}) {
     final id         = m['id']?.toString()          ?? '';
     final senderId   = m['sender_id']?.toString()   ?? '';
@@ -561,8 +544,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   Future<void> _checkAIJoined() async {
+    if (widget.userId.isEmpty) return;
     try {
-      if (widget.userId.isEmpty) return;
       final result = await api.checkAIInConversation(widget.userId);
       if (mounted && result['ai_joined'] == true) {
         setState(() => _aiJoined = true);
@@ -570,16 +553,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
     } catch (_) {}
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // CHANGED: context window uses all loaded messages (capped at _kContextWindow)
-  // ─────────────────────────────────────────────────────────────────────────
   List<Map<String, String>> _buildAIContext() {
-    final relevant = _msgs
-        .where((m) => !m.isError && m.content.isNotEmpty)
-        .toList();
-    // Take the MOST RECENT _kContextWindow messages so the AI has the
-    // freshest context while staying within token limits.
-    final window = relevant.length > _kContextWindow
+    final relevant = _msgs.where((m) => !m.isError && m.content.isNotEmpty).toList();
+    final window   = relevant.length > _kContextWindow
         ? relevant.sublist(relevant.length - _kContextWindow)
         : relevant;
     return window
@@ -588,7 +564,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Polling — CHANGED: guard against running before history is fully loaded
+  // Polling — guarded + DM AI-message isolation
   // ─────────────────────────────────────────────────────────────────────────
   void _startPolling() {
     _pollTimer?.cancel();
@@ -596,7 +572,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   Future<void> _poll() async {
-    // CHANGED: don't poll if history hasn't loaded yet — avoids duplicate msgs
     if (!_historyLoaded || _isSending || _loadingMore) return;
     final convId = _activeConvId;
     if (convId == null || convId.isEmpty) return;
@@ -607,6 +582,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
       final myId        = await _getMyId();
       final existingIds = _msgs.map((m) => m.id).toSet();
+      final fingerprints = _msgs.map((m) => m.fingerprint).toSet();
       bool  added       = false;
 
       setState(() {
@@ -618,8 +594,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
           final isAIMsg    = senderType == 'ai' || senderType == 'system';
           final isMe       = !isAIMsg && myId != null && senderId == myId;
 
+          // ── DM ISOLATION: skip AI messages unless AI was explicitly invited ──
+          if (!_isAIMode && isAIMsg && !_aiJoined) continue;
+
           if (id.isEmpty || existingIds.contains(id)) continue;
 
+          // Fingerprint dedup: prevents greeting / AI responses from appearing twice
+          final fp = '${isMe ? "u" : "a"}:${content.trim().hashCode}';
+          if (fingerprints.contains(fp)) continue;
+
+          // For our own messages: replace optimistic bubble if content matches
           if (isMe) {
             final optIdx = _msgs.indexWhere(
               (msg) => msg.id.startsWith('local_') && msg.isMe && msg.content == content,
@@ -631,6 +615,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   sender: old.sender, avatar: old.avatar,
                   isMe: true, time: old.time);
               existingIds.add(id);
+              fingerprints.add(fp);
               added = true;
               continue;
             }
@@ -638,11 +623,14 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
           _msgs.add(_msgFromMap(m, myId: myId));
           existingIds.add(id);
+          fingerprints.add(fp);
           added = true;
         }
       });
 
-      await _savePollTime(newMsgs.last['created_at']?.toString() ?? '');
+      if (newMsgs.isNotEmpty) {
+        await _savePollTime(newMsgs.last['created_at']?.toString() ?? '');
+      }
       if (added) _scrollDown();
     } catch (_) {}
   }
@@ -673,8 +661,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
       await _showAdGate(text, viaAIDM: viaAIDM);
       return;
     }
-    if (result == _QuotaResult.dailyLimit) {
-      _showDailyLimit();
+    if (result == _QuotaResult.hardLockout) {
+      _showLockoutSheet();
       return;
     }
     await _sendAI(text, adUnlocked: false, viaAIDM: viaAIDM);
@@ -702,8 +690,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
 
     _textCtrl.clear();
-    // CHANGED: build context BEFORE adding the optimistic user bubble so
-    //          the current message isn't included in its own context window.
     final contextHistory = _buildAIContext();
     final optimisticId   = 'local_${DateTime.now().microsecondsSinceEpoch}';
 
@@ -729,23 +715,29 @@ class _ConversationScreenState extends State<ConversationScreen> {
       final aiContent = (res['content'] ?? '').toString().trim();
       if (aiContent.isEmpty) throw Exception('Empty AI response');
 
+      // Advance poll time so this response isn't re-delivered by the next poll
       await _savePollTime(DateTime.now().toUtc().toIso8601String());
 
+      // Update quota counts
       if (res['quota'] != null) {
         final q = res['quota'] as Map;
         setState(() {
-          _quota['free_used']     = max(_freeUsed, (q['free_used'] as int?) ?? 0);
-          _quota['window_expires']= q['window_expires'] ?? _quota['window_expires'];
-          _quota['is_premium']    = q['is_premium'] ?? _quota['is_premium'];
+          _quota['free_used']  = max(_freeUsed, (q['free_used'] as int?) ?? 0);
+          _quota['is_premium'] = q['is_premium'] ?? _quota['is_premium'];
         });
         await _saveQuota();
-      } else if (!_isPremium && !_inUnlockedWindow && !isContextMessage) {
-        setState(() => _quota['free_used'] = _freeUsed + 1);
-        await _saveQuota();
+      } else if (!_isPremium && !isContextMessage) {
+        if (_freeUsed < _kFreeMessages) {
+          setState(() => _quota['free_used'] = _freeUsed + 1);
+          await _saveQuota();
+        } else if (adUnlocked || _cycleActive) {
+          await _consumeAdMessage();
+        }
       }
 
       if (!mounted) return;
 
+      // Replace optimistic user bubble with confirmed server ID
       final realUserMsgId = res['user_message_id']?.toString();
       if (realUserMsgId != null && realUserMsgId.isNotEmpty) {
         final idx = _msgs.indexWhere((m) => m.id == optimisticId);
@@ -774,11 +766,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (!mounted) return;
       setState(() => _aiResponding = false);
       if      (e.statusCode == 402) await _showAdGate(text, viaAIDM: viaAIDM);
-      else if (e.statusCode == 429) _showDailyLimit();
-      else _addErrorBubble('Failed to get a response (${e.statusCode}). Please try again.');
+      else if (e.statusCode == 429) _showLockoutSheet();
+      else _addErrorBubble('Failed to get AI response (${e.statusCode}). Please try again.');
     } catch (e) {
       if (!mounted) return;
-      debugPrint('[ConversationScreen] _sendAI error: $e');
+      debugPrint('[Conv] _sendAI error: $e');
       setState(() => _aiResponding = false);
       _addErrorBubble('Could not reach AI right now. Please try again.');
     }
@@ -822,7 +814,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         await _savePollTime(DateTime.now().toUtc().toIso8601String());
       }
     } catch (e) {
-      debugPrint('[ConversationScreen] _sendDM error: $e');
+      debugPrint('[Conv] _sendDM error: $e');
       if (!mounted) return;
       setState(() {
         final idx = _msgs.indexWhere((m) => m.id == optimisticId);
@@ -849,10 +841,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Invite AI
+  // Invite AI — with retry on error
   // ─────────────────────────────────────────────────────────────────────────
   void _inviteAI() {
-    if (widget.userId.isEmpty || _isAIMode || _aiJoined) return;
+    if (widget.userId.isEmpty || _isAIMode || _aiJoined || _convInitializing) return;
     HapticFeedback.lightImpact();
     _doInviteAI();
   }
@@ -862,131 +854,309 @@ class _ConversationScreenState extends State<ConversationScreen> {
     try {
       await api.inviteAIToConversation(widget.userId);
       if (!mounted) return;
+
+      final joinMsg = _Msg(
+        content: '🤖 **RiseUp AI has joined the conversation!**\n\n'
+                 'Use **@ai** followed by your question to get wealth advice.\n\n'
+                 '_Example: @ai How do I invest \$500?_',
+        sender : 'RiseUp AI',
+        avatar : '🤖',
+        isMe   : false,
+        isAI   : true,
+      );
       setState(() {
-        _aiJoined = true;
+        _aiJoined         = true;
         _convInitializing = false;
-        _msgs.add(_Msg(
-          content: '🤖 **RiseUp AI has joined the conversation!**\n\n'
-                   'Use **@ai** followed by your question to get wealth advice right here.',
-          sender : 'RiseUp AI',
-          avatar : '🤖',
-          isMe   : false,
-          isAI   : true,
-        ));
+        _msgs.add(joinMsg);
       });
       _scrollDown();
+      // Advance poll time so join message isn't duplicated by next poll
+      await _savePollTime(DateTime.now().toUtc().toIso8601String());
     } catch (e) {
-      debugPrint('[ConversationScreen] _doInviteAI error: $e');
+      debugPrint('[Conv] _doInviteAI error: $e');
       if (!mounted) return;
       setState(() => _convInitializing = false);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Could not invite AI. Please try again.'),
+
+      final alreadyJoined = e.toString().toLowerCase().contains('already');
+      if (alreadyJoined) {
+        setState(() => _aiJoined = true);
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: const Text('Could not invite AI. Please try again.'),
         backgroundColor: AppColors.error,
-        duration: Duration(seconds: 2),
+        duration: const Duration(seconds: 3),
+        action: SnackBarAction(
+          label: 'Retry',
+          textColor: Colors.white,
+          onPressed: _doInviteAI,
+        ),
       ));
     }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Typing animation
+  // Typing animation — locks scroll while AI is typing
   // ─────────────────────────────────────────────────────────────────────────
   void _typeMessage(_Msg msg) {
     msg.isTyping    = true;
     msg.displayText = '';
     int i = 0;
+
+    // Lock scroll so the view stays at the bottom, no jitter
+    if (mounted) setState(() => _scrollLocked = true);
+
     _typingTimer?.cancel();
-    _typingTimer = Timer.periodic(const Duration(milliseconds: 12), (t) {
+    _typingTimer = Timer.periodic(const Duration(milliseconds: 14), (t) {
       if (!mounted) { t.cancel(); return; }
+
       if (i >= msg.content.length) {
         t.cancel();
         if (mounted) {
           setState(() {
             msg.isTyping    = false;
             msg.displayText = msg.content;
+            _scrollLocked   = false; // release scroll lock when done
           });
         }
         return;
       }
+
       i++;
       if (mounted) setState(() => msg.displayText = msg.content.substring(0, i));
-      if (i % 5 == 0) HapticFeedback.selectionClick();
+      if (i % 25 == 0) HapticFeedback.selectionClick();
       _scrollDown();
     });
   }
 
   void _scrollDown({bool jump = false}) {
-    Future.delayed(const Duration(milliseconds: 80), () {
+    Future.delayed(const Duration(milliseconds: 60), () {
       if (!mounted || !_scroll.hasClients) return;
       final maxExt = _scroll.position.maxScrollExtent;
-      if (jump) _scroll.jumpTo(maxExt);
-      else _scroll.animateTo(maxExt,
-          duration: const Duration(milliseconds: 220), curve: Curves.easeOut);
+      if (jump) {
+        _scroll.jumpTo(maxExt);
+      } else {
+        _scroll.animateTo(maxExt,
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut);
+      }
     });
   }
 
-  void _copyToClipboard(String text) {
+  // ─────────────────────────────────────────────────────────────────────────
+  // In-app link handler
+  // ─────────────────────────────────────────────────────────────────────────
+  Future<void> _openLink(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    try {
+      final ok = await launchUrl(uri, mode: LaunchMode.inAppBrowserView);
+      if (!ok) await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      try { await launchUrl(uri, mode: LaunchMode.externalApplication); } catch (_) {}
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Smart copy / clipboard
+  // ─────────────────────────────────────────────────────────────────────────
+  void _copyToClipboard(String text, {String label = 'Copied'}) {
     Clipboard.setData(ClipboardData(text: text));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-      content: Text('Copied to clipboard ✓'),
-      duration: Duration(seconds: 1),
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('$label ✓'),
+      duration: const Duration(seconds: 1),
       behavior: SnackBarBehavior.floating,
+      backgroundColor: AppColors.success,
     ));
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Ad gate / daily limit
-  // ─────────────────────────────────────────────────────────────────────────
-  Future<void> _showAdGate(String pendingText, {bool viaAIDM = false}) async {
-    final watched = await showModalBottomSheet<bool>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => _AdGateSheet(
-        freeUsed: _freeUsed, adsToday: _adsToday,
-        maxAds: _kMaxAdsPerDay, windowHours: _kWindowDur.inHours,
-      ),
-    );
-    if (watched != true || !mounted) return;
+  /// Detects content sections in a message (code, links, lists, articles, contacts).
+  List<Map<String, dynamic>> _detectSections(_Msg m) {
+    final sections = <Map<String, dynamic>>[];
+    final content  = m.content;
 
-    if (!adService.isRewardedReady) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Ad not ready yet. Please try again in a moment.'),
-        duration: Duration(seconds: 2),
-      ));
-      return;
+    // ── Code blocks ────────────────────────────────────────────────────────
+    final codeMatches = RegExp(r'```(\w*)\n?([\s\S]*?)```').allMatches(content);
+    for (final match in codeMatches) {
+      final lang = match.group(1)?.trim() ?? '';
+      final code = match.group(2)?.trim() ?? '';
+      if (code.isNotEmpty) {
+        sections.add({
+          'icon' : Icons.code_rounded,
+          'label': lang.isNotEmpty ? 'Copy $lang code' : 'Copy code',
+          'text' : code,
+          'type' : 'code',
+        });
+      }
     }
 
-    await adService.showRewardedAd(
-      featureKey: 'ai_chat',
-      onRewarded: () async {
-        setState(() {
-          _quota['free_used']     = 0;
-          _quota['ads_today']     = _adsToday + 1;
-          _quota['window_expires']= DateTime.now().add(_kWindowDur).toIso8601String();
-        });
-        await _saveQuota();
-        if (mounted) await _sendAI(pendingText, adUnlocked: true, viaAIDM: viaAIDM);
-      },
-      onDismissed: () {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Watch the full ad to unlock AI messages.'),
-          duration: Duration(seconds: 2),
-        ));
+    // ── Links (open in-app) ───────────────────────────────────────────────
+    final urls = RegExp(r'https?://[^\s\]\)>"]+', caseSensitive: false)
+        .allMatches(content);
+    for (final u in urls) {
+      sections.add({
+        'icon' : Icons.open_in_browser_rounded,
+        'label': 'Open link',
+        'text' : u.group(0)!,
+        'type' : 'link',
+      });
+    }
+
+    // ── Numbered or bulleted list ─────────────────────────────────────────
+    if (RegExp(r'^\d+\.\s', multiLine: true).hasMatch(content) ||
+        RegExp(r'^[-•*]\s',  multiLine: true).hasMatch(content)) {
+      sections.add({
+        'icon' : Icons.format_list_bulleted_rounded,
+        'label': 'Copy full list',
+        'text' : content,
+        'type' : 'list',
+      });
+    }
+
+    // ── Long article / post (>300 chars, no code) ─────────────────────────
+    if (content.length > 300 && codeMatches.isEmpty) {
+      sections.add({
+        'icon' : Icons.article_rounded,
+        'label': 'Copy as article',
+        'text' : content,
+        'type' : 'article',
+      });
+    }
+
+    // ── Contact info ──────────────────────────────────────────────────────
+    if (RegExp(r'[\w.]+@[\w.]+\.\w+').hasMatch(content) ||
+        RegExp(r'\+?\d[\d\s\-\(\)]{7,}').hasMatch(content)) {
+      sections.add({
+        'icon' : Icons.contacts_rounded,
+        'label': 'Copy contact info',
+        'text' : content,
+        'type' : 'contact',
+      });
+    }
+
+    return sections;
+  }
+
+  void _showBubbleMenu(BuildContext ctx, _Msg m) {
+    HapticFeedback.mediumImpact();
+    final sections = _detectSections(m);
+
+    showModalBottomSheet(
+      context: ctx,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) {
+        final isDark = Theme.of(ctx).brightness == Brightness.dark;
+        final bg     = isDark ? AppColors.bgCard : Colors.white;
+        final text   = isDark ? Colors.white     : Colors.black87;
+
+        return Container(
+          margin: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+              color: bg, borderRadius: BorderRadius.circular(20)),
+          child: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const SizedBox(height: 8),
+              Container(
+                  width: 36, height: 4,
+                  decoration: BoxDecoration(
+                      color: isDark ? Colors.white24 : Colors.black12,
+                      borderRadius: BorderRadius.circular(2))),
+              const SizedBox(height: 4),
+
+              // Always available: copy full message
+              _menuItem(Icons.copy_rounded, 'Copy message', text, () {
+                Navigator.pop(ctx);
+                _copyToClipboard(m.content, label: 'Message copied');
+              }),
+
+              // Smart detected sections
+              for (final s in sections)
+                if (s['type'] == 'link')
+                  _menuItem(s['icon'] as IconData, s['label'] as String, text, () {
+                    Navigator.pop(ctx);
+                    _openLink(s['text'] as String);
+                  })
+                else
+                  _menuItem(s['icon'] as IconData, s['label'] as String, text, () {
+                    Navigator.pop(ctx);
+                    _copyToClipboard(s['text'] as String, label: s['label'] as String);
+                  }),
+
+              // Select-text hint
+              _menuItem(Icons.select_all_rounded, 'Select text', text, () {
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(
+                  content: Text('Hold and drag to select text'),
+                  duration: Duration(seconds: 2),
+                  behavior: SnackBarBehavior.floating,
+                ));
+              }),
+
+              // Share insight (AI messages only)
+              if (!m.isMe && m.isAI)
+                _menuItem(Icons.share_rounded, 'Share insight', text, () {
+                  Navigator.pop(ctx);
+                  _copyToClipboard(
+                    '💡 RiseUp AI Wealth Insight:\n\n${m.content}\n\n— via RiseUp',
+                    label: 'Insight copied — ready to share!',
+                  );
+                }),
+
+              SizedBox(height: MediaQuery.of(ctx).padding.bottom + 12),
+            ]),
+          ),
+        );
       },
     );
   }
 
-  void _showDailyLimit() {
+  Widget _menuItem(IconData icon, String label, Color textColor, VoidCallback onTap) =>
+    ListTile(
+      leading: Icon(icon, color: AppColors.primary, size: 20),
+      title: Text(label,
+          style: TextStyle(color: textColor, fontSize: 14, fontWeight: FontWeight.w500)),
+      onTap: onTap,
+      dense: true,
+    );
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Ad gate — multi-step (2 ads per cycle)
+  // ─────────────────────────────────────────────────────────────────────────
+  Future<void> _showAdGate(String pendingText, {bool viaAIDM = false}) async {
+    final success = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      isDismissible: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _AdGateSheet(
+        cycleAdsWatched: _cycleAds,
+        adsPerCycle    : _kAdsPerCycle,
+        msgsPerCycle   : _kMsgsPerCycle,
+        totalAdMsgs    : _totalAdMsgs,
+        maxAdMsgs      : _kMaxAdMessages,
+        onAdWatched    : () async {
+          if (!mounted) return;
+          setState(() => _quota['cycle_ads'] = _cycleAds + 1);
+          await _saveQuota();
+        },
+      ),
+    );
+    if (!mounted || success != true) return;
+    await _sendAI(pendingText, adUnlocked: true, viaAIDM: viaAIDM);
+  }
+
+  void _showLockoutSheet() {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => _DailyLimitSheet(onUpgrade: () {
-        Navigator.pop(context);
-        context.go('/premium');
-      }),
+      builder: (_) => _LockoutSheet(
+        lockoutUntil: (_quota['lockout_until'] as String?) ?? '',
+        onUpgrade   : () { Navigator.pop(context); context.go('/premium'); },
+      ),
     );
   }
 
@@ -996,12 +1166,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
   @override
   Widget build(BuildContext context) {
     final isDark      = Theme.of(context).brightness == Brightness.dark;
-    final bgColor     = isDark ? Colors.black : Colors.white;
-    final cardColor   = isDark ? AppColors.bgCard : Colors.white;
-    final surfColor   = isDark ? AppColors.bgSurface : Colors.grey.shade100;
-    final borderColor = isDark ? AppColors.bgSurface : Colors.grey.shade200;
-    final textColor   = isDark ? Colors.white : Colors.black87;
-    final subColor    = isDark ? Colors.white54 : Colors.black45;
+    final bgColor     = isDark ? Colors.black         : Colors.white;
+    final cardColor   = isDark ? AppColors.bgCard     : Colors.white;
+    final surfColor   = isDark ? AppColors.bgSurface  : Colors.grey.shade100;
+    final borderColor = isDark ? AppColors.bgSurface  : Colors.grey.shade200;
+    final textColor   = isDark ? Colors.white         : Colors.black87;
+    final subColor    = isDark ? Colors.white54       : Colors.black45;
 
     return Scaffold(
       backgroundColor: bgColor,
@@ -1016,46 +1186,52 @@ class _ConversationScreenState extends State<ConversationScreen> {
         if (_aiJoined && !_isAIMode) _AIJoinedBanner(),
         if ((_isAIMode || _aiJoined) && !_isPremium)
           _QuotaRibbon(
-            isPremium     : _isPremium,
-            inWindow      : _inUnlockedWindow,
-            freeUsed      : _freeUsed,
-            freeTotal     : _kFreeMessages,
-            adsToday      : _adsToday,
-            maxAds        : _kMaxAdsPerDay,
-            windowExpires : _quota['window_expires'] as String?,
+            isPremium   : _isPremium,
+            inLockout   : _inLockout,
+            freeUsed    : _freeUsed,
+            freeTotal   : _kFreeMessages,
+            cycleAds    : _cycleAds,
+            adsPerCycle : _kAdsPerCycle,
+            cycleMsgs   : _cycleMsgs,
+            msgsPerCycle: _kMsgsPerCycle,
+            totalAdMsgs : _totalAdMsgs,
+            maxAdMsgs   : _kMaxAdMessages,
+            lockoutUntil: _quota['lockout_until'] as String?,
           ),
         Expanded(
           child: !_historyLoaded
-              ? const Center(child: CircularProgressIndicator(
-                  color: AppColors.primary, strokeWidth: 2))
-              : _msgs.isEmpty
-                  ? _buildEmptyState(isDark, subColor, textColor)
-                  : ListView.builder(
-                      controller : _scroll,
-                      padding    : const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      // CHANGED: +1 for load-more indicator at top, +1 for typing at bottom
-                      itemCount  : _msgs.length +
-                                   (_aiResponding ? 1 : 0) +
-                                   (_loadingMore  ? 1 : 0),
-                      itemBuilder: (_, i) {
-                        // CHANGED: first slot = "loading older messages" spinner
-                        if (_loadingMore && i == 0) {
-                          return const Padding(
-                            padding: EdgeInsets.symmetric(vertical: 12),
-                            child: Center(child: SizedBox(
-                              width: 20, height: 20,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: AppColors.primary),
-                            )),
-                          );
-                        }
-                        final msgIdx = _loadingMore ? i - 1 : i;
-                        if (msgIdx == _msgs.length) {
-                          return _buildTypingIndicator(isDark, surfColor, ai: true);
-                        }
-                        return _buildBubble(_msgs[msgIdx], isDark, textColor, surfColor);
-                      },
-                    ),
+            ? const Center(child: CircularProgressIndicator(
+                color: AppColors.primary, strokeWidth: 2))
+            : _msgs.isEmpty
+              ? _buildEmptyState(isDark, subColor, textColor)
+              : ListView.builder(
+                  controller: _scroll,
+                  // Prevents jitter/hanging while AI is typing
+                  physics: _scrollLocked
+                      ? const NeverScrollableScrollPhysics()
+                      : const AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  itemCount: _msgs.length +
+                             (_aiResponding ? 1 : 0) +
+                             (_loadingMore  ? 1 : 0),
+                  itemBuilder: (_, i) {
+                    if (_loadingMore && i == 0) {
+                      return const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 12),
+                        child: Center(child: SizedBox(
+                          width: 20, height: 20,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: AppColors.primary),
+                        )),
+                      );
+                    }
+                    final msgIdx = _loadingMore ? i - 1 : i;
+                    if (msgIdx == _msgs.length) {
+                      return _buildTypingIndicator(isDark, surfColor);
+                    }
+                    return _buildBubble(_msgs[msgIdx], isDark, textColor, surfColor);
+                  },
+                ),
         ),
         _buildInputBar(isDark, cardColor, borderColor, textColor, subColor, surfColor),
       ]),
@@ -1072,9 +1248,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final avatarIsUrl   = !_isAIMode && displayAvatar.startsWith('http');
 
     return AppBar(
-      backgroundColor  : card,
-      elevation        : 0,
-      surfaceTintColor : Colors.transparent,
+      backgroundColor : card,
+      elevation       : 0,
+      surfaceTintColor: Colors.transparent,
       leading: IconButton(
         icon: Icon(Icons.arrow_back_ios_new_rounded, color: text, size: 18),
         onPressed: () =>
@@ -1117,7 +1293,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
               Row(mainAxisSize: MainAxisSize.min, children: [
                 Flexible(
                   child: Text(displayName,
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: text),
+                    style: TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w700, color: text),
                     overflow: TextOverflow.ellipsis),
                 ),
                 if (_isAIMode || _aiJoined) ...[
@@ -1156,12 +1333,17 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(color: AppColors.primary.withOpacity(0.3)),
                 ),
-                child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(Icons.auto_awesome, color: AppColors.primary, size: 13),
-                  SizedBox(width: 4),
-                  Text('Invite AI', style: TextStyle(
-                      color: AppColors.primary, fontSize: 11, fontWeight: FontWeight.w600)),
-                ]),
+                child: _convInitializing
+                    ? const SizedBox(width: 16, height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: AppColors.primary))
+                    : const Row(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(Icons.auto_awesome, color: AppColors.primary, size: 13),
+                        SizedBox(width: 4),
+                        Text('Invite AI', style: TextStyle(
+                            color: AppColors.primary, fontSize: 11,
+                            fontWeight: FontWeight.w600)),
+                      ]),
               ),
             ),
           ),
@@ -1178,12 +1360,14 @@ class _ConversationScreenState extends State<ConversationScreen> {
         IconButton(
           icon: Icon(Iconsax.call, color: text, size: 20),
           onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-              content: Text('Voice calls coming soon 📞'), duration: Duration(seconds: 1))),
+              content: Text('Voice calls coming soon 📞'),
+              duration: Duration(seconds: 1))),
         ),
         IconButton(
           icon: Icon(Iconsax.video, color: text, size: 20),
           onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-              content: Text('Video calls coming soon 🎥'), duration: Duration(seconds: 1))),
+              content: Text('Video calls coming soon 🎥'),
+              duration: Duration(seconds: 1))),
         ),
       ],
       bottom: PreferredSize(
@@ -1213,8 +1397,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         IconButton(
           icon: Icon(Iconsax.image, color: sub, size: 22),
           onPressed: () async {
-            final file =
-                await ImagePicker().pickImage(source: ImageSource.gallery);
+            final file = await ImagePicker().pickImage(source: ImageSource.gallery);
             if (file != null && mounted) {
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                 content: Text('Photo selected ✅ — media upload coming soon'),
@@ -1274,19 +1457,14 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Message bubble
+  // Message bubble — with smart copy + in-app link tap
   // ─────────────────────────────────────────────────────────────────────────
-  Widget _buildBubble(
-      _Msg m, bool isDark, Color textColor, Color surfColor) {
+  Widget _buildBubble(_Msg m, bool isDark, Color textColor, Color surfColor) {
     final aiBg    = isDark ? const Color(0xFF1A1A2E) : Colors.grey.shade100;
     final errorBg = isDark ? const Color(0xFF2D1515) : const Color(0xFFFFF0F0);
     final avatarIsUrl = m.avatar.startsWith('http') && m.avatar.length > 10;
 
-    final bubbleBg = m.isError
-        ? errorBg
-        : m.isMe
-            ? AppColors.userBubble
-            : aiBg;
+    final bubbleBg = m.isError ? errorBg : m.isMe ? AppColors.userBubble : aiBg;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 14),
@@ -1346,8 +1524,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   child: Container(
                     constraints: BoxConstraints(
                         maxWidth: MediaQuery.of(context).size.width * 0.75),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 10),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                     decoration: BoxDecoration(
                       color: bubbleBg,
                       borderRadius: BorderRadius.only(
@@ -1368,13 +1545,19 @@ class _ConversationScreenState extends State<ConversationScreen> {
                           child: (m.isMe || !m.isAI)
                               ? Text(m.displayText,
                                   style: TextStyle(
-                                    color: m.isMe ? Colors.white : textColor,
+                                    color  : m.isMe ? Colors.white : textColor,
                                     fontSize: 14, height: 1.5,
                                   ))
                               : MarkdownBody(
                                   data: m.displayText,
+                                  // ── In-app link opening ─────────────────
+                                  onTapLink: (text, href, title) {
+                                    if (href != null && href.isNotEmpty) {
+                                      _openLink(href);
+                                    }
+                                  },
                                   styleSheet: MarkdownStyleSheet(
-                                    p     : TextStyle(
+                                    p: TextStyle(
                                       color: isDark
                                           ? const Color(0xFFE8E8F0)
                                           : Colors.black87,
@@ -1384,7 +1567,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
                                       fontWeight: FontWeight.w700,
                                       color: AppColors.primaryLight,
                                     ),
-                                    code  : TextStyle(
+                                    a: const TextStyle(
+                                      color: AppColors.primary,
+                                      decoration: TextDecoration.underline,
+                                    ),
+                                    code: TextStyle(
                                       fontFamily: 'monospace',
                                       backgroundColor: isDark
                                           ? const Color(0xFF2A2A3E)
@@ -1437,106 +1624,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
     ).animate().fadeIn(duration: 200.ms).slideY(begin: 0.08, curve: Curves.easeOut);
   }
 
-  void _showBubbleMenu(BuildContext context, _Msg m) {
-    HapticFeedback.mediumImpact();
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (_) {
-        final isDark = Theme.of(context).brightness == Brightness.dark;
-        final bg     = isDark ? AppColors.bgCard : Colors.white;
-        final text   = isDark ? Colors.white : Colors.black87;
-
-        final codeBlocks = RegExp(r'```[\s\S]*?```')
-            .allMatches(m.content)
-            .map((e) => e
-                .group(0)!
-                .replaceAll(RegExp(r'^```\w*\n?|```$'), '')
-                .trim())
-            .where((s) => s.isNotEmpty)
-            .toList();
-
-        return Container(
-          margin: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-              color: bg, borderRadius: BorderRadius.circular(20)),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            const SizedBox(height: 8),
-            Container(
-                width: 36, height: 4,
-                decoration: BoxDecoration(
-                    color: isDark ? Colors.white24 : Colors.black12,
-                    borderRadius: BorderRadius.circular(2))),
-            const SizedBox(height: 4),
-            _menuItem(Icons.copy_rounded, 'Copy message', text, () {
-              Navigator.pop(context);
-              _copyToClipboard(m.content);
-            }),
-            if (codeBlocks.isNotEmpty)
-              _menuItem(Icons.code_rounded, 'Copy code', text, () {
-                Navigator.pop(context);
-                _copyToClipboard(codeBlocks.join('\n\n'));
-              }),
-            _menuItem(Icons.select_all_rounded, 'Select text', text, () {
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                content: Text('Hold and drag on the message to select text'),
-                duration: Duration(seconds: 2),
-                behavior: SnackBarBehavior.floating,
-              ));
-            }),
-            if (!m.isMe && m.isAI)
-              _menuItem(Icons.share_rounded, 'Share insight', text, () {
-                Navigator.pop(context);
-                Clipboard.setData(ClipboardData(
-                    text: '💡 RiseUp AI insight:\n\n${m.content}'));
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                  content: Text('Insight copied — ready to share! ✓'),
-                  duration: Duration(seconds: 1),
-                  behavior: SnackBarBehavior.floating,
-                ));
-              }),
-            SizedBox(height: MediaQuery.of(context).padding.bottom + 12),
-          ]),
-        );
-      },
-    );
-  }
-
-  Widget _menuItem(IconData icon, String label, Color textColor,
-      VoidCallback onTap) {
-    return ListTile(
-      leading: Icon(icon, color: AppColors.primary, size: 20),
-      title: Text(label,
-          style: TextStyle(
-              color: textColor, fontSize: 14, fontWeight: FontWeight.w500)),
-      onTap: onTap,
-      dense: true,
-    );
-  }
-
-  Widget _buildTypingIndicator(bool isDark, Color surfColor, {required bool ai}) {
-    final avatarEmoji = ai ? '🤖' : widget.avatar;
-    final avatarIsUrl = !ai && avatarEmoji.startsWith('http');
-
+  Widget _buildTypingIndicator(bool isDark, Color surfColor) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 14),
       child: Row(children: [
         Container(
           width: 28, height: 28,
-          decoration: BoxDecoration(
-            gradient: avatarIsUrl ? null
-                : const LinearGradient(
-                    colors: [AppColors.primary, AppColors.accent]),
-            image: avatarIsUrl
-                ? DecorationImage(
-                    image: NetworkImage(avatarEmoji), fit: BoxFit.cover)
-                : null,
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]),
             shape: BoxShape.circle,
           ),
-          child: avatarIsUrl ? null
-              : Center(child: Text(avatarEmoji,
-                  style: const TextStyle(fontSize: 14))),
+          child: const Center(child: Text('🤖',
+              style: TextStyle(fontSize: 14))),
         ),
         const SizedBox(width: 8),
         Container(
@@ -1563,36 +1662,31 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   Widget _buildEmptyState(bool isDark, Color subColor, Color textColor) {
-    final bg = isDark ? Colors.black : Colors.white;
-
     if (_isAIMode) {
       final firstName = _cachedMyName?.split(' ').first ?? '';
       final prompts   = [
         '💰  How do I make my first \$1,000 online?',
-        '📈  Best beginner investments in 2025?',
+        '📈  Best beginner investments right now?',
         '🚀  Top side hustles I can start today?',
         '🧠  How do I improve my money mindset?',
       ];
-
       return Container(
-        color: bg,
+        color: isDark ? Colors.black : Colors.white,
         child: ListView(
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
           children: [
             Container(
               width: 80, height: 80,
               decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                    colors: [AppColors.primary, AppColors.accent]),
+                gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]),
                 shape: BoxShape.circle,
               ),
-              child: const Center(
-                  child: Text('🤖', style: TextStyle(fontSize: 40))),
+              child: const Center(child: Text('🤖', style: TextStyle(fontSize: 40))),
             ).animate().scale(duration: 400.ms, curve: Curves.elasticOut),
             const SizedBox(height: 20),
             Text('Your AI Wealth Mentor',
-                style: TextStyle(
-                    fontSize: 20, fontWeight: FontWeight.w800, color: textColor),
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800,
+                    color: textColor),
                 textAlign: TextAlign.center),
             const SizedBox(height: 8),
             Text(
@@ -1604,21 +1698,21 @@ class _ConversationScreenState extends State<ConversationScreen> {
             ),
             const SizedBox(height: 32),
             Text('Try asking:',
-                style: TextStyle(
-                    fontSize: 12,
-                    color: subColor,
+                style: TextStyle(fontSize: 12, color: subColor,
                     fontWeight: FontWeight.w600)),
             const SizedBox(height: 10),
             ...prompts.map((p) => GestureDetector(
-              onTap: () { _textCtrl.text = p.substring(3).trim(); _onSend(); },
+              onTap: () {
+                _textCtrl.text = p.substring(3).trim();
+                _onSend();
+              },
               child: Container(
                 margin: const EdgeInsets.only(bottom: 8),
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 decoration: BoxDecoration(
                   color: AppColors.primary.withOpacity(0.07),
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(
-                      color: AppColors.primary.withOpacity(0.18)),
+                  border: Border.all(color: AppColors.primary.withOpacity(0.18)),
                 ),
                 child: Text(p,
                     style: TextStyle(
@@ -1634,15 +1728,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
 
     return Container(
-      color: bg,
+      color: isDark ? Colors.black : Colors.white,
       child: Center(
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
           const Text('👋', style: TextStyle(fontSize: 56)),
           const SizedBox(height: 16),
           Text('Say hello!',
-              style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w600,
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600,
                   color: textColor)),
           const SizedBox(height: 8),
           Text('Start a conversation below',
@@ -1665,9 +1757,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sub-widgets (unchanged from v11)
+// _AIJoinedBanner
 // ─────────────────────────────────────────────────────────────────────────────
-
 class _AIJoinedBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
@@ -1678,24 +1769,30 @@ class _AIJoinedBanner extends StatelessWidget {
       Icon(Icons.auto_awesome, color: AppColors.primary, size: 14),
       SizedBox(width: 8),
       Text('RiseUp AI is in this conversation',
-          style: TextStyle(
-              fontSize: 12,
-              color: AppColors.primary,
+          style: TextStyle(fontSize: 12, color: AppColors.primary,
               fontWeight: FontWeight.w500)),
     ]),
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// _QuotaRibbon — updated for v3 quota model
+// ─────────────────────────────────────────────────────────────────────────────
 class _QuotaRibbon extends StatefulWidget {
-  final bool isPremium, inWindow;
-  final int freeUsed, freeTotal, adsToday, maxAds;
-  final String? windowExpires;
+  final bool isPremium, inLockout;
+  final int  freeUsed, freeTotal;
+  final int  cycleAds, adsPerCycle;
+  final int  cycleMsgs, msgsPerCycle;
+  final int  totalAdMsgs, maxAdMsgs;
+  final String? lockoutUntil;
 
   const _QuotaRibbon({
-    required this.isPremium,  required this.inWindow,
-    required this.freeUsed,   required this.freeTotal,
-    required this.adsToday,   required this.maxAds,
-    this.windowExpires,
+    required this.isPremium,    required this.inLockout,
+    required this.freeUsed,     required this.freeTotal,
+    required this.cycleAds,     required this.adsPerCycle,
+    required this.cycleMsgs,    required this.msgsPerCycle,
+    required this.totalAdMsgs,  required this.maxAdMsgs,
+    this.lockoutUntil,
   });
 
   @override
@@ -1703,30 +1800,30 @@ class _QuotaRibbon extends StatefulWidget {
 }
 
 class _QuotaRibbonState extends State<_QuotaRibbon> {
-  Timer? _timer;
-  String _expiry = '';
+  Timer?  _timer;
+  String  _countdown = '';
 
   @override
   void initState() {
     super.initState();
-    if (widget.inWindow && widget.windowExpires != null) _startTimer();
+    if (widget.inLockout && widget.lockoutUntil != null) _startTimer();
   }
 
   void _startTimer() {
-    _updateExpiry();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _updateExpiry());
+    _update();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _update());
   }
 
-  void _updateExpiry() {
+  void _update() {
     if (!mounted) return;
-    final exp  = DateTime.tryParse(widget.windowExpires ?? '');
+    final exp  = DateTime.tryParse(widget.lockoutUntil ?? '');
     if (exp == null) return;
     final diff = exp.difference(DateTime.now());
-    if (diff.isNegative) { setState(() => _expiry = ''); return; }
+    if (diff.isNegative) { setState(() => _countdown = ''); return; }
     final h = diff.inHours;
     final m = (diff.inMinutes % 60).toString().padLeft(2, '0');
     final s = (diff.inSeconds % 60).toString().padLeft(2, '0');
-    setState(() => _expiry = h > 0 ? '${h}h ${m}m' : '$m:$s');
+    setState(() => _countdown = h > 0 ? '${h}h ${m}m' : '$m:$s');
   }
 
   @override
@@ -1735,18 +1832,30 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
   @override
   Widget build(BuildContext context) {
     if (widget.isPremium) return const SizedBox.shrink();
-    final remaining = widget.freeTotal - widget.freeUsed;
-    if (widget.inWindow) {
-      return _ribbon(Icons.lock_open_rounded, AppColors.success,
-          'AI unlocked${_expiry.isNotEmpty ? ' · $_expiry left' : ''}',
-          Colors.transparent);
+
+    // Lockout active
+    if (widget.inLockout) {
+      return _ribbon(Icons.lock_rounded, AppColors.error,
+          'AI locked${_countdown.isNotEmpty ? ' · resets in $_countdown' : ''}',
+          AppColors.error.withOpacity(0.08));
     }
-    if (remaining > 0) {
-      return _ribbon(
-          Icons.chat_bubble_outline_rounded, AppColors.primary,
-          '$remaining free AI message${remaining == 1 ? '' : 's'} remaining',
+
+    // Free messages remaining
+    final freeLeft = widget.freeTotal - widget.freeUsed;
+    if (freeLeft > 0) {
+      return _ribbon(Icons.chat_bubble_outline_rounded, AppColors.primary,
+          '$freeLeft free message${freeLeft == 1 ? '' : 's'} remaining',
           AppColors.primary.withOpacity(0.06));
     }
+
+    // Active cycle: show remaining messages in cycle
+    if (widget.cycleAds >= widget.adsPerCycle) {
+      final left = widget.msgsPerCycle - widget.cycleMsgs;
+      return _ribbon(Icons.lock_open_rounded, AppColors.success,
+          '$left message${left == 1 ? '' : 's'} left in this session',
+          Colors.transparent);
+    }
+
     return const SizedBox.shrink();
   }
 
@@ -1758,135 +1867,253 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
       child: Row(children: [
         Icon(icon, size: 13, color: color),
         const SizedBox(width: 6),
-        Text(label,
-            style: TextStyle(
-                fontSize: 12, color: color, fontWeight: FontWeight.w500)),
-        const Spacer(),
+        Expanded(
+          child: Text(label,
+              style: TextStyle(fontSize: 12, color: color,
+                  fontWeight: FontWeight.w500)),
+        ),
         GestureDetector(
           onTap: () => GoRouter.of(context).go('/premium'),
           child: const Text('Go Premium',
-              style: TextStyle(
-                  fontSize: 11,
-                  color: AppColors.primary,
+              style: TextStyle(fontSize: 11, color: AppColors.primary,
                   fontWeight: FontWeight.w600)),
         ),
       ]),
     );
 }
 
-class _AdGateSheet extends StatelessWidget {
-  final int freeUsed, adsToday, maxAds, windowHours;
+// ─────────────────────────────────────────────────────────────────────────────
+// _AdGateSheet — handles the 2-ad cycle internally
+// ─────────────────────────────────────────────────────────────────────────────
+class _AdGateSheet extends StatefulWidget {
+  final int cycleAdsWatched; // ads already watched before this gate opened
+  final int adsPerCycle;
+  final int msgsPerCycle;
+  final int totalAdMsgs;
+  final int maxAdMsgs;
+  final Future<void> Function() onAdWatched; // parent increments cycle_ads
 
   const _AdGateSheet({
-    required this.freeUsed,  required this.adsToday,
-    required this.maxAds,    required this.windowHours,
+    required this.cycleAdsWatched,
+    required this.adsPerCycle,
+    required this.msgsPerCycle,
+    required this.totalAdMsgs,
+    required this.maxAdMsgs,
+    required this.onAdWatched,
   });
 
   @override
+  State<_AdGateSheet> createState() => _AdGateSheetState();
+}
+
+class _AdGateSheetState extends State<_AdGateSheet> {
+  int     _localWatched = 0;
+  bool    _watching     = false;
+  String? _error;
+  bool    _success      = false;
+
+  int  get _totalWatched  => widget.cycleAdsWatched + _localWatched;
+  int  get _adsRemaining  => widget.adsPerCycle - _totalWatched;
+  bool get _cycleComplete => _totalWatched >= widget.adsPerCycle;
+
+  Future<void> _watchAd() async {
+    if (_watching || _cycleComplete) return;
+
+    if (!adService.isRewardedReady) {
+      setState(() => _error = 'Ad not ready. Please wait a moment and try again.');
+      return;
+    }
+
+    setState(() { _watching = true; _error = null; });
+
+    await adService.showRewardedAd(
+      featureKey: 'ai_chat',
+      onRewarded: () async {
+        await widget.onAdWatched();
+        if (!mounted) return;
+        setState(() {
+          _localWatched++;
+          _watching = false;
+        });
+        if (_cycleComplete) {
+          setState(() => _success = true);
+          await Future.delayed(const Duration(milliseconds: 700));
+          if (mounted) Navigator.pop(context, true);
+        }
+      },
+      onDismissed: () {
+        if (!mounted) return;
+        setState(() {
+          _watching = false;
+          _error    = 'Please watch the full ad to unlock messages.';
+        });
+      },
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final isDark    = Theme.of(context).brightness == Brightness.dark;
-    final bg        = isDark ? AppColors.bgCard : Colors.white;
-    final text      = isDark ? Colors.white     : Colors.black87;
-    final sub       = isDark ? Colors.white60   : Colors.black54;
-    final remaining = maxAds - adsToday;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bg     = isDark ? AppColors.bgCard : Colors.white;
+    final text   = isDark ? Colors.white     : Colors.black87;
+    final sub    = isDark ? Colors.white60   : Colors.black54;
+    final msgsLeft = widget.msgsPerCycle;
+    final adsMsgLimit = widget.maxAdMsgs - widget.totalAdMsgs;
 
     return Container(
       decoration: BoxDecoration(
           color: bg,
-          borderRadius:
-              const BorderRadius.vertical(top: Radius.circular(28))),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28))),
       padding: EdgeInsets.fromLTRB(
           24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(width: 40, height: 4,
+        Container(
+            width: 40, height: 4,
             decoration: BoxDecoration(
                 color: isDark ? Colors.white24 : Colors.black12,
                 borderRadius: BorderRadius.circular(2))),
         const SizedBox(height: 24),
-        Container(
-          width: 72, height: 72,
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-                colors: [AppColors.primary, AppColors.accent]),
-            shape: BoxShape.circle,
-          ),
-          child: const Center(
-              child: Text('🤖', style: TextStyle(fontSize: 36))),
+
+        // Icon / success animation
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 300),
+          child: _success
+              ? const Text('🎉', style: TextStyle(fontSize: 56), key: ValueKey('success'))
+              : Container(
+                  key: const ValueKey('robot'),
+                  width: 72, height: 72,
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                        colors: [AppColors.primary, AppColors.accent]),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Center(child: Text('🤖',
+                      style: TextStyle(fontSize: 36))),
+                ),
         ),
         const SizedBox(height: 16),
-        Text('Unlock AI Messages',
-            style: TextStyle(
-                fontSize: 20, fontWeight: FontWeight.w800, color: text)),
-        const SizedBox(height: 8),
+
         Text(
-          "You've used your $freeUsed free AI messages.\n"
-          'Watch a short ad to unlock ${windowHours}h of unlimited AI mentoring.',
-          style: TextStyle(fontSize: 14, color: sub, height: 1.5),
-          textAlign: TextAlign.center,
+          _success ? 'Unlocked! 🚀' : 'Unlock AI Messages',
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: text),
         ),
         const SizedBox(height: 8),
-        Text('$remaining unlock${remaining == 1 ? '' : 's'} remaining today',
-            style: TextStyle(fontSize: 12, color: sub)),
+        if (!_success) ...[
+          Text(
+            'Watch $_adsRemaining more ad${_adsRemaining == 1 ? '' : 's'} to unlock $msgsLeft messages.',
+            style: TextStyle(fontSize: 14, color: sub, height: 1.5),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${adsMsgLimit > 0 ? adsMsgLimit : 0} ad-messages left before 4hr rest',
+            style: TextStyle(fontSize: 11, color: sub),
+          ),
+          const SizedBox(height: 8),
+          // Progress dots
+          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            for (int i = 0; i < widget.adsPerCycle; i++) ...[
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                width: 28, height: 8,
+                decoration: BoxDecoration(
+                  color: i < _totalWatched
+                      ? AppColors.success
+                      : AppColors.primary.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+              if (i < widget.adsPerCycle - 1) const SizedBox(width: 6),
+            ],
+          ]),
+          const SizedBox(height: 4),
+          Text(
+            '$_totalWatched / ${widget.adsPerCycle} ads watched',
+            style: TextStyle(fontSize: 11, color: sub),
+          ),
+        ],
+        if (_error != null) ...[
+          const SizedBox(height: 8),
+          Text(_error!,
+              style: const TextStyle(fontSize: 12, color: AppColors.error),
+              textAlign: TextAlign.center),
+        ],
         const SizedBox(height: 24),
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton.icon(
-            onPressed: () => Navigator.pop(context, true),
-            icon: const Icon(Icons.play_circle_fill_rounded, size: 20),
-            label: Text('Watch Ad — Unlock ${windowHours}h Free'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14)),
-              textStyle: const TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.w700),
+
+        if (!_success) ...[
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: _watching ? null : _watchAd,
+              icon: _watching
+                  ? const SizedBox(width: 18, height: 18,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white))
+                  : const Icon(Icons.play_circle_fill_rounded, size: 20),
+              label: Text(_watching
+                  ? 'Loading ad...'
+                  : 'Watch Ad ${_totalWatched + 1} of ${widget.adsPerCycle}'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+                disabledBackgroundColor: Colors.grey.shade500,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
+                textStyle: const TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w700),
+              ),
             ),
           ),
-        ),
-        const SizedBox(height: 12),
-        SizedBox(
-          width: double.infinity,
-          child: OutlinedButton.icon(
-            onPressed: () {
-              Navigator.pop(context, false);
-              context.go('/premium');
-            },
-            icon: const Icon(Icons.workspace_premium_rounded, size: 18),
-            label: const Text('Go Premium — Unlimited AI'),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: AppColors.gold,
-              side: const BorderSide(color: AppColors.gold),
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14)),
-              textStyle: const TextStyle(
-                  fontSize: 14, fontWeight: FontWeight.w600),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () {
+                Navigator.pop(context, false);
+                GoRouter.of(context).go('/premium');
+              },
+              icon: const Icon(Icons.workspace_premium_rounded, size: 18),
+              label: const Text('Go Premium — Unlimited AI'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.gold,
+                side: const BorderSide(color: AppColors.gold),
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
+                textStyle: const TextStyle(
+                    fontSize: 14, fontWeight: FontWeight.w600),
+              ),
             ),
           ),
-        ),
-        const SizedBox(height: 12),
-        TextButton(
-          onPressed: () => Navigator.pop(context, false),
-          child: Text('Not now', style: TextStyle(color: sub, fontSize: 13)),
-        ),
+          const SizedBox(height: 12),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('Not now', style: TextStyle(color: sub, fontSize: 13)),
+          ),
+        ],
       ]),
     );
   }
 }
 
-class _DailyLimitSheet extends StatefulWidget {
+// ─────────────────────────────────────────────────────────────────────────────
+// _LockoutSheet — replaces _DailyLimitSheet; shows 4-hr lockout countdown
+// ─────────────────────────────────────────────────────────────────────────────
+class _LockoutSheet extends StatefulWidget {
+  final String lockoutUntil;
   final VoidCallback onUpgrade;
-  const _DailyLimitSheet({required this.onUpgrade});
+
+  const _LockoutSheet({required this.lockoutUntil, required this.onUpgrade});
 
   @override
-  State<_DailyLimitSheet> createState() => _DailyLimitSheetState();
+  State<_LockoutSheet> createState() => _LockoutSheetState();
 }
 
-class _DailyLimitSheetState extends State<_DailyLimitSheet> {
-  Timer? _timer;
-  String _countdown = '--:--:--';
+class _LockoutSheetState extends State<_LockoutSheet> {
+  Timer?  _timer;
+  String  _countdown = '--:--:--';
+  bool    _expired   = false;
 
   @override
   void initState() {
@@ -1897,9 +2124,13 @@ class _DailyLimitSheetState extends State<_DailyLimitSheet> {
 
   void _update() {
     if (!mounted) return;
-    final now      = DateTime.now().toUtc();
-    final midnight = DateTime.utc(now.year, now.month, now.day + 1);
-    final diff     = midnight.difference(now);
+    final exp  = DateTime.tryParse(widget.lockoutUntil);
+    if (exp == null) { setState(() { _countdown = '—'; _expired = true; }); return; }
+    final diff = exp.difference(DateTime.now());
+    if (diff.isNegative) {
+      setState(() { _countdown = 'Ready!'; _expired = true; });
+      return;
+    }
     final h = diff.inHours.toString().padLeft(2, '0');
     final m = (diff.inMinutes % 60).toString().padLeft(2, '0');
     final s = (diff.inSeconds % 60).toString().padLeft(2, '0');
@@ -1919,43 +2150,49 @@ class _DailyLimitSheetState extends State<_DailyLimitSheet> {
     return Container(
       decoration: BoxDecoration(
           color: bg,
-          borderRadius:
-              const BorderRadius.vertical(top: Radius.circular(28))),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28))),
       padding: EdgeInsets.fromLTRB(
           24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(width: 40, height: 4,
+        Container(
+            width: 40, height: 4,
             decoration: BoxDecoration(
                 color: isDark ? Colors.white24 : Colors.black12,
                 borderRadius: BorderRadius.circular(2))),
         const SizedBox(height: 24),
-        const Text('⏰', style: TextStyle(fontSize: 52)),
+        Text(_expired ? '✅' : '⏸️',
+            style: const TextStyle(fontSize: 52)),
         const SizedBox(height: 12),
-        Text('Daily Limit Reached',
-            style: TextStyle(
-                fontSize: 20, fontWeight: FontWeight.w800, color: text)),
+        Text(
+          _expired ? 'AI Messages Ready!' : '4-Hour Rest Period',
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: text),
+        ),
         const SizedBox(height: 8),
         Text(
-          "You've used all your free AI unlocks for today.\n"
-          'Your limit resets at midnight UTC.',
+          _expired
+              ? 'Your ad-message limit has reset. You can watch ads for more messages again!'
+              : 'You used all ${_kMaxAdMessages} ad-messages. '
+                'Take a short break — your limit resets automatically.',
           style: TextStyle(fontSize: 14, color: sub, height: 1.5),
           textAlign: TextAlign.center,
         ),
-        const SizedBox(height: 24),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
-          decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(0.08),
-              borderRadius: BorderRadius.circular(16)),
-          child: Column(children: [
-            Text('Resets in', style: TextStyle(fontSize: 12, color: sub)),
-            const SizedBox(height: 6),
-            Text(_countdown,
-                style: TextStyle(
-                    fontSize: 32, fontWeight: FontWeight.w800, color: text,
-                    fontFamily: 'monospace', letterSpacing: 2)),
-          ]),
-        ),
+        if (!_expired) ...[
+          const SizedBox(height: 24),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
+            decoration: BoxDecoration(
+                color: AppColors.primary.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(16)),
+            child: Column(children: [
+              Text('Resets in', style: TextStyle(fontSize: 12, color: sub)),
+              const SizedBox(height: 6),
+              Text(_countdown,
+                  style: TextStyle(
+                      fontSize: 32, fontWeight: FontWeight.w800, color: text,
+                      fontFamily: 'monospace', letterSpacing: 2)),
+            ]),
+          ),
+        ],
         const SizedBox(height: 24),
         SizedBox(
           width: double.infinity,
@@ -1977,11 +2214,12 @@ class _DailyLimitSheetState extends State<_DailyLimitSheet> {
         const SizedBox(height: 12),
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: Text('Come back later',
-              style: TextStyle(color: sub, fontSize: 13)),
+          child: Text(
+            _expired ? 'Start chatting!' : 'Come back later',
+            style: TextStyle(color: sub, fontSize: 13),
+          ),
         ),
       ]),
     );
   }
 }
-
