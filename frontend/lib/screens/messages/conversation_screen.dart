@@ -115,7 +115,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   bool _scrollLocked     = false;
   bool _loadingMore      = false;
   bool _hasMoreHistory   = true;
-  bool _removingAI       = false;   // ← NEW: true while remove-AI request is in flight
+  bool _removingAI       = false;
 
   String? _aiConvId;
   String? _lastPollTime;
@@ -637,16 +637,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
     await _sendAI(text, adUnlocked: false, viaAIDM: viaAIDM);
   }
 
-  // ─── FIX 1: 403 handling ─────────────────────────────────────────────────
-  // Added [_retried] parameter (default false). On a 403 we clear the cached
-  // conv ID, create a fresh conversation, then call ourselves exactly once
-  // more (retried: true) so we can never loop infinitely.
+  // ─── FIX: renamed _retried → retried (Dart disallows underscore named params)
   Future<void> _sendAI(
     String text, {
     bool adUnlocked       = false,
     bool viaAIDM          = false,
     bool isContextMessage = false,
-    bool _retried         = false,   // ← NEW
+    bool retried          = false,   // ← FIX: was _retried
   }) async {
     String? convId = viaAIDM ? widget.userId : _aiConvId;
 
@@ -738,8 +735,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (!mounted) return;
       setState(() {
         _aiResponding = false;
-        // Remove the optimistic bubble so the user's text doesn't appear
-        // as sent when the request actually failed.
         _msgs.removeWhere((m) => m.id == optimisticId);
       });
 
@@ -747,9 +742,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
         await _showAdGate(text, viaAIDM: viaAIDM);
       } else if (e.statusCode == 429) {
         _showLockoutSheet();
-      } else if (e.statusCode == 403 && !_retried) {
+      } else if (e.statusCode == 403 && !retried) {
         // ── FIX: stale / invalid conv ID ────────────────────────────────
-        // Clear the cache, create a fresh conversation, then retry once.
         debugPrint('[Conv] 403 — resetting AI conv and retrying once');
         final prefs = await SharedPreferences.getInstance();
         await prefs.remove(_kAiConvIdKey);
@@ -761,7 +755,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
             adUnlocked      : adUnlocked,
             viaAIDM         : viaAIDM,
             isContextMessage: isContextMessage,
-            _retried        : true,   // prevent infinite loop
+            retried         : true,   // ← FIX: was _retried
           );
         } else {
           _addErrorBubble('Could not connect to AI. Please try again.');
@@ -900,9 +894,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
   }
 
-  // ─── FIX 2: Remove AI from DM conversation ───────────────────────────────
-  // Tapping the "AI Active" chip calls this. It asks the API to remove the AI
-  // participant, then resets _aiJoined so the "Invite AI" button reappears.
+  // ─────────────────────────────────────────────────────────────────────────
+  // Remove AI from DM conversation
+  // ─────────────────────────────────────────────────────────────────────────
   Future<void> _removeAI() async {
     if (_removingAI || !_aiJoined || widget.userId.isEmpty || _isAIMode) return;
     HapticFeedback.lightImpact();
@@ -944,9 +938,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
     try {
       await api.removeAIFromConversation(widget.userId);
     } catch (e) {
-      // Even if the backend call fails we flip the flag locally — the AI
-      // won't respond anyway once _aiJoined is false, and the user can
-      // re-invite if needed.
       debugPrint('[Conv] _removeAI backend error (ignoring): $e');
     }
 
@@ -956,7 +947,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
       _removingAI = false;
     });
 
-    // Add a local notice so the chat shows the AI left
     final leaveMsg = _Msg(
       content: '🤖 **RiseUp AI has left the conversation.**\n\n'
                'Tap **Invite AI** in the toolbar to bring it back.',
@@ -1307,7 +1297,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // AppBar  ← FIX 2: "AI Active" chip is now tappable to remove AI
+  // AppBar
   // ─────────────────────────────────────────────────────────────────────────
   PreferredSizeWidget _buildAppBar(
       bool isDark, Color card, Color border, Color text, Color sub) {
@@ -1417,7 +1407,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
             ),
           ),
 
-        // ── "AI Active" chip — now tappable to REMOVE AI ─────────────────
+        // ── "AI Active" chip — tappable to REMOVE AI ─────────────────────
         if (!_isAIMode && _aiJoined)
           Padding(
             padding: const EdgeInsets.only(right: 6, top: 8, bottom: 8),
