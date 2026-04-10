@@ -1,13 +1,14 @@
 // frontend/lib/screens/workflow/workflow_research_screen.dart
-// v3.1 — Intent-Aware Smart Workflow Engine + Chat Follow-Up
+// v3.2 — Ad-integrated edition
 //
-// New in v3.1:
-//   • After agent output, users can send follow-up messages in a natural
-//     chat UI — scrollable conversation history, typing indicator, and a
-//     sticky input bar at the bottom.
-//   • Chat history is seeded with the initial AI answer as the first
-//     assistant bubble, so the conversation feels continuous.
-//   • Follow-up calls reuse api.quickAgent with full conversation context.
+// Ad placements:
+//  • startResearch()      → adManager.showInterstitial() (frequency-capped)
+//  • _runQuickAgent()     → adManager.showInterstitial() (frequency-capped)
+//  • createWorkflow()     → adManager.forceInterstitial() after success
+//  • _ReviewPhase         → adManager.getBannerWidget() above Create button
+//  • _AgentOutputPhase    → rewarded "Watch ad to build workflow free" card
+//  • _InputPhase          → canCreateWorkflow gate (rewarded or upgrade)
+//  • _ConfirmPhase        → agent uses remaining badge
 
 import 'dart:async';
 import 'package:flutter/material.dart';
@@ -18,72 +19,47 @@ import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
+import '../../services/ad_manager.dart';
 import '../../providers/locale_provider.dart';
 import '../../providers/currency_provider.dart';
 
 // ═══════════════════════════════════════════════════════════════════
-// INTENT DETECTION ENGINE
+// INTENT DETECTION
 // ═══════════════════════════════════════════════════════════════════
 
 enum TaskIntent {
-  incomeGoal,
-  contactSearch,
-  jobSearch,
-  productSourcing,
-  learnSkill,
-  businessResearch,
-  quickAnswer,
-  marketplacePost,
+  incomeGoal, contactSearch, jobSearch, productSourcing,
+  learnSkill, businessResearch, quickAnswer, marketplacePost,
 }
 
 class IntentResult {
   final TaskIntent intent;
-  final String     label;
-  final String     description;
-  final String     emoji;
+  final String     label, description, emoji;
   final Color      color;
   final double     confidence;
-
-  const IntentResult({
-    required this.intent,
-    required this.label,
-    required this.description,
-    required this.emoji,
-    required this.color,
-    required this.confidence,
-  });
+  const IntentResult({required this.intent, required this.label, required this.description,
+    required this.emoji, required this.color, required this.confidence});
 }
 
 IntentResult detectIntent(String text) {
   final t = text.toLowerCase().trim();
-  bool has(List<String> patterns) {
-    for (final p in patterns) { if (t.contains(p)) return true; }
-    return false;
-  }
-  if (has(['contact','phone number','whatsapp number','number of','give me a contact','contacts of','find someone','who sells','sellers in','vendors in','suppliers in','address of'])) {
+  bool has(List<String> p) => p.any((x) => t.contains(x));
+  if (has(['contact','phone number','whatsapp number','number of','give me a contact','contacts of','find someone','who sells','sellers in','vendors in','suppliers in','address of']))
     return IntentResult(intent: TaskIntent.contactSearch, label: 'Contact / Directory Search', description: "I'll search for contacts and vendors who match what you're looking for.", emoji: '📞', color: const Color(0xFF00B894), confidence: 0.92);
-  }
-  if (has(['where to buy','how to buy','buy cheap','affordable','source for','import from','wholesale','supplier','looking to buy','need to buy','want to buy','price of'])) {
+  if (has(['where to buy','how to buy','buy cheap','affordable','source for','import from','wholesale','supplier','looking to buy','need to buy','want to buy','price of']))
     return IntentResult(intent: TaskIntent.productSourcing, label: 'Product Sourcing', description: "I'll find suppliers, prices, and sourcing strategies.", emoji: '🛒', color: const Color(0xFF6C5CE7), confidence: 0.88);
-  }
-  if (has(['find job','get job','job in','jobs for','freelance job','remote job','hiring','vacancy','employment','work as','looking for work','apply for','job opportunities'])) {
+  if (has(['find job','get job','job in','jobs for','freelance job','remote job','hiring','vacancy','employment','work as','looking for work','apply for','job opportunities']))
     return IntentResult(intent: TaskIntent.jobSearch, label: 'Job / Freelance Search', description: "I'll find real job openings and freelance opportunities for your skills.", emoji: '💼', color: const Color(0xFF0984E3), confidence: 0.90);
-  }
-  if (has(['i want to sell','i am selling','i sell','selling my','sell my','list my','post my','want to sell','help me sell'])) {
+  if (has(['i want to sell','i am selling','i sell','selling my','sell my','list my','post my','want to sell','help me sell']))
     return IntentResult(intent: TaskIntent.marketplacePost, label: 'Post a Listing', description: "I'll take you to the marketplace to list what you're selling.", emoji: '💰', color: AppColors.success, confidence: 0.85);
-  }
-  if (has(['how to learn','learn to','learn how to','teach me','course for','tutorial on','beginner guide','explain how','what is'])) {
+  if (has(['how to learn','learn to','learn how to','teach me','course for','tutorial on','beginner guide','explain how','what is']))
     return IntentResult(intent: TaskIntent.learnSkill, label: 'Learning & Guidance', description: "I'll give you a clear step-by-step guide to learn or get started.", emoji: '📚', color: const Color(0xFFFD79A8), confidence: 0.80);
-  }
-  if (has(['how to start','how to build','how to create','how to launch','business idea','side hustle','start a business','open a','set up a','business plan'])) {
+  if (has(['how to start','how to build','how to create','how to launch','business idea','side hustle','start a business','open a','set up a','business plan']))
     return IntentResult(intent: TaskIntent.businessResearch, label: 'Business Research', description: "I'll research this business model and create a full execution workflow.", emoji: '🔬', color: const Color(0xFF9B59B6), confidence: 0.82);
-  }
-  if (has(['i want to earn','make money from','income from','i want to start earning','my goal is to earn','passive income','per month','monthly income','earn \$','make \$'])) {
+  if (has(['i want to earn','make money from','income from','i want to start earning','my goal is to earn','passive income','per month','monthly income','earn \$','make \$']))
     return IntentResult(intent: TaskIntent.incomeGoal, label: 'Income Goal', description: "I'll research this income path and build your full workflow.", emoji: '🚀', color: AppColors.primary, confidence: 0.95);
-  }
-  if (text.trim().endsWith('?') || has(['what','why','when','who','where','which','can i','is it'])) {
+  if (text.trim().endsWith('?') || has(['what','why','when','who','where','which','can i','is it']))
     return IntentResult(intent: TaskIntent.quickAnswer, label: 'Quick Answer', description: "I'll answer this directly with specific, useful information.", emoji: '💡', color: const Color(0xFFFDCB6E), confidence: 0.70);
-  }
   return IntentResult(intent: TaskIntent.incomeGoal, label: 'Income Workflow', description: "I'll research this goal and build your personalized income execution plan.", emoji: '⚡', color: AppColors.primary, confidence: 0.60);
 }
 
@@ -92,8 +68,7 @@ IntentResult detectIntent(String text) {
 // ═══════════════════════════════════════════════════════════════════
 
 class ChatMessage {
-  final String   role;      // 'user' | 'assistant'
-  final String   content;
+  final String   role, content;
   final DateTime timestamp;
   ChatMessage({required this.role, required this.content}) : timestamp = DateTime.now();
 }
@@ -110,22 +85,18 @@ final workflowResearchProvider =
 });
 
 class WorkflowResearchState {
-  final _Phase               phase;
-  final String               goal;
-  final double               budget;
-  final double               hoursPerDay;
-  final String               currency;
-  final String               language;
-  final String?              timezone;
-  final List<String>         skills;
+  final _Phase            phase;
+  final String            goal, currency, language;
+  final double            budget, hoursPerDay;
+  final String?           timezone;
+  final List<String>      skills;
   final Map<String, dynamic> research;
-  final String               error;
-  final bool                 isLoading;
-  final bool                 brainUsed;
-  final IntentResult?        detectedIntent;
-  final String               agentOutput;
-  final List<ChatMessage>    chatHistory;
-  final bool                 chatLoading;
+  final String            error;
+  final bool              isLoading, brainUsed;
+  final IntentResult?     detectedIntent;
+  final String            agentOutput;
+  final List<ChatMessage> chatHistory;
+  final bool              chatLoading;
 
   WorkflowResearchState({
     this.phase = _Phase.input, this.goal = '', this.budget = 0,
@@ -143,16 +114,14 @@ class WorkflowResearchState {
     bool? brainUsed, IntentResult? detectedIntent, String? agentOutput,
     List<ChatMessage>? chatHistory, bool? chatLoading,
   }) => WorkflowResearchState(
-    phase: phase ?? this.phase, goal: goal ?? this.goal,
-    budget: budget ?? this.budget, hoursPerDay: hoursPerDay ?? this.hoursPerDay,
-    currency: currency ?? this.currency, language: language ?? this.language,
-    timezone: timezone ?? this.timezone, skills: skills ?? this.skills,
-    research: research ?? this.research, error: error ?? this.error,
-    isLoading: isLoading ?? this.isLoading, brainUsed: brainUsed ?? this.brainUsed,
-    detectedIntent: detectedIntent ?? this.detectedIntent,
+    phase: phase ?? this.phase, goal: goal ?? this.goal, budget: budget ?? this.budget,
+    hoursPerDay: hoursPerDay ?? this.hoursPerDay, currency: currency ?? this.currency,
+    language: language ?? this.language, timezone: timezone ?? this.timezone,
+    skills: skills ?? this.skills, research: research ?? this.research,
+    error: error ?? this.error, isLoading: isLoading ?? this.isLoading,
+    brainUsed: brainUsed ?? this.brainUsed, detectedIntent: detectedIntent ?? this.detectedIntent,
     agentOutput: agentOutput ?? this.agentOutput,
-    chatHistory: chatHistory ?? this.chatHistory,
-    chatLoading: chatLoading ?? this.chatLoading,
+    chatHistory: chatHistory ?? this.chatHistory, chatLoading: chatLoading ?? this.chatLoading,
   );
 }
 
@@ -173,8 +142,8 @@ class WorkflowResearchNotifier extends StateNotifier<WorkflowResearchState> {
 
   void updateBudget(double v)      => state = state.copyWith(budget: v, error: '');
   void updateHoursPerDay(double v) => state = state.copyWith(hoursPerDay: v);
-  void addSkill(String s)          { if (!state.skills.contains(s)) state = state.copyWith(skills: [...state.skills, s]); }
-  void removeSkill(String s)       => state = state.copyWith(skills: state.skills.where((x) => x != s).toList());
+  void addSkill(String s)    { if (!state.skills.contains(s)) state = state.copyWith(skills: [...state.skills, s]); }
+  void removeSkill(String s) => state = state.copyWith(skills: state.skills.where((x) => x != s).toList());
 
   void updateCurrency(String v) {
     state = state.copyWith(currency: v);
@@ -226,13 +195,14 @@ class WorkflowResearchNotifier extends StateNotifier<WorkflowResearchState> {
     state = state.copyWith(detectedIntent: IntentResult(
       intent: TaskIntent.incomeGoal, label: 'Income Workflow',
       description: 'Building your personalized income execution plan.',
-      emoji: 'lightning', color: AppColors.primary, confidence: 1.0,
-    ));
+      emoji: '⚡', color: AppColors.primary, confidence: 1.0));
     startResearch();
   }
 
   Future<void> startResearch() async {
     state = state.copyWith(phase: _Phase.researching, error: '', isLoading: true, brainUsed: false);
+    // ── AD: frequency-capped interstitial before research starts ──────────
+    await adManager.showInterstitial();
     try {
       final result = await api.post('/workflow/research', {
         'goal': state.goal, 'currency': state.currency,
@@ -251,13 +221,26 @@ class WorkflowResearchNotifier extends StateNotifier<WorkflowResearchState> {
   }
 
   Future<void> _runQuickAgent(BuildContext context) async {
+    // ── Gate: check agent daily limit ────────────────────────────────────
+    if (!adManager.canUseAgent) {
+      // Ask user to watch an ad
+      final unlocked = await adManager.watchAdForAgentUse(context);
+      if (!unlocked) {
+        state = state.copyWith(
+          error: 'Daily AI limit reached. Watch an ad above to continue.',
+          phase: _Phase.confirming);
+        return;
+      }
+    }
     state = state.copyWith(phase: _Phase.researching, isLoading: true, error: '');
+    // ── AD: frequency-capped interstitial before agent runs ───────────────
+    await adManager.showInterstitial();
+    adManager.recordAgentUse();
     try {
       final result = await api.quickAgent(state.goal);
       final output = result['output']?.toString() ?? result.toString();
       state = state.copyWith(
         agentOutput: output,
-        // Seed chat history with the initial assistant answer
         chatHistory: [ChatMessage(role: 'assistant', content: output)],
         phase: _Phase.agentMode, isLoading: false,
       );
@@ -267,37 +250,27 @@ class WorkflowResearchNotifier extends StateNotifier<WorkflowResearchState> {
     }
   }
 
-  /// Send a follow-up chat message
   Future<void> sendFollowUp(String message) async {
     if (message.trim().isEmpty || state.chatLoading) return;
+    // Gate follow-up messages the same way
+    if (!adManager.canUseAgent) return;
 
     final userMsg = ChatMessage(role: 'user', content: message.trim());
-    state = state.copyWith(
-      chatHistory: [...state.chatHistory, userMsg],
-      chatLoading: true,
-    );
-
+    state = state.copyWith(chatHistory: [...state.chatHistory, userMsg], chatLoading: true);
+    adManager.recordAgentUse();
     try {
-      // Build context-aware prompt from conversation history
-      final history = state.chatHistory
-          .map((m) => '${m.role == 'user' ? 'User' : 'Assistant'}: ${m.content}')
-          .join('\n\n');
-      final contextPrompt =
-          'Original question: ${state.goal}\n\nConversation so far:\n$history\n\nFollow-up: ${message.trim()}';
-
-      final result = await api.quickAgent(contextPrompt);
-      final reply  = result['output']?.toString() ?? result.toString();
-
+      final history       = state.chatHistory.map((m) => '${m.role == 'user' ? 'User' : 'Assistant'}: ${m.content}').join('\n\n');
+      final contextPrompt = 'Original question: ${state.goal}\n\nConversation so far:\n$history\n\nFollow-up: ${message.trim()}';
+      final result        = await api.quickAgent(contextPrompt);
+      final reply         = result['output']?.toString() ?? result.toString();
       state = state.copyWith(
         chatHistory: [...state.chatHistory, ChatMessage(role: 'assistant', content: reply)],
-        chatLoading: false,
-      );
+        chatLoading: false);
     } catch (e) {
       state = state.copyWith(
         chatHistory: [...state.chatHistory,
           ChatMessage(role: 'assistant', content: "Sorry, I couldn't get a response. Please try again.")],
-        chatLoading: false,
-      );
+        chatLoading: false);
     }
   }
 
@@ -315,14 +288,16 @@ class WorkflowResearchNotifier extends StateNotifier<WorkflowResearchState> {
       });
       final wfId = result['workflow_id']?.toString() ?? '';
       state = state.copyWith(phase: _Phase.done, isLoading: false);
+
       if (wfId.isNotEmpty) {
-        api.recordInteractionSignal(
-          action: 'workflow_created',
-          postId: wfId,
-          postContent: '',
-        );
+        api.recordInteractionSignal(action: 'workflow_created', postId: wfId, postContent: '');
       }
-      await Future.delayed(const Duration(milliseconds: 700));
+
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      // ── AD: force interstitial after workflow created (milestone moment) ─
+      if (!adManager.isPremium) await adManager.forceInterstitial();
+
       if (context.mounted && wfId.isNotEmpty) context.pushReplacement('/workflow/$wfId');
     } catch (e) {
       state = state.copyWith(error: 'Failed to create workflow. Please try again.',
@@ -359,7 +334,7 @@ class _WorkflowResearchScreenState extends ConsumerState<WorkflowResearchScreen>
     final state    = ref.watch(workflowResearchProvider);
     final notifier = ref.read(workflowResearchProvider.notifier);
 
-    final titles = {
+    const titles = {
       _Phase.input:      'What do you need?',
       _Phase.confirming: 'Is this right?',
       _Phase.researching:'Working on it...',
@@ -373,20 +348,17 @@ class _WorkflowResearchScreenState extends ConsumerState<WorkflowResearchScreen>
       canPop: state.phase == _Phase.input,
       onPopInvokedWithResult: (didPop, _) { if (!didPop) notifier.goBack(); },
       child: Scaffold(
-        backgroundColor: isDark ? const Color(0xFF0A0A0A) : const Color(0xFFF8F8FA),
-        // resizeToAvoidBottomInset must be true so keyboard pushes chat input up
+        backgroundColor:          isDark ? const Color(0xFF0A0A0A) : const Color(0xFFF8F8FA),
         resizeToAvoidBottomInset: true,
         appBar: AppBar(
           backgroundColor: isDark ? const Color(0xFF0A0A0A) : const Color(0xFFF8F8FA),
-          elevation: 0, surfaceTintColor: Colors.transparent,
-          centerTitle: true,
+          elevation: 0, surfaceTintColor: Colors.transparent, centerTitle: true,
           leading: IconButton(
             icon: Icon(Iconsax.arrow_left, color: isDark ? Colors.white70 : Colors.black54),
-            onPressed: state.phase == _Phase.input ? () => context.pop() : notifier.goBack,
-          ),
+            onPressed: state.phase == _Phase.input ? () => context.pop() : notifier.goBack),
           title: Text(titles[state.phase] ?? 'Workflow',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700,
-                  color: isDark ? Colors.white : Colors.black87)),
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700,
+              color: isDark ? Colors.white : Colors.black87)),
         ),
         body: AnimatedSwitcher(
           duration: const Duration(milliseconds: 300),
@@ -394,9 +366,7 @@ class _WorkflowResearchScreenState extends ConsumerState<WorkflowResearchScreen>
             opacity: anim,
             child: SlideTransition(
               position: Tween<Offset>(begin: const Offset(0, 0.03), end: Offset.zero).animate(anim),
-              child: child,
-            ),
-          ),
+              child: child)),
           child: _buildPhase(state, notifier, isDark),
         ),
       ),
@@ -405,34 +375,32 @@ class _WorkflowResearchScreenState extends ConsumerState<WorkflowResearchScreen>
 
   Widget _buildPhase(WorkflowResearchState s, WorkflowResearchNotifier n, bool isDark) {
     switch (s.phase) {
-      case _Phase.input:      return _InputPhase(key: const ValueKey('i'), isDark: isDark);
-      case _Phase.confirming: return _ConfirmPhase(key: const ValueKey('c'), isDark: isDark);
-      case _Phase.researching:return _LoadingPhase(key: const ValueKey('l'), intent: s.detectedIntent);
-      case _Phase.review:     return _ReviewPhase(key: const ValueKey('r'), isDark: isDark);
-      case _Phase.agentMode:  return _AgentOutputPhase(key: const ValueKey('a'), isDark: isDark);
-      case _Phase.creating:   return const _CreatingPhase(key: ValueKey('cr'));
-      case _Phase.done:       return const _DonePhase(key: ValueKey('d'));
+      case _Phase.input:       return _InputPhase(key: const ValueKey('i'), isDark: isDark);
+      case _Phase.confirming:  return _ConfirmPhase(key: const ValueKey('c'), isDark: isDark);
+      case _Phase.researching: return _LoadingPhase(key: const ValueKey('l'), intent: s.detectedIntent);
+      case _Phase.review:      return _ReviewPhase(key: const ValueKey('r'), isDark: isDark);
+      case _Phase.agentMode:   return _AgentOutputPhase(key: const ValueKey('a'), isDark: isDark);
+      case _Phase.creating:    return const _CreatingPhase(key: ValueKey('cr'));
+      case _Phase.done:        return const _DonePhase(key: ValueKey('d'));
     }
   }
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// PHASE 1: INPUT
+// PHASE 1: INPUT  — workflow limit gate wired in
 // ═══════════════════════════════════════════════════════════════════
 
 class _InputPhase extends ConsumerStatefulWidget {
   final bool isDark;
   const _InputPhase({super.key, required this.isDark});
-  @override
-  ConsumerState<_InputPhase> createState() => _InputPhaseState();
+  @override ConsumerState<_InputPhase> createState() => _InputPhaseState();
 }
 
 class _InputPhaseState extends ConsumerState<_InputPhase> {
   bool _showAdvanced = false;
-
   static const _currencies = ['USD','EUR','GBP','NGN','GHS','KES','ZAR','INR','PKR','BDT','PHP','IDR','BRL','MXN','EGP','TRY','USDT'];
-  static const _skills = ['Writing','Design','Coding','Video Editing','Marketing','Sales','Translation','Data Entry','Photography','Social Media'];
-  static const _examples = [
+  static const _skills     = ['Writing','Design','Coding','Video Editing','Marketing','Sales','Translation','Data Entry','Photography','Social Media'];
+  static const _examples   = [
     '💡 I want to start a YouTube channel',
     '📱 Find contacts of phone sellers or buyers in any location',
     '💼 Freelance design jobs online',
@@ -440,6 +408,66 @@ class _InputPhaseState extends ConsumerState<_InputPhase> {
     '💰 I want to earn from home',
     '🔬 How to start dropshipping',
   ];
+
+  Future<void> _onAnalyse(WorkflowResearchNotifier notifier) async {
+    // If this is a workflow-type intent and limit is hit, gate it
+    final text = notifier.goalController.text.trim();
+    if (text.length < 5) { notifier.analyzeInput(); return; }
+    final intent = detectIntent(text).intent;
+    final isWorkflow = intent == TaskIntent.incomeGoal || intent == TaskIntent.businessResearch;
+    if (isWorkflow && !adManager.canCreateWorkflow) {
+      await _showLimitDialog();
+      return;
+    }
+    notifier.analyzeInput();
+  }
+
+  Future<void> _showLimitDialog() async {
+    if (!mounted) return;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    await showModalBottomSheet(
+      context: context, isScrollControlled: true, backgroundColor: Colors.transparent,
+      builder: (_) => Container(
+        padding: EdgeInsets.fromLTRB(24, 24, 24, MediaQuery.of(context).padding.bottom + 24),
+        decoration: BoxDecoration(
+          color: isDark ? AppColors.bgCard : Colors.white,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24))),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(width: 36, height: 4,
+            decoration: BoxDecoration(color: Colors.grey.shade400, borderRadius: AppRadius.pill)),
+          const SizedBox(height: 20),
+          const Text('🚀', style: TextStyle(fontSize: 40)),
+          const SizedBox(height: 12),
+          Text('Free Workflow Limit Reached',
+            style: AppTextStyles.h3.copyWith(color: isDark ? Colors.white : Colors.black87), textAlign: TextAlign.center),
+          const SizedBox(height: 8),
+          Text('Watch a short ad to create another workflow free, or upgrade to Pro.',
+            style: AppTextStyles.body.copyWith(color: isDark ? Colors.white70 : Colors.black54), textAlign: TextAlign.center),
+          const SizedBox(height: 24),
+          SizedBox(width: double.infinity, child: ElevatedButton.icon(
+            onPressed: () async {
+              Navigator.pop(context);
+              final unlocked = await adManager.watchAdForWorkflow(context);
+              if (unlocked && mounted) {
+                ref.read(workflowResearchProvider.notifier).analyzeInput();
+              }
+            },
+            icon: const Icon(Iconsax.play_circle), label: const Text('Watch Ad & Continue'),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.success, foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(borderRadius: AppRadius.pill)))),
+          const SizedBox(height: 10),
+          SizedBox(width: double.infinity, child: OutlinedButton.icon(
+            onPressed: () { Navigator.pop(context); context.push('/upgrade'); },
+            icon: const Icon(Iconsax.crown, color: AppColors.warning), label: const Text('Upgrade to Pro'),
+            style: OutlinedButton.styleFrom(foregroundColor: AppColors.warning,
+              side: const BorderSide(color: AppColors.warning),
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(borderRadius: AppRadius.pill)))),
+        ]),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -455,23 +483,20 @@ class _InputPhaseState extends ConsumerState<_InputPhase> {
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 40),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Container(
-          decoration: BoxDecoration(
-            color: bg, borderRadius: BorderRadius.circular(20),
-            boxShadow: [BoxShadow(color: Colors.black.withOpacity(isDark ? 0.3 : 0.06), blurRadius: 20, offset: const Offset(0, 4))],
-          ),
+          decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20),
+            boxShadow: [BoxShadow(color: Colors.black.withOpacity(isDark ? 0.3 : 0.06), blurRadius: 20, offset: const Offset(0, 4))]),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(18, 18, 18, 0),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text('Tell me what you need', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: text)),
                 const SizedBox(height: 3),
-                Text("Ask anything — I'll figure out the best way to help", style: TextStyle(fontSize: 13, color: sub)),
+                Text("Ask anything — I'll figure out the best way to help",
+                  style: TextStyle(fontSize: 13, color: sub)),
                 const SizedBox(height: 14),
                 Container(
-                  decoration: BoxDecoration(
-                    color: surface, borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: AppColors.primary.withOpacity(0.3), width: 1.5),
-                  ),
+                  decoration: BoxDecoration(color: surface, borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: AppColors.primary.withOpacity(0.3), width: 1.5)),
                   child: TextField(
                     controller: notifier.goalController,
                     maxLines: 4, minLines: 3,
@@ -479,17 +504,13 @@ class _InputPhaseState extends ConsumerState<_InputPhase> {
                     decoration: InputDecoration(
                       hintText: 'e.g. "I want to earn from YouTube" or "find phone sellers in any location"',
                       hintStyle: TextStyle(color: sub.withOpacity(0.6), fontSize: 12, height: 1.5),
-                      border: InputBorder.none, contentPadding: const EdgeInsets.all(16),
-                    ),
-                  ),
+                      border: InputBorder.none, contentPadding: const EdgeInsets.all(16))),
                 ),
               ]),
             ),
             if (state.error.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(18, 6, 18, 0),
-                child: Text(state.error, style: const TextStyle(color: AppColors.error, fontSize: 12)),
-              ),
+              Padding(padding: const EdgeInsets.fromLTRB(18, 6, 18, 0),
+                child: Text(state.error, style: const TextStyle(color: AppColors.error, fontSize: 12))),
             const SizedBox(height: 14),
             Padding(padding: const EdgeInsets.symmetric(horizontal: 18),
               child: Text('Try these:', style: TextStyle(fontSize: 11, color: sub))),
@@ -509,36 +530,30 @@ class _InputPhaseState extends ConsumerState<_InputPhase> {
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
                     decoration: BoxDecoration(
-                      color: AppColors.primary.withOpacity(0.08),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: AppColors.primary.withOpacity(0.2)),
-                    ),
-                    child: Text(_examples[i], style: TextStyle(fontSize: 10, color: AppColors.primary, fontWeight: FontWeight.w500)),
-                  ),
+                      color: AppColors.primary.withOpacity(0.08), borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: AppColors.primary.withOpacity(0.2))),
+                    child: Text(_examples[i], style: TextStyle(fontSize: 10, color: AppColors.primary, fontWeight: FontWeight.w500))),
                 ),
-              ),
-            ),
+              )),
             const SizedBox(height: 16),
             Padding(
               padding: const EdgeInsets.fromLTRB(18, 0, 18, 18),
               child: SizedBox(width: double.infinity,
                 child: GestureDetector(
-                  onTap: () { HapticFeedback.mediumImpact(); notifier.analyzeInput(); },
+                  onTap: () { HapticFeedback.mediumImpact(); _onAnalyse(notifier); },
                   child: Container(
                     padding: const EdgeInsets.symmetric(vertical: 15),
                     decoration: BoxDecoration(
                       gradient: const LinearGradient(colors: [Color(0xFF6C5CE7), Color(0xFF00CEC9)]),
                       borderRadius: BorderRadius.circular(14),
-                      boxShadow: [BoxShadow(color: const Color(0xFF6C5CE7).withOpacity(0.3), blurRadius: 14, offset: const Offset(0, 5))],
-                    ),
+                      boxShadow: [BoxShadow(color: const Color(0xFF6C5CE7).withOpacity(0.3), blurRadius: 14, offset: const Offset(0, 5))]),
                     child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
                       Icon(Iconsax.flash, color: Colors.white, size: 18),
                       SizedBox(width: 8),
                       Text('Analyse & Execute', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 15)),
                     ]),
                   ),
-                ),
-              ),
+                )),
             ),
           ]),
         ).animate().fadeIn(duration: 300.ms),
@@ -552,8 +567,7 @@ class _InputPhaseState extends ConsumerState<_InputPhase> {
             decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(14),
               boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 10, offset: const Offset(0, 2))]),
             child: Row(children: [
-              Icon(Iconsax.setting_2, color: AppColors.primary, size: 16),
-              const SizedBox(width: 10),
+              Icon(Iconsax.setting_2, color: AppColors.primary, size: 16), const SizedBox(width: 10),
               Text('Advanced Settings', style: TextStyle(color: text, fontSize: 14, fontWeight: FontWeight.w600)),
               const Spacer(),
               Icon(_showAdvanced ? Iconsax.arrow_down : Iconsax.arrow_right_3, color: sub, size: 16),
@@ -580,8 +594,7 @@ class _InputPhaseState extends ConsumerState<_InputPhase> {
                     return FilterChip(label: Text(s, style: const TextStyle(fontSize: 11)), selected: sel,
                       onSelected: (v) => v ? notifier.addSkill(s) : notifier.removeSkill(s),
                       selectedColor: AppColors.primary.withOpacity(0.15), checkmarkColor: AppColors.primary);
-                  }).toList(),
-                ),
+                  }).toList()),
                 const SizedBox(height: 14),
                 Divider(color: sub.withOpacity(0.12)),
                 const SizedBox(height: 10),
@@ -593,7 +606,7 @@ class _InputPhaseState extends ConsumerState<_InputPhase> {
                     style: TextStyle(color: state.budget == 0 ? AppColors.success : AppColors.primary, fontWeight: FontWeight.w700, fontSize: 12)),
                 ]),
                 Slider(value: state.budget, min: 0, max: 500, divisions: 50,
-                    activeColor: AppColors.primary, onChanged: notifier.updateBudget),
+                  activeColor: AppColors.primary, onChanged: notifier.updateBudget),
                 Row(children: [
                   Icon(Iconsax.clock, color: AppColors.accent, size: 14), const SizedBox(width: 6),
                   Text('Daily Time', style: TextStyle(color: text, fontSize: 13, fontWeight: FontWeight.w600)),
@@ -602,7 +615,7 @@ class _InputPhaseState extends ConsumerState<_InputPhase> {
                     style: const TextStyle(color: AppColors.accent, fontWeight: FontWeight.w700, fontSize: 12)),
                 ]),
                 Slider(value: state.hoursPerDay, min: 0.5, max: 12, divisions: 23,
-                    activeColor: AppColors.accent, onChanged: notifier.updateHoursPerDay),
+                  activeColor: AppColors.accent, onChanged: notifier.updateHoursPerDay),
                 const SizedBox(height: 4),
                 Row(children: [
                   Icon(Iconsax.money, color: sub, size: 14), const SizedBox(width: 6),
@@ -619,13 +632,10 @@ class _InputPhaseState extends ConsumerState<_InputPhase> {
                         decoration: BoxDecoration(
                           color: sel ? AppColors.primary : Colors.transparent,
                           borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: sel ? AppColors.primary : sub.withOpacity(0.3)),
-                        ),
-                        child: Text(c, style: TextStyle(color: sel ? Colors.white : sub, fontSize: 12, fontWeight: FontWeight.w600)),
-                      ),
+                          border: Border.all(color: sel ? AppColors.primary : sub.withOpacity(0.3))),
+                        child: Text(c, style: TextStyle(color: sel ? Colors.white : sub, fontSize: 12, fontWeight: FontWeight.w600))),
                     );
-                  }).toList(),
-                ),
+                  }).toList()),
               ]),
             ),
           ),
@@ -636,7 +646,7 @@ class _InputPhaseState extends ConsumerState<_InputPhase> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// PHASE 2: CONFIRM INTENT
+// PHASE 2: CONFIRM
 // ═══════════════════════════════════════════════════════════════════
 
 class _ConfirmPhase extends ConsumerWidget {
@@ -674,8 +684,7 @@ class _ConfirmPhase extends ConsumerWidget {
           decoration: BoxDecoration(
             color: bg, borderRadius: BorderRadius.circular(20),
             border: Border.all(color: intent.color.withOpacity(0.4), width: 1.5),
-            boxShadow: [BoxShadow(color: intent.color.withOpacity(0.1), blurRadius: 20, offset: const Offset(0, 4))],
-          ),
+            boxShadow: [BoxShadow(color: intent.color.withOpacity(0.1), blurRadius: 20, offset: const Offset(0, 4))]),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
               Container(width: 48, height: 48,
@@ -686,8 +695,7 @@ class _ConfirmPhase extends ConsumerWidget {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(color: intent.color.withOpacity(0.12), borderRadius: BorderRadius.circular(8)),
-                  child: Text('I think you need:', style: TextStyle(fontSize: 10, color: intent.color, fontWeight: FontWeight.w600)),
-                ),
+                  child: Text('I think you need:', style: TextStyle(fontSize: 10, color: intent.color, fontWeight: FontWeight.w600))),
                 const SizedBox(height: 4),
                 Text(intent.label, style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: text)),
               ])),
@@ -699,17 +707,26 @@ class _ConfirmPhase extends ConsumerWidget {
               Text('Confidence: ', style: TextStyle(fontSize: 11, color: sub)),
               Expanded(child: ClipRRect(borderRadius: BorderRadius.circular(4),
                 child: LinearProgressIndicator(value: intent.confidence, backgroundColor: surface,
-                    valueColor: AlwaysStoppedAnimation(intent.color), minHeight: 4))),
+                  valueColor: AlwaysStoppedAnimation(intent.color), minHeight: 4))),
               const SizedBox(width: 6),
               Text('${(intent.confidence * 100).toInt()}%',
-                  style: TextStyle(fontSize: 11, color: intent.color, fontWeight: FontWeight.w700)),
+                style: TextStyle(fontSize: 11, color: intent.color, fontWeight: FontWeight.w700)),
             ]),
             const SizedBox(height: 12),
-            Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: surface, borderRadius: BorderRadius.circular(10)),
+            Container(padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(color: surface, borderRadius: BorderRadius.circular(10)),
               child: Row(children: [
                 Icon(Iconsax.message_text, color: sub, size: 14), const SizedBox(width: 8),
-                Expanded(child: Text('"${state.goal}"', style: TextStyle(fontSize: 12, color: sub, fontStyle: FontStyle.italic))),
+                Expanded(child: Text('"${state.goal}"',
+                  style: TextStyle(fontSize: 12, color: sub, fontStyle: FontStyle.italic))),
               ])),
+            // ── AD: show remaining agent uses for non-workflow intents ──────
+            if (!adManager.isPremium &&
+                intent.intent != TaskIntent.incomeGoal &&
+                intent.intent != TaskIntent.businessResearch) ...[
+              const SizedBox(height: 10),
+              _AgentUsageChip(isDark: isDark, intent: intent),
+            ],
           ]),
         ).animate().fadeIn().scale(begin: const Offset(0.97, 0.97)),
 
@@ -723,16 +740,14 @@ class _ConfirmPhase extends ConsumerWidget {
               decoration: BoxDecoration(
                 gradient: LinearGradient(colors: [intent.color, intent.color.withOpacity(0.7)]),
                 borderRadius: BorderRadius.circular(14),
-                boxShadow: [BoxShadow(color: intent.color.withOpacity(0.3), blurRadius: 14, offset: const Offset(0, 5))],
-              ),
+                boxShadow: [BoxShadow(color: intent.color.withOpacity(0.3), blurRadius: 14, offset: const Offset(0, 5))]),
               child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
                 Text(intent.emoji, style: const TextStyle(fontSize: 16)),
                 const SizedBox(width: 10),
                 Text('Yes, ${actionLabel()}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 15)),
               ]),
             ),
-          ),
-        ).animate().fadeIn(delay: 100.ms).slideY(begin: 0.1),
+          )).animate().fadeIn(delay: 100.ms).slideY(begin: 0.1),
 
         const SizedBox(height: 10),
 
@@ -740,22 +755,45 @@ class _ConfirmPhase extends ConsumerWidget {
           SizedBox(width: double.infinity,
             child: OutlinedButton.icon(
               onPressed: () { HapticFeedback.lightImpact(); notifier.forceWorkflow(); },
-              icon: const Icon(Iconsax.flash, color: AppColors.primary, size: 15),
+              icon:  const Icon(Iconsax.flash, color: AppColors.primary, size: 15),
               label: const Text('Build a full income workflow instead', style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.w600, fontSize: 13)),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 13),
+              style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 13),
                 side: const BorderSide(color: AppColors.primary, width: 1.5),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-              ),
-            ),
-          ).animate().fadeIn(delay: 150.ms),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+            )).animate().fadeIn(delay: 150.ms),
 
         const SizedBox(height: 8),
         TextButton.icon(
           onPressed: notifier.goBack,
-          icon: Icon(Iconsax.arrow_left, color: sub, size: 14),
+          icon:  Icon(Iconsax.arrow_left, color: sub, size: 14),
           label: Text('Edit my request', style: TextStyle(color: sub, fontSize: 13)),
         ).animate().fadeIn(delay: 200.ms),
+      ]),
+    );
+  }
+}
+
+// ── Agent usage chip shown in confirm phase ───────────────────────────────────
+
+class _AgentUsageChip extends StatelessWidget {
+  final bool        isDark;
+  final IntentResult intent;
+  const _AgentUsageChip({required this.isDark, required this.intent});
+
+  @override
+  Widget build(BuildContext context) {
+    final remaining = adManager.agentUsesRemaining;
+    final color     = remaining > 0 ? intent.color : AppColors.error;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(color: color.withOpacity(0.08), borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withOpacity(0.2))),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(Iconsax.cpu, color: color, size: 12),
+        const SizedBox(width: 5),
+        Text(
+          remaining > 0 ? '$remaining free AI use${remaining == 1 ? "" : "s"} left today' : 'No free AI uses left today',
+          style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w600)),
       ]),
     );
   }
@@ -774,7 +812,7 @@ class _LoadingPhase extends StatefulWidget {
 class _LoadingPhaseState extends State<_LoadingPhase> with SingleTickerProviderStateMixin {
   late AnimationController _pulse;
   @override void initState() { super.initState(); _pulse = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))..repeat(reverse: true); }
-  @override void dispose() { _pulse.dispose(); super.dispose(); }
+  @override void dispose()   { _pulse.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
@@ -797,8 +835,7 @@ class _LoadingPhaseState extends State<_LoadingPhase> with SingleTickerProviderS
       '✨ Preparing your results...',
     ];
 
-    return Center(child: Padding(
-      padding: const EdgeInsets.all(32),
+    return Center(child: Padding(padding: const EdgeInsets.all(32),
       child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
         AnimatedBuilder(
           animation: _pulse,
@@ -809,21 +846,20 @@ class _LoadingPhaseState extends State<_LoadingPhase> with SingleTickerProviderS
               decoration: BoxDecoration(
                 gradient: LinearGradient(colors: [color, color.withOpacity(0.6)]),
                 borderRadius: BorderRadius.circular(26),
-                boxShadow: [BoxShadow(color: color.withOpacity(0.3 + _pulse.value * 0.2), blurRadius: 24, offset: const Offset(0, 6))],
-              ),
-              child: Center(child: Text(emoji, style: const TextStyle(fontSize: 40))),
-            ),
+                boxShadow: [BoxShadow(color: color.withOpacity(0.3 + _pulse.value * 0.2), blurRadius: 24, offset: const Offset(0, 6))]),
+              child: Center(child: Text(emoji, style: const TextStyle(fontSize: 40)))),
           ),
         ),
         const SizedBox(height: 28),
         Text(isWorkflow ? 'Deep Research in Progress' : 'Working on it...',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: color)),
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: color)),
         const SizedBox(height: 8),
         Text(
-          isWorkflow ? "AI is searching RiseUp's brain, analyzing your goal, and building your execution plan." : "Finding exactly what you need based on your request.",
+          isWorkflow
+              ? "AI is searching RiseUp's brain, analyzing your goal, and building your execution plan."
+              : "Finding exactly what you need based on your request.",
           textAlign: TextAlign.center,
-          style: const TextStyle(color: AppColors.textSecondary, fontSize: 13, height: 1.5),
-        ),
+          style: const TextStyle(color: AppColors.textSecondary, fontSize: 13, height: 1.5)),
         const SizedBox(height: 28),
         ...messages.asMap().entries.map((e) => Padding(
           padding: const EdgeInsets.only(bottom: 10),
@@ -839,14 +875,13 @@ class _LoadingPhaseState extends State<_LoadingPhase> with SingleTickerProviderS
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// PHASE 4a: AGENT OUTPUT + CHAT FOLLOW-UP
+// PHASE 4a: AGENT OUTPUT + CHAT  — rewarded "build workflow" card wired
 // ═══════════════════════════════════════════════════════════════════
 
 class _AgentOutputPhase extends ConsumerStatefulWidget {
   final bool isDark;
   const _AgentOutputPhase({super.key, required this.isDark});
-  @override
-  ConsumerState<_AgentOutputPhase> createState() => _AgentOutputPhaseState();
+  @override ConsumerState<_AgentOutputPhase> createState() => _AgentOutputPhaseState();
 }
 
 class _AgentOutputPhaseState extends ConsumerState<_AgentOutputPhase> {
@@ -854,14 +889,13 @@ class _AgentOutputPhaseState extends ConsumerState<_AgentOutputPhase> {
   final _scrollCtrl = ScrollController();
   bool  _focused    = false;
 
-  @override
-  void dispose() { _chatCtrl.dispose(); _scrollCtrl.dispose(); super.dispose(); }
+  @override void dispose() { _chatCtrl.dispose(); _scrollCtrl.dispose(); super.dispose(); }
 
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollCtrl.hasClients) {
         _scrollCtrl.animateTo(_scrollCtrl.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 320), curve: Curves.easeOut);
+          duration: const Duration(milliseconds: 320), curve: Curves.easeOut);
       }
     });
   }
@@ -869,6 +903,13 @@ class _AgentOutputPhaseState extends ConsumerState<_AgentOutputPhase> {
   Future<void> _send(WorkflowResearchNotifier notifier) async {
     final txt = _chatCtrl.text.trim();
     if (txt.isEmpty) return;
+
+    // Gate follow-up if limit hit
+    if (!adManager.canUseAgent) {
+      final unlocked = await adManager.watchAdForAgentUse(context);
+      if (!unlocked) return;
+    }
+
     _chatCtrl.clear();
     HapticFeedback.lightImpact();
     await notifier.sendFollowUp(txt);
@@ -888,14 +929,11 @@ class _AgentOutputPhaseState extends ConsumerState<_AgentOutputPhase> {
     if (state.chatHistory.isNotEmpty) _scrollToBottom();
 
     return Column(children: [
-      // ── Scrollable chat messages ────────────────────────────────
       Expanded(
         child: ListView(
           controller: _scrollCtrl,
           padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
           children: [
-
-            // Top row: intent chip + copy button
             Row(children: [
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -903,8 +941,7 @@ class _AgentOutputPhaseState extends ConsumerState<_AgentOutputPhase> {
                 child: Row(mainAxisSize: MainAxisSize.min, children: [
                   Text(intent.emoji, style: const TextStyle(fontSize: 12)), const SizedBox(width: 5),
                   Text(intent.label, style: TextStyle(color: intent.color, fontSize: 11, fontWeight: FontWeight.w700)),
-                ]),
-              ),
+                ])),
               const Spacer(),
               if (state.chatHistory.isNotEmpty)
                 GestureDetector(
@@ -913,55 +950,49 @@ class _AgentOutputPhaseState extends ConsumerState<_AgentOutputPhase> {
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                       content: Text('Copied ✅'), backgroundColor: AppColors.success, duration: Duration(seconds: 2)));
                   },
-                  child: Padding(
-                    padding: const EdgeInsets.all(6),
-                    child: Icon(Iconsax.copy, color: sub, size: 17),
-                  ),
-                ),
+                  child: Padding(padding: const EdgeInsets.all(6), child: Icon(Iconsax.copy, color: sub, size: 17))),
             ]),
             const SizedBox(height: 10),
 
             // Chat bubbles
             ...state.chatHistory.asMap().entries.map((e) => _ChatBubble(
-              key: ValueKey('msg_${e.key}'),
-              message: e.value,
-              isUser: e.value.role == 'user',
-              isDark: isDark,
-              accentColor: intent.color,
+              key: ValueKey('msg_${e.key}'), message: e.value,
+              isUser: e.value.role == 'user', isDark: isDark, accentColor: intent.color,
             ).animate().fadeIn(duration: 220.ms).slideY(begin: 0.05)),
 
             // Typing indicator
             if (state.chatLoading)
-              Align(
-                alignment: Alignment.centerLeft,
+              Align(alignment: Alignment.centerLeft,
                 child: Container(
                   margin: const EdgeInsets.only(top: 4, bottom: 4),
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-                  decoration: BoxDecoration(
-                    color: surface,
+                  decoration: BoxDecoration(color: surface,
                     borderRadius: const BorderRadius.only(
                       topLeft: Radius.circular(4), topRight: Radius.circular(16),
-                      bottomLeft: Radius.circular(16), bottomRight: Radius.circular(16),
-                    ),
-                  ),
-                  child: _TypingDots(color: intent.color),
-                ),
-              ).animate().fadeIn(),
+                      bottomLeft: Radius.circular(16), bottomRight: Radius.circular(16))),
+                  child: _TypingDots(color: intent.color))).animate().fadeIn(),
+
+            // ── AD: remaining uses badge + rewarded gate ─────────────────
+            if (!adManager.isPremium) ...[
+              const SizedBox(height: 8),
+              _ChatAgentUsageBanner(isDark: isDark, intent: intent),
+            ],
 
             const SizedBox(height: 12),
 
-            // ── "Build workflow" upsell ──────────────────────────
+            // ── "Build workflow" upsell card ──────────────────────────────
             Container(
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
                 gradient: LinearGradient(colors: [AppColors.primary.withOpacity(0.08), AppColors.accent.withOpacity(0.06)]),
                 borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppColors.primary.withOpacity(0.2)),
-              ),
+                border: Border.all(color: AppColors.primary.withOpacity(0.2))),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('Want a full income plan?', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13, color: AppColors.primary)),
+                const Text('Want a full income plan?',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13, color: AppColors.primary)),
                 const SizedBox(height: 3),
-                Text('Build a step-by-step workflow with AI to execute this properly.', style: TextStyle(fontSize: 11, color: sub)),
+                Text('Build a step-by-step workflow with AI to execute this properly.',
+                  style: TextStyle(fontSize: 11, color: sub)),
                 const SizedBox(height: 10),
                 GestureDetector(
                   onTap: () { HapticFeedback.mediumImpact(); notifier.forceWorkflow(); },
@@ -969,59 +1000,48 @@ class _AgentOutputPhaseState extends ConsumerState<_AgentOutputPhase> {
                     padding: const EdgeInsets.symmetric(vertical: 11),
                     decoration: BoxDecoration(
                       gradient: const LinearGradient(colors: [Color(0xFF6C5CE7), Color(0xFF00CEC9)]),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
+                      borderRadius: BorderRadius.circular(12)),
                     child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
                       Icon(Iconsax.flash, color: Colors.white, size: 14), SizedBox(width: 7),
                       Text('Build Income Workflow', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13)),
-                    ]),
-                  ),
-                ),
-              ]),
-            ),
+                    ]))),
+              ])),
             const SizedBox(height: 6),
           ],
         ),
       ),
 
-      // ── Sticky follow-up input bar ──────────────────────────────
+      // ── Sticky chat input ─────────────────────────────────────────────
       Container(
         decoration: BoxDecoration(
           color: isDark ? const Color(0xFF0F0F13) : const Color(0xFFEFEFF4),
           border: Border(top: BorderSide(color: (isDark ? Colors.white : Colors.black).withOpacity(0.07))),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.09), blurRadius: 14, offset: const Offset(0, -3))],
-        ),
+          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.09), blurRadius: 14, offset: const Offset(0, -3))]),
         padding: EdgeInsets.fromLTRB(12, 10, 12, MediaQuery.of(context).viewInsets.bottom + 12),
         child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
           Expanded(
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 180),
               decoration: BoxDecoration(
-                color: inputBg,
-                borderRadius: BorderRadius.circular(22),
+                color: inputBg, borderRadius: BorderRadius.circular(22),
                 border: Border.all(
                   color: _focused ? intent.color.withOpacity(0.55) : (isDark ? Colors.white12 : Colors.black12),
-                  width: _focused ? 1.5 : 1.0,
-                ),
+                  width: _focused ? 1.5 : 1.0),
                 boxShadow: _focused
                     ? [BoxShadow(color: intent.color.withOpacity(0.1), blurRadius: 8, offset: const Offset(0, 2))]
-                    : [],
-              ),
+                    : []),
               child: Focus(
                 onFocusChange: (v) => setState(() => _focused = v),
                 child: TextField(
-                  controller: _chatCtrl,
-                  maxLines: 4, minLines: 1,
+                  controller: _chatCtrl, maxLines: 4, minLines: 1,
                   textCapitalization: TextCapitalization.sentences,
                   style: TextStyle(fontSize: 14, color: isDark ? Colors.white : Colors.black87),
                   decoration: InputDecoration(
-                    hintText: 'Ask a follow-up question...',
+                    hintText:  'Ask a follow-up question...',
                     hintStyle: TextStyle(color: sub.withOpacity(0.6), fontSize: 13),
-                    border: InputBorder.none,
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  ),
-                  onSubmitted: (_) => _send(notifier),
-                ),
+                    border:    InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10)),
+                  onSubmitted: (_) => _send(notifier)),
               ),
             ),
           ),
@@ -1032,20 +1052,14 @@ class _AgentOutputPhaseState extends ConsumerState<_AgentOutputPhase> {
               duration: const Duration(milliseconds: 180),
               width: 42, height: 42,
               decoration: BoxDecoration(
-                gradient: state.chatLoading
-                    ? null
-                    : LinearGradient(colors: [intent.color, intent.color.withOpacity(0.75)]),
+                gradient: state.chatLoading ? null : LinearGradient(colors: [intent.color, intent.color.withOpacity(0.75)]),
                 color: state.chatLoading ? sub.withOpacity(0.15) : null,
                 shape: BoxShape.circle,
-                boxShadow: state.chatLoading
-                    ? []
-                    : [BoxShadow(color: intent.color.withOpacity(0.35), blurRadius: 10, offset: const Offset(0, 3))],
-              ),
+                boxShadow: state.chatLoading ? [] : [BoxShadow(color: intent.color.withOpacity(0.35), blurRadius: 10, offset: const Offset(0, 3))]),
               child: state.chatLoading
                   ? const Padding(padding: EdgeInsets.all(11),
                       child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white54))
-                  : const Icon(Iconsax.send_1, color: Colors.white, size: 18),
-            ),
+                  : const Icon(Iconsax.send_1, color: Colors.white, size: 18)),
           ),
         ]),
       ),
@@ -1053,20 +1067,59 @@ class _AgentOutputPhaseState extends ConsumerState<_AgentOutputPhase> {
   }
 }
 
-// ── Chat bubble ────────────────────────────────────────────────────
+// ── Chat agent usage banner in agent output phase ─────────────────────────────
+
+class _ChatAgentUsageBanner extends StatelessWidget {
+  final bool isDark; final IntentResult intent;
+  const _ChatAgentUsageBanner({required this.isDark, required this.intent});
+
+  @override
+  Widget build(BuildContext context) {
+    final remaining = adManager.agentUsesRemaining;
+    if (remaining > 1) return const SizedBox.shrink(); // only show when low
+    final color = remaining > 0 ? AppColors.warning : AppColors.error;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(color: color.withOpacity(0.08), borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withOpacity(0.2))),
+      child: Row(children: [
+        Icon(remaining > 0 ? Iconsax.warning_2 : Iconsax.cpu, color: color, size: 13),
+        const SizedBox(width: 8),
+        Expanded(child: Text(
+          remaining > 0 ? '$remaining follow-up left today' : 'Follow-ups used up today',
+          style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 11, fontWeight: FontWeight.w600))),
+        if (remaining == 0)
+          GestureDetector(
+            onTap: () async {
+              final ok = await adManager.watchAdForAgentUse(context);
+              if (ok && context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                  content: Text('✅ Follow-up unlocked!'), backgroundColor: AppColors.success));
+              }
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(color: color.withOpacity(0.12), borderRadius: AppRadius.pill,
+                border: Border.all(color: color.withOpacity(0.3))),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Iconsax.play_circle, color: color, size: 10), const SizedBox(width: 3),
+                Text('Watch Ad', style: TextStyle(color: color, fontSize: 9, fontWeight: FontWeight.w700)),
+              ])),
+          ),
+      ]),
+    );
+  }
+}
 
 class _ChatBubble extends StatelessWidget {
-  final ChatMessage message;
-  final bool        isUser;
-  final bool        isDark;
-  final Color       accentColor;
+  final ChatMessage message; final bool isUser, isDark; final Color accentColor;
   const _ChatBubble({super.key, required this.message, required this.isUser, required this.isDark, required this.accentColor});
 
   @override
   Widget build(BuildContext context) {
     final bg        = isUser ? accentColor : (isDark ? const Color(0xFF1E1E26) : const Color(0xFFEEEEF4));
     final textColor = isUser ? Colors.white : (isDark ? Colors.white : Colors.black87);
-
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
@@ -1079,20 +1132,14 @@ class _ChatBubble extends StatelessWidget {
             topLeft:     Radius.circular(isUser ? 16 : 4),
             topRight:    Radius.circular(isUser ? 4  : 16),
             bottomLeft:  const Radius.circular(16),
-            bottomRight: const Radius.circular(16),
-          ),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 6, offset: const Offset(0, 2))],
-        ),
-        child: SelectableText(
-          message.content,
-          style: TextStyle(fontSize: 13.5, color: textColor, height: 1.55),
-        ),
+            bottomRight: const Radius.circular(16)),
+          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 6, offset: const Offset(0, 2))]),
+        child: SelectableText(message.content,
+          style: TextStyle(fontSize: 13.5, color: textColor, height: 1.55)),
       ),
     );
   }
 }
-
-// ── Animated typing dots ───────────────────────────────────────────
 
 class _TypingDots extends StatefulWidget {
   final Color color;
@@ -1106,24 +1153,21 @@ class _TypingDotsState extends State<_TypingDots> with SingleTickerProviderState
   @override void dispose() { _ctrl.dispose(); super.dispose(); }
 
   @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _ctrl,
-      builder: (_, __) => Row(mainAxisSize: MainAxisSize.min, children: List.generate(3, (i) {
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: _ctrl,
+    builder: (_, __) => Row(mainAxisSize: MainAxisSize.min,
+      children: List.generate(3, (i) {
         final t     = ((_ctrl.value * 3) - i).clamp(0.0, 1.0);
         final scale = 0.6 + (t < 0.5 ? t : 1 - t) * 0.8;
-        return Container(
-          margin: const EdgeInsets.symmetric(horizontal: 2),
+        return Container(margin: const EdgeInsets.symmetric(horizontal: 2),
           width: 7 * scale, height: 7 * scale,
-          decoration: BoxDecoration(color: widget.color.withOpacity(0.7), shape: BoxShape.circle),
-        );
+          decoration: BoxDecoration(color: widget.color.withOpacity(0.7), shape: BoxShape.circle));
       })),
-    );
-  }
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// PHASE 4b: REVIEW — workflow research results
+// PHASE 4b: REVIEW  — banner above Create button
 // ═══════════════════════════════════════════════════════════════════
 
 class _ReviewPhase extends ConsumerWidget {
@@ -1140,87 +1184,73 @@ class _ReviewPhase extends ConsumerWidget {
     final sub      = isDark ? Colors.white54 : Colors.black45;
     final surface  = isDark ? const Color(0xFF1E1E24) : const Color(0xFFF2F2F7);
 
-    final score        = d['viability_score'] as int? ?? 75;
-    final timeline     = d['realistic_timeline']?.toString() ?? '';
-    final warning      = d['honest_warning']?.toString() ?? '';
+    final score        = d['viability_score']            as int?    ?? 75;
+    final timeline     = d['realistic_timeline']?.toString()        ?? '';
+    final warning      = d['honest_warning']?.toString()            ?? '';
     final currency     = d['potential_monthly_income']?['currency'] ?? state.currency;
-    final potMin       = d['potential_monthly_income']?['min'] ?? 0;
-    final potMax       = d['potential_monthly_income']?['max'] ?? 0;
+    final potMin       = d['potential_monthly_income']?['min']      ?? 0;
+    final potMax       = d['potential_monthly_income']?['max']      ?? 0;
     final brainMethods = (d['brain_matched_methods'] as List? ?? []);
-    final working      = (d['what_is_working_now'] as List? ?? []);
+    final working      = (d['what_is_working_now']   as List? ?? []);
     final regional     = (d['regional_opportunities'] as List? ?? []);
-    final freeTools    = (d['free_tools'] as List? ?? []);
-    final steps        = (d['step_by_step_workflow'] as List? ?? []);
-    final aiCan        = (d['breakdown']?['ai_can_do'] as List? ?? []);
+    final freeTools    = (d['free_tools']             as List? ?? []);
+    final steps        = (d['step_by_step_workflow']  as List? ?? []);
+    final aiCan        = (d['breakdown']?['ai_can_do']   as List? ?? []);
     final userMust     = (d['breakdown']?['user_must_do'] as List? ?? []);
 
-    Widget sectionTitle(String t) => Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Text(t, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: text)),
-    );
-    Widget bullet(String t, Color c) => Padding(
-      padding: const EdgeInsets.only(bottom: 6),
+    Widget sectionTitle(String t) => Padding(padding: const EdgeInsets.only(bottom: 10),
+      child: Text(t, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: text)));
+    Widget bullet(String t, Color c) => Padding(padding: const EdgeInsets.only(bottom: 6),
       child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Icon(Iconsax.tick_circle, color: c, size: 14), const SizedBox(width: 8),
         Expanded(child: Text(t, style: TextStyle(fontSize: 12, color: isDark ? Colors.white70 : Colors.black54, height: 1.4))),
-      ]),
-    );
-    Widget breakdownCard(String emoji, String title, String subtitle, String badge, Color badgeColor) =>
-      Container(
-        margin: const EdgeInsets.only(bottom: 8), padding: const EdgeInsets.all(12),
+      ]));
+    Widget breakCard(String emoji, String title, String subtitle, String badge, Color badgeColor) =>
+      Container(margin: const EdgeInsets.only(bottom: 8), padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: badgeColor.withOpacity(0.15))),
+          border: Border.all(color: badgeColor.withOpacity(0.15))),
         child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(emoji, style: const TextStyle(fontSize: 17)), const SizedBox(width: 10),
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(title, style: TextStyle(color: text, fontWeight: FontWeight.w600, fontSize: 13)),
+            Text(title,    style: TextStyle(color: text, fontWeight: FontWeight.w600, fontSize: 13)),
             const SizedBox(height: 2),
             Text(subtitle, style: const TextStyle(color: AppColors.textSecondary, fontSize: 11)),
           ])),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+          Container(padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
             decoration: BoxDecoration(color: badgeColor.withOpacity(0.12), borderRadius: BorderRadius.circular(8)),
-            child: Text(badge, style: TextStyle(color: badgeColor, fontSize: 10, fontWeight: FontWeight.w700)),
-          ),
-        ]),
-      );
+            child: Text(badge, style: TextStyle(color: badgeColor, fontSize: 10, fontWeight: FontWeight.w700))),
+        ]));
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        if (state.brainUsed) ...[
-          Container(
-            margin: const EdgeInsets.only(bottom: 12),
+        if (state.brainUsed)
+          Container(margin: const EdgeInsets.only(bottom: 12),
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
             decoration: BoxDecoration(
               gradient: const LinearGradient(colors: [Color(0xFF6C5CE7), Color(0xFF00B894)]),
-              borderRadius: BorderRadius.circular(20),
-            ),
+              borderRadius: BorderRadius.circular(20)),
             child: const Row(mainAxisSize: MainAxisSize.min, children: [
               Icon(Icons.auto_awesome, color: Colors.white, size: 10), SizedBox(width: 4),
               Text('🧠 Enhanced with RiseUp Brain', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w700)),
-            ]),
-          ),
-        ],
+            ])),
+
         Container(
           padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: bg, borderRadius: BorderRadius.circular(16),
+          decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(16),
             border: Border.all(color: AppColors.primary.withOpacity(0.22)),
-            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 3))],
-          ),
+            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 3))]),
           child: Row(children: [
-            SizedBox(width: 56, height: 56,
-              child: Stack(children: [
-                CircularProgressIndicator(value: score / 100, backgroundColor: surface,
-                    valueColor: const AlwaysStoppedAnimation(AppColors.success), strokeWidth: 5),
-                Center(child: Text('$score', style: const TextStyle(color: AppColors.success, fontWeight: FontWeight.w800, fontSize: 15))),
-              ])),
+            SizedBox(width: 56, height: 56, child: Stack(children: [
+              CircularProgressIndicator(value: score / 100, backgroundColor: surface,
+                valueColor: const AlwaysStoppedAnimation(AppColors.success), strokeWidth: 5),
+              Center(child: Text('$score', style: const TextStyle(color: AppColors.success, fontWeight: FontWeight.w800, fontSize: 15))),
+            ])),
             const SizedBox(width: 14),
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(d['title']?.toString() ?? 'Your Workflow',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: text),
-                  maxLines: 2, overflow: TextOverflow.ellipsis),
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: text),
+                maxLines: 2, overflow: TextOverflow.ellipsis),
               const SizedBox(height: 6),
               Wrap(spacing: 6, children: [
                 _SmallTag('⏱ $timeline', AppColors.primary),
@@ -1230,51 +1260,52 @@ class _ReviewPhase extends ConsumerWidget {
           ]),
         ).animate().fadeIn(),
         const SizedBox(height: 16),
+
         if (brainMethods.isNotEmpty) ...[
           sectionTitle('🧠 Matched from RiseUp Brain'),
           Wrap(spacing: 8, runSpacing: 6,
             children: brainMethods.map((m) => Container(
               padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
               decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.08), borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: AppColors.primary.withOpacity(0.25))),
+                border: Border.all(color: AppColors.primary.withOpacity(0.25))),
               child: Text(m.toString(), style: const TextStyle(fontSize: 11, color: AppColors.primary, fontWeight: FontWeight.w600)),
-            )).toList(),
-          ),
+            )).toList()),
           const SizedBox(height: 16),
         ],
         if (regional.isNotEmpty) ...[sectionTitle('🌍 Regional Opportunities'), ...regional.map((op) => bullet(op.toString(), AppColors.info)), const SizedBox(height: 16)],
         if (working.isNotEmpty)  ...[sectionTitle('📈 What\'s Working Right Now'), ...working.map((w) => bullet(w.toString(), AppColors.success)), const SizedBox(height: 16)],
+
         sectionTitle('⚡ What AI Can Do For You'),
-        ...aiCan.map((item) { final m = item as Map; return breakdownCard('🤖', m['task']?.toString() ?? '', m['how']?.toString() ?? '', 'Saves ${m['saves_hours']}h', AppColors.success); }),
+        ...aiCan.map((item) { final m = item as Map; return breakCard('🤖', m['task']?.toString() ?? '', m['how']?.toString() ?? '', 'Saves ${m['saves_hours']}h', AppColors.success); }),
         if (userMust.isNotEmpty) ...[
           const SizedBox(height: 10), sectionTitle('👤 What You Must Do'),
-          ...userMust.map((item) { final m = item as Map; return breakdownCard('🎯', m['task']?.toString() ?? '', m['why']?.toString() ?? '', m['time_required']?.toString() ?? '', AppColors.warning); }),
+          ...userMust.map((item) { final m = item as Map; return breakCard('🎯', m['task']?.toString() ?? '', m['why']?.toString() ?? '', m['time_required']?.toString() ?? '', AppColors.warning); }),
         ],
         const SizedBox(height: 16),
+
         if (freeTools.isNotEmpty) ...[
           sectionTitle('🆓 Free Tools (Start at \$0)'),
           Wrap(spacing: 8, runSpacing: 8,
             children: freeTools.map((t) { final tool = t as Map; return Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               decoration: BoxDecoration(color: AppColors.success.withOpacity(0.08), borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: AppColors.success.withOpacity(0.25))),
+                border: Border.all(color: AppColors.success.withOpacity(0.25))),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text(tool['name']?.toString() ?? '', style: const TextStyle(color: AppColors.success, fontWeight: FontWeight.w700, fontSize: 12)),
                 Text(tool['purpose']?.toString() ?? '', style: TextStyle(color: sub, fontSize: 10)),
-              ]),
-            ); }).toList(),
-          ),
+              ])); }).toList()),
           const SizedBox(height: 16),
         ],
+
         if (steps.isNotEmpty) ...[
           sectionTitle('📋 Your ${steps.length}-Step Workflow'),
           ...steps.take(4).toList().asMap().entries.map((e) {
-            final s = e.value as Map;
+            final s      = e.value as Map;
             final isAuto = s['type'] == 'automated';
             return Container(
               margin: const EdgeInsets.only(bottom: 8), padding: const EdgeInsets.fromLTRB(12, 11, 12, 11),
               decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: (isAuto ? AppColors.primary : AppColors.warning).withOpacity(0.2))),
+                border: Border.all(color: (isAuto ? AppColors.primary : AppColors.warning).withOpacity(0.2))),
               child: Row(children: [
                 Container(width: 28, height: 28,
                   decoration: BoxDecoration(color: (isAuto ? AppColors.primary : AppColors.warning).withOpacity(0.12), shape: BoxShape.circle),
@@ -1284,30 +1315,37 @@ class _ReviewPhase extends ConsumerWidget {
                   Text(s['title']?.toString() ?? '', style: TextStyle(color: text, fontWeight: FontWeight.w600, fontSize: 13)),
                   const SizedBox(height: 2),
                   Text(isAuto ? '🤖 AI handles this' : '👤 You do this',
-                      style: TextStyle(color: isAuto ? AppColors.primary : AppColors.warning, fontSize: 10, fontWeight: FontWeight.w600)),
+                    style: TextStyle(color: isAuto ? AppColors.primary : AppColors.warning, fontSize: 10, fontWeight: FontWeight.w600)),
                 ])),
                 Text('${s['time_minutes'] ?? 30} min', style: TextStyle(color: sub, fontSize: 11)),
-              ]),
-            );
+              ]));
           }),
           if (steps.length > 4)
             Padding(padding: const EdgeInsets.only(top: 3, bottom: 4),
               child: Text('+${steps.length - 4} more steps inside the workflow',
-                  style: const TextStyle(fontSize: 12, color: AppColors.primary))),
+                style: const TextStyle(fontSize: 12, color: AppColors.primary))),
           const SizedBox(height: 16),
         ],
+
         if (warning.isNotEmpty)
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(color: AppColors.warning.withOpacity(0.08), borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.warning.withOpacity(0.3))),
+              border: Border.all(color: AppColors.warning.withOpacity(0.3))),
             child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
               const Text('⚠️', style: TextStyle(fontSize: 14)), const SizedBox(width: 10),
               Expanded(child: Text(warning, style: TextStyle(
-                  color: isDark ? Colors.orange.shade200 : Colors.orange.shade800, fontSize: 12, height: 1.5))),
-            ]),
-          ),
+                color: isDark ? Colors.orange.shade200 : Colors.orange.shade800, fontSize: 12, height: 1.5))),
+            ])),
+
         const SizedBox(height: 20),
+
+        // ── AD: banner ad above the Create button ─────────────────────────
+        if (!adManager.isPremium)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 16),
+            child: adManager.getBannerWidget()),
+
         SizedBox(width: double.infinity,
           child: GestureDetector(
             onTap: () { HapticFeedback.mediumImpact(); notifier.createWorkflow(context); },
@@ -1316,22 +1354,20 @@ class _ReviewPhase extends ConsumerWidget {
               decoration: BoxDecoration(
                 gradient: const LinearGradient(colors: [Color(0xFF6C5CE7), Color(0xFF00CEC9)]),
                 borderRadius: BorderRadius.circular(14),
-                boxShadow: [BoxShadow(color: const Color(0xFF6C5CE7).withOpacity(0.3), blurRadius: 14, offset: const Offset(0, 5))],
-              ),
+                boxShadow: [BoxShadow(color: const Color(0xFF6C5CE7).withOpacity(0.3), blurRadius: 14, offset: const Offset(0, 5))]),
               child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
                 Icon(Iconsax.flash, color: Colors.white, size: 17), SizedBox(width: 8),
                 Text('Create This Workflow', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 15)),
               ]),
             ),
-          ),
-        ).animate().fadeIn(delay: 100.ms),
+          )).animate().fadeIn(delay: 100.ms),
+
         const SizedBox(height: 10),
         SizedBox(width: double.infinity,
           child: TextButton.icon(
             onPressed: notifier.goBack,
-            icon: Icon(Iconsax.arrow_left, color: sub, size: 13),
-            label: Text('Research a different goal', style: TextStyle(color: sub, fontSize: 13)),
-          )),
+            icon:  Icon(Iconsax.arrow_left, color: sub, size: 13),
+            label: Text('Research a different goal', style: TextStyle(color: sub, fontSize: 13)))),
         const SizedBox(height: 40),
       ]),
     );
@@ -1367,17 +1403,15 @@ class _DonePhase extends StatelessWidget {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// SHARED WIDGETS
+// SHARED
 // ═══════════════════════════════════════════════════════════════════
 
 class _SmallTag extends StatelessWidget {
-  final String label;
-  final Color  color;
+  final String label; final Color color;
   const _SmallTag(this.label, this.color);
   @override
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
     decoration: BoxDecoration(color: color.withOpacity(0.12), borderRadius: BorderRadius.circular(8)),
-    child: Text(label, style: TextStyle(fontSize: 10, color: color, fontWeight: FontWeight.w600)),
-  );
+    child: Text(label, style: TextStyle(fontSize: 10, color: color, fontWeight: FontWeight.w600)));
 }
