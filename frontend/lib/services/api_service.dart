@@ -1117,9 +1117,6 @@ class ApiService {
         data: {
           'content':     content,
           'ad_unlocked': adUnlocked,
-          // Provides the AI with full conversation memory on every call.
-          // The backend can use this directly or ignore it if it already
-          // queries DB history — sending it is always safe.
           if (contextHistory.isNotEmpty) 'context_history': contextHistory,
         },
       );
@@ -1146,13 +1143,11 @@ class ApiService {
   /// Response must include: { "conversation_id": "<uuid>" }
   Future<String> getOrCreateAIConversation() async {
     try {
-      // Prefer GET — cheap, idempotent, works when conv already exists.
       final r = await _dio.get('/messages/ai-conversation');
       final id = (r.data['conversation_id'] as String?) ?? '';
       if (id.isNotEmpty) return id;
       throw ApiException('Empty conversation_id');
     } on DioException catch (e) {
-      // 404 means the conversation doesn't exist yet — create it.
       if (e.response?.statusCode == 404) {
         try {
           final r = await _dio.post('/messages/ai-conversation', data: {});
@@ -1176,6 +1171,22 @@ class ApiService {
     try {
       final r = await _dio.post(
           '/messages/conversations/$conversationId/invite-ai', data: {});
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Remove the AI mentor from a group/DM conversation.
+  ///
+  /// Called from conversation_screen when the user taps "Remove AI".
+  /// Maps to: DELETE /messages/conversations/{id}/remove-ai
+  ///
+  /// Response shape (backend):
+  ///   { "success": true, "message": "AI removed from conversation" }
+  Future<Map<String, dynamic>> removeAIFromConversation(
+      String conversationId) async {
+    try {
+      final r = await _dio.delete(
+          '/messages/conversations/$conversationId/remove-ai');
       return r.data as Map<String, dynamic>;
     } catch (e) { throw _handleError(e); }
   }
