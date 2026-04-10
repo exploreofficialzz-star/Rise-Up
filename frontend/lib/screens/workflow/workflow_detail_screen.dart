@@ -9,6 +9,7 @@ import 'package:intl/intl.dart';
 import 'package:fl_chart/fl_chart.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
+import '../../services/ad_manager.dart';          // ← AD
 import '../../providers/locale_provider.dart';
 import '../../providers/currency_provider.dart';
 
@@ -133,6 +134,7 @@ class WorkflowDetailNotifier extends StateNotifier<WorkflowDetailState> {
 
   Future<Map<String, dynamic>> getAIAssist(String stepTitle,
       {String? userQuestion}) async {
+    adManager.recordAgentUse();                    // ← AD: track usage
     final params = <String, dynamic>{'step_title': stepTitle};
     if (userQuestion != null && userQuestion.isNotEmpty) {
       params['user_question'] = userQuestion;
@@ -217,6 +219,8 @@ class _WorkflowDetailScreenState
 
     return Scaffold(
       backgroundColor: isDark ? AppColors.bgDark : Colors.white,
+      // ── AD: sticky banner anchored to bottom ──────────────────────────
+      bottomNavigationBar: adManager.getStickyBanner(context),
       body: NestedScrollView(
         headerSliverBuilder: (_, __) => [
           _SliverAppBarHeader(
@@ -275,15 +279,33 @@ class _WorkflowDetailScreenState
               workflowId: widget.workflowId,
               steps:      state.steps,
               isDark:     isDark,
+              // ── AD: gate + interstitial wired into onRunAI ───────────
               onRunAI:    (step, question) =>
-                  notifier.getAIAssist(
-                step['title']?.toString() ?? '',
-                userQuestion: question,
-              ),
+                  _runAIWithAdGate(context, notifier, step, question),
             ),
           ],
         ),
       ),
+    );
+  }
+
+  // ── AD: check agent limit → rewarded gate → interstitial → run ──────────
+  Future<Map<String, dynamic>> _runAIWithAdGate(
+    BuildContext context,
+    WorkflowDetailNotifier notifier,
+    Map step,
+    String? question,
+  ) async {
+    if (!adManager.canUseAgent) {
+      final unlocked = await adManager.watchAdForAgentUse(context);
+      if (!unlocked) {
+        throw Exception('Watch an ad to unlock more AI uses today.');
+      }
+    }
+    await adManager.showInterstitial();
+    return notifier.getAIAssist(
+      step['title']?.toString() ?? '',
+      userQuestion: question,
     );
   }
 
@@ -361,11 +383,14 @@ class _WorkflowDetailScreenState
     }
   }
 
+  // ── AD: interstitial fires (frequency-capped) before sheet opens ─────────
   Future<void> _showAIAssist(
     BuildContext context,
     WorkflowDetailState state,
     Map step,
   ) async {
+    await adManager.showInterstitial();
+    if (!mounted) return;
     await showModalBottomSheet(
       context:           context,
       isScrollControlled: true,
@@ -812,7 +837,7 @@ class _TabBarDelegate extends SliverPersistentHeaderDelegate {
             fontWeight: FontWeight.w700, fontSize: 12),
         tabs: const [
           Tab(text: 'Steps',     icon: Icon(Iconsax.task,        size: 18)),
-          Tab(text: 'Tools',     icon: Icon(Iconsax.setting_2,   size: 18)), // ✅ FIXED: was Iconsax.setting_2
+          Tab(text: 'Tools',     icon: Icon(Iconsax.setting_2,   size: 18)),
           Tab(text: 'Revenue',   icon: Icon(Iconsax.money,       size: 18)),
           Tab(text: 'AI Assist', icon: Icon(Iconsax.cpu,         size: 18)),
         ],
@@ -873,6 +898,12 @@ class _StepsTab extends StatelessWidget {
                 onAI:     onAIAssist,
               )),
         ],
+        // ── AD: banner between To Do and Completed sections ──────────────
+        if (todoSteps.isNotEmpty && doneSteps.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: adManager.getBannerWidget(),
+          ),
         if (doneSteps.isNotEmpty) ...[
           const SizedBox(height: 24),
           _SectionTitle('Completed (${doneSteps.length})', isDark),
@@ -1185,9 +1216,16 @@ class _ToolsTab extends StatelessWidget {
                 totalRevenue: totalRevenue,
                 index:        e.key,
               )),
-          const SizedBox(height: 24),
+          const SizedBox(height: 8),
         ],
+        // ── AD: banner between free and paid tool sections ────────────────
+        if (freeTools.isNotEmpty && paidTools.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: adManager.getBannerWidget(),
+          ),
         if (paidTools.isNotEmpty) ...[
+          const SizedBox(height: 8),
           _SectionHeader(
             icon:     Iconsax.crown,
             title:    'Upgrade When Ready',
@@ -1215,7 +1253,7 @@ class _ToolsTab extends StatelessWidget {
         ],
         if (freeTools.isEmpty && paidTools.isEmpty)
           _EmptyState(
-            icon:     Iconsax.setting_2, // ✅ FIXED: was Iconsax.setting_2
+            icon:     Iconsax.setting_2,
             title:    'No tools yet',
             subtitle: 'Tools will be added as you progress',
             isDark:   isDark,
@@ -1914,6 +1952,9 @@ class _AIAssistTabState extends State<_AIAssistTab> {
   List<Map<String, dynamic>> _history = [];
 
   @override
+  void dispose() { _questionCtrl.dispose(); super.dispose(); }
+
+  @override
   Widget build(BuildContext context) {
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -1969,6 +2010,12 @@ class _AIAssistTabState extends State<_AIAssistTab> {
             ],
           ),
         ),
+
+        // ── AD: usage counter + rewarded gate ─────────────────────────────
+        if (!adManager.isPremium) ...[
+          const SizedBox(height: 12),
+          _AIUsageBanner(isDark: widget.isDark),
+        ],
 
         const SizedBox(height: 24),
 
@@ -2244,6 +2291,62 @@ class _AIAssistTabState extends State<_AIAssistTab> {
         _aiOutput = 'Error: $e';
       });
     }
+  }
+}
+
+// ── AD: daily usage banner shown inside AI tab ───────────────────────────────
+
+class _AIUsageBanner extends StatelessWidget {
+  final bool isDark;
+  const _AIUsageBanner({required this.isDark});
+
+  @override
+  Widget build(BuildContext context) {
+    final remaining = adManager.agentUsesRemaining;
+    final color     = remaining > 0 ? AppColors.primary : AppColors.error;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color:        color.withOpacity(0.06),
+        borderRadius: AppRadius.lg,
+        border:       Border.all(color: color.withOpacity(0.25))),
+      child: Row(children: [
+        Icon(remaining > 0 ? Iconsax.cpu : Iconsax.warning_2, color: color, size: 16),
+        const SizedBox(width: 10),
+        Expanded(child: Text(
+          remaining > 0
+              ? '$remaining free AI run${remaining == 1 ? "" : "s"} left today'
+              : 'Daily free AI runs used up',
+          style: TextStyle(
+            color:      isDark ? Colors.white : Colors.black87,
+            fontSize:   12,
+            fontWeight: FontWeight.w600))),
+        if (remaining == 0)
+          GestureDetector(
+            onTap: () async {
+              final unlocked = await adManager.watchAdForAgentUse(context);
+              if (unlocked && context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                  content:         Text('✅ AI use unlocked!'),
+                  backgroundColor: AppColors.success));
+              }
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color:        AppColors.warning.withOpacity(0.15),
+                borderRadius: AppRadius.pill,
+                border:       Border.all(color: AppColors.warning.withOpacity(0.4))),
+              child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Iconsax.play_circle, color: AppColors.warning, size: 12),
+                SizedBox(width: 4),
+                Text('Watch Ad', style: TextStyle(
+                  color: AppColors.warning, fontSize: 10, fontWeight: FontWeight.w700)),
+              ])),
+          ),
+      ]),
+    );
   }
 }
 
