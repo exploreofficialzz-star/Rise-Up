@@ -1,18 +1,12 @@
 // ignore_for_file: deprecated_member_use
 // frontend/lib/screens/messages/conversation_screen.dart
-// Production v13 — Quota v3 · Scroll-lock · Smart copy · In-app links · Dedup · DM isolation · Invite AI fix
+// Production v14 — 403 auto-retry · AI toggle-off
 //
-// Changes vs v12:
-//  • QUOTA v3: 2 ads per cycle → 3 messages; after 30 ad-messages → 4hr lockout → reset
-//  • SCROLL LOCK: while AI is typing the list is NeverScrollable (no jitter/hang)
-//  • SMART COPY: detects code blocks, URLs, lists, articles, contact info per message
-//  • IN-APP LINKS: MarkdownBody onTapLink opens url_launcher inAppBrowserView
-//  • DEDUP FIX: fingerprint (role+content hash) prevents greeting / poll duplicates;
-//               greeting no longer calls sendAIMessageInDM (primary dupe source)
-//  • DM ISOLATION: poll skips AI sender_type messages when !_aiJoined
-//  • AI CONV VALIDATION: clears cached AI conv ID if no AI messages found (>5 msgs)
-//  • INVITE AI: retry action on error, poll-time advanced after join message
-//  • _lastPollTime advanced immediately after greeting so greeting never polled back
+// Changes vs v13:
+//  • FIX 403: on ApiException(403) clear cached _aiConvId, get/create fresh conv, retry once
+//  • FIX AI TOGGLE: "AI Active" chip is now tappable; calls _removeAI() which hits
+//    api.removeAIFromConversation and resets _aiJoined → false so the "Invite AI"
+//    button reappears and the user can re-invite if they want.
 
 import 'dart:async';
 import 'dart:convert';
@@ -35,15 +29,15 @@ import '../../services/api_service.dart';
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
-const int _kFreeMessages   = 3;   // initial free AI messages
-const int _kAdsPerCycle    = 2;   // ads user must watch per unlock cycle
-const int _kMsgsPerCycle   = 3;   // AI messages unlocked per cycle
-const int _kMaxAdMessages  = 30;  // cap before 4-hour lockout
+const int _kFreeMessages   = 3;
+const int _kAdsPerCycle    = 2;
+const int _kMsgsPerCycle   = 3;
+const int _kMaxAdMessages  = 30;
 const Duration _kLockoutDur = Duration(hours: 4);
 
 const String _kQuotaPrefsKey  = 'riseup_ai_quota_v3';
 const String _kAiConvIdKey    = 'riseup_ai_conv_id_v2';
-const String _kGreetedPrefix  = 'riseup_ai_greeted_v2_'; // bumped to clear old flags
+const String _kGreetedPrefix  = 'riseup_ai_greeted_v2_';
 const String _kPollTimePrefix = 'riseup_poll_time_v1_';
 
 const int _kContextWindow   = 50;
@@ -78,7 +72,6 @@ class _Msg {
         isTyping    = false,
         time        = time ?? DateTime.now();
 
-  /// Role-prefixed content hash for dedup across optimistic↔server transitions.
   String get fingerprint => '${isMe ? "u" : "a"}:${content.trim().hashCode}';
 }
 
@@ -88,7 +81,7 @@ enum _QuotaResult { allowed, showAdGate, hardLockout }
 // ConversationScreen widget
 // ─────────────────────────────────────────────────────────────────────────────
 class ConversationScreen extends StatefulWidget {
-  final String userId;   // DM conversation UUID, or 'ai' for AI-only
+  final String userId;
   final String name;
   final String avatar;
   final bool   isAI;
@@ -119,9 +112,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
   bool _dmSending        = false;
   bool _aiJoined         = false;
   bool _convInitializing = false;
-  bool _scrollLocked     = false; // true while AI message is typing
+  bool _scrollLocked     = false;
   bool _loadingMore      = false;
   bool _hasMoreHistory   = true;
+  bool _removingAI       = false;   // ← NEW: true while remove-AI request is in flight
 
   String? _aiConvId;
   String? _lastPollTime;
@@ -131,14 +125,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Timer? _typingTimer;
   Timer? _pollTimer;
 
-  // ── Quota state ────────────────────────────────────────────────────────────
-  // Persisted in SharedPrefs under _kQuotaPrefsKey.
-  //   free_used     – messages consumed from the 3-free allocation
-  //   cycle_ads     – ads watched in current cycle (0 → _kAdsPerCycle)
-  //   cycle_msgs    – ad-messages sent in current cycle (0 → _kMsgsPerCycle)
-  //   total_ad_msgs – lifetime ad-message count (resets after lockout clears)
-  //   lockout_until – ISO-8601 string; null = not locked
-  //   is_premium    – boolean
   Map<String, dynamic> _quota = {
     'free_used'    : 0,
     'cycle_ads'    : 0,
@@ -148,7 +134,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
     'is_premium'   : false,
   };
 
-  // ── Computed quota helpers ─────────────────────────────────────────────────
   bool get _isAIMode    => widget.isAI || widget.userId == 'ai';
   bool get _isSending   => _aiResponding || _dmSending;
   String? get _activeConvId => _isAIMode ? _aiConvId : widget.userId;
@@ -159,14 +144,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
   int  get _cycleMsgs    => (_quota['cycle_msgs']    as int?) ?? 0;
   int  get _totalAdMsgs  => (_quota['total_ad_msgs'] as int?) ?? 0;
 
-  /// Returns true if a 4-hour lockout is active. Auto-resets when it expires.
   bool get _inLockout {
     final exp = _quota['lockout_until'] as String?;
     if (exp == null) return false;
     final dt = DateTime.tryParse(exp);
     if (dt == null) return false;
     if (DateTime.now().isAfter(dt)) {
-      // Lockout expired — reset all ad counters so user can watch ads again
       _quota['lockout_until']  = null;
       _quota['total_ad_msgs']  = 0;
       _quota['cycle_ads']      = 0;
@@ -177,7 +160,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
     return true;
   }
 
-  /// True when the user has completed the 2-ad cycle and still has messages left.
   bool get _cycleActive =>
       _cycleAds >= _kAdsPerCycle && _cycleMsgs < _kMsgsPerCycle;
 
@@ -239,7 +221,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Quota — load / save / check
+  // Quota
   // ─────────────────────────────────────────────────────────────────────────
   Future<void> _loadQuota() async {
     try {
@@ -258,7 +240,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
         }
       }
     } catch (_) {}
-    // Sync premium status from remote
     try {
       final remote = await api.getAIQuota();
       if (mounted) {
@@ -292,7 +273,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
     return _QuotaResult.showAdGate;
   }
 
-  /// Consume one ad-unlocked message slot; triggers lockout if 30 cap reached.
   Future<void> _consumeAdMessage() async {
     final newCycleMsgs   = _cycleMsgs + 1;
     final newTotalAdMsgs = _totalAdMsgs + 1;
@@ -343,7 +323,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // History — initial load
+  // History
   // ─────────────────────────────────────────────────────────────────────────
   Future<void> _loadHistory() async {
     if (_historyLoaded) return;
@@ -400,9 +380,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (!mounted) return;
 
       if (msgs.isNotEmpty) {
-        // ── AI conversation validation ────────────────────────────────────
-        // If we have more than 5 messages but none are from an AI sender,
-        // the cached conv ID is probably a user DM — reset and create fresh.
         final hasAIMsg = msgs.any((m) {
           final st = (m['sender_type'] as String?) ?? '';
           return st == 'ai' || st == 'system';
@@ -414,7 +391,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
           _aiConvId = null;
           final ok = await _ensureAIConv();
           if (!ok || !mounted) return;
-          // Retry with the fresh conversation
           final fresh = await api.getDMMessages(_aiConvId!, limit: _kHistoryPageSize);
           if (!mounted) return;
           if (fresh.isEmpty) {
@@ -430,7 +406,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
           }
           return;
         }
-        // ── Normal load ───────────────────────────────────────────────────
         setState(() {
           _msgs.clear();
           for (final m in msgs) _msgs.add(_msgFromMap(m, myId: _cachedMyId));
@@ -467,12 +442,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Future<void> _loadMoreHistory() async {
     if (_loadingMore || !_hasMoreHistory || _msgs.isEmpty) return;
     if (mounted) setState(() => _loadingMore = true);
-    // Backend load-more (offset/before) not yet implemented — disable gracefully
     if (mounted) setState(() { _hasMoreHistory = false; _loadingMore = false; });
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // First-time greeting — LOCAL ONLY (no backend call → no dupe)
+  // First-time greeting
   // ─────────────────────────────────────────────────────────────────────────
   Future<void> _maybeShowFirstTimeGreeting() async {
     if (_aiConvId == null) return;
@@ -482,7 +456,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
       final alreadyDone = prefs.getBool(greetKey) ?? false;
       if (alreadyDone) return;
 
-      // Save flag FIRST to prevent double-greeting on fast re-entry
       await prefs.setBool(greetKey, true);
 
       final firstName = _cachedMyName?.split(' ').first ?? 'there';
@@ -505,7 +478,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
         _typeMessage(greetMsg);
       }
 
-      // Advance poll time so this greeting is never fetched back from the server
       await _savePollTime(DateTime.now().toUtc().toIso8601String());
     } catch (e) {
       debugPrint('[Conv] greeting error: $e');
@@ -564,7 +536,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Polling — guarded + DM AI-message isolation
+  // Polling
   // ─────────────────────────────────────────────────────────────────────────
   void _startPolling() {
     _pollTimer?.cancel();
@@ -594,16 +566,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
           final isAIMsg    = senderType == 'ai' || senderType == 'system';
           final isMe       = !isAIMsg && myId != null && senderId == myId;
 
-          // ── DM ISOLATION: skip AI messages unless AI was explicitly invited ──
           if (!_isAIMode && isAIMsg && !_aiJoined) continue;
 
           if (id.isEmpty || existingIds.contains(id)) continue;
 
-          // Fingerprint dedup: prevents greeting / AI responses from appearing twice
           final fp = '${isMe ? "u" : "a"}:${content.trim().hashCode}';
           if (fingerprints.contains(fp)) continue;
 
-          // For our own messages: replace optimistic bubble if content matches
           if (isMe) {
             final optIdx = _msgs.indexWhere(
               (msg) => msg.id.startsWith('local_') && msg.isMe && msg.content == content,
@@ -668,11 +637,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
     await _sendAI(text, adUnlocked: false, viaAIDM: viaAIDM);
   }
 
+  // ─── FIX 1: 403 handling ─────────────────────────────────────────────────
+  // Added [_retried] parameter (default false). On a 403 we clear the cached
+  // conv ID, create a fresh conversation, then call ourselves exactly once
+  // more (retried: true) so we can never loop infinitely.
   Future<void> _sendAI(
     String text, {
     bool adUnlocked       = false,
     bool viaAIDM          = false,
     bool isContextMessage = false,
+    bool _retried         = false,   // ← NEW
   }) async {
     String? convId = viaAIDM ? widget.userId : _aiConvId;
 
@@ -715,10 +689,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
       final aiContent = (res['content'] ?? '').toString().trim();
       if (aiContent.isEmpty) throw Exception('Empty AI response');
 
-      // Advance poll time so this response isn't re-delivered by the next poll
       await _savePollTime(DateTime.now().toUtc().toIso8601String());
 
-      // Update quota counts
       if (res['quota'] != null) {
         final q = res['quota'] as Map;
         setState(() {
@@ -737,7 +709,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
       if (!mounted) return;
 
-      // Replace optimistic user bubble with confirmed server ID
       final realUserMsgId = res['user_message_id']?.toString();
       if (realUserMsgId != null && realUserMsgId.isNotEmpty) {
         final idx = _msgs.indexWhere((m) => m.id == optimisticId);
@@ -762,16 +733,50 @@ class _ConversationScreenState extends State<ConversationScreen> {
         _msgs.add(aiMsg);
       });
       _typeMessage(aiMsg);
+
     } on ApiException catch (e) {
       if (!mounted) return;
-      setState(() => _aiResponding = false);
-      if      (e.statusCode == 402) await _showAdGate(text, viaAIDM: viaAIDM);
-      else if (e.statusCode == 429) _showLockoutSheet();
-      else _addErrorBubble('Failed to get AI response (${e.statusCode}). Please try again.');
+      setState(() {
+        _aiResponding = false;
+        // Remove the optimistic bubble so the user's text doesn't appear
+        // as sent when the request actually failed.
+        _msgs.removeWhere((m) => m.id == optimisticId);
+      });
+
+      if (e.statusCode == 402) {
+        await _showAdGate(text, viaAIDM: viaAIDM);
+      } else if (e.statusCode == 429) {
+        _showLockoutSheet();
+      } else if (e.statusCode == 403 && !_retried) {
+        // ── FIX: stale / invalid conv ID ────────────────────────────────
+        // Clear the cache, create a fresh conversation, then retry once.
+        debugPrint('[Conv] 403 — resetting AI conv and retrying once');
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove(_kAiConvIdKey);
+        _aiConvId = null;
+        final ok = await _ensureAIConv();
+        if (ok && mounted) {
+          await _sendAI(
+            text,
+            adUnlocked      : adUnlocked,
+            viaAIDM         : viaAIDM,
+            isContextMessage: isContextMessage,
+            _retried        : true,   // prevent infinite loop
+          );
+        } else {
+          _addErrorBubble('Could not connect to AI. Please try again.');
+        }
+      } else {
+        _addErrorBubble('Failed to get AI response (${e.statusCode}). Please try again.');
+      }
+
     } catch (e) {
       if (!mounted) return;
       debugPrint('[Conv] _sendAI error: $e');
-      setState(() => _aiResponding = false);
+      setState(() {
+        _aiResponding = false;
+        _msgs.removeWhere((m) => m.id == optimisticId);
+      });
       _addErrorBubble('Could not reach AI right now. Please try again.');
     }
   }
@@ -841,7 +846,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Invite AI — with retry on error
+  // Invite AI
   // ─────────────────────────────────────────────────────────────────────────
   void _inviteAI() {
     if (widget.userId.isEmpty || _isAIMode || _aiJoined || _convInitializing) return;
@@ -870,7 +875,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
         _msgs.add(joinMsg);
       });
       _scrollDown();
-      // Advance poll time so join message isn't duplicated by next poll
       await _savePollTime(DateTime.now().toUtc().toIso8601String());
     } catch (e) {
       debugPrint('[Conv] _doInviteAI error: $e');
@@ -896,15 +900,90 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
   }
 
+  // ─── FIX 2: Remove AI from DM conversation ───────────────────────────────
+  // Tapping the "AI Active" chip calls this. It asks the API to remove the AI
+  // participant, then resets _aiJoined so the "Invite AI" button reappears.
+  Future<void> _removeAI() async {
+    if (_removingAI || !_aiJoined || widget.userId.isEmpty || _isAIMode) return;
+    HapticFeedback.lightImpact();
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        final isDark = Theme.of(ctx).brightness == Brightness.dark;
+        return AlertDialog(
+          backgroundColor: isDark ? AppColors.bgCard : Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Text('Remove AI?',
+              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 17)),
+          content: const Text(
+            'RiseUp AI will leave this conversation. '
+            'You can re-invite it at any time.',
+            style: TextStyle(fontSize: 14, height: 1.5),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Remove',
+                  style: TextStyle(color: AppColors.error,
+                      fontWeight: FontWeight.w600)),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _removingAI = true);
+
+    try {
+      await api.removeAIFromConversation(widget.userId);
+    } catch (e) {
+      // Even if the backend call fails we flip the flag locally — the AI
+      // won't respond anyway once _aiJoined is false, and the user can
+      // re-invite if needed.
+      debugPrint('[Conv] _removeAI backend error (ignoring): $e');
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _aiJoined   = false;
+      _removingAI = false;
+    });
+
+    // Add a local notice so the chat shows the AI left
+    final leaveMsg = _Msg(
+      content: '🤖 **RiseUp AI has left the conversation.**\n\n'
+               'Tap **Invite AI** in the toolbar to bring it back.',
+      sender : 'RiseUp AI',
+      avatar : '🤖',
+      isMe   : false,
+      isAI   : true,
+    );
+    setState(() => _msgs.add(leaveMsg));
+    _scrollDown();
+    await _savePollTime(DateTime.now().toUtc().toIso8601String());
+
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text('AI removed from conversation'),
+      duration: Duration(seconds: 2),
+      behavior: SnackBarBehavior.floating,
+    ));
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
-  // Typing animation — locks scroll while AI is typing
+  // Typing animation
   // ─────────────────────────────────────────────────────────────────────────
   void _typeMessage(_Msg msg) {
     msg.isTyping    = true;
     msg.displayText = '';
     int i = 0;
 
-    // Lock scroll so the view stays at the bottom, no jitter
     if (mounted) setState(() => _scrollLocked = true);
 
     _typingTimer?.cancel();
@@ -917,7 +996,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           setState(() {
             msg.isTyping    = false;
             msg.displayText = msg.content;
-            _scrollLocked   = false; // release scroll lock when done
+            _scrollLocked   = false;
           });
         }
         return;
@@ -959,7 +1038,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Smart copy / clipboard
+  // Smart copy
   // ─────────────────────────────────────────────────────────────────────────
   void _copyToClipboard(String text, {String label = 'Copied'}) {
     Clipboard.setData(ClipboardData(text: text));
@@ -972,12 +1051,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
     ));
   }
 
-  /// Detects content sections in a message (code, links, lists, articles, contacts).
   List<Map<String, dynamic>> _detectSections(_Msg m) {
     final sections = <Map<String, dynamic>>[];
     final content  = m.content;
 
-    // ── Code blocks ────────────────────────────────────────────────────────
     final codeMatches = RegExp(r'```(\w*)\n?([\s\S]*?)```').allMatches(content);
     for (final match in codeMatches) {
       final lang = match.group(1)?.trim() ?? '';
@@ -992,7 +1069,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
       }
     }
 
-    // ── Links (open in-app) ───────────────────────────────────────────────
     final urls = RegExp(r'https?://[^\s\]\)>"]+', caseSensitive: false)
         .allMatches(content);
     for (final u in urls) {
@@ -1004,7 +1080,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
       });
     }
 
-    // ── Numbered or bulleted list ─────────────────────────────────────────
     if (RegExp(r'^\d+\.\s', multiLine: true).hasMatch(content) ||
         RegExp(r'^[-•*]\s',  multiLine: true).hasMatch(content)) {
       sections.add({
@@ -1015,7 +1090,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
       });
     }
 
-    // ── Long article / post (>300 chars, no code) ─────────────────────────
     if (content.length > 300 && codeMatches.isEmpty) {
       sections.add({
         'icon' : Icons.article_rounded,
@@ -1025,7 +1099,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
       });
     }
 
-    // ── Contact info ──────────────────────────────────────────────────────
     if (RegExp(r'[\w.]+@[\w.]+\.\w+').hasMatch(content) ||
         RegExp(r'\+?\d[\d\s\-\(\)]{7,}').hasMatch(content)) {
       sections.add({
@@ -1066,13 +1139,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       borderRadius: BorderRadius.circular(2))),
               const SizedBox(height: 4),
 
-              // Always available: copy full message
               _menuItem(Icons.copy_rounded, 'Copy message', text, () {
                 Navigator.pop(ctx);
                 _copyToClipboard(m.content, label: 'Message copied');
               }),
 
-              // Smart detected sections
               for (final s in sections)
                 if (s['type'] == 'link')
                   _menuItem(s['icon'] as IconData, s['label'] as String, text, () {
@@ -1085,7 +1156,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
                     _copyToClipboard(s['text'] as String, label: s['label'] as String);
                   }),
 
-              // Select-text hint
               _menuItem(Icons.select_all_rounded, 'Select text', text, () {
                 Navigator.pop(ctx);
                 ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(
@@ -1095,7 +1165,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 ));
               }),
 
-              // Share insight (AI messages only)
               if (!m.isMe && m.isAI)
                 _menuItem(Icons.share_rounded, 'Share insight', text, () {
                   Navigator.pop(ctx);
@@ -1123,7 +1192,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Ad gate — multi-step (2 ads per cycle)
+  // Ad gate
   // ─────────────────────────────────────────────────────────────────────────
   Future<void> _showAdGate(String pendingText, {bool viaAIDM = false}) async {
     final success = await showModalBottomSheet<bool>(
@@ -1206,7 +1275,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
               ? _buildEmptyState(isDark, subColor, textColor)
               : ListView.builder(
                   controller: _scroll,
-                  // Prevents jitter/hanging while AI is typing
                   physics: _scrollLocked
                       ? const NeverScrollableScrollPhysics()
                       : const AlwaysScrollableScrollPhysics(),
@@ -1239,7 +1307,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // AppBar
+  // AppBar  ← FIX 2: "AI Active" chip is now tappable to remove AI
   // ─────────────────────────────────────────────────────────────────────────
   PreferredSizeWidget _buildAppBar(
       bool isDark, Color card, Color border, Color text, Color sub) {
@@ -1321,6 +1389,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         ),
       ]),
       actions: [
+        // ── Invite AI button (shown when AI not yet joined) ──────────────
         if (!_isAIMode && !_aiJoined)
           Padding(
             padding: const EdgeInsets.only(right: 6, top: 8, bottom: 8),
@@ -1347,16 +1416,40 @@ class _ConversationScreenState extends State<ConversationScreen> {
               ),
             ),
           ),
-        if (_aiJoined)
-          const Padding(
-            padding: EdgeInsets.only(right: 12),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(Icons.auto_awesome, color: AppColors.success, size: 13),
-              SizedBox(width: 4),
-              Text('AI Active', style: TextStyle(
-                  color: AppColors.success, fontSize: 11, fontWeight: FontWeight.w600)),
-            ]),
+
+        // ── "AI Active" chip — now tappable to REMOVE AI ─────────────────
+        if (!_isAIMode && _aiJoined)
+          Padding(
+            padding: const EdgeInsets.only(right: 6, top: 8, bottom: 8),
+            child: GestureDetector(
+              onTap: _removingAI ? null : _removeAI,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: AppColors.success.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: AppColors.success.withOpacity(0.4)),
+                ),
+                child: _removingAI
+                    ? const SizedBox(width: 16, height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: AppColors.success))
+                    : Row(mainAxisSize: MainAxisSize.min, children: const [
+                        Icon(Icons.auto_awesome,
+                            color: AppColors.success, size: 13),
+                        SizedBox(width: 4),
+                        Text('AI Active',
+                            style: TextStyle(
+                                color: AppColors.success, fontSize: 11,
+                                fontWeight: FontWeight.w600)),
+                        SizedBox(width: 4),
+                        Icon(Icons.close_rounded,
+                            color: AppColors.success, size: 12),
+                      ]),
+              ),
+            ),
           ),
+
         IconButton(
           icon: Icon(Iconsax.call, color: text, size: 20),
           onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -1457,7 +1550,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Message bubble — with smart copy + in-app link tap
+  // Message bubble
   // ─────────────────────────────────────────────────────────────────────────
   Widget _buildBubble(_Msg m, bool isDark, Color textColor, Color surfColor) {
     final aiBg    = isDark ? const Color(0xFF1A1A2E) : Colors.grey.shade100;
@@ -1550,7 +1643,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
                                   ))
                               : MarkdownBody(
                                   data: m.displayText,
-                                  // ── In-app link opening ─────────────────
                                   onTapLink: (text, href, title) {
                                     if (href != null && href.isNotEmpty) {
                                       _openLink(href);
@@ -1776,7 +1868,7 @@ class _AIJoinedBanner extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// _QuotaRibbon — updated for v3 quota model
+// _QuotaRibbon
 // ─────────────────────────────────────────────────────────────────────────────
 class _QuotaRibbon extends StatefulWidget {
   final bool isPremium, inLockout;
@@ -1833,14 +1925,12 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
   Widget build(BuildContext context) {
     if (widget.isPremium) return const SizedBox.shrink();
 
-    // Lockout active
     if (widget.inLockout) {
       return _ribbon(Icons.lock_rounded, AppColors.error,
           'AI locked${_countdown.isNotEmpty ? ' · resets in $_countdown' : ''}',
           AppColors.error.withOpacity(0.08));
     }
 
-    // Free messages remaining
     final freeLeft = widget.freeTotal - widget.freeUsed;
     if (freeLeft > 0) {
       return _ribbon(Icons.chat_bubble_outline_rounded, AppColors.primary,
@@ -1848,7 +1938,6 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
           AppColors.primary.withOpacity(0.06));
     }
 
-    // Active cycle: show remaining messages in cycle
     if (widget.cycleAds >= widget.adsPerCycle) {
       final left = widget.msgsPerCycle - widget.cycleMsgs;
       return _ribbon(Icons.lock_open_rounded, AppColors.success,
@@ -1883,15 +1972,15 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// _AdGateSheet — handles the 2-ad cycle internally
+// _AdGateSheet
 // ─────────────────────────────────────────────────────────────────────────────
 class _AdGateSheet extends StatefulWidget {
-  final int cycleAdsWatched; // ads already watched before this gate opened
+  final int cycleAdsWatched;
   final int adsPerCycle;
   final int msgsPerCycle;
   final int totalAdMsgs;
   final int maxAdMsgs;
-  final Future<void> Function() onAdWatched; // parent increments cycle_ads
+  final Future<void> Function() onAdWatched;
 
   const _AdGateSheet({
     required this.cycleAdsWatched,
@@ -1974,7 +2063,6 @@ class _AdGateSheetState extends State<_AdGateSheet> {
                 borderRadius: BorderRadius.circular(2))),
         const SizedBox(height: 24),
 
-        // Icon / success animation
         AnimatedSwitcher(
           duration: const Duration(milliseconds: 300),
           child: _success
@@ -2010,7 +2098,6 @@ class _AdGateSheetState extends State<_AdGateSheet> {
             style: TextStyle(fontSize: 11, color: sub),
           ),
           const SizedBox(height: 8),
-          // Progress dots
           Row(mainAxisAlignment: MainAxisAlignment.center, children: [
             for (int i = 0; i < widget.adsPerCycle; i++) ...[
               AnimatedContainer(
@@ -2098,7 +2185,7 @@ class _AdGateSheetState extends State<_AdGateSheet> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// _LockoutSheet — replaces _DailyLimitSheet; shows 4-hr lockout countdown
+// _LockoutSheet
 // ─────────────────────────────────────────────────────────────────────────────
 class _LockoutSheet extends StatefulWidget {
   final String lockoutUntil;
