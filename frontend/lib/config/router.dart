@@ -1,10 +1,21 @@
 // frontend/lib/config/router.dart
-// v4.0 — APEX v7 handoff params + Methods Brain + Marketplace + all original routes
+// v5.0 — Facebook-style persistent auth guard
+//
+// Changes vs v4.0:
+//  • refreshListenable: authService
+//    GoRouter re-evaluates the redirect callback whenever authService
+//    calls notifyListeners() (on login, logout, or 401 failure).
+//  • redirect callback:
+//    - unauthenticated + protected route → /login (instant, no more auth errors)
+//    - authenticated + /login or /register → /home (skip login if already in)
+//    - /splash is always allowed (it controls its own navigation timer)
+//  • Web no longer hard-codes /login as initialLocation — it checks auth too.
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../config/app_constants.dart';
+import '../services/auth_service.dart'; // ← NEW
 import '../screens/auth/splash_screen.dart';
 import '../screens/auth/login_screen.dart';
 import '../screens/auth/register_screen.dart';
@@ -59,10 +70,60 @@ import '../screens/methods/methods_brain_screen.dart';
 import '../screens/marketplace/marketplace_screen.dart';
 import '../main_shell.dart';
 
+// Routes that don't require authentication
+const _publicRoutes = {
+  '/splash',
+  '/login',
+  '/register',
+  '/forgot-password',
+  '/privacy',
+  '/terms',
+  '/onboarding',
+};
+
+bool _isPublic(String location) =>
+    _publicRoutes.contains(location) ||
+    location.startsWith('/verify-email');
+
 final router = GoRouter(
-  initialLocation: kIsWeb ? '/login' : '/splash',
+  // FIX: Both mobile AND web start at splash so auth status is checked.
+  // Previously web always went to /login, even for logged-in users.
+  initialLocation: '/splash',
+
+  // FIX: authService is a ChangeNotifier.
+  // Every time auth status changes (login / logout / 401-failure),
+  // GoRouter automatically re-runs the redirect callback below.
+  refreshListenable: authService,
+
+  // FIX: Global auth guard — runs on every navigation.
+  redirect: (context, state) {
+    final location = state.matchedLocation;
+    final status   = authService.status;
+
+    // While status is still being determined (very brief, <5ms on device)
+    // let /splash handle it — do not redirect yet.
+    if (status == AuthStatus.unknown) {
+      return location == '/splash' ? null : '/splash';
+    }
+
+    // User is not logged in and trying to reach a protected route → /login
+    if (status == AuthStatus.unauthenticated && !_isPublic(location)) {
+      return '/login';
+    }
+
+    // User IS logged in and navigates to login/register → skip to home
+    if (status == AuthStatus.authenticated &&
+        (location == '/login' || location == '/register')) {
+      return '/home';
+    }
+
+    // No redirect needed
+    return null;
+  },
+
   errorBuilder: (context, state) =>
       _ErrorPage(error: state.error?.toString()),
+
   routes: [
     // ── Public ────────────────────────────────────────────────────
     GoRoute(path: '/splash',          builder: (_, __) => const SplashScreen()),
@@ -107,7 +168,6 @@ final router = GoRouter(
     ShellRoute(
       builder: (context, state, child) => MainShell(child: child),
       routes: [
-        // Core nav
         GoRoute(path: '/home',      builder: (_, __) => const HomeScreen()),
         GoRoute(path: '/dashboard', builder: (_, __) => const DashboardScreen()),
         GoRoute(path: '/explore',   builder: (_, __) => const ExploreScreen()),
@@ -115,7 +175,6 @@ final router = GoRouter(
         GoRoute(path: '/messages',  builder: (_, __) => const MessagesScreen()),
         GoRoute(path: '/profile',   builder: (_, __) => const ProfileScreen()),
 
-        // Profile / social
         GoRoute(
           path: '/user-profile/:id',
           builder: (_, s) => UserProfileScreen(userId: s.pathParameters['id']!),
@@ -149,7 +208,6 @@ final router = GoRouter(
         ),
         GoRoute(path: '/create-status', builder: (_, __) => const CreateStatusScreen()),
 
-        // Income tools
         GoRoute(path: '/tasks',    builder: (_, __) => const TasksScreen()),
         GoRoute(path: '/skills',   builder: (_, __) => const SkillsScreen()),
         GoRoute(
@@ -171,7 +229,6 @@ final router = GoRouter(
         GoRoute(path: '/memory',       builder: (_, __) => const IncomeMemoryScreen()),
         GoRoute(path: '/collaboration',builder: (_, __) => const CollaborationScreen()),
 
-        // Workflow Engine
         GoRoute(path: '/workflow',     builder: (_, __) => const WorkflowHubScreen()),
         GoRoute(path: '/workflow/new', builder: (_, __) => const WorkflowResearchScreen()),
         GoRoute(
@@ -179,19 +236,15 @@ final router = GoRouter(
           builder: (_, s) => WorkflowDetailScreen(workflowId: s.pathParameters['id']!),
         ),
 
-        // ── APEX Agentic AI — v7.0 handoff support ─────────────────
         GoRoute(
           path: '/agent',
           builder: (_, s) {
-            // Support both query params (direct nav) and extra (handoff from Mentor)
             final extra = s.extra as Map<String, dynamic>? ?? {};
             return AgentScreen(
-              // Original params
               workflowId: s.uri.queryParameters['workflowId']
                   ?? extra['workflowId']?.toString(),
               sessionId: s.uri.queryParameters['sessionId']
                   ?? extra['sessionId']?.toString(),
-              // v7.0 handoff params (passed via context.push('/agent', extra: {...}))
               handoffTask:      extra['handoffTask']?.toString(),
               handoffSessionId: extra['handoffSessionId']?.toString(),
               handoffTemplate:  extra['handoffTemplate'] as Map<String, dynamic>?,
@@ -201,10 +254,7 @@ final router = GoRouter(
           },
         ),
 
-        // Market Pulse
-        GoRoute(path: '/pulse', builder: (_, __) => const MarketPulseScreen()),
-
-        // Methods Brain & Marketplace
+        GoRoute(path: '/pulse',       builder: (_, __) => const MarketPulseScreen()),
         GoRoute(path: '/methods',     builder: (_, __) => const MethodsBrainScreen()),
         GoRoute(path: '/marketplace', builder: (_, __) => const MarketplaceScreen()),
       ],
@@ -232,7 +282,8 @@ class _ErrorPage extends StatelessWidget {
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             if (error != null) ...[
               const SizedBox(height: 8),
-              Text(error!, style: const TextStyle(color: Colors.grey, fontSize: 12)),
+              Text(error!,
+                  style: const TextStyle(color: Colors.grey, fontSize: 12)),
             ],
             const SizedBox(height: 24),
             ElevatedButton(
