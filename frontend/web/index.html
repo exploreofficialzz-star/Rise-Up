@@ -30,7 +30,6 @@
 
     html, body {
       height: 100%;
-      /* Match Flutter splash background so there's zero flash */
       background-color: #000000;
       overflow: hidden;
     }
@@ -39,35 +38,128 @@
       z-index: 10 !important;
     }
 
-    /* Loading div is invisible — Flutter splash_screen.dart owns the UI.
-       We keep the div in the DOM only because flutter_bootstrap.js expects
-       it to exist; it is removed the instant Flutter's first frame fires. */
+    /* ── Loading screen — mirrors splash_screen.dart exactly ── */
     #loading {
-      display: none;
+      position: fixed;
+      inset: 0;
+      background: #000000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      padding-top: 28vh;
+      z-index: 9999;
+      transition: opacity 0.3s ease;
+    }
+    #loading.hide {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* Logo — same 130×130 as Image.asset in splash_screen.dart */
+    #loading img {
+      width: 130px;
+      height: 130px;
+      object-fit: contain;
+    }
+
+    /* "RiseUp" — same font size, weight, gradient, letter-spacing as dart */
+    #loading h1 {
+      margin-top: -12px; /* mirrors Transform.translate(offset: Offset(0, -12)) */
+      font-size: 48px;
+      font-weight: 900;
+      letter-spacing: -1px;
+      line-height: 1;
+      background: linear-gradient(90deg, #FF6B00 0%, #FFD700 40%, #6C5CE7 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+
+    /* ── Bouncing dots — mirrors _Dot widget ── */
+    #dots {
+      position: fixed;
+      bottom: 100px;
+      left: 0;
+      right: 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 10px;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      animation: bounce 1.2s ease-in-out infinite;
+    }
+    .dot:nth-child(1) { background: #FF9AA2; box-shadow: 0 0 6px rgba(255,154,162,0.5); animation-delay: 0s; }
+    .dot:nth-child(2) { background: #81ECEC; box-shadow: 0 0 6px rgba(129,236,236,0.5); animation-delay: 0.24s; }
+    .dot:nth-child(3) { background: #FFD700; box-shadow: 0 0 6px rgba(255,215,0,0.5);   animation-delay: 0.48s; }
+    .dot:nth-child(4) { background: #74B9FF; box-shadow: 0 0 6px rgba(116,185,255,0.5); animation-delay: 0.72s; }
+
+    @keyframes bounce {
+      0%, 100% { transform: scale(0.7); }
+      50%       { transform: scale(1.3); }
+    }
+
+    /* "By chAs" footer — mirrors Positioned(bottom:40) text in dart */
+    #brand {
+      position: fixed;
+      bottom: 40px;
+      left: 0;
+      right: 0;
+      text-align: center;
+      color: rgba(255,255,255,0.3);
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 1px;
+      font-family: system-ui, -apple-system, sans-serif;
     }
   </style>
 </head>
 <body>
 
-  <!-- Intentionally invisible — Flutter splash_screen.dart is the splash for
-       both mobile AND web. This div is kept solely so flutter_bootstrap.js
-       has something to hand off from. -->
-  <div id="loading"></div>
+  <div id="loading">
+    <img src="assets/assets/images/riseup_logo.png"
+         onerror="this.style.display='none'; document.getElementById('fallback-icon').style.display='block'"
+         alt="RiseUp">
+    <!-- Fallback if asset path not available on web -->
+    <span id="fallback-icon" style="display:none; font-size:100px; line-height:1;">📈</span>
+    <h1>RiseUp</h1>
+  </div>
+
+  <div id="dots">
+    <div class="dot"></div>
+    <div class="dot"></div>
+    <div class="dot"></div>
+    <div class="dot"></div>
+  </div>
+
+  <span id="brand">By chAs</span>
 
   <script>
-    // Remove the placeholder the moment Flutter renders its first frame
+    // Hide the HTML splash the instant Flutter renders its first frame
+    // (Flutter's own splash_screen.dart takes over from here)
     window.addEventListener('flutter-first-frame', function () {
-      var el = document.getElementById('loading');
-      if (el) el.remove();
+      var loading  = document.getElementById('loading');
+      var dots     = document.getElementById('dots');
+      var brand    = document.getElementById('brand');
+      if (loading) { loading.classList.add('hide'); setTimeout(function(){ loading.remove(); }, 350); }
+      if (dots)    { dots.remove(); }
+      if (brand)   { brand.remove(); }
     });
 
-    // Safety fallback — remove after 10s no matter what
+    // Safety fallback — remove after 10s
     setTimeout(function () {
-      var el = document.getElementById('loading');
-      if (el) el.remove();
+      ['loading','dots','brand'].forEach(function(id){
+        var el = document.getElementById(id);
+        if (el) el.remove();
+      });
     }, 10000);
   </script>
 
   <script src="flutter_bootstrap.js" async></script>
 </body>
-</html>
+  </html>
