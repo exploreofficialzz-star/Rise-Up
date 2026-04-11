@@ -1,14 +1,5 @@
 // frontend/lib/screens/auth/splash_screen.dart
-// v2.1 — Instant exit, no navigation ownership
-//
-// Key design:
-//  • Shows branded animation for 500ms (feels snappy like Facebook)
-//  • Does NOT own navigation — GoRouter redirect owns all routing decisions
-//  • _navigate() is purely a safety net for the extremely rare case where
-//    authService.initialize() hasn't completed after 500ms (shouldn't happen
-//    in practice — storage reads take <5ms, but belt-and-suspenders)
-//  • If GoRouter's redirect already navigated away during the 500ms delay,
-//    the mounted check prevents any double-navigation crash
+// v2.2 — Logo and RiseUp text tightened up
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -42,16 +33,9 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<void> _navigate() async {
-    // 500ms brand window — fast like Facebook
     await Future.delayed(const Duration(milliseconds: 500));
     if (!mounted) return;
 
-    // At this point GoRouter's redirect callback has already handled routing
-    // (because authService.initialize() runs before runApp() and sets status,
-    // which the redirect reads on first render).
-    //
-    // This block is a pure safety net — only runs if somehow status is still
-    // unknown after 500ms (e.g. extremely slow storage read on a cold device).
     if (authService.status == AuthStatus.unknown) {
       final token = await storageService.read(key: 'access_token');
       if (!mounted) return;
@@ -59,8 +43,6 @@ class _SplashScreenState extends State<SplashScreen>
         (token != null && token.isNotEmpty) ? '/home' : '/login',
       );
     }
-    // If status is already known, the redirect callback already navigated.
-    // Do nothing — avoids double-navigation flicker.
   }
 
   @override
@@ -86,30 +68,36 @@ class _SplashScreenState extends State<SplashScreen>
                   'assets/images/riseup_logo.png',
                   width: 130,
                   height: 130,
+                  fit: BoxFit.contain,
                   errorBuilder: (_, __, ___) => const Icon(
                     Icons.trending_up_rounded,
                     color: Color(0xFFFF6B00),
                     size: 100,
                   ),
                 ),
-                const SizedBox(height: 4),
-                ShaderMask(
-                  shaderCallback: (bounds) => const LinearGradient(
-                    colors: [
-                      Color(0xFFFF6B00),
-                      Color(0xFFFFD700),
-                      Color(0xFF6C5CE7),
-                    ],
-                    stops: [0.0, 0.4, 1.0],
-                  ).createShader(bounds),
-                  child: const Text(
-                    'RiseUp',
-                    style: TextStyle(
-                      fontSize: 48,
-                      fontWeight: FontWeight.w900,
-                      color: Colors.white,
-                      letterSpacing: -1,
-                      height: 1.0,
+
+                // Pull text up by -12px to close the gap caused by
+                // internal whitespace at the bottom of the logo asset
+                Transform.translate(
+                  offset: const Offset(0, -12),
+                  child: ShaderMask(
+                    shaderCallback: (bounds) => const LinearGradient(
+                      colors: [
+                        Color(0xFFFF6B00),
+                        Color(0xFFFFD700),
+                        Color(0xFF6C5CE7),
+                      ],
+                      stops: [0.0, 0.4, 1.0],
+                    ).createShader(bounds),
+                    child: const Text(
+                      'RiseUp',
+                      style: TextStyle(
+                        fontSize:      48,
+                        fontWeight:    FontWeight.w900,
+                        color:         Colors.white,
+                        letterSpacing: -1,
+                        height:        1.0,
+                      ),
                     ),
                   ),
                 ),
@@ -145,9 +133,9 @@ class _SplashScreenState extends State<SplashScreen>
               'By chAs',
               textAlign: TextAlign.center,
               style: TextStyle(
-                color:       footerColor,
-                fontSize:    13,
-                fontWeight:  FontWeight.w500,
+                color:         footerColor,
+                fontSize:      13,
+                fontWeight:    FontWeight.w500,
                 letterSpacing: 1,
               ),
             ),
@@ -163,11 +151,7 @@ class _Dot extends StatelessWidget {
   final AnimationController ctrl;
   final double delay;
   final Color  color;
-  const _Dot({
-    required this.ctrl,
-    required this.delay,
-    required this.color,
-  });
+  const _Dot({required this.ctrl, required this.delay, required this.color});
 
   @override
   Widget build(BuildContext context) {
@@ -188,8 +172,8 @@ class _Dot extends StatelessWidget {
               shape: BoxShape.circle,
               boxShadow: [
                 BoxShadow(
-                  color:       color.withOpacity(0.5),
-                  blurRadius:  6,
+                  color:        color.withOpacity(0.5),
+                  blurRadius:   6,
                   spreadRadius: 1,
                 ),
               ],
