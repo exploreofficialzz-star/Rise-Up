@@ -1,4 +1,11 @@
 // frontend/lib/main.dart
+//
+// Changes vs original:
+//  • authService.initialize() added to the parallel Future.wait block.
+//    This reads the stored token from secure storage (fast, <5ms) BEFORE
+//    runApp() is called, so the very first GoRouter render already knows
+//    whether to show /home or /login — no extra delay, no flicker.
+//
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -8,6 +15,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'config/app_constants.dart';
 import 'config/router.dart';
 import 'services/ad_manager.dart';
+import 'services/auth_service.dart'; // ← NEW
 import 'services/notification_service.dart';
 import 'utils/storage_service.dart';
 import 'utils/connectivity_wrapper.dart';
@@ -40,9 +48,9 @@ void main() async {
 
   if (!kIsWeb) {
     SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
-      systemNavigationBarColor: Colors.transparent,
+      statusBarColor:            Colors.transparent,
+      statusBarIconBrightness:   Brightness.light,
+      systemNavigationBarColor:  Colors.transparent,
     ));
     await SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
@@ -50,17 +58,18 @@ void main() async {
     ]);
   }
 
-  // FIX: Run Supabase + notifications in parallel instead of sequential.
-  // Previously a blocking api.getProfile() network call happened here,
-  // adding 1–3 seconds before runApp() was ever called. Removed entirely.
-  // Premium status is resolved lazily inside HomeScreen after login.
+  // FIX: authService.initialize() reads the stored token from secure storage
+  // before runApp() so GoRouter's first render already knows auth status.
+  // Supabase must initialize first (it provides the auth stream), so we
+  // run Supabase first, then auth + notifications in parallel.
+  await _initSupabase();
+
   await Future.wait([
-    _initSupabase(),
+    authService.initialize(), // ← NEW: sets AuthStatus before first frame
     _initNotifications(),
   ]);
 
-  // FIX: Ads initialize fire-and-forget — never blocks the UI thread.
-  // Defaults to free tier; HomeScreen updates ad behaviour once profile loads.
+  // Ads initialize fire-and-forget — never blocks the UI thread.
   adManager.initialize(isPremium: false).catchError((_) {});
 
   FlutterError.onError = (details) {
@@ -88,9 +97,11 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
 
   Future<void> _runVersionCheck() async {
     try {
-      final matches = router.routerDelegate.currentConfiguration.matches;
+      final matches =
+          router.routerDelegate.currentConfiguration.matches;
       if (matches.isNotEmpty) {
-        final ctx = router.routerDelegate.navigatorKey.currentContext;
+        final ctx =
+            router.routerDelegate.navigatorKey.currentContext;
         if (ctx != null && ctx.mounted) {
           versionCheckService.checkAndPrompt(ctx);
         }
@@ -107,7 +118,6 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // App Open Ad disabled — caused black screen on startup.
-    // Per-screen refresh is handled by HomeScreen's own observer.
   }
 
   @override
@@ -117,27 +127,17 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
         final locale = ref.watch(localeProvider);
 
         return MaterialApp.router(
-          title: 'RiseUp',
+          title:                    'RiseUp',
           debugShowCheckedModeBanner: false,
-          theme: AppTheme.light,
-          darkTheme: AppTheme.dark,
-          themeMode: ThemeMode.system,
-          locale: locale,
+          theme:      AppTheme.light,
+          darkTheme:  AppTheme.dark,
+          themeMode:  ThemeMode.system,
+          locale:     locale,
           supportedLocales: const [
-            Locale('en'),
-            Locale('es'),
-            Locale('fr'),
-            Locale('de'),
-            Locale('pt'),
-            Locale('hi'),
-            Locale('ar'),
-            Locale('zh'),
-            Locale('ja'),
-            Locale('ru'),
-            Locale('sw'),
-            Locale('yo'),
-            Locale('ig'),
-            Locale('ha'),
+            Locale('en'), Locale('es'), Locale('fr'), Locale('de'),
+            Locale('pt'), Locale('hi'), Locale('ar'), Locale('zh'),
+            Locale('ja'), Locale('ru'), Locale('sw'), Locale('yo'),
+            Locale('ig'), Locale('ha'),
           ],
           localizationsDelegates: const [
             GlobalMaterialLocalizations.delegate,
@@ -193,7 +193,7 @@ class _GlobalErrorWidget extends StatelessWidget {
               ),
               const SizedBox(height: 32),
               ElevatedButton(
-                onPressed: () => router.go('/login'),
+                onPressed: () => router.go('/home'),
                 style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.primary),
                 child: const Text('Go Home'),
