@@ -1,15 +1,14 @@
 // frontend/lib/screens/auth/splash_screen.dart
+// v2.1 — Instant exit, no navigation ownership
 //
-// Changes vs original:
-//  • Navigation logic removed from _navigate() — the GoRouter redirect
-//    callback (refreshListenable: authService) now owns all navigation
-//    decisions. Splash just shows the branded animation for 1500ms then
-//    lets the router redirect fire. If auth status was already set by
-//    authService.initialize() in main(), the redirect fires immediately
-//    and the user goes straight to /home — no extra delay.
-//  • Web: same 1500ms splash, router handles the rest.
-//  • Token check still exists as a fallback so the splash works even if
-//    authService hasn't finished initialize() (extremely rare).
+// Key design:
+//  • Shows branded animation for 500ms (feels snappy like Facebook)
+//  • Does NOT own navigation — GoRouter redirect owns all routing decisions
+//  • _navigate() is purely a safety net for the extremely rare case where
+//    authService.initialize() hasn't completed after 500ms (shouldn't happen
+//    in practice — storage reads take <5ms, but belt-and-suspenders)
+//  • If GoRouter's redirect already navigated away during the 500ms delay,
+//    the mounted check prevents any double-navigation crash
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -43,37 +42,39 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<void> _navigate() async {
-    // Always show the splash for at least 1500ms for brand visibility
-    await Future.delayed(const Duration(milliseconds: 1500));
+    // 500ms brand window — fast like Facebook
+    await Future.delayed(const Duration(milliseconds: 500));
     if (!mounted) return;
 
-    // If authService already knows the status (set in main() before runApp),
-    // the GoRouter redirect will have already handled navigation.
-    // This manual push is a safety net for the rare case where
-    // authService.initialize() is still running.
+    // At this point GoRouter's redirect callback has already handled routing
+    // (because authService.initialize() runs before runApp() and sets status,
+    // which the redirect reads on first render).
+    //
+    // This block is a pure safety net — only runs if somehow status is still
+    // unknown after 500ms (e.g. extremely slow storage read on a cold device).
     if (authService.status == AuthStatus.unknown) {
-      // Still loading — read token directly as fast fallback
       final token = await storageService.read(key: 'access_token');
       if (!mounted) return;
       context.go(
-          (token != null && token.isNotEmpty) ? '/home' : '/login');
+        (token != null && token.isNotEmpty) ? '/home' : '/login',
+      );
     }
-    // If status is known, GoRouter's refreshListenable already navigated.
-    // Doing nothing here avoids a double-navigation flicker.
+    // If status is already known, the redirect callback already navigated.
+    // Do nothing — avoids double-navigation flicker.
   }
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bgColor    = isDark ? Colors.black : Colors.white;
+    final isDark      = Theme.of(context).brightness == Brightness.dark;
+    final bgColor     = isDark ? Colors.black : Colors.white;
     final footerColor = isDark ? Colors.white30 : Colors.black26;
-    final screenH    = MediaQuery.of(context).size.height;
+    final screenH     = MediaQuery.of(context).size.height;
 
     return Scaffold(
       backgroundColor: bgColor,
       body: Stack(
         children: [
-          // ── Logo + RiseUp ──────────────────────────────
+          // ── Logo + wordmark ──────────────────────────────────────────
           Positioned(
             top: screenH * 0.28,
             left: 0,
@@ -116,7 +117,7 @@ class _SplashScreenState extends State<SplashScreen>
             ),
           ),
 
-          // ── Animated dots ──────────────────────────────
+          // ── Animated loading dots ────────────────────────────────────
           Positioned(
             bottom: 100,
             left: 0,
@@ -135,7 +136,7 @@ class _SplashScreenState extends State<SplashScreen>
             ),
           ),
 
-          // ── By chAs ────────────────────────────────────
+          // ── Footer ───────────────────────────────────────────────────
           Positioned(
             bottom: 40,
             left: 0,
@@ -144,9 +145,9 @@ class _SplashScreenState extends State<SplashScreen>
               'By chAs',
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: footerColor,
-                fontSize: 13,
-                fontWeight: FontWeight.w500,
+                color:       footerColor,
+                fontSize:    13,
+                fontWeight:  FontWeight.w500,
                 letterSpacing: 1,
               ),
             ),
@@ -157,11 +158,16 @@ class _SplashScreenState extends State<SplashScreen>
   }
 }
 
+// ── Bouncing dot ───────────────────────────────────────────────────────────
 class _Dot extends StatelessWidget {
   final AnimationController ctrl;
   final double delay;
-  final Color color;
-  const _Dot({required this.ctrl, required this.delay, required this.color});
+  final Color  color;
+  const _Dot({
+    required this.ctrl,
+    required this.delay,
+    required this.color,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -182,8 +188,8 @@ class _Dot extends StatelessWidget {
               shape: BoxShape.circle,
               boxShadow: [
                 BoxShadow(
-                  color: color.withOpacity(0.5),
-                  blurRadius: 6,
+                  color:       color.withOpacity(0.5),
+                  blurRadius:  6,
                   spreadRadius: 1,
                 ),
               ],
