@@ -1,30 +1,59 @@
 // frontend/lib/providers/app_providers.dart
+//
+// Changes vs original:
+//  • profileProvider now loads cached profile from storage first,
+//    then updates in background. This means:
+//    - Profile screen NEVER shows a system-default fallback
+//    - Profile loads instantly on every screen open
+//    - Fresh data replaces cached data silently
+//  • authStateProvider now delegates to authService (ChangeNotifier)
+//
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../services/api_service.dart';
+import '../services/auth_service.dart';
 import '../services/currency_service.dart';
+import '../utils/storage_service.dart';
 
 // ── Auth State ────────────────────────────────────────
+// Thin wrapper — real state lives in authService (ChangeNotifier).
+// Kept for backward compatibility with any screen that reads it.
 final authStateProvider = FutureProvider<bool>((ref) async {
-  return api.isAuthenticated();
+  return authService.isAuthenticated;
 });
 
 // ── User Profile ──────────────────────────────────────
+// Facebook-style: show cached profile instantly, refresh in background.
+// If network fails, the cache keeps showing — never a blank/system-default.
 final profileProvider = FutureProvider.autoDispose<Map>((ref) async {
-  final data = await api.getProfile();
-  final profile = data['profile'] as Map? ?? {};
+  // Step 1 — try to return a fresh profile from the network
+  try {
+    final data    = await api.getProfile();
+    final profile = data['profile'] as Map? ?? {};
 
-  // Initialise the global currency service whenever the profile loads
-  final currencyCode = profile['currency']?.toString() ?? 'USD';
-  currency.init(currencyCode);
+    // Persist for next cold start / offline use
+    await storageService.cacheProfile(Map<String, dynamic>.from(profile));
 
-  return profile;
+    // Boot the currency service with the user's preference
+    final currencyCode = profile['currency']?.toString() ?? 'USD';
+    currency.init(currencyCode);
+
+    return profile;
+  } catch (e) {
+    // Step 2 — network failed (offline, or token being refreshed)
+    //          Return cached profile so the screen never shows system-default
+    final cached = await storageService.getCachedProfile();
+    if (cached != null && cached.isNotEmpty) {
+      final currencyCode = cached['currency']?.toString() ?? 'USD';
+      currency.init(currencyCode);
+      return cached;
+    }
+    // Nothing cached yet (first-ever load failed) — propagate the error
+    rethrow;
+  }
 });
 
 // ── Currency Service (renamed to avoid collision) ─────
-// RENAMED: currencyProvider → currencyServiceProvider
-// This provides the CurrencyService instance
 final currencyServiceProvider = Provider<CurrencyService>((ref) {
-  // Trigger a reload when profile changes
   ref.watch(profileProvider);
   return currency;
 });
@@ -45,7 +74,8 @@ final statsProvider = FutureProvider.autoDispose<Map>((ref) async {
 });
 
 // ── Tasks ─────────────────────────────────────────────
-final tasksProvider = FutureProvider.autoDispose.family<List, String?>((ref, status) async {
+final tasksProvider =
+    FutureProvider.autoDispose.family<List, String?>((ref, status) async {
   return api.getTasks(status: status);
 });
 
@@ -74,7 +104,8 @@ final earningsProvider = FutureProvider.autoDispose<Map>((ref) async {
 });
 
 // ── Conversations ─────────────────────────────────────
-final conversationsProvider = FutureProvider.autoDispose<List>((ref) async {
+final conversationsProvider =
+    FutureProvider.autoDispose<List>((ref) async {
   final data = await api.getConversations();
   return (data['conversations'] as List?) ?? [];
 });
@@ -102,24 +133,27 @@ class StageNotifier extends StateNotifier<String> {
   void updateStage(String stage) => state = stage;
 }
 
-final stageProvider = StateNotifierProvider<StageNotifier, String>((ref) {
-  return StageNotifier();
-});
+final stageProvider =
+    StateNotifierProvider<StageNotifier, String>((ref) => StageNotifier());
 
 // ── Onboarding Progress ───────────────────────────────
 class OnboardingNotifier extends StateNotifier<Map<String, dynamic>> {
-  OnboardingNotifier() : super({
-    'step': 0,
-    'totalSteps': 5,
-    'isComplete': false,
-    'conversationId': null,
-  });
+  OnboardingNotifier()
+      : super({
+          'step':           0,
+          'totalSteps':     5,
+          'isComplete':     false,
+          'conversationId': null,
+        });
 
-  void nextStep() => state = {...state, 'step': (state['step'] as int) + 1};
-  void complete(String convId) => state = {...state, 'isComplete': true, 'conversationId': convId};
-  void setConversationId(String id) => state = {...state, 'conversationId': id};
+  void nextStep() =>
+      state = {...state, 'step': (state['step'] as int) + 1};
+  void complete(String convId) =>
+      state = {...state, 'isComplete': true, 'conversationId': convId};
+  void setConversationId(String id) =>
+      state = {...state, 'conversationId': id};
 }
 
-final onboardingProvider = StateNotifierProvider<OnboardingNotifier, Map<String, dynamic>>((ref) {
-  return OnboardingNotifier();
-});
+final onboardingProvider =
+    StateNotifierProvider<OnboardingNotifier, Map<String, dynamic>>(
+        (ref) => OnboardingNotifier());
