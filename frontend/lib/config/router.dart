@@ -1,21 +1,19 @@
 // frontend/lib/config/router.dart
-// v5.0 — Facebook-style persistent auth guard
+// v5.1 — Fixed splash deadlock + instant auth routing
 //
-// Changes vs v4.0:
-//  • refreshListenable: authService
-//    GoRouter re-evaluates the redirect callback whenever authService
-//    calls notifyListeners() (on login, logout, or 401 failure).
-//  • redirect callback:
-//    - unauthenticated + protected route → /login (instant, no more auth errors)
-//    - authenticated + /login or /register → /home (skip login if already in)
-//    - /splash is always allowed (it controls its own navigation timer)
-//  • Web no longer hard-codes /login as initialLocation — it checks auth too.
+// Root cause of infinite splash:
+//  1. redirect returned null for /splash when status was known → never left
+//  2. refreshListenable only fires on STATUS CHANGES — since initialize()
+//     set the status before runApp(), no change ever fired → splash stuck
+//
+// Fix: redirect now actively routes AWAY from /splash the moment status
+// is known. No longer relies on a change event to escape splash.
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../config/app_constants.dart';
-import '../services/auth_service.dart'; // ← NEW
+import '../services/auth_service.dart';
 import '../screens/auth/splash_screen.dart';
 import '../screens/auth/login_screen.dart';
 import '../screens/auth/register_screen.dart';
@@ -70,7 +68,7 @@ import '../screens/methods/methods_brain_screen.dart';
 import '../screens/marketplace/marketplace_screen.dart';
 import '../main_shell.dart';
 
-// Routes that don't require authentication
+// Routes that never require authentication
 const _publicRoutes = {
   '/splash',
   '/login',
@@ -86,32 +84,39 @@ bool _isPublic(String location) =>
     location.startsWith('/verify-email');
 
 final router = GoRouter(
-  // FIX: Both mobile AND web start at splash so auth status is checked.
-  // Previously web always went to /login, even for logged-in users.
+  // Both mobile and web start at splash — router decides where to land
   initialLocation: '/splash',
 
-  // FIX: authService is a ChangeNotifier.
-  // Every time auth status changes (login / logout / 401-failure),
-  // GoRouter automatically re-runs the redirect callback below.
+  // authService is a ChangeNotifier — GoRouter re-evaluates redirect
+  // on every login / logout / 401-failure notifyListeners() call
   refreshListenable: authService,
 
-  // FIX: Global auth guard — runs on every navigation.
+  // ── Global auth guard ────────────────────────────────────────────────
   redirect: (context, state) {
     final location = state.matchedLocation;
     final status   = authService.status;
 
-    // While status is still being determined (very brief, <5ms on device)
-    // let /splash handle it — do not redirect yet.
+    // ── 1. Auth status not yet resolved (absolute max ~5ms on device) ──
+    // Keep user on splash until initialize() completes.
     if (status == AuthStatus.unknown) {
       return location == '/splash' ? null : '/splash';
     }
 
-    // User is not logged in and trying to reach a protected route → /login
+    // ── 2. Auth resolved — actively leave splash ───────────────────────
+    // FIX: Without this block, redirect returns null for /splash when
+    // status is already known, so the app never leaves the splash screen.
+    // refreshListenable only fires on CHANGES; since initialize() set the
+    // status before runApp(), no change ever fires → infinite splash.
+    if (location == '/splash') {
+      return status == AuthStatus.authenticated ? '/home' : '/login';
+    }
+
+    // ── 3. Unauthenticated on protected route → /login ─────────────────
     if (status == AuthStatus.unauthenticated && !_isPublic(location)) {
       return '/login';
     }
 
-    // User IS logged in and navigates to login/register → skip to home
+    // ── 4. Authenticated on login/register → skip to home ──────────────
     if (status == AuthStatus.authenticated &&
         (location == '/login' || location == '/register')) {
       return '/home';
@@ -125,7 +130,7 @@ final router = GoRouter(
       _ErrorPage(error: state.error?.toString()),
 
   routes: [
-    // ── Public ────────────────────────────────────────────────────
+    // ── Public ──────────────────────────────────────────────────────────
     GoRoute(path: '/splash',          builder: (_, __) => const SplashScreen()),
     GoRoute(path: '/login',           builder: (_, __) => const LoginScreen()),
     GoRoute(path: '/register',        builder: (_, __) => const RegisterScreen()),
@@ -133,13 +138,14 @@ final router = GoRouter(
     GoRoute(
       path: '/verify-email',
       builder: (_, s) => VerifyEmailScreen(
-          email: s.uri.queryParameters['email'] ?? ''),
+        email: s.uri.queryParameters['email'] ?? '',
+      ),
     ),
-    GoRoute(path: '/privacy', builder: (_, __) => const PrivacyPolicyScreen()),
-    GoRoute(path: '/terms',   builder: (_, __) => const TermsScreen()),
+    GoRoute(path: '/privacy',    builder: (_, __) => const PrivacyPolicyScreen()),
+    GoRoute(path: '/terms',      builder: (_, __) => const TermsScreen()),
     GoRoute(path: '/onboarding', builder: (_, __) => const OnboardingChatScreen()),
 
-    // ── Full-screen modals ─────────────────────────────────────────
+    // ── Full-screen modals (outside shell so no bottom nav) ─────────────
     GoRoute(path: '/premium', builder: (_, __) => const PremiumScreen()),
     GoRoute(
       path: '/comments/:postId',
@@ -155,16 +161,16 @@ final router = GoRouter(
         final extra = s.extra as Map<String, String?>? ?? {};
         return ConversationScreen(
           userId:      s.pathParameters['userId']!,
-          name:        s.uri.queryParameters['name']        ?? extra['name']        ?? 'User',
-          avatar:      s.uri.queryParameters['avatar']      ?? extra['avatar']      ?? '🙂',
-          isAI:        s.uri.queryParameters['isAI']        == 'true',
-          postContext: s.uri.queryParameters['postContext']  ?? extra['postContext'],
-          postAuthor:  s.uri.queryParameters['postAuthor']   ?? extra['postAuthor'],
+          name:        s.uri.queryParameters['name']       ?? extra['name']       ?? 'User',
+          avatar:      s.uri.queryParameters['avatar']     ?? extra['avatar']     ?? '🙂',
+          isAI:        s.uri.queryParameters['isAI']       == 'true',
+          postContext: s.uri.queryParameters['postContext'] ?? extra['postContext'],
+          postAuthor:  s.uri.queryParameters['postAuthor']  ?? extra['postAuthor'],
         );
       },
     ),
 
-    // ── Main shell ─────────────────────────────────────────────────
+    // ── Main shell (bottom nav) ─────────────────────────────────────────
     ShellRoute(
       builder: (context, state, child) => MainShell(child: child),
       routes: [
@@ -177,7 +183,8 @@ final router = GoRouter(
 
         GoRoute(
           path: '/user-profile/:id',
-          builder: (_, s) => UserProfileScreen(userId: s.pathParameters['id']!),
+          builder: (_, s) =>
+              UserProfileScreen(userId: s.pathParameters['id']!),
         ),
         GoRoute(path: '/edit-profile',  builder: (_, __) => const EditProfileScreen()),
         GoRoute(path: '/settings',      builder: (_, __) => const SettingsScreen()),
@@ -212,7 +219,8 @@ final router = GoRouter(
         GoRoute(path: '/skills',   builder: (_, __) => const SkillsScreen()),
         GoRoute(
           path: '/skills/:id',
-          builder: (_, s) => SkillDetailScreen(moduleId: s.pathParameters['id']!),
+          builder: (_, s) =>
+              SkillDetailScreen(moduleId: s.pathParameters['id']!),
         ),
         GoRoute(path: '/roadmap',      builder: (_, __) => const RoadmapScreen()),
         GoRoute(path: '/earnings',     builder: (_, __) => const EarningsScreen()),
@@ -233,7 +241,9 @@ final router = GoRouter(
         GoRoute(path: '/workflow/new', builder: (_, __) => const WorkflowResearchScreen()),
         GoRoute(
           path: '/workflow/:id',
-          builder: (_, s) => WorkflowDetailScreen(workflowId: s.pathParameters['id']!),
+          builder: (_, s) => WorkflowDetailScreen(
+            workflowId: s.pathParameters['id']!,
+          ),
         ),
 
         GoRoute(
@@ -262,9 +272,7 @@ final router = GoRouter(
   ],
 );
 
-// ─────────────────────────────────────────────────────────────────
-// Error page
-// ─────────────────────────────────────────────────────────────────
+// ── Error page ─────────────────────────────────────────────────────────────
 class _ErrorPage extends StatelessWidget {
   final String? error;
   const _ErrorPage({this.error});
@@ -278,12 +286,16 @@ class _ErrorPage extends StatelessWidget {
           children: [
             const Icon(Icons.error_outline, size: 64, color: Colors.red),
             const SizedBox(height: 16),
-            const Text('Page not found',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const Text(
+              'Page not found',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
             if (error != null) ...[
               const SizedBox(height: 8),
-              Text(error!,
-                  style: const TextStyle(color: Colors.grey, fontSize: 12)),
+              Text(
+                error!,
+                style: const TextStyle(color: Colors.grey, fontSize: 12),
+              ),
             ],
             const SizedBox(height: 24),
             ElevatedButton(
