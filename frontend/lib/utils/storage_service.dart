@@ -1,8 +1,15 @@
+// frontend/lib/utils/storage_service.dart
+//
+// Changes vs original:
+//  • cacheProfile()   — saves profile JSON for instant offline display
+//  • getCachedProfile() — reads cached profile (never shows system default)
+//  • clearProfileCache() — called on logout
 // ─────────────────────────────────────────────────────────────
 //  StorageService — Platform-safe key-value storage
 //  • Mobile: flutter_secure_storage (encrypted)
 //  • Web:    flutter_secure_storage with web options (localStorage)
 // ─────────────────────────────────────────────────────────────
+import 'dart:convert';
 import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -61,6 +68,35 @@ class StorageService {
     } catch (e) {
       debugPrint('[Storage] deleteAll error: $e');
     }
+  }
+
+  // ── Profile cache ────────────────────────────────────────────────────
+  // Stores the last successfully loaded profile so:
+  //   • The profile screen never falls back to system defaults on network error
+  //   • The app feels instant — cached data shows while fresh data loads
+  static const _kCachedProfile = '_cached_profile';
+
+  Future<void> cacheProfile(Map<String, dynamic> profile) async {
+    try {
+      await write(key: _kCachedProfile, value: jsonEncode(profile));
+    } catch (e) {
+      debugPrint('[Storage] cacheProfile error: $e');
+    }
+  }
+
+  Future<Map<String, dynamic>?> getCachedProfile() async {
+    try {
+      final raw = await read(key: _kCachedProfile);
+      if (raw == null || raw.isEmpty) return null;
+      return Map<String, dynamic>.from(jsonDecode(raw) as Map);
+    } catch (e) {
+      debugPrint('[Storage] getCachedProfile error: $e');
+      return null;
+    }
+  }
+
+  Future<void> clearProfileCache() async {
+    await delete(key: _kCachedProfile);
   }
 }
 
