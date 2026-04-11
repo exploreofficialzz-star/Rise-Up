@@ -1,5 +1,5 @@
 // frontend/lib/config/router.dart
-// v3.0 — Methods Brain + Marketplace + all original routes preserved
+// v4.0 — APEX v7 handoff params + Methods Brain + Marketplace + all original routes
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -55,11 +55,8 @@ import '../screens/memory/income_memory_screen.dart';
 import '../screens/challenges/challenges_screen.dart';
 import '../screens/crm/crm_screen.dart';
 import '../screens/portfolio/portfolio_screen.dart';
-
-// ── NEW v3.0 ──────────────────────────────────────────────────────
 import '../screens/methods/methods_brain_screen.dart';
 import '../screens/marketplace/marketplace_screen.dart';
-
 import '../main_shell.dart';
 
 final router = GoRouter(
@@ -77,8 +74,8 @@ final router = GoRouter(
       builder: (_, s) => VerifyEmailScreen(
           email: s.uri.queryParameters['email'] ?? ''),
     ),
-    GoRoute(path: '/privacy',    builder: (_, __) => const PrivacyPolicyScreen()),
-    GoRoute(path: '/terms',      builder: (_, __) => const TermsScreen()),
+    GoRoute(path: '/privacy', builder: (_, __) => const PrivacyPolicyScreen()),
+    GoRoute(path: '/terms',   builder: (_, __) => const TermsScreen()),
     GoRoute(path: '/onboarding', builder: (_, __) => const OnboardingChatScreen()),
 
     // ── Full-screen modals ─────────────────────────────────────────
@@ -96,12 +93,12 @@ final router = GoRouter(
       builder: (_, s) {
         final extra = s.extra as Map<String, String?>? ?? {};
         return ConversationScreen(
-          userId:       s.pathParameters['userId']!,
-          name:         s.uri.queryParameters['name']     ?? extra['name']    ?? 'User',
-          avatar:       s.uri.queryParameters['avatar']   ?? extra['avatar']  ?? '🙂',
-          isAI:         s.uri.queryParameters['isAI']     == 'true',
-          postContext:  s.uri.queryParameters['postContext']  ?? extra['postContext'],
-          postAuthor:   s.uri.queryParameters['postAuthor']   ?? extra['postAuthor'],
+          userId:      s.pathParameters['userId']!,
+          name:        s.uri.queryParameters['name']        ?? extra['name']        ?? 'User',
+          avatar:      s.uri.queryParameters['avatar']      ?? extra['avatar']      ?? '🙂',
+          isAI:        s.uri.queryParameters['isAI']        == 'true',
+          postContext: s.uri.queryParameters['postContext']  ?? extra['postContext'],
+          postAuthor:  s.uri.queryParameters['postAuthor']   ?? extra['postAuthor'],
         );
       },
     ),
@@ -123,7 +120,7 @@ final router = GoRouter(
           path: '/user-profile/:id',
           builder: (_, s) => UserProfileScreen(userId: s.pathParameters['id']!),
         ),
-        GoRoute(path: '/edit-profile', builder: (_, __) => const EditProfileScreen()),
+        GoRoute(path: '/edit-profile',  builder: (_, __) => const EditProfileScreen()),
         GoRoute(path: '/settings',      builder: (_, __) => const SettingsScreen()),
         GoRoute(path: '/notifications', builder: (_, __) => const NotificationsScreen()),
         GoRoute(path: '/live',          builder: (_, __) => const LiveScreen()),
@@ -131,8 +128,8 @@ final router = GoRouter(
           path: '/live-viewer/:id',
           builder: (_, s) => LiveViewerScreen(
             sessionId: s.pathParameters['id']!,
-            host:  s.uri.queryParameters['host']  ?? '',
-            title: s.uri.queryParameters['title'] ?? '',
+            host:      s.uri.queryParameters['host']  ?? '',
+            title:     s.uri.queryParameters['title'] ?? '',
           ),
         ),
         GoRoute(path: '/groups', builder: (_, __) => const GroupsScreen()),
@@ -146,7 +143,8 @@ final router = GoRouter(
         GoRoute(
           path: '/chat',
           builder: (_, s) => ChatScreen(
-            conversationId: s.uri.queryParameters['sessionId'] ?? s.uri.queryParameters['conversationId'],
+            conversationId: s.uri.queryParameters['sessionId']
+                ?? s.uri.queryParameters['conversationId'],
           ),
         ),
         GoRoute(path: '/create-status', builder: (_, __) => const CreateStatusScreen()),
@@ -174,34 +172,41 @@ final router = GoRouter(
         GoRoute(path: '/collaboration',builder: (_, __) => const CollaborationScreen()),
 
         // Workflow Engine
-        GoRoute(path: '/workflow',        builder: (_, __) => const WorkflowHubScreen()),
-        GoRoute(path: '/workflow/new',    builder: (_, __) => const WorkflowResearchScreen()),
+        GoRoute(path: '/workflow',     builder: (_, __) => const WorkflowHubScreen()),
+        GoRoute(path: '/workflow/new', builder: (_, __) => const WorkflowResearchScreen()),
         GoRoute(
           path: '/workflow/:id',
           builder: (_, s) => WorkflowDetailScreen(workflowId: s.pathParameters['id']!),
         ),
 
-        // Agentic AI
+        // ── APEX Agentic AI — v7.0 handoff support ─────────────────
         GoRoute(
           path: '/agent',
-          builder: (_, s) => AgentScreen(
-            workflowId: s.uri.queryParameters['workflowId'],
-            sessionId:  s.uri.queryParameters['sessionId'],
-          ),
+          builder: (_, s) {
+            // Support both query params (direct nav) and extra (handoff from Mentor)
+            final extra = s.extra as Map<String, dynamic>? ?? {};
+            return AgentScreen(
+              // Original params
+              workflowId: s.uri.queryParameters['workflowId']
+                  ?? extra['workflowId']?.toString(),
+              sessionId: s.uri.queryParameters['sessionId']
+                  ?? extra['sessionId']?.toString(),
+              // v7.0 handoff params (passed via context.push('/agent', extra: {...}))
+              handoffTask:      extra['handoffTask']?.toString(),
+              handoffSessionId: extra['handoffSessionId']?.toString(),
+              handoffTemplate:  extra['handoffTemplate'] as Map<String, dynamic>?,
+              handoffQuestions: (extra['handoffQuestions'] as List?)
+                  ?.cast<Map<String, dynamic>>(),
+            );
+          },
         ),
 
         // Market Pulse
         GoRoute(path: '/pulse', builder: (_, __) => const MarketPulseScreen()),
 
-        // ── NEW v3.0: Methods Brain & Marketplace ──────────────────
-        GoRoute(
-          path: '/methods',
-          builder: (_, __) => const MethodsBrainScreen(),
-        ),
-        GoRoute(
-          path: '/marketplace',
-          builder: (_, __) => const MarketplaceScreen(),
-        ),
+        // Methods Brain & Marketplace
+        GoRoute(path: '/methods',     builder: (_, __) => const MethodsBrainScreen()),
+        GoRoute(path: '/marketplace', builder: (_, __) => const MarketplaceScreen()),
       ],
     ),
   ],
