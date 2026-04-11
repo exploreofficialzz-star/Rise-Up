@@ -30,114 +30,42 @@
 
     html, body {
       height: 100%;
-      background-color: #0F0E17;
+      /* Match Flutter splash background so there's zero flash */
+      background-color: #000000;
       overflow: hidden;
     }
 
-    /* Flutter renders fullscreen */
     flt-glass-pane {
       z-index: 10 !important;
     }
 
-    /* ── Loading screen — shown before Flutter loads ── */
+    /* Loading div is invisible — Flutter splash_screen.dart owns the UI.
+       We keep the div in the DOM only because flutter_bootstrap.js expects
+       it to exist; it is removed the instant Flutter's first frame fires. */
     #loading {
-      position: fixed;
-      inset: 0;
-      background: #0F0E17;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      z-index: 9999;
-      transition: opacity 0.4s ease;
-    }
-    #loading.hide { opacity: 0; pointer-events: none; }
-    #loading img {
-      width: 96px;
-      height: 96px;
-      border-radius: 24px;
-      box-shadow: 0 0 40px rgba(108,92,231,0.5);
-      animation: pulse 1.8s ease-in-out infinite;
-    }
-    #loading h1 {
-      margin-top: 20px;
-      font-size: 36px;
-      font-weight: 900;
-      background: linear-gradient(135deg, #FF6B00, #FFD700, #6C5CE7);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-      font-family: system-ui, -apple-system, sans-serif;
-      letter-spacing: -1px;
-    }
-    #loading p {
-      margin-top: 8px;
-      color: #B2B2CC;
-      font-size: 14px;
-      letter-spacing: 1.5px;
-      font-family: system-ui, sans-serif;
-    }
-    #loading .bar {
-      margin-top: 40px;
-      width: 48px;
-      height: 3px;
-      background: #1F1F3A;
-      border-radius: 3px;
-      overflow: hidden;
-    }
-    #loading .bar-fill {
-      height: 100%;
-      width: 0%;
-      background: linear-gradient(90deg, #FF6B00, #FFD700);
-      border-radius: 3px;
-      animation: load 2.4s ease-in-out forwards;
-    }
-    #loading .brand {
-      position: absolute;
-      bottom: 32px;
-      color: #6B6B8A;
-      font-size: 12px;
-      font-family: system-ui, sans-serif;
-    }
-    @keyframes pulse {
-      0%, 100% { transform: scale(1); box-shadow: 0 0 40px rgba(108,92,231,0.5); }
-      50%       { transform: scale(1.04); box-shadow: 0 0 60px rgba(255,107,0,0.4); }
-    }
-    @keyframes load {
-      0%   { width: 0%; }
-      100% { width: 100%; }
+      display: none;
     }
   </style>
 </head>
 <body>
 
-  <!-- ── HTML Loading screen (shows before Flutter loads) ── -->
-  <div id="loading">
-    <img src="icons/Icon-192.png" alt="RiseUp Logo">
-    <h1>RiseUp</h1>
-    <p>Your AI Wealth Mentor</p>
-    <div class="bar"><div class="bar-fill"></div></div>
-    <span class="brand">Made with ❤️ by ChAs Tech Group</span>
-  </div>
+  <!-- Intentionally invisible — Flutter splash_screen.dart is the splash for
+       both mobile AND web. This div is kept solely so flutter_bootstrap.js
+       has something to hand off from. -->
+  <div id="loading"></div>
 
   <script>
-    // Hide loading screen once Flutter first frame fires
+    // Remove the placeholder the moment Flutter renders its first frame
     window.addEventListener('flutter-first-frame', function () {
       var el = document.getElementById('loading');
-      if (el) {
-        el.classList.add('hide');
-        setTimeout(function () { el.remove(); }, 500);
-      }
+      if (el) el.remove();
     });
 
-    // Fallback — hide after 8 seconds no matter what
+    // Safety fallback — remove after 10s no matter what
     setTimeout(function () {
       var el = document.getElementById('loading');
-      if (el) {
-        el.classList.add('hide');
-        setTimeout(function () { el.remove(); }, 500);
-      }
-    }, 8000);
+      if (el) el.remove();
+    }, 10000);
   </script>
 
   <script src="flutter_bootstrap.js" async></script>
