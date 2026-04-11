@@ -1,7 +1,19 @@
 // frontend/lib/screens/auth/splash_screen.dart
-import 'package:flutter/foundation.dart' show kIsWeb;
+//
+// Changes vs original:
+//  • Navigation logic removed from _navigate() — the GoRouter redirect
+//    callback (refreshListenable: authService) now owns all navigation
+//    decisions. Splash just shows the branded animation for 1500ms then
+//    lets the router redirect fire. If auth status was already set by
+//    authService.initialize() in main(), the redirect fires immediately
+//    and the user goes straight to /home — no extra delay.
+//  • Web: same 1500ms splash, router handles the rest.
+//  • Token check still exists as a fallback so the splash works even if
+//    authService hasn't finished initialize() (extremely rare).
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import '../../services/auth_service.dart';
 import '../../utils/storage_service.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -21,12 +33,6 @@ class _SplashScreenState extends State<SplashScreen>
       vsync: this,
       duration: const Duration(milliseconds: 1200),
     )..repeat();
-
-    // FIX: Token check and minimum display time run in parallel.
-    // Previously: await 2800ms THEN check token → total ≥ 2800ms.
-    // Now: both run at the same time → total = max(1500ms, token_check_time).
-    // Since flutter_secure_storage reads locally, token check is typically <100ms,
-    // making the effective splash exactly 1500ms instead of 2800ms.
     _navigate();
   }
 
@@ -36,39 +42,32 @@ class _SplashScreenState extends State<SplashScreen>
     super.dispose();
   }
 
-  Future<String?> _readToken() async {
-    try {
-      return await storageService.read(key: 'access_token');
-    } catch (_) {
-      return null;
-    }
-  }
-
   Future<void> _navigate() async {
-    if (kIsWeb) {
-      await Future.delayed(const Duration(milliseconds: 1200));
-      if (mounted) context.go('/login');
-      return;
-    }
-
-    // Run minimum display time and token check concurrently.
-    final results = await Future.wait([
-      Future.delayed(const Duration(milliseconds: 1500)), // min splash display
-      _readToken(),                                        // local storage read
-    ]);
-
+    // Always show the splash for at least 1500ms for brand visibility
+    await Future.delayed(const Duration(milliseconds: 1500));
     if (!mounted) return;
 
-    final token = results[1] as String?;
-    context.go(token != null && token.isNotEmpty ? '/home' : '/login');
+    // If authService already knows the status (set in main() before runApp),
+    // the GoRouter redirect will have already handled navigation.
+    // This manual push is a safety net for the rare case where
+    // authService.initialize() is still running.
+    if (authService.status == AuthStatus.unknown) {
+      // Still loading — read token directly as fast fallback
+      final token = await storageService.read(key: 'access_token');
+      if (!mounted) return;
+      context.go(
+          (token != null && token.isNotEmpty) ? '/home' : '/login');
+    }
+    // If status is known, GoRouter's refreshListenable already navigated.
+    // Doing nothing here avoids a double-navigation flicker.
   }
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bgColor = isDark ? Colors.black : Colors.white;
+    final bgColor    = isDark ? Colors.black : Colors.white;
     final footerColor = isDark ? Colors.white30 : Colors.black26;
-    final screenH = MediaQuery.of(context).size.height;
+    final screenH    = MediaQuery.of(context).size.height;
 
     return Scaffold(
       backgroundColor: bgColor,
@@ -125,17 +124,13 @@ class _SplashScreenState extends State<SplashScreen>
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                _Dot(ctrl: _dotsCtrl, delay: 0.0,
-                    color: const Color(0xFFFF9AA2)),
+                _Dot(ctrl: _dotsCtrl, delay: 0.0, color: const Color(0xFFFF9AA2)),
                 const SizedBox(width: 10),
-                _Dot(ctrl: _dotsCtrl, delay: 0.2,
-                    color: const Color(0xFF81ECEC)),
+                _Dot(ctrl: _dotsCtrl, delay: 0.2, color: const Color(0xFF81ECEC)),
                 const SizedBox(width: 10),
-                _Dot(ctrl: _dotsCtrl, delay: 0.4,
-                    color: const Color(0xFFFFD700)),
+                _Dot(ctrl: _dotsCtrl, delay: 0.4, color: const Color(0xFFFFD700)),
                 const SizedBox(width: 10),
-                _Dot(ctrl: _dotsCtrl, delay: 0.6,
-                    color: const Color(0xFF74B9FF)),
+                _Dot(ctrl: _dotsCtrl, delay: 0.6, color: const Color(0xFF74B9FF)),
               ],
             ),
           ),
@@ -166,8 +161,7 @@ class _Dot extends StatelessWidget {
   final AnimationController ctrl;
   final double delay;
   final Color color;
-  const _Dot(
-      {required this.ctrl, required this.delay, required this.color});
+  const _Dot({required this.ctrl, required this.delay, required this.color});
 
   @override
   Widget build(BuildContext context) {
