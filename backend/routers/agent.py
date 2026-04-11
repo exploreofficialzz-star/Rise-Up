@@ -1,18 +1,15 @@
 """
-RiseUp Autonomous Agent — v5.1 (APEX Global + Brain-Aware)
-═══════════════════════════════════════════════════════════════════════════
-v5.1 Brain injection (over v5):
-  • _get_brain_context() — parallel internal RiseUp search + adaptive profile
-  • run_agent          — brain context prepended to task before _react_loop
-  • run_agent_stream   — brain context prepended; SSE "brain_context" event
-  • agent_chat         — brain context appended to _chat_system() prompt
-  • Graceful import    — if brain not deployed, _AGENT_BRAIN_ENABLED=False
-                         and the router loads normally, no features lost
-
-All original v5 preserved exactly:
-  Free/Premium model routing | Chat session memory | Rewarded Ads (AdManager)
-  Gamification (XP/coins/badges/streaks) | 28-tool TOOLS registry
-  Quota system (5 free / 50 premium daily runs) | Growth AI endpoints
+RiseUp Autonomous Agent — v7.0 (APEX Token Engine + Browser Orchestrator + Mentor Handoff)
+═══════════════════════════════════════════════════════════════════════════════════════════
+v7.0 adds over v5.1:
+  • Token engine (Manus-style) — every action costs tokens, free=500/day
+  • Rewarded ads grant +100 tokens each (max 5/day)
+  • Browser orchestrator — Playwright headless → screenshots → SSE stream
+  • Human-in-the-loop — CAPTCHA/2FA detection, pauses, user answers relay
+  • Mentor → APEX handoff — POST /agent/handoff with template + questions
+  • Task router — classifies any task to workflow template (Fiverr, Upwork, etc.)
+  • /run-stream updated with per-step token deduction
+  • All v5.1 preserved exactly
 """
 
 import json
@@ -36,7 +33,16 @@ from services.action_service     import (
 from services.scraper_service    import scraper_engine
 from utils.auth import get_current_user, get_current_user_optional
 
-# ── Brain import (graceful — agent loads even if brain not deployed) ─────────
+# ── Token service (v7) ────────────────────────────────────────────
+from services.token_service import token_service, TOOL_TOKEN_COSTS
+
+# ── Browser orchestrator (v7) ─────────────────────────────────────
+from services.browser_orchestrator import BrowserOrchestrator
+
+# ── Task router (v7) ─────────────────────────────────────────────
+from services.task_router import classify_task, get_template, WORKFLOW_TEMPLATES
+
+# ── Brain import (graceful) ───────────────────────────────────────
 try:
     from services.riseup_brain_service import (
         search_riseup_brain,
@@ -55,23 +61,17 @@ except Exception as _brain_err:
 router = APIRouter(prefix="/agent", tags=["Agentic AI"])
 logger = logging.getLogger(__name__)
 
+
 # ═══════════════════════════════════════════════════════════════════
-# v5.1 BRAIN CONTEXT HELPER
+# BRAIN CONTEXT HELPER (v5.1)
 # ═══════════════════════════════════════════════════════════════════
 
 async def _get_brain_context(task: str, user_id: str, country: str) -> str:
-    """
-    Run internal RiseUp search + load adaptive user profile in parallel.
-    Returns a formatted context block to inject into agent system prompts.
-    Never raises — returns "" on any failure so the agent is unaffected.
-    """
     if not _AGENT_BRAIN_ENABLED:
         return ""
     try:
         brain_result, adaptive_ctx = await asyncio.gather(
-            search_riseup_brain(
-                query=task, user_id=user_id, user_country=country, limit=4
-            ),
+            search_riseup_brain(query=task, user_id=user_id, user_country=country, limit=4),
             build_adaptive_context_prompt(user_id),
             return_exceptions=True,
         )
@@ -87,7 +87,7 @@ async def _get_brain_context(task: str, user_id: str, country: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# CONFIGURATION & CONSTANTS
+# CONSTANTS
 # ═══════════════════════════════════════════════════════════════════
 
 class ModelTier(str, Enum):
@@ -124,8 +124,9 @@ MAX_CHAT_HISTORY     = 50
 SUMMARIZE_THRESHOLD  = 30
 MAX_SESSION_AGE_DAYS = 30
 
+
 # ═══════════════════════════════════════════════════════════════════
-# REQUEST MODELS
+# REQUEST / RESPONSE MODELS
 # ═══════════════════════════════════════════════════════════════════
 
 class AgentRequest(BaseModel):
@@ -185,15 +186,6 @@ class AdWatchCompleteRequest(BaseModel):
     session_id:   Optional[str] = None
     verify_token: Optional[str] = None
 
-class AdStatusResponse(BaseModel):
-    credits_available:    int
-    credits_used_today:   int
-    credits_earned_today: int
-    max_credits_per_day:  int
-    can_watch_more:       bool
-    xp_earned_from_ads:   int
-    show_ad_prompt:       bool
-
 class GamificationState(BaseModel):
     xp:              int       = 0
     coins:           int       = 0
@@ -201,6 +193,50 @@ class GamificationState(BaseModel):
     streak_days:     int       = 0
     total_api_calls: int       = 0
     badges:          List[str] = []
+
+# v7 new models
+class HandoffRequest(BaseModel):
+    task:            str
+    context:         Optional[str]        = None
+    source:          str                  = "mentor"
+    source_conv_id:  Optional[str]        = None
+    prefill_answers: Optional[Dict[str, Any]] = None
+    auto_start:      bool                 = False
+
+class BrowserRunRequest(BaseModel):
+    session_id:   str
+    task:         str
+    template_key: Optional[str]       = None
+    user_answers: Optional[Dict]      = None
+    start_url:    Optional[str]       = None
+    goals:        Optional[List[str]] = None
+
+class BrowserAnswerRequest(BaseModel):
+    session_id: str
+    answer:     str
+
+class OpportunitySearchRequest(BaseModel):
+    query: Optional[str]=None; types: Optional[List[str]]=None
+    max_results: int=20; score_with_ai: bool=True; session_id: Optional[str]=None
+
+class MarketAnalysisRequest(BaseModel):
+    industry: str; skill: Optional[str]=None; location: Optional[str]=None
+
+class DailyPlanRequest(BaseModel):
+    goal: Optional[str]=None; timeframe: Optional[str]="today"; session_id: Optional[str]=None
+
+class ScoreOpportunityRequest(BaseModel):
+    opportunity: Dict[str,Any]; session_id: Optional[str]=None
+
+class FollowUpRequest(BaseModel):
+    context: str; session_id: Optional[str]=None
+
+class EarningInsightRequest(BaseModel):
+    earnings: List[Dict[str,Any]]; session_id: Optional[str]=None
+
+class MilestoneRequest(BaseModel):
+    monthly_income: Optional[float]=None; session_id: Optional[str]=None
+
 
 # ═══════════════════════════════════════════════════════════════════
 # TOOL REGISTRY
@@ -239,6 +275,7 @@ TOOLS: Dict[str, Dict] = {
     "track_earnings_insight": {"category": "intelligence", "description": "Analyse user earnings history: growth rate, top sources, what to focus on.", "system": 'Financial analyst. Return ONLY valid JSON: {"growth_rate":"...","top_source":"...","monthly_trend":"growing|stable|declining","insight":"3-sentence analysis","next_milestone":"...","recommended_action":"..."}', "free_compatible": True},
     "growth_milestone_check": {"category": "intelligence", "description": "Check wealth stage milestones and tell exactly what to do to reach the next stage.", "system": 'Wealth coach. Return ONLY valid JSON: {"current_stage":"survival|earning|growing|wealth","progress_to_next":0-100,"next_stage":"...","gap":"...","milestones_achieved":["..."],"next_milestones":["..."],"action_to_advance":"The single most impactful thing they can do right now"}', "free_compatible": True},
 }
+
 
 # ═══════════════════════════════════════════════════════════════════
 # CHAT MEMORY MANAGER
@@ -467,9 +504,9 @@ class ModelRouter:
         is_premium = user.get("is_premium", False)
         use_free   = prefer_free if prefer_free is not None else not is_premium
         if use_free or not is_premium:
-            if task_complexity == "simple":  return {"model": FREE_MODELS["fallback"], "provider": "groq",   "tier": "free",    "max_tokens": 2000, "temperature": 0.7}
-            elif task_complexity == "vision": return {"model": FREE_MODELS["vision"],   "provider": "google", "tier": "free",    "max_tokens": 4000, "temperature": 0.7}
-            else:                             return {"model": FREE_MODELS["primary"],  "provider": "google", "tier": "free",    "max_tokens": 4000, "temperature": 0.7}
+            if task_complexity == "simple":   return {"model": FREE_MODELS["fallback"], "provider": "groq",   "tier": "free", "max_tokens": 2000, "temperature": 0.7}
+            elif task_complexity == "vision": return {"model": FREE_MODELS["vision"],   "provider": "google", "tier": "free", "max_tokens": 4000, "temperature": 0.7}
+            else:                             return {"model": FREE_MODELS["primary"],  "provider": "google", "tier": "free", "max_tokens": 4000, "temperature": 0.7}
         else:
             if task_complexity == "reasoning": return {"model": PREMIUM_MODELS["reasoning"], "provider": "openai", "tier": "premium", "max_tokens": 4000, "temperature": 0.7}
             elif task_complexity == "vision":  return {"model": PREMIUM_MODELS["vision"],    "provider": "openai", "tier": "premium", "max_tokens": 4000, "temperature": 0.7}
@@ -627,9 +664,9 @@ def _parse(text: str) -> Dict:
     return out
 
 async def _react_loop(task, profile, budget, hours, currency, permissions, language="en", session_id=None, user_id=None) -> Dict:
-    system = _agent_system(profile, task, budget, hours, currency, permissions, language)
+    system   = _agent_system(profile, task, budget, hours, currency, permissions, language)
     messages = [{"role": "user", "content": f"Begin: {task}"}]
-    memory = []; last_result = {}
+    memory   = []; last_result = {}
     for i in range(1, MAX_REACT_ITERATIONS + 1):
         ctx = ""
         if memory:
@@ -637,16 +674,19 @@ async def _react_loop(task, profile, budget, hours, currency, permissions, langu
                 f"\n[{m['iteration']}] TOOL={m['tool'] or 'NONE'}\nTHOUGHT: {m['thought']}\nRESULT: {m['observation'][:350]}...\n" if len(m['observation']) > 350
                 else f"\n[{m['iteration']}] TOOL={m['tool'] or 'NONE'}\nTHOUGHT: {m['thought']}\nRESULT: {m['observation']}\n"
                 for m in memory) + "\n─── Continue ───"
-        result = await ModelRouter.chat_with_model(messages=messages + ([{"role":"assistant","content":ctx}] if ctx else []), system=system, user=profile, task_complexity="standard", prefer_free=True, max_tokens=800)
+        result      = await ModelRouter.chat_with_model(messages=messages + ([{"role":"assistant","content":ctx}] if ctx else []), system=system, user=profile, task_complexity="standard", prefer_free=True, max_tokens=800)
         last_result = result; turn = _parse(result["content"])
         obs = ""
-        if turn["tool"] and turn["tool"] in TOOLS:   obs = await _execute_tool(turn["tool"], turn["tool_input"] or {"query": task}, profile, permissions, session_id, user_id)
-        elif turn["tool"]:                            obs = json.dumps({"error": f"Tool '{turn['tool']}' not in registry"})
+        if turn["tool"] and turn["tool"] in TOOLS:
+            obs = await _execute_tool(turn["tool"], turn["tool_input"] or {"query": task}, profile, permissions, session_id, user_id)
+        elif turn["tool"]:
+            obs = json.dumps({"error": f"Tool '{turn['tool']}' not in registry"})
         memory.append({"thought": turn["thought"], "tool": turn["tool"], "input": turn["tool_input"], "observation": obs, "iteration": i})
         if session_id and user_id:
             await ChatMemoryManager.save_message(session_id, user_id, "assistant", f"Step {i}: {turn['thought'][:200]}...", {"tool": turn["tool"], "iteration": i, "observation_preview": obs[:200]})
         if turn["done"] or i == MAX_REACT_ITERATIONS: break
     return {"memory": memory, "iterations": len(memory), "model": last_result.get("model","unknown"), "tier": last_result.get("tier","free")}
+
 
 # ═══════════════════════════════════════════════════════════════════
 # QUOTA & UTILITIES
@@ -676,12 +716,10 @@ async def _check_quota(user_id: str, is_premium: bool = False) -> Dict:
         logger.warning(f"Quota check error: {e}")
         return {"allowed": True, "runs_used": 1, "runs_limit": limit, "tier": "free", "via_ad_credit": False, "show_ad": False}
 
-
 async def _award_call_gamification(user_id: str, is_premium: bool) -> Dict:
     xp    = CALL_XP_PREMIUM    if is_premium else CALL_XP_FREE
     coins = CALL_COINS_PREMIUM if is_premium else CALL_COINS_FREE
     return await GamificationManager.award(user_id, xp=xp, coins=coins, reason="api_call")
-
 
 def _sse(event, data) -> str:
     return f"event: {event}\ndata: {json.dumps(data) if not isinstance(data, str) else data}\n\n"
@@ -725,6 +763,253 @@ async def _save_workflow(user_id, task, data, currency, workflow_id=None, sessio
 
 
 # ═══════════════════════════════════════════════════════════════════
+# v7: TOKEN ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════
+
+@router.get("/tokens")
+async def get_token_state(user: dict = Depends(get_current_user)):
+    """Get current user APEX token state."""
+    return await token_service.get_state(user["id"], user.get("is_premium", False))
+
+@router.post("/tokens/ad-grant")
+async def grant_ad_tokens(request: Request, user: dict = Depends(get_current_user)):
+    """Grant tokens after user watches a rewarded ad."""
+    if user.get("is_premium", False):
+        return {"granted": False, "message": "Premium users have unlimited tokens 🎉", "is_premium": True}
+    result = await token_service.grant_ad_tokens(user["id"])
+    if result.get("granted"):
+        await GamificationManager.award(user["id"], xp=AD_REWARD_XP, coins=CALL_COINS_FREE, reason="rewarded_ad_watched")
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════
+# v7: MENTOR → APEX HANDOFF
+# ═══════════════════════════════════════════════════════════════════
+
+@router.post("/handoff")
+@limiter.limit(AI_LIMIT)
+async def handoff_from_mentor(req: HandoffRequest, request: Request, user: dict = Depends(get_current_user)):
+    """
+    Called by Mentor AI or any screen to hand a task to APEX.
+    Returns session_id, template info, and questions to collect before starting.
+    """
+    user_id    = user["id"]
+    is_premium = user.get("is_premium", False)
+
+    tok = await token_service.get_state(user_id, is_premium)
+    if tok["exhausted"] and not is_premium:
+        raise HTTPException(402, {
+            "error": "Token limit reached",
+            "can_watch_ad": tok["can_watch_ad"],
+            "show_subscribe": not tok["can_watch_ad"],
+            "message": "Watch an ad to get more tokens, or upgrade to Premium.",
+            "tokens_remaining": 0,
+        })
+
+    template_key = await classify_task(req.task, ai_service)
+    template     = get_template(template_key) if template_key else None
+
+    session = await ChatMemoryManager.create_session(
+        user_id,
+        title       = f"{'🤖 ' if req.source == 'mentor' else '⚡ '}APEX: {req.task[:40]}",
+        context     = req.context,
+        workflow_id = None,
+    )
+    session_id = session["id"]
+
+    source_label = {"mentor": "Your AI Mentor", "user": "You", "workflow": "Workflow"}.get(req.source, req.source)
+    await ChatMemoryManager.save_message(
+        session_id, user_id, "system",
+        f"**Task from {source_label}:** {req.task}" + (f"\n\nContext: {req.context}" if req.context else ""),
+        {"type": "handoff", "source": req.source, "source_conv_id": req.source_conv_id}
+    )
+
+    questions = []
+    if template:
+        prefilled = req.prefill_answers or {}
+        for q in template.user_questions:
+            if q["key"] not in prefilled:
+                cond = q.get("if")
+                if cond:
+                    k, v = cond.split("==")
+                    if prefilled.get(k.strip()) != v.strip():
+                        continue
+                questions.append(q)
+
+    can_auto = req.auto_start and len(questions) == 0
+
+    return {
+        "session_id":  session_id,
+        "template_key": template_key,
+        "template": {
+            "category":         template.category,
+            "title":            template.title,
+            "platform":         template.platform,
+            "icon":             template.icon,
+            "estimated_tokens": template.estimated_tokens,
+            "needs_browser":    template.needs_browser,
+            "login_required":   template.login_required,
+        } if template else None,
+        "questions":        questions,
+        "estimated_tokens": template.estimated_tokens if template else 200,
+        "needs_browser":    template.needs_browser if template else False,
+        "message": (
+            f"I'll handle this for you! {template.icon if template else '🤖'} Just need a few details first."
+            if questions else
+            f"Starting now! {template.icon if template else '🤖'}"
+        ),
+        "auto_start":  can_auto,
+        "token_state": tok,
+        "source":      req.source,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# v7: BROWSER AUTOMATION
+# ═══════════════════════════════════════════════════════════════════
+
+@router.post("/browser/run")
+@limiter.limit(AI_LIMIT)
+async def run_browser_task(
+    req: BrowserRunRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(get_current_user),
+):
+    """Launch browser automation session. Events streamed via /browser/stream/{session_id}."""
+    user_id    = user["id"]
+    is_premium = user.get("is_premium", False)
+
+    tok = await token_service.get_state(user_id, is_premium)
+    if tok["exhausted"] and not is_premium:
+        raise HTTPException(402, {"error": "Token limit reached", "can_watch_ad": tok["can_watch_ad"]})
+
+    template  = get_template(req.template_key or "") if req.template_key else None
+    start_url = req.start_url or (template.start_url if template else "https://www.google.com")
+    goals     = req.goals     or (template.goals     if template else [req.task])
+
+    answers = req.user_answers or {}
+    resolved_goals = []
+    for goal in goals:
+        for k, v in answers.items():
+            goal = goal.replace(f"{{{k}}}", str(v))
+        resolved_goals.append(goal)
+
+    await ChatMemoryManager.save_message(
+        req.session_id, user_id, "system",
+        f"🌐 Browser task started: {req.task}",
+        {"type": "browser_start", "template": req.template_key, "start_url": start_url}
+    )
+
+    async def _deduct(tool_name: str):
+        return await token_service.deduct(user_id, tool_name, is_premium)
+
+    background_tasks.add_task(
+        _run_browser_background,
+        session_id      = req.session_id,
+        task            = req.task,
+        start_url       = start_url,
+        goals           = resolved_goals,
+        user_id         = user_id,
+        token_deduct_fn = _deduct,
+    )
+
+    return {
+        "started":    True,
+        "session_id": req.session_id,
+        "stream_url": f"/agent/browser/stream/{req.session_id}",
+        "message":    f"🌐 Browser starting for: {req.task}",
+    }
+
+
+async def _run_browser_background(session_id: str, task: str, start_url: str, goals: List[str], user_id: str, token_deduct_fn):
+    try:
+        async for event in BrowserOrchestrator.run(
+            session_id      = session_id,
+            task            = task,
+            start_url       = start_url,
+            goals           = goals,
+            ai_service_ref  = ai_service,
+            token_deduct_fn = token_deduct_fn,
+        ):
+            try:
+                supabase_service.client.table("browser_events").insert({
+                    "session_id":    session_id,
+                    "user_id":       user_id,
+                    "event_type":    event.type,
+                    "event_data":    json.dumps(event.data),
+                    "screenshot_b64": event.screenshot_b64,
+                    "created_at":    datetime.now(timezone.utc).isoformat(),
+                }).execute()
+            except Exception as e:
+                logger.error("Browser event save: %s", e)
+    except Exception as e:
+        logger.error("Browser background run: %s", e)
+        try:
+            supabase_service.client.table("browser_events").insert({
+                "session_id": session_id,
+                "user_id":    user_id,
+                "event_type": "browser_error",
+                "event_data": json.dumps({"message": str(e)}),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }).execute()
+        except Exception: pass
+
+
+@router.get("/browser/stream/{session_id}")
+async def stream_browser_events(session_id: str, request: Request, user: dict = Depends(get_current_user)):
+    """SSE stream of browser events. Frontend connects here for live screenshots and status."""
+    user_id = user["id"]
+    last_id = [0]
+
+    async def gen():
+        yield _sse("connected", {"session_id": session_id})
+        polls = 0
+        while polls < 600:
+            if await request.is_disconnected(): break
+            try:
+                rows = (
+                    supabase_service.client.table("browser_events")
+                    .select("*")
+                    .eq("session_id", session_id)
+                    .eq("user_id", user_id)
+                    .gt("id", last_id[0])
+                    .order("id", desc=False)
+                    .limit(10)
+                    .execute().data or []
+                )
+                for row in rows:
+                    last_id[0] = row["id"]
+                    data = json.loads(row.get("event_data", "{}"))
+                    if row.get("screenshot_b64"):
+                        data["screenshot_b64"] = row["screenshot_b64"]
+                    yield _sse(row["event_type"], data)
+                    if row["event_type"] in ("browser_session_complete", "browser_error", "token_exhausted"):
+                        return
+            except Exception as e:
+                logger.error("Browser SSE poll: %s", e)
+            await asyncio.sleep(1)
+            polls += 1
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.post("/browser/answer")
+async def relay_human_answer(req: BrowserAnswerRequest, user: dict = Depends(get_current_user)):
+    """Relay CAPTCHA / 2FA / question answer back to the running browser session."""
+    ok = BrowserOrchestrator.provide_answer(req.session_id, req.answer)
+    return {"relayed": ok, "session_id": req.session_id}
+
+
+@router.get("/browser/status/{session_id}")
+async def browser_status(session_id: str, user: dict = Depends(get_current_user)):
+    sess = BrowserOrchestrator.get_session(session_id)
+    return {"active": sess is not None and sess.is_alive, "session_id": session_id,
+            "current_url": sess.current_url if sess else ""}
+
+
+# ═══════════════════════════════════════════════════════════════════
 # ADS ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════
 
@@ -762,7 +1047,7 @@ async def list_badges(user: dict = Depends(get_current_user)):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# MAIN AGENT ENDPOINTS — run_agent, run_agent_stream, agent_chat
+# MAIN AGENT ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════
 
 @router.post("/run")
@@ -788,13 +1073,8 @@ async def run_agent(req: AgentRequest, request: Request, user: dict = Depends(ge
         session_id = session["id"]
     await ChatMemoryManager.save_message(session_id, user_id, "user", f"Task: {req.task}\nBudget: {req.budget}\nHours: {req.hours_per_day}", {"type": "agent_request", "budget": req.budget, "hours": req.hours_per_day})
 
-    # ── v5.1: Brain context — search RiseUp internally before ReAct loop ──
     brain_ctx     = await _get_brain_context(req.task, user_id, country)
-    enriched_task = (
-        f"{req.task}\n\n[RISEUP INTERNAL CONTEXT — searched before this run]\n{brain_ctx}"
-        if brain_ctx else req.task
-    )
-    # ──────────────────────────────────────────────────────────────────────
+    enriched_task = (f"{req.task}\n\n[RISEUP INTERNAL CONTEXT — searched before this run]\n{brain_ctx}" if brain_ctx else req.task)
 
     react       = await _react_loop(enriched_task, profile, req.budget or 0, req.hours_per_day or 2, currency, permissions, language, session_id, user_id)
     tier        = "premium" if is_premium and not use_free else "free"
@@ -818,59 +1098,106 @@ async def run_agent_stream(req: AgentRequest, request: Request, user: dict = Dep
     permissions = {"allow_email": req.allow_email, "allow_social_post": req.allow_social_post, "social_tokens": req.social_tokens or {}}
 
     async def stream():
+        # ── Token check ───────────────────────────────────────────
+        tok_state = await token_service.get_state(user_id, is_premium)
+        yield _sse("token_state", tok_state)
+        if tok_state["exhausted"] and not is_premium:
+            yield _sse("token_exhausted", {
+                "can_watch_ad":   tok_state["can_watch_ad"],
+                "show_subscribe": not tok_state["can_watch_ad"],
+                "message":        "Watch an ad to continue, or upgrade to Premium.",
+            })
+            return
+
+        # ── Quota check ───────────────────────────────────────────
         quota = await _check_quota(user_id, is_premium)
         yield _sse("quota_check", {**quota, "runs_remaining": quota["runs_limit"] - quota["runs_used"], "tier": "free" if use_free else "premium"})
         if not quota["allowed"]:
             yield _sse("error", {"message": "Daily run limit reached.", "show_ad": quota.get("show_ad", True), "can_watch_more": quota.get("can_watch_more", True), "resets_at": quota.get("resets_at",""), "tier": quota["tier"]}); return
 
-        session    = await ChatMemoryManager.create_session(user_id, title=f"Stream: {req.task[:30]}...", context=req.context, workflow_id=req.workflow_id)
+        session    = await ChatMemoryManager.create_session(user_id, title=f"⚡ {req.task[:35]}...", context=req.context, workflow_id=req.workflow_id)
         session_id = session["id"]
         await ChatMemoryManager.save_message(session_id, user_id, "user", req.task)
 
-        # ── v5.1: Brain context injection ─────────────────────────────────
+        # ── Brain context ─────────────────────────────────────────
         brain_ctx = await _get_brain_context(req.task, user_id, country)
-        base_task = (
-            f"{req.task}\n\n[RISEUP INTERNAL CONTEXT — searched before this run]\n{brain_ctx}"
-            if brain_ctx else req.task
-        )
+        base_task = (f"{req.task}\n\n[RISEUP INTERNAL CONTEXT — searched before this run]\n{brain_ctx}" if brain_ctx else req.task)
         if brain_ctx:
             yield _sse("brain_context", {"found": True, "message": "✅ Searched RiseUp internally"})
-        # ──────────────────────────────────────────────────────────────────
 
-        system    = _agent_system(profile, base_task, req.budget or 0, req.hours_per_day or 2, currency, permissions, language)
-        messages  = [{"role": "user", "content": f"Begin: {base_task}"}]
-        memory    = []; last_model = "unknown"; tier_used = "free" if use_free else "premium"
+        # ── Template detection ────────────────────────────────────
+        template_key = await classify_task(req.task, ai_service)
+        if template_key:
+            tpl = get_template(template_key)
+            yield _sse("template_detected", {
+                "template_key":     template_key,
+                "title":            tpl.title,
+                "platform":         tpl.platform,
+                "icon":             tpl.icon,
+                "needs_browser":    tpl.needs_browser,
+                "estimated_tokens": tpl.estimated_tokens,
+            })
+
+        system   = _agent_system(profile, base_task, req.budget or 0, req.hours_per_day or 2, currency, permissions, language)
+        messages = [{"role": "user", "content": f"Begin: {base_task}"}]
+        memory   = []; last_model = "unknown"; tier_used = "free" if use_free else "premium"
 
         for i in range(1, MAX_REACT_ITERATIONS + 1):
+            # ── Deduct reasoning token ────────────────────────────
+            tok = await token_service.deduct(user_id, "_reasoning_step", is_premium)
+            if not tok["allowed"]:
+                yield _sse("token_exhausted", {**tok, "can_watch_ad": tok.get("can_watch_ad", True), "show_subscribe": False})
+                break
+            yield _sse("token_update", {"remaining": tok["remaining"], "cost": tok["cost"], "percent_used": tok.get("percent_used", 0), "tool": "_reasoning_step"})
+
             ctx = ""
             if memory:
                 ctx = "\n─── COMPLETED ───\n" + "".join(
                     f"\n[{m['iteration']}] TOOL={m['tool'] or 'NONE'} | {m['observation'][:250]}...\n" if len(m['observation']) > 250
                     else f"\n[{m['iteration']}] TOOL={m['tool'] or 'NONE'} | {m['observation']}\n"
                     for m in memory) + "\n─── Continue ───"
+
             result     = await ModelRouter.chat_with_model(messages=messages + ([{"role":"assistant","content":ctx}] if ctx else []), system=system, user=profile, task_complexity="standard", prefer_free=use_free, max_tokens=800)
             last_model = result.get("model","unknown"); tier_used = result.get("tier", tier_used)
-            turn = _parse(result["content"]); cat = TOOLS.get(turn["tool"] or "", {}).get("category","")
+            turn       = _parse(result["content"])
+            cat        = TOOLS.get(turn["tool"] or "", {}).get("category","")
+
             yield _sse("thinking", {"iteration": i, "thought": turn["thought"], "total": MAX_REACT_ITERATIONS, "model": last_model, "tier": tier_used})
+
             obs = ""
             if turn["tool"] and turn["tool"] in TOOLS:
                 tool_input = turn["tool_input"] or {"query": req.task}
+
+                # ── Deduct tool token ─────────────────────────────
+                tok2 = await token_service.deduct(user_id, turn["tool"], is_premium)
+                if not tok2["allowed"]:
+                    yield _sse("token_exhausted", {**tok2, "can_watch_ad": tok2.get("can_watch_ad", True)}); break
+                yield _sse("token_update", {"remaining": tok2["remaining"], "cost": tok2["cost"], "percent_used": tok2.get("percent_used", 0), "tool": turn["tool"]})
+
                 yield _sse("tool_call", {"iteration": i, "tool": turn["tool"], "category": cat, "input": tool_input})
                 obs = await _execute_tool(turn["tool"], tool_input, profile, permissions, session_id, user_id)
-                try: preview = json.loads(obs)
+                try:    preview = json.loads(obs)
                 except: preview = {"raw": obs[:300]}
                 yield _sse("tool_result", {"iteration": i, "tool": turn["tool"], "category": cat, "preview": str(obs)[:350]})
                 if cat == "action": yield _sse("action_done", {"tool": turn["tool"], "result": preview})
-            elif turn["tool"]: obs = json.dumps({"error": f"Unknown tool: {turn['tool']}"})
+
+            elif turn["tool"]:
+                obs = json.dumps({"error": f"Unknown tool: {turn['tool']}"})
+
             memory.append({"thought": turn["thought"], "tool": turn["tool"], "input": turn["tool_input"], "observation": obs, "iteration": i})
             if turn["done"] or i == MAX_REACT_ITERATIONS: break
+
+        # ── Deduct final synthesis ────────────────────────────────
+        await token_service.deduct(user_id, "_final_synthesis", is_premium)
 
         yield _sse("finalizing", {"message": "Writing your complete plan...", "model": last_model})
         agent_data  = await _finalize(req.task, memory, currency, language, tier_used)
         workflow_id = await _save_workflow(user_id, req.task, agent_data, currency, req.workflow_id, session_id)
         await ChatMemoryManager.save_message(session_id, user_id, "assistant", json.dumps(agent_data), {"type": "stream_complete", "workflow_id": workflow_id})
-        gami = await _award_call_gamification(user_id, is_premium)
-        yield _sse("complete", {**agent_data, "workflow_id": workflow_id, "session_id": session_id, "model_used": last_model, "model_tier": tier_used, "iterations": len(memory), "task": req.task, "quota": quota, "gamification": gami, "via_ad_credit": quota.get("via_ad_credit", False)})
+        gami      = await _award_call_gamification(user_id, is_premium)
+        final_tok = await token_service.get_state(user_id, is_premium)
+
+        yield _sse("complete", {**agent_data, "workflow_id": workflow_id, "session_id": session_id, "model_used": last_model, "model_tier": tier_used, "iterations": len(memory), "task": req.task, "quota": quota, "gamification": gami, "via_ad_credit": quota.get("via_ad_credit", False), "token_state": final_tok})
 
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Access-Control-Allow-Origin": "*"})
 
@@ -903,12 +1230,9 @@ async def agent_chat(req: AgentChatRequest, request: Request, user: dict = Depen
     db_messages = await ChatMemoryManager.get_messages(session_id, user_id, limit=req.history_limit)
     history     = [{"role": m["role"], "content": m["content"]} for m in db_messages if not m.get("is_summary")]
 
-    # ── v5.1: Brain context — search RiseUp + adaptive profile before responding ──
-    country     = profile.get("country", "US")
-    brain_ctx   = await _get_brain_context(req.message, user_id, country)
-    base_system = _chat_system(profile, session_context, language)
-    system      = base_system + ("\n\n" + brain_ctx if brain_ctx else "")
-    # ──────────────────────────────────────────────────────────────────────────────
+    country   = profile.get("country", "US")
+    brain_ctx = await _get_brain_context(req.message, user_id, country)
+    system    = _chat_system(profile, session_context, language) + ("\n\n" + brain_ctx if brain_ctx else "")
 
     history.append({"role": "user", "content": req.message})
     result     = await ModelRouter.chat_with_model(messages=history, system=system, user=user, task_complexity="standard", prefer_free=use_free, max_tokens=2500, stream=req.stream)
@@ -1020,7 +1344,6 @@ async def execute_tool(req: ExecuteToolRequest, request: Request, user: dict = D
     gami = await _award_call_gamification(user["id"], user.get("is_premium", False))
     return {"tool": req.tool, "output": output, "session_id": req.session_id, "gamification": gami}
 
-
 @router.post("/quick")
 @limiter.limit(FREE_TIER_LIMIT)
 async def quick_execute(req: QuickRequest, request: Request, user: dict = Depends(get_current_user_optional)):
@@ -1031,7 +1354,6 @@ async def quick_execute(req: QuickRequest, request: Request, user: dict = Depend
         system=f"You are APEX for users in {profile.get('country','US')}. TASK: {req.task}. Produce COMPLETE ready-to-use output. Use {profile.get('currency','USD')}. Respond in {req.language or profile.get('language','en')}.",
         user=user or {"is_premium": False}, task_complexity="simple", prefer_free=True, max_tokens=1800)
     return {"output": result["content"], "task": req.task, "model_used": result["model"], "model_tier": result["tier"], "language": req.language or profile.get("language","en")}
-
 
 @router.post("/analyze")
 @limiter.limit(AI_LIMIT)
@@ -1048,7 +1370,6 @@ async def analyze(req: AnalyzeRequest, request: Request, user: dict = Depends(ge
     gami = await _award_call_gamification(user["id"], is_premium)
     return {"analysis": output, "model_used": result["model"], "model_tier": result["tier"], "gamification": gami}
 
-
 @router.post("/scan")
 @limiter.limit(AI_LIMIT)
 async def scan(req: ScanRequest, request: Request, user: dict = Depends(get_current_user)):
@@ -1061,28 +1382,6 @@ async def scan(req: ScanRequest, request: Request, user: dict = Depends(get_curr
 # ═══════════════════════════════════════════════════════════════════
 # GROWTH AI ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════
-
-class OpportunitySearchRequest(BaseModel):
-    query: Optional[str]=None; types: Optional[List[str]]=None; max_results: int=20; score_with_ai: bool=True; session_id: Optional[str]=None
-
-class MarketAnalysisRequest(BaseModel):
-    industry: str; skill: Optional[str]=None; location: Optional[str]=None
-
-class DailyPlanRequest(BaseModel):
-    goal: Optional[str]=None; timeframe: Optional[str]="today"; session_id: Optional[str]=None
-
-class ScoreOpportunityRequest(BaseModel):
-    opportunity: Dict[str,Any]; session_id: Optional[str]=None
-
-class FollowUpRequest(BaseModel):
-    context: str; session_id: Optional[str]=None
-
-class EarningInsightRequest(BaseModel):
-    earnings: List[Dict[str,Any]]; session_id: Optional[str]=None
-
-class MilestoneRequest(BaseModel):
-    monthly_income: Optional[float]=None; session_id: Optional[str]=None
-
 
 @router.post("/opportunities/search")
 @limiter.limit(AI_LIMIT)
@@ -1193,7 +1492,8 @@ async def get_quota(user: dict = Depends(get_current_user)):
         sb = supabase_service.client; row = sb.table("agent_run_quota").select("runs_used").eq("quota_key", key).maybe_single().execute()
         used = row.data["runs_used"] if row.data else 0
         ad_state = await AdManager.get_credits(user_id) if not is_premium else {}
-        return {"runs_used": used, "runs_limit": limit, "runs_remaining": limit - used, "tier": "premium" if is_premium else "free", "ad_credits": ad_state.get("credits_available",0) if not is_premium else None, "show_ad_prompt": (used >= limit and not is_premium and ad_state.get("can_watch_more",True))}
+        tok_state = await token_service.get_state(user_id, is_premium)
+        return {"runs_used": used, "runs_limit": limit, "runs_remaining": limit - used, "tier": "premium" if is_premium else "free", "ad_credits": ad_state.get("credits_available",0) if not is_premium else None, "show_ad_prompt": (used >= limit and not is_premium and ad_state.get("can_watch_more",True)), "token_state": tok_state}
     except Exception: return {"runs_used": 0, "runs_limit": limit, "runs_remaining": limit, "tier": "premium" if is_premium else "free", "ad_credits": 0}
 
 @router.get("/tools")
@@ -1204,3 +1504,17 @@ async def list_tools():
 async def list_models(user: dict = Depends(get_current_user)):
     is_premium = user.get("is_premium",False)
     return {"tier": "premium" if is_premium else "free", "models": {"free": FREE_MODELS if not is_premium else {**FREE_MODELS,"note":"Also available as fallback"}, "premium": PREMIUM_MODELS if is_premium else {"message":"Upgrade to access premium models"}}, "current_limits": {"daily_runs": PREMIUM_DAILY_RUNS if is_premium else DEFAULT_DAILY_RUNS, "max_chat_history": MAX_CHAT_HISTORY, "ad_credits_per_day": MAX_AD_CREDITS_PER_DAY if not is_premium else 0}}
+
+@router.get("/workflow-templates")
+async def list_workflow_templates(user: dict = Depends(get_current_user)):
+    """List all available workflow templates for the APEX task router."""
+    return {
+        "total": len(WORKFLOW_TEMPLATES),
+        "templates": [
+            {"key": k, "title": t.title, "category": t.category,
+             "platform": t.platform, "icon": t.icon,
+             "needs_browser": t.needs_browser, "estimated_tokens": t.estimated_tokens}
+            for k, t in WORKFLOW_TEMPLATES.items()
+        ]
+    }
+
