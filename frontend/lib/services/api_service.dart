@@ -1,9 +1,19 @@
 // frontend/lib/services/api_service.dart
+//
+// Changes vs original:
+//  • _addAuthInterceptor: when refresh fails → authService.onAuthenticationFailed()
+//    This clears storage AND triggers GoRouter to redirect to /login instantly.
+//    Previously the bad token stayed in storage and EVERY subsequent call failed
+//    with "authentication error" until the user manually killed the app.
+//  • signIn now calls authService.onLoginSuccess()
+//  • signOut now calls authService.onLogout()
+//
 import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:path/path.dart' as p;
 import '../config/app_constants.dart';
 import '../utils/storage_service.dart';
+import 'auth_service.dart'; // ← NEW
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Custom exception so every screen can handle errors uniformly
@@ -104,6 +114,7 @@ class ApiService {
           _isRefreshing = false;
 
           if (refreshed) {
+            // Token refreshed — retry the original request
             final token = await storageService.read(key: 'access_token');
             error.requestOptions.headers['Authorization'] = 'Bearer $token';
             try {
@@ -112,6 +123,14 @@ class ApiService {
             } catch (_) {
               return handler.next(error);
             }
+          } else {
+            // FIX: Refresh also failed — session is dead.
+            // Clear tokens + flip auth state → GoRouter redirects to /login.
+            // Previously this was a silent failure that left bad tokens in
+            // storage, causing every subsequent call to show "authentication
+            // error" until the user killed and reinstalled the app.
+            await authService.onAuthenticationFailed();
+            return handler.next(error);
           }
         }
         return handler.next(error);
@@ -214,13 +233,18 @@ class ApiService {
           key: 'refresh_token', value: data['refresh_token'] as String);
       await storageService.write(
           key: 'user_id', value: data['user_id'] as String);
+
+      // FIX: Tell authService login succeeded → GoRouter redirect fires → /home
+      authService.onLoginSuccess();
+
       return data;
     } catch (e) { throw _handleError(e); }
   }
 
   Future<void> signOut() async {
     try { await _dio.post('/auth/signout', data: {}); } catch (_) {}
-    await storageService.deleteAll();
+    // FIX: Use authService.onLogout() which also clears Supabase session
+    await authService.onLogout();
   }
 
   Future<Map<String, dynamic>> forgotPassword(String email) async {
@@ -1046,13 +1070,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Load messages for a conversation, with optional incremental polling.
-  ///
-  /// [since] — ISO 8601 timestamp; when provided, only messages created
-  ///           after this timestamp are returned (used by the poller).
-  /// Response must be either:
-  ///   { "messages": [...] }   ← preferred
-  ///   [...]                   ← flat list also accepted
   Future<List<Map<String, dynamic>>> getDMMessages(
     String conversationId, {
     int limit = 50,
@@ -1080,11 +1097,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Send a peer-to-peer DM.
-  ///
-  /// Response must include the created message's UUID in one of:
-  ///   { "message": { "id": "<uuid>", ... } }   ← preferred
-  ///   { "id": "<uuid>", ... }                   ← flat also accepted
   Future<Map<String, dynamic>> sendDMMessage(
       String conversationId, String content) async {
     try {
@@ -1095,16 +1107,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Send a message to the AI mentor inside a messages-system conversation.
-  ///
-  /// [contextHistory] — the last N turns of the conversation passed as
-  ///   [{role: 'user'|'assistant', content: '...'}] so the AI has memory
-  ///   even if the backend doesn't query DB history on its own.
-  ///
-  /// Response must include at minimum:
-  ///   { "content": "<AI reply text>", ... }
-  /// Optionally:
-  ///   { "content": "...", "quota": {...}, "user_message_id": "<uuid>" }
   Future<Map<String, dynamic>> sendAIMessageInDM(
     String conversationId,
     String content, {
@@ -1124,11 +1126,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Get / sync the AI quota for the current user.
-  ///
-  /// Response shape:
-  ///   { "free_used": int, "ads_today": int, "is_premium": bool,
-  ///     "window_expires": "ISO8601"|null }
   Future<Map<String, dynamic>> getAIQuota() async {
     try {
       final r = await _dio.get('/messages/ai-quota');
@@ -1136,11 +1133,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Gets (or creates) the dedicated user ↔ AI conversation in the
-  /// messages system. Idempotent — safe to call on every screen open.
-  ///
-  /// Tries GET first; falls back to POST if not found (404).
-  /// Response must include: { "conversation_id": "<uuid>" }
   Future<String> getOrCreateAIConversation() async {
     try {
       final r = await _dio.get('/messages/ai-conversation');
@@ -1175,13 +1167,6 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Remove the AI mentor from a group/DM conversation.
-  ///
-  /// Called from conversation_screen when the user taps "Remove AI".
-  /// Maps to: DELETE /messages/conversations/{id}/remove-ai
-  ///
-  /// Response shape (backend):
-  ///   { "success": true, "message": "AI removed from conversation" }
   Future<Map<String, dynamic>> removeAIFromConversation(
       String conversationId) async {
     try {
@@ -1505,9 +1490,7 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // ── METHODS BRAIN
-  // ══════════════════════════════════════════════════════════════════════════
+  // ── Methods Brain ─────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> brainMentorChat({
     required String message,
@@ -1534,8 +1517,6 @@ class ApiService {
       return r.data as Map<String, dynamic>;
     } catch (e) { throw _handleError(e); }
   }
-
-  // ── Income Methods Library ────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> getBrainMethods({
     String? investmentTier,
@@ -1618,8 +1599,6 @@ class ApiService {
       return r.data as Map<String, dynamic>;
     } catch (e) { throw _handleError(e); }
   }
-
-  // ── Positioning Quiz ──────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> savePositioning(
       Map<String, dynamic> data) async {
@@ -1778,9 +1757,7 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // ── ADAPTIVE BRAIN SIGNALS
-  // ══════════════════════════════════════════════════════════════════════════
+  // ── Adaptive Brain Signals ────────────────────────────────────────────────
 
   Future<Map<String, dynamic>?> recordPostSignal({
     required String postId,
@@ -1794,9 +1771,7 @@ class ApiService {
         if (tag != null) 'tag': tag,
       });
       return r.data as Map<String, dynamic>?;
-    } catch (_) {
-      return null;
-    }
+    } catch (_) { return null; }
   }
 
   Future<void> recordInteractionSignal({
