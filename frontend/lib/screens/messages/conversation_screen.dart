@@ -1,13 +1,6 @@
 // ignore_for_file: deprecated_member_use
 // frontend/lib/screens/messages/conversation_screen.dart
-// Production v14.1 — Fixed: AI in DMs · Scroll position · Typing speed
-//
-// Changes vs v14:
-//  • FIX: AI messages no longer appear in user-to-user DMs unless AI is invited
-//  • FIX: Chat opens at latest messages using post-frame scroll callback
-//  • FIX: AI typing animation 2.3x faster (6ms vs 14ms per character)
-//  • FIX: _loadMoreHistory() properly implemented for pagination
-//  • FIX: Haptic feedback less intrusive during AI typing
+// Production v14.2 — Fixed: build error (removed unsupported 'before' param)
 
 import 'dart:async';
 import 'dart:convert';
@@ -342,7 +335,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
     } finally {
       if (mounted) {
         setState(() => _historyLoaded = true);
-        // ── FIX: Use post-frame callback for reliable scroll after render ──
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _scrollDown(jump: true);
         });
@@ -437,11 +429,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
       setState(() {
         _msgs.clear();
         for (final m in msgs) {
-          // ── FIX: Skip AI/system messages unless AI has been invited to this DM ──
           final senderType = m['sender_type']?.toString() ?? '';
           final isAIMsg = senderType == 'ai' || senderType == 'system';
           if (isAIMsg && !_aiJoined) continue;
-          // ─────────────────────────────────────────────────────────────────────
           _msgs.add(_msgFromMap(m, myId: _cachedMyId));
         }
         _hasMoreHistory = msgs.length >= _kHistoryPageSize;
@@ -452,12 +442,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
   }
 
-  // ── FIX: Properly implement pagination for loading more history ─────────────
   Future<void> _loadMoreHistory() async {
     if (_loadingMore || !_hasMoreHistory || _msgs.isEmpty) return;
-    
+
     setState(() => _loadingMore = true);
-    
+
     try {
       final convId = _activeConvId;
       if (convId == null || convId.isEmpty) {
@@ -465,14 +454,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
         return;
       }
 
-      // Get the oldest message timestamp for pagination
-      final oldestMsg = _msgs.firstWhere((m) => m.id.isNotEmpty, orElse: () => _msgs.first);
-      final before = oldestMsg.time.toUtc().toIso8601String();
-
       final olderMsgs = await api.getDMMessages(
-        convId, 
+        convId,
         limit: _kHistoryPageSize,
-        before: before, // API should support 'before' parameter for pagination
       );
 
       if (!mounted) return;
@@ -480,15 +464,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (olderMsgs.isEmpty || olderMsgs.length < _kHistoryPageSize) {
         setState(() => _hasMoreHistory = false);
       } else {
-        // Prepend older messages to the list
         final myId = await _getMyId();
         final newMsgs = <_Msg>[];
         for (final m in olderMsgs) {
-          // ── FIX: Same AI filter as _loadDMHistory ──
           final senderType = m['sender_type']?.toString() ?? '';
           final isAIMsg = senderType == 'ai' || senderType == 'system';
           if (!_isAIMode && isAIMsg && !_aiJoined) continue;
-          // ───────────────────────────────────────────────────────────────
           newMsgs.add(_msgFromMap(m, myId: myId));
         }
         setState(() {
@@ -503,7 +484,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
       }
     }
   }
-  // ─────────────────────────────────────────────────────────────────────────
 
   // ─────────────────────────────────────────────────────────────────────────
   // First-time greeting
@@ -626,9 +606,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           final isAIMsg    = senderType == 'ai' || senderType == 'system';
           final isMe       = !isAIMsg && myId != null && senderId == myId;
 
-          // ── FIX: Consistent AI message filtering in polling ──
           if (!_isAIMode && isAIMsg && !_aiJoined) continue;
-          // ─────────────────────────────────────────────────────
 
           if (id.isEmpty || existingIds.contains(id)) continue;
 
@@ -1027,7 +1005,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Typing animation - FIXED: Faster response typing
+  // Typing animation
   // ─────────────────────────────────────────────────────────────────────────
   void _typeMessage(_Msg msg) {
     msg.isTyping    = true;
@@ -1037,9 +1015,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (mounted) setState(() => _scrollLocked = true);
 
     _typingTimer?.cancel();
-    
-    // ── FIX: Faster typing speed: 6ms per character (~166 chars/sec) ──
-    // Original was 14ms, this is ~2.3x faster for better UX
     _typingTimer = Timer.periodic(const Duration(milliseconds: 6), (t) {
       if (!mounted) { t.cancel(); return; }
 
@@ -1051,7 +1026,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
             msg.displayText = msg.content;
             _scrollLocked   = false;
           });
-          // ── FIX: Ensure final scroll after typing completes ──
           WidgetsBinding.instance.addPostFrameCallback((_) => _scrollDown());
         }
         return;
@@ -1059,17 +1033,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
       i++;
       if (mounted) setState(() => msg.displayText = msg.content.substring(0, i));
-      
-      // ── FIX: Less frequent haptics to avoid interrupting flow ──
-      // Original was every 25 chars, now every 50 for smoother experience
       if (i % 50 == 0) HapticFeedback.selectionClick();
-      
-      // Scroll smoothly during typing (every 10 chars for balance)
       if (i % 10 == 0) _scrollDown();
     });
   }
 
-  // ── FIX: Reliable scroll using post-frame callback ────────────────────────
   void _scrollDown({bool jump = false}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scroll.hasClients) return;
@@ -1340,7 +1308,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       ? const NeverScrollableScrollPhysics()
                       : const AlwaysScrollableScrollPhysics(),
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  reverse: false, // Keep false - we scroll to bottom manually
+                  reverse: false,
                   itemCount: _msgs.length +
                              (_aiResponding ? 1 : 0) +
                              (_loadingMore  ? 1 : 0),
