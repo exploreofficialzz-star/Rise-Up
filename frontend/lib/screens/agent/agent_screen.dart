@@ -417,7 +417,8 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
           final streamUrl = r['stream_url']?.toString() ?? '';
           if (streamUrl.isNotEmpty) {
             try {
-              final stream = api.streamGet(streamUrl);
+              // FIX: use streamPost instead of streamGet (streamGet not defined on ApiService)
+              final stream = api.streamPost(streamUrl, {});
               await for (final event in stream) { if (!mounted) break; _handleSSE(event); }
             } catch (_) {}
           }
@@ -438,7 +439,8 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
         adWatchesLeft: _tokenState.adWatchesLeft,
         onWatchAd: () async {
           Navigator.pop(context);
-          final ok = await adManager.watchRewardedAd(context);
+          // FIX: use watchAdForAgentUse — watchRewardedAd is not defined on AdManager
+          final ok = await adManager.watchAdForAgentUse(context);
           if (ok && mounted) {
             try {
               final r = await api.post('/agent/tokens/ad-grant', {});
@@ -783,6 +785,9 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
       });
   }
 
+  // FIX: Added missing closing ')' for Expanded widget — original had only 4 closing
+  // parens after fromLTRB, but 5 are needed: InputDecoration, TextField, ClipRRect,
+  // Container, Expanded.
   Widget _inputBar(bool isDark, List<Color> gc) {
     final hintColor   = isDark ? Colors.white.withOpacity(0.30) : Colors.black.withOpacity(0.30);
     final inputBg     = isDark ? const Color(0xFF191919) : const Color(0xFFF3F3F5);
@@ -806,7 +811,7 @@ class _AgentScreenState extends ConsumerState<AgentScreen>
               hintStyle: TextStyle(fontSize: 16, color: hintColor),
               border: InputBorder.none, enabledBorder: InputBorder.none,
               focusedBorder: InputBorder.none, disabledBorder: InputBorder.none,
-              contentPadding: const EdgeInsets.fromLTRB(18, 14, 18, 14))))),
+              contentPadding: const EdgeInsets.fromLTRB(18, 14, 18, 14)))))),
         const SizedBox(width: 10),
         AnimatedBuilder(animation: _starCtrl, builder: (_, __) {
           final active = !_isStreaming;
@@ -1525,3 +1530,5 @@ class _LimitSheet extends StatelessWidget {
       ]));
   }
 }
+
+// ignore_for_file: deprecated_member_use
