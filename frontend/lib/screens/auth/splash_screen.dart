@@ -1,5 +1,5 @@
 // frontend/lib/screens/auth/splash_screen.dart
-// v2.3 — 2 second splash visibility before router navigates
+// v2.4 — always navigates after 2s delay regardless of auth status
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -33,19 +33,24 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<void> _navigate() async {
-    // Show splash for 2 seconds before letting the router navigate
+    // Always show splash for exactly 2 seconds
     await Future.delayed(const Duration(milliseconds: 2000));
     if (!mounted) return;
 
-    // Safety net — only needed if authService.initialize() somehow
-    // hasn't completed yet (extremely rare, storage reads take <5ms)
-    if (authService.status == AuthStatus.unknown) {
+    // Resolve auth — prefer live status, fall back to stored token
+    final bool isLoggedIn;
+    if (authService.status == AuthStatus.authenticated) {
+      isLoggedIn = true;
+    } else if (authService.status == AuthStatus.unauthenticated) {
+      isLoggedIn = false;
+    } else {
+      // status is still unknown — check token directly
       final token = await storageService.read(key: 'access_token');
       if (!mounted) return;
-      context.go(
-        (token != null && token.isNotEmpty) ? '/home' : '/login',
-      );
+      isLoggedIn = token != null && token.isNotEmpty;
     }
+
+    context.go(isLoggedIn ? '/home' : '/login');
   }
 
   @override
