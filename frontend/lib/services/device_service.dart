@@ -1,11 +1,11 @@
 // frontend/lib/services/device_service.dart
-// Generates + persists a unique device ID used for refresh token binding
+// v1.1 — fixed import path for storage_service
 
 import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
-import 'storage_service.dart';
+import '../utils/storage_service.dart';
 
 class DeviceService {
   DeviceService._();
@@ -14,10 +14,8 @@ class DeviceService {
   static const _kDeviceIdKey = 'riseup_device_id';
 
   /// Returns a stable device ID — generated once, stored forever.
-  /// Even after logout the device ID persists so the backend can
-  /// recognise returning devices.
+  /// Persists across logouts so the backend always recognises this device.
   Future<String> getDeviceId() async {
-    // Return cached value if already fetched this session
     final stored = await storageService.read(key: _kDeviceIdKey);
     if (stored != null && stored.isNotEmpty) return stored;
 
@@ -28,7 +26,7 @@ class DeviceService {
         id = 'web-${const Uuid().v4()}';
       } else if (Platform.isAndroid) {
         final android = await info.androidInfo;
-        id = android.id; // stable hardware ID
+        id = android.id;
       } else if (Platform.isIOS) {
         final ios = await info.iosInfo;
         id = ios.identifierForVendor ?? const Uuid().v4();
