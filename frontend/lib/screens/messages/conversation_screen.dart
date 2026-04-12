@@ -1,6 +1,6 @@
 // ignore_for_file: deprecated_member_use
 // frontend/lib/screens/messages/conversation_screen.dart
-// Production v14.2 — Fixed: build error (removed unsupported 'before' param)
+// Production v14.3 — Quota v2 (3hr cycle lock + daily lock), msg cache, AI invite removed from DMs
 
 import 'dart:async';
 import 'dart:convert';
@@ -23,16 +23,19 @@ import '../../services/api_service.dart';
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
-const int _kFreeMessages   = 3;
-const int _kAdsPerCycle    = 2;
-const int _kMsgsPerCycle   = 3;
-const int _kMaxAdMessages  = 30;
-const Duration _kLockoutDur = Duration(hours: 4);
+const int _kFreeMessages        = 3;
+const int _kAdsPerCycle         = 2;
+const int _kMsgsPerCycle        = 3;
+const int _kMaxResponses        = 30;
+const Duration _kCycleLockoutDur = Duration(hours: 3);
+const Duration _kDailyLockoutDur = Duration(hours: 24);
 
-const String _kQuotaPrefsKey  = 'riseup_ai_quota_v3';
-const String _kAiConvIdKey    = 'riseup_ai_conv_id_v2';
-const String _kGreetedPrefix  = 'riseup_ai_greeted_v2_';
-const String _kPollTimePrefix = 'riseup_poll_time_v1_';
+const String _kQuotaPrefsKey      = 'riseup_ai_quota_v4';
+const String _kAiConvIdKey        = 'riseup_ai_conv_id_v2';
+const String _kGreetedPrefix      = 'riseup_ai_greeted_v2_';
+const String _kPollTimePrefix     = 'riseup_poll_time_v1_';
+const String _kMsgCachePrefix     = 'riseup_msgs_cache_v1_';
+const String _kMsgCacheTimePrefix = 'riseup_msgs_ctime_v1_';
 
 const int _kContextWindow   = 50;
 const int _kHistoryPageSize = 100;
@@ -69,7 +72,7 @@ class _Msg {
   String get fingerprint => '${isMe ? "u" : "a"}:${content.trim().hashCode}';
 }
 
-enum _QuotaResult { allowed, showAdGate, hardLockout }
+enum _QuotaResult { allowed, showAdGate, cycleLockout, hardLockout }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ConversationScreen widget
@@ -104,12 +107,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
   bool _historyLoaded    = false;
   bool _aiResponding     = false;
   bool _dmSending        = false;
-  bool _aiJoined         = false;
   bool _convInitializing = false;
   bool _scrollLocked     = false;
   bool _loadingMore      = false;
   bool _hasMoreHistory   = true;
-  bool _removingAI       = false;
 
   String? _aiConvId;
   String? _lastPollTime;
@@ -120,34 +121,52 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Timer? _pollTimer;
 
   Map<String, dynamic> _quota = {
-    'free_used'    : 0,
-    'cycle_ads'    : 0,
-    'cycle_msgs'   : 0,
-    'total_ad_msgs': 0,
-    'lockout_until': null,
-    'is_premium'   : false,
+    'free_used'           : 0,
+    'cycle_ads'           : 0,
+    'cycle_msgs'          : 0,
+    'total_responses'     : 0,
+    'cycle_lockout_until' : null,
+    'daily_lockout_until' : null,
+    'is_premium'          : false,
   };
 
   bool get _isAIMode    => widget.isAI || widget.userId == 'ai';
   bool get _isSending   => _aiResponding || _dmSending;
   String? get _activeConvId => _isAIMode ? _aiConvId : widget.userId;
 
-  bool get _isPremium    => _quota['is_premium'] == true;
-  int  get _freeUsed     => (_quota['free_used']     as int?) ?? 0;
-  int  get _cycleAds     => (_quota['cycle_ads']     as int?) ?? 0;
-  int  get _cycleMsgs    => (_quota['cycle_msgs']    as int?) ?? 0;
-  int  get _totalAdMsgs  => (_quota['total_ad_msgs'] as int?) ?? 0;
+  bool get _isPremium       => _quota['is_premium'] == true;
+  int  get _freeUsed        => (_quota['free_used']       as int?) ?? 0;
+  int  get _cycleAds        => (_quota['cycle_ads']       as int?) ?? 0;
+  int  get _cycleMsgs       => (_quota['cycle_msgs']      as int?) ?? 0;
+  int  get _totalResponses  => (_quota['total_responses'] as int?) ?? 0;
 
-  bool get _inLockout {
-    final exp = _quota['lockout_until'] as String?;
+  bool get _inDailyLockout {
+    final exp = _quota['daily_lockout_until'] as String?;
     if (exp == null) return false;
     final dt = DateTime.tryParse(exp);
     if (dt == null) return false;
     if (DateTime.now().isAfter(dt)) {
-      _quota['lockout_until']  = null;
-      _quota['total_ad_msgs']  = 0;
-      _quota['cycle_ads']      = 0;
-      _quota['cycle_msgs']     = 0;
+      _quota['daily_lockout_until'] = null;
+      _quota['total_responses']     = 0;
+      _quota['cycle_lockout_until'] = null;
+      _quota['cycle_ads']           = 0;
+      _quota['cycle_msgs']          = 0;
+      _saveQuota();
+      return false;
+    }
+    return true;
+  }
+
+  bool get _inCycleLockout {
+    if (_inDailyLockout) return false;
+    final exp = _quota['cycle_lockout_until'] as String?;
+    if (exp == null) return false;
+    final dt = DateTime.tryParse(exp);
+    if (dt == null) return false;
+    if (DateTime.now().isAfter(dt)) {
+      _quota['cycle_lockout_until'] = null;
+      _quota['cycle_ads']           = 0;
+      _quota['cycle_msgs']          = 0;
       _saveQuota();
       return false;
     }
@@ -156,6 +175,58 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   bool get _cycleActive =>
       _cycleAds >= _kAdsPerCycle && _cycleMsgs < _kMsgsPerCycle;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Cache helpers
+  // ─────────────────────────────────────────────────────────────────────────
+  String get _convCacheKey =>
+      '$_kMsgCachePrefix${_isAIMode ? 'ai' : widget.userId}';
+  String get _convCacheTimeKey =>
+      '$_kMsgCacheTimePrefix${_isAIMode ? 'ai' : widget.userId}';
+
+  Future<void> _saveMessageCache(List<_Msg> msgs) async {
+    try {
+      final prefs   = await SharedPreferences.getInstance();
+      final encoded = jsonEncode(msgs
+          .where((m) => !m.isError && m.content.isNotEmpty)
+          .map((m) => {
+                'id'     : m.id,
+                'content': m.content,
+                'sender' : m.sender,
+                'avatar' : m.avatar,
+                'isMe'   : m.isMe,
+                'isAI'   : m.isAI,
+                'time'   : m.time.toIso8601String(),
+              })
+          .toList());
+      await prefs.setString(_convCacheKey, encoded);
+      await prefs.setString(
+          _convCacheTimeKey, DateTime.now().toIso8601String());
+    } catch (_) {}
+  }
+
+  Future<List<_Msg>?> _loadMessageCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw   = prefs.getString(_convCacheKey);
+      if (raw == null) return null;
+      final list  = jsonDecode(raw) as List;
+      return list
+          .map((m) => _Msg(
+                id     : m['id']?.toString(),
+                content: m['content']?.toString() ?? '',
+                sender : m['sender']?.toString()  ?? '',
+                avatar : m['avatar']?.toString()  ?? '',
+                isMe   : m['isMe'] == true,
+                isAI   : m['isAI'] == true,
+                time   : DateTime.tryParse(m['time']?.toString() ?? '')
+                             ?.toLocal(),
+              ))
+          .toList();
+    } catch (_) {
+      return null;
+    }
+  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Lifecycle
@@ -225,11 +296,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
         final local = Map<String, dynamic>.from(jsonDecode(raw) as Map);
         if (mounted) {
           setState(() {
-            _quota['free_used']     = (local['free_used']     as int?) ?? 0;
-            _quota['cycle_ads']     = (local['cycle_ads']     as int?) ?? 0;
-            _quota['cycle_msgs']    = (local['cycle_msgs']    as int?) ?? 0;
-            _quota['total_ad_msgs'] = (local['total_ad_msgs'] as int?) ?? 0;
-            _quota['lockout_until'] =  local['lockout_until'] as String?;
+            _quota['free_used']           = (local['free_used']           as int?) ?? 0;
+            _quota['cycle_ads']           = (local['cycle_ads']           as int?) ?? 0;
+            _quota['cycle_msgs']          = (local['cycle_msgs']          as int?) ?? 0;
+            _quota['total_responses']     = (local['total_responses']     as int?) ?? 0;
+            _quota['cycle_lockout_until'] =  local['cycle_lockout_until'] as String?;
+            _quota['daily_lockout_until'] =  local['daily_lockout_until'] as String?;
           });
         }
       }
@@ -250,36 +322,46 @@ class _ConversationScreenState extends State<ConversationScreen> {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_kQuotaPrefsKey, jsonEncode({
-        'free_used'    : _freeUsed,
-        'cycle_ads'    : _cycleAds,
-        'cycle_msgs'   : _cycleMsgs,
-        'total_ad_msgs': _totalAdMsgs,
-        'lockout_until': _quota['lockout_until'],
+        'free_used'           : _freeUsed,
+        'cycle_ads'           : _cycleAds,
+        'cycle_msgs'          : _cycleMsgs,
+        'total_responses'     : _totalResponses,
+        'cycle_lockout_until' : _quota['cycle_lockout_until'],
+        'daily_lockout_until' : _quota['daily_lockout_until'],
       }));
     } catch (_) {}
   }
 
   _QuotaResult _checkAIQuota() {
-    if (_isPremium)  return _QuotaResult.allowed;
-    if (_inLockout)  return _QuotaResult.hardLockout;
+    if (_isPremium)      return _QuotaResult.allowed;
+    if (_inDailyLockout) return _QuotaResult.hardLockout;
+    if (_inCycleLockout) return _QuotaResult.cycleLockout;
     if (_freeUsed < _kFreeMessages) return _QuotaResult.allowed;
-    if (_cycleActive)               return _QuotaResult.allowed;
+    if (_cycleActive)    return _QuotaResult.allowed;
     return _QuotaResult.showAdGate;
   }
 
   Future<void> _consumeAdMessage() async {
-    final newCycleMsgs   = _cycleMsgs + 1;
-    final newTotalAdMsgs = _totalAdMsgs + 1;
-    final cycleExhausted = newCycleMsgs >= _kMsgsPerCycle;
-    final hitCap         = newTotalAdMsgs >= _kMaxAdMessages;
+    final newCycleMsgs      = _cycleMsgs + 1;
+    final newTotalResponses = _totalResponses + 1;
+    final cycleExhausted    = newCycleMsgs >= _kMsgsPerCycle;
+    final hitDailyMax       = newTotalResponses >= _kMaxResponses;
 
     setState(() {
-      _quota['cycle_msgs']    = cycleExhausted ? 0 : newCycleMsgs;
-      _quota['cycle_ads']     = cycleExhausted ? 0 : _cycleAds;
-      _quota['total_ad_msgs'] = newTotalAdMsgs;
-      if (hitCap) {
-        _quota['lockout_until'] =
-            DateTime.now().add(_kLockoutDur).toIso8601String();
+      _quota['cycle_msgs']      = newCycleMsgs;
+      _quota['total_responses'] = newTotalResponses;
+
+      if (hitDailyMax) {
+        _quota['daily_lockout_until']  =
+            DateTime.now().add(_kDailyLockoutDur).toIso8601String();
+        _quota['cycle_lockout_until']  = null;
+        _quota['cycle_ads']            = 0;
+        _quota['cycle_msgs']           = 0;
+      } else if (cycleExhausted) {
+        _quota['cycle_lockout_until']  =
+            DateTime.now().add(_kCycleLockoutDur).toIso8601String();
+        _quota['cycle_ads']            = 0;
+        _quota['cycle_msgs']           = 0;
       }
     });
     await _saveQuota();
@@ -323,17 +405,30 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (_historyLoaded) return;
     await _fetchMyInfo();
 
+    // ── Step 1: show cached messages instantly ──
+    final cached = await _loadMessageCache();
+    if (cached != null && cached.isNotEmpty && mounted) {
+      setState(() {
+        _msgs.clear();
+        _msgs.addAll(cached);
+        _historyLoaded = true;
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _scrollDown(jump: true);
+      });
+    }
+
+    // ── Step 2: fetch fresh data in background ──
     try {
       if (_isAIMode) {
         await _loadAIHistory();
       } else {
         await _loadDMHistory();
-        _checkAIJoined();
       }
     } catch (e) {
       debugPrint('[Conv] _loadHistory error: $e');
     } finally {
-      if (mounted) {
+      if (mounted && !_historyLoaded) {
         setState(() => _historyLoaded = true);
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _scrollDown(jump: true);
@@ -389,7 +484,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
           _aiConvId = null;
           final ok = await _ensureAIConv();
           if (!ok || !mounted) return;
-          final fresh = await api.getDMMessages(_aiConvId!, limit: _kHistoryPageSize);
+          final fresh =
+              await api.getDMMessages(_aiConvId!, limit: _kHistoryPageSize);
           if (!mounted) return;
           if (fresh.isEmpty) {
             _hasMoreHistory = false;
@@ -401,6 +497,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
               _hasMoreHistory = fresh.length >= _kHistoryPageSize;
             });
             await _savePollTime(fresh.last['created_at']?.toString() ?? '');
+            await _saveMessageCache(_msgs);
           }
           return;
         }
@@ -410,6 +507,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           _hasMoreHistory = msgs.length >= _kHistoryPageSize;
         });
         await _savePollTime(msgs.last['created_at']?.toString() ?? '');
+        await _saveMessageCache(_msgs);
       } else {
         _hasMoreHistory = false;
         await _maybeShowFirstTimeGreeting();
@@ -423,20 +521,24 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (widget.userId.isEmpty || widget.userId == 'ai') return;
 
     try {
-      final msgs = await api.getDMMessages(widget.userId, limit: _kHistoryPageSize);
-      if (!mounted || msgs.isEmpty) { _hasMoreHistory = false; return; }
+      final msgs =
+          await api.getDMMessages(widget.userId, limit: _kHistoryPageSize);
+      if (!mounted || msgs.isEmpty) {
+        _hasMoreHistory = false;
+        return;
+      }
 
       setState(() {
         _msgs.clear();
         for (final m in msgs) {
           final senderType = m['sender_type']?.toString() ?? '';
-          final isAIMsg = senderType == 'ai' || senderType == 'system';
-          if (isAIMsg && !_aiJoined) continue;
+          if (senderType == 'ai' || senderType == 'system') continue;
           _msgs.add(_msgFromMap(m, myId: _cachedMyId));
         }
         _hasMoreHistory = msgs.length >= _kHistoryPageSize;
       });
       await _savePollTime(msgs.last['created_at']?.toString() ?? '');
+      await _saveMessageCache(_msgs);
     } catch (e) {
       debugPrint('[Conv] _loadDMHistory error: $e');
     }
@@ -464,24 +566,20 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (olderMsgs.isEmpty || olderMsgs.length < _kHistoryPageSize) {
         setState(() => _hasMoreHistory = false);
       } else {
-        final myId = await _getMyId();
+        final myId    = await _getMyId();
         final newMsgs = <_Msg>[];
         for (final m in olderMsgs) {
           final senderType = m['sender_type']?.toString() ?? '';
-          final isAIMsg = senderType == 'ai' || senderType == 'system';
-          if (!_isAIMode && isAIMsg && !_aiJoined) continue;
+          if (!_isAIMode &&
+              (senderType == 'ai' || senderType == 'system')) continue;
           newMsgs.add(_msgFromMap(m, myId: myId));
         }
-        setState(() {
-          _msgs.insertAll(0, newMsgs);
-        });
+        setState(() => _msgs.insertAll(0, newMsgs));
       }
     } catch (e) {
       debugPrint('[Conv] _loadMoreHistory error: $e');
     } finally {
-      if (mounted) {
-        setState(() => _loadingMore = false);
-      }
+      if (mounted) setState(() => _loadingMore = false);
     }
   }
 
@@ -555,16 +653,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
     return _cachedMyId;
   }
 
-  Future<void> _checkAIJoined() async {
-    if (widget.userId.isEmpty) return;
-    try {
-      final result = await api.checkAIInConversation(widget.userId);
-      if (mounted && result['ai_joined'] == true) {
-        setState(() => _aiJoined = true);
-      }
-    } catch (_) {}
-  }
-
   List<Map<String, String>> _buildAIContext() {
     final relevant = _msgs.where((m) => !m.isError && m.content.isNotEmpty).toList();
     final window   = relevant.length > _kContextWindow
@@ -592,10 +680,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
       final newMsgs = await api.getDMMessages(convId, since: _lastPollTime);
       if (!mounted || newMsgs.isEmpty) return;
 
-      final myId        = await _getMyId();
-      final existingIds = _msgs.map((m) => m.id).toSet();
+      final myId         = await _getMyId();
+      final existingIds  = _msgs.map((m) => m.id).toSet();
       final fingerprints = _msgs.map((m) => m.fingerprint).toSet();
-      bool  added       = false;
+      bool  added        = false;
 
       setState(() {
         for (final m in newMsgs) {
@@ -606,8 +694,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           final isAIMsg    = senderType == 'ai' || senderType == 'system';
           final isMe       = !isAIMsg && myId != null && senderId == myId;
 
-          if (!_isAIMode && isAIMsg && !_aiJoined) continue;
-
+          if (!_isAIMode && isAIMsg) continue;
           if (id.isEmpty || existingIds.contains(id)) continue;
 
           final fp = '${isMe ? "u" : "a"}:${content.trim().hashCode}';
@@ -615,14 +702,20 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
           if (isMe) {
             final optIdx = _msgs.indexWhere(
-              (msg) => msg.id.startsWith('local_') && msg.isMe && msg.content == content,
+              (msg) =>
+                  msg.id.startsWith('local_') &&
+                  msg.isMe &&
+                  msg.content == content,
             );
             if (optIdx != -1) {
               final old = _msgs[optIdx];
               _msgs[optIdx] = _Msg(
-                  id: id, content: old.content,
-                  sender: old.sender, avatar: old.avatar,
-                  isMe: true, time: old.time);
+                  id     : id,
+                  content: old.content,
+                  sender : old.sender,
+                  avatar : old.avatar,
+                  isMe   : true,
+                  time   : old.time);
               existingIds.add(id);
               fingerprints.add(fp);
               added = true;
@@ -640,7 +733,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (newMsgs.isNotEmpty) {
         await _savePollTime(newMsgs.last['created_at']?.toString() ?? '');
       }
-      if (added) _scrollDown();
+      if (added) {
+        _scrollDown();
+        await _saveMessageCache(_msgs);
+      }
     } catch (_) {}
   }
 
@@ -653,12 +749,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
     if (_isAIMode) {
       await _trySendAI(text);
-    } else if (_aiJoined && text.startsWith('@ai ')) {
-      final aiText = text.substring(4).trim();
-      if (aiText.isNotEmpty) {
-        _textCtrl.clear();
-        await _trySendAI(aiText, viaAIDM: true);
-      }
     } else {
       await _sendDM(text);
     }
@@ -666,13 +756,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   Future<void> _trySendAI(String text, {bool viaAIDM = false}) async {
     final result = _checkAIQuota();
-    if (result == _QuotaResult.showAdGate) {
-      await _showAdGate(text, viaAIDM: viaAIDM);
-      return;
-    }
-    if (result == _QuotaResult.hardLockout) {
-      _showLockoutSheet();
-      return;
+    switch (result) {
+      case _QuotaResult.showAdGate:
+        await _showAdGate(text, viaAIDM: viaAIDM);
+        return;
+      case _QuotaResult.cycleLockout:
+        _showCycleLockoutSheet();
+        return;
+      case _QuotaResult.hardLockout:
+        _showDailyLockoutSheet();
+        return;
+      case _QuotaResult.allowed:
+        break;
     }
     await _sendAI(text, adUnlocked: false, viaAIDM: viaAIDM);
   }
@@ -736,7 +831,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
         await _saveQuota();
       } else if (!_isPremium && !isContextMessage) {
         if (_freeUsed < _kFreeMessages) {
-          setState(() => _quota['free_used'] = _freeUsed + 1);
+          final newTotal = _totalResponses + 1;
+          setState(() {
+            _quota['free_used']       = _freeUsed + 1;
+            _quota['total_responses'] = newTotal;
+            if (newTotal >= _kMaxResponses) {
+              _quota['daily_lockout_until'] =
+                  DateTime.now().add(_kDailyLockoutDur).toIso8601String();
+            }
+          });
           await _saveQuota();
         } else if (adUnlocked || _cycleActive) {
           await _consumeAdMessage();
@@ -751,9 +854,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
         if (idx != -1) {
           final old = _msgs[idx];
           _msgs[idx] = _Msg(
-              id: realUserMsgId, content: old.content,
-              sender: old.sender, avatar: old.avatar,
-              isMe: true, time: old.time);
+              id     : realUserMsgId,
+              content: old.content,
+              sender : old.sender,
+              avatar : old.avatar,
+              isMe   : true,
+              time   : old.time);
         }
       }
 
@@ -769,6 +875,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         _msgs.add(aiMsg);
       });
       _typeMessage(aiMsg);
+      await _saveMessageCache(_msgs);
 
     } on ApiException catch (e) {
       if (!mounted) return;
@@ -780,7 +887,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (e.statusCode == 402) {
         await _showAdGate(text, viaAIDM: viaAIDM);
       } else if (e.statusCode == 429) {
-        _showLockoutSheet();
+        _showDailyLockoutSheet();
       } else if (e.statusCode == 403 && !retried) {
         debugPrint('[Conv] 403 — resetting AI conv and retrying once');
         final prefs = await SharedPreferences.getInstance();
@@ -799,7 +906,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
           _addErrorBubble('Could not connect to AI. Please try again.');
         }
       } else {
-        _addErrorBubble('Failed to get AI response (${e.statusCode}). Please try again.');
+        _addErrorBubble(
+            'Failed to get AI response (${e.statusCode}). Please try again.');
       }
 
     } catch (e) {
@@ -842,13 +950,17 @@ class _ConversationScreenState extends State<ConversationScreen> {
           if (idx != -1 && realId != null && realId.isNotEmpty) {
             final old = _msgs[idx];
             _msgs[idx] = _Msg(
-                id: realId, content: old.content,
-                sender: old.sender, avatar: old.avatar,
-                isMe: true, time: old.time);
+                id     : realId,
+                content: old.content,
+                sender : old.sender,
+                avatar : old.avatar,
+                isMe   : true,
+                time   : old.time);
           }
           _dmSending = false;
         });
         await _savePollTime(DateTime.now().toUtc().toIso8601String());
+        await _saveMessageCache(_msgs);
       }
     } catch (e) {
       debugPrint('[Conv] _sendDM error: $e');
@@ -858,9 +970,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
         if (idx != -1) {
           final old = _msgs[idx];
           _msgs[idx] = _Msg(
-            id: optimisticId, content: old.content,
-            sender: old.sender, avatar: old.avatar,
-            isMe: true, isError: true, time: old.time,
+            id     : optimisticId,
+            content: old.content,
+            sender : old.sender,
+            avatar : old.avatar,
+            isMe   : true,
+            isError: true,
+            time   : old.time,
           );
         }
         _dmSending = false;
@@ -871,137 +987,14 @@ class _ConversationScreenState extends State<ConversationScreen> {
   void _addErrorBubble(String msg) {
     if (!mounted) return;
     setState(() => _msgs.add(_Msg(
-      content: msg, sender: 'RiseUp AI',
-      avatar: '🤖', isMe: false, isAI: true, isError: true,
-    )));
-    _scrollDown();
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Invite AI
-  // ─────────────────────────────────────────────────────────────────────────
-  void _inviteAI() {
-    if (widget.userId.isEmpty || _isAIMode || _aiJoined || _convInitializing) return;
-    HapticFeedback.lightImpact();
-    _doInviteAI();
-  }
-
-  Future<void> _doInviteAI() async {
-    if (mounted) setState(() => _convInitializing = true);
-    try {
-      await api.inviteAIToConversation(widget.userId);
-      if (!mounted) return;
-
-      final joinMsg = _Msg(
-        content: '🤖 **RiseUp AI has joined the conversation!**\n\n'
-                 'Use **@ai** followed by your question to get wealth advice.\n\n'
-                 '_Example: @ai How do I invest \$500?_',
-        sender : 'RiseUp AI',
-        avatar : '🤖',
-        isMe   : false,
-        isAI   : true,
-      );
-      setState(() {
-        _aiJoined         = true;
-        _convInitializing = false;
-        _msgs.add(joinMsg);
-      });
-      _scrollDown();
-      await _savePollTime(DateTime.now().toUtc().toIso8601String());
-    } catch (e) {
-      debugPrint('[Conv] _doInviteAI error: $e');
-      if (!mounted) return;
-      setState(() => _convInitializing = false);
-
-      final alreadyJoined = e.toString().toLowerCase().contains('already');
-      if (alreadyJoined) {
-        setState(() => _aiJoined = true);
-        return;
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: const Text('Could not invite AI. Please try again.'),
-        backgroundColor: AppColors.error,
-        duration: const Duration(seconds: 3),
-        action: SnackBarAction(
-          label: 'Retry',
-          textColor: Colors.white,
-          onPressed: _doInviteAI,
-        ),
-      ));
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Remove AI from DM conversation
-  // ─────────────────────────────────────────────────────────────────────────
-  Future<void> _removeAI() async {
-    if (_removingAI || !_aiJoined || widget.userId.isEmpty || _isAIMode) return;
-    HapticFeedback.lightImpact();
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) {
-        final isDark = Theme.of(ctx).brightness == Brightness.dark;
-        return AlertDialog(
-          backgroundColor: isDark ? AppColors.bgCard : Colors.white,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Text('Remove AI?',
-              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 17)),
-          content: const Text(
-            'RiseUp AI will leave this conversation. '
-            'You can re-invite it at any time.',
-            style: TextStyle(fontSize: 14, height: 1.5),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Remove',
-                  style: TextStyle(color: AppColors.error,
-                      fontWeight: FontWeight.w600)),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (confirmed != true || !mounted) return;
-
-    setState(() => _removingAI = true);
-
-    try {
-      await api.removeAIFromConversation(widget.userId);
-    } catch (e) {
-      debugPrint('[Conv] _removeAI backend error (ignoring): $e');
-    }
-
-    if (!mounted) return;
-    setState(() {
-      _aiJoined   = false;
-      _removingAI = false;
-    });
-
-    final leaveMsg = _Msg(
-      content: '🤖 **RiseUp AI has left the conversation.**\n\n'
-               'Tap **Invite AI** in the toolbar to bring it back.',
+      content: msg,
       sender : 'RiseUp AI',
       avatar : '🤖',
       isMe   : false,
       isAI   : true,
-    );
-    setState(() => _msgs.add(leaveMsg));
+      isError: true,
+    )));
     _scrollDown();
-    await _savePollTime(DateTime.now().toUtc().toIso8601String());
-
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-      content: Text('AI removed from conversation'),
-      duration: Duration(seconds: 2),
-      behavior: SnackBarBehavior.floating,
-    ));
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -1062,7 +1055,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
       final ok = await launchUrl(uri, mode: LaunchMode.inAppBrowserView);
       if (!ok) await launchUrl(uri, mode: LaunchMode.externalApplication);
     } catch (_) {
-      try { await launchUrl(uri, mode: LaunchMode.externalApplication); } catch (_) {}
+      try {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } catch (_) {}
     }
   }
 
@@ -1098,8 +1093,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
       }
     }
 
-    final urls = RegExp(r'https?://[^\s\]\)>"]+', caseSensitive: false)
-        .allMatches(content);
+    final urls =
+        RegExp(r'https?://[^\s\]\)>"]+', caseSensitive: false).allMatches(content);
     for (final u in urls) {
       sections.add({
         'icon' : Icons.open_in_browser_rounded,
@@ -1110,7 +1105,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
 
     if (RegExp(r'^\d+\.\s', multiLine: true).hasMatch(content) ||
-        RegExp(r'^[-•*]\s',  multiLine: true).hasMatch(content)) {
+        RegExp(r'^[-•*]\s', multiLine: true).hasMatch(content)) {
       sections.add({
         'icon' : Icons.format_list_bulleted_rounded,
         'label': 'Copy full list',
@@ -1162,7 +1157,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               const SizedBox(height: 8),
               Container(
-                  width: 36, height: 4,
+                  width: 36,
+                  height: 4,
                   decoration: BoxDecoration(
                       color: isDark ? Colors.white24 : Colors.black12,
                       borderRadius: BorderRadius.circular(2))),
@@ -1182,7 +1178,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 else
                   _menuItem(s['icon'] as IconData, s['label'] as String, text, () {
                     Navigator.pop(ctx);
-                    _copyToClipboard(s['text'] as String, label: s['label'] as String);
+                    _copyToClipboard(s['text'] as String,
+                        label: s['label'] as String);
                   }),
 
               _menuItem(Icons.select_all_rounded, 'Select text', text, () {
@@ -1211,17 +1208,19 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
   }
 
-  Widget _menuItem(IconData icon, String label, Color textColor, VoidCallback onTap) =>
-    ListTile(
-      leading: Icon(icon, color: AppColors.primary, size: 20),
-      title: Text(label,
-          style: TextStyle(color: textColor, fontSize: 14, fontWeight: FontWeight.w500)),
-      onTap: onTap,
-      dense: true,
-    );
+  Widget _menuItem(
+          IconData icon, String label, Color textColor, VoidCallback onTap) =>
+      ListTile(
+        leading: Icon(icon, color: AppColors.primary, size: 20),
+        title: Text(label,
+            style: TextStyle(
+                color: textColor, fontSize: 14, fontWeight: FontWeight.w500)),
+        onTap: onTap,
+        dense: true,
+      );
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Ad gate
+  // Ad gate & lockout sheets
   // ─────────────────────────────────────────────────────────────────────────
   Future<void> _showAdGate(String pendingText, {bool viaAIDM = false}) async {
     final success = await showModalBottomSheet<bool>(
@@ -1233,8 +1232,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
         cycleAdsWatched: _cycleAds,
         adsPerCycle    : _kAdsPerCycle,
         msgsPerCycle   : _kMsgsPerCycle,
-        totalAdMsgs    : _totalAdMsgs,
-        maxAdMsgs      : _kMaxAdMessages,
+        totalResponses : _totalResponses,
+        maxResponses   : _kMaxResponses,
         onAdWatched    : () async {
           if (!mounted) return;
           setState(() => _quota['cycle_ads'] = _cycleAds + 1);
@@ -1246,13 +1245,27 @@ class _ConversationScreenState extends State<ConversationScreen> {
     await _sendAI(pendingText, adUnlocked: true, viaAIDM: viaAIDM);
   }
 
-  void _showLockoutSheet() {
+  void _showCycleLockoutSheet() {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => _LockoutSheet(
-        lockoutUntil: (_quota['lockout_until'] as String?) ?? '',
+        lockoutUntil: (_quota['cycle_lockout_until'] as String?) ?? '',
+        isDaily     : false,
+        onUpgrade   : () { Navigator.pop(context); context.go('/premium'); },
+      ),
+    );
+  }
+
+  void _showDailyLockoutSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _LockoutSheet(
+        lockoutUntil: (_quota['daily_lockout_until'] as String?) ?? '',
+        isDaily     : true,
         onUpgrade   : () { Navigator.pop(context); context.go('/premium'); },
       ),
     );
@@ -1264,12 +1277,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
   @override
   Widget build(BuildContext context) {
     final isDark      = Theme.of(context).brightness == Brightness.dark;
-    final bgColor     = isDark ? Colors.black         : Colors.white;
-    final cardColor   = isDark ? AppColors.bgCard     : Colors.white;
-    final surfColor   = isDark ? AppColors.bgSurface  : Colors.grey.shade100;
-    final borderColor = isDark ? AppColors.bgSurface  : Colors.grey.shade200;
-    final textColor   = isDark ? Colors.white         : Colors.black87;
-    final subColor    = isDark ? Colors.white54       : Colors.black45;
+    final bgColor     = isDark ? Colors.black        : Colors.white;
+    final cardColor   = isDark ? AppColors.bgCard    : Colors.white;
+    final surfColor   = isDark ? AppColors.bgSurface : Colors.grey.shade100;
+    final borderColor = isDark ? AppColors.bgSurface : Colors.grey.shade200;
+    final textColor   = isDark ? Colors.white        : Colors.black87;
+    final subColor    = isDark ? Colors.white54      : Colors.black45;
 
     return Scaffold(
       backgroundColor: bgColor,
@@ -1281,57 +1294,64 @@ class _ConversationScreenState extends State<ConversationScreen> {
             color: AppColors.primary.withOpacity(0.5),
             minHeight: 2,
           ),
-        if (_aiJoined && !_isAIMode) _AIJoinedBanner(),
-        if ((_isAIMode || _aiJoined) && !_isPremium)
+        if (_isAIMode && !_isPremium)
           _QuotaRibbon(
-            isPremium   : _isPremium,
-            inLockout   : _inLockout,
-            freeUsed    : _freeUsed,
-            freeTotal   : _kFreeMessages,
-            cycleAds    : _cycleAds,
-            adsPerCycle : _kAdsPerCycle,
-            cycleMsgs   : _cycleMsgs,
-            msgsPerCycle: _kMsgsPerCycle,
-            totalAdMsgs : _totalAdMsgs,
-            maxAdMsgs   : _kMaxAdMessages,
-            lockoutUntil: _quota['lockout_until'] as String?,
+            isPremium      : _isPremium,
+            inDailyLockout : _inDailyLockout,
+            inCycleLockout : _inCycleLockout,
+            freeUsed       : _freeUsed,
+            freeTotal      : _kFreeMessages,
+            cycleAds       : _cycleAds,
+            adsPerCycle    : _kAdsPerCycle,
+            cycleMsgs      : _cycleMsgs,
+            msgsPerCycle   : _kMsgsPerCycle,
+            totalResponses : _totalResponses,
+            maxResponses   : _kMaxResponses,
+            cycleLockoutUntil: _quota['cycle_lockout_until'] as String?,
+            dailyLockoutUntil: _quota['daily_lockout_until'] as String?,
           ),
         Expanded(
           child: !_historyLoaded
-            ? const Center(child: CircularProgressIndicator(
-                color: AppColors.primary, strokeWidth: 2))
-            : _msgs.isEmpty
-              ? _buildEmptyState(isDark, subColor, textColor)
-              : ListView.builder(
-                  controller: _scroll,
-                  physics: _scrollLocked
-                      ? const NeverScrollableScrollPhysics()
-                      : const AlwaysScrollableScrollPhysics(),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  reverse: false,
-                  itemCount: _msgs.length +
-                             (_aiResponding ? 1 : 0) +
-                             (_loadingMore  ? 1 : 0),
-                  itemBuilder: (_, i) {
-                    if (_loadingMore && i == 0) {
-                      return const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 12),
-                        child: Center(child: SizedBox(
-                          width: 20, height: 20,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2, color: AppColors.primary),
-                        )),
-                      );
-                    }
-                    final msgIdx = _loadingMore ? i - 1 : i;
-                    if (msgIdx == _msgs.length) {
-                      return _buildTypingIndicator(isDark, surfColor);
-                    }
-                    return _buildBubble(_msgs[msgIdx], isDark, textColor, surfColor);
-                  },
-                ),
+              ? const Center(child: CircularProgressIndicator(
+                  color: AppColors.primary, strokeWidth: 2))
+              : _msgs.isEmpty
+                  ? _buildEmptyState(isDark, subColor, textColor)
+                  : ListView.builder(
+                      controller: _scroll,
+                      physics: _scrollLocked
+                          ? const NeverScrollableScrollPhysics()
+                          : const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 12),
+                      reverse: false,
+                      itemCount: _msgs.length +
+                          (_aiResponding ? 1 : 0) +
+                          (_loadingMore  ? 1 : 0),
+                      itemBuilder: (_, i) {
+                        if (_loadingMore && i == 0) {
+                          return const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 12),
+                            child: Center(
+                              child: SizedBox(
+                                width: 20, height: 20,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: AppColors.primary),
+                              ),
+                            ),
+                          );
+                        }
+                        final msgIdx = _loadingMore ? i - 1 : i;
+                        if (msgIdx == _msgs.length) {
+                          return _buildTypingIndicator(isDark, surfColor);
+                        }
+                        return _buildBubble(
+                            _msgs[msgIdx], isDark, textColor, surfColor);
+                      },
+                    ),
         ),
-        _buildInputBar(isDark, cardColor, borderColor, textColor, subColor, surfColor),
+        _buildInputBar(
+            isDark, cardColor, borderColor, textColor, subColor, surfColor),
       ]),
     );
   }
@@ -1351,32 +1371,38 @@ class _ConversationScreenState extends State<ConversationScreen> {
       surfaceTintColor: Colors.transparent,
       leading: IconButton(
         icon: Icon(Icons.arrow_back_ios_new_rounded, color: text, size: 18),
-        onPressed: () =>
-            Navigator.of(context).canPop() ? context.pop() : context.go('/messages'),
+        onPressed: () => Navigator.of(context).canPop()
+            ? context.pop()
+            : context.go('/messages'),
       ),
       title: Row(children: [
         Stack(children: [
           Container(
             width: 36, height: 36,
             decoration: BoxDecoration(
-              gradient: avatarIsUrl ? null
-                  : const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
+              gradient: avatarIsUrl
+                  ? null
+                  : const LinearGradient(
+                      colors: [AppColors.primary, AppColors.accent]),
               image: avatarIsUrl
                   ? DecorationImage(
                       image: NetworkImage(widget.avatar), fit: BoxFit.cover)
                   : null,
               shape: BoxShape.circle,
             ),
-            child: avatarIsUrl ? null
-                : Center(child: Text(displayAvatar,
-                    style: const TextStyle(fontSize: 18))),
+            child: avatarIsUrl
+                ? null
+                : Center(
+                    child: Text(displayAvatar,
+                        style: const TextStyle(fontSize: 18))),
           ),
           Positioned(
             bottom: 0, right: 0,
             child: Container(
               width: 10, height: 10,
               decoration: BoxDecoration(
-                color: AppColors.success, shape: BoxShape.circle,
+                color: AppColors.success,
+                shape: BoxShape.circle,
                 border: Border.all(color: card, width: 1.5),
               ),
             ),
@@ -1391,21 +1417,26 @@ class _ConversationScreenState extends State<ConversationScreen> {
               Row(mainAxisSize: MainAxisSize.min, children: [
                 Flexible(
                   child: Text(displayName,
-                    style: TextStyle(
-                        fontSize: 14, fontWeight: FontWeight.w700, color: text),
-                    overflow: TextOverflow.ellipsis),
+                      style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: text),
+                      overflow: TextOverflow.ellipsis),
                 ),
-                if (_isAIMode || _aiJoined) ...[
+                if (_isAIMode) ...[
                   const SizedBox(width: 5),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 5, vertical: 1),
                     decoration: BoxDecoration(
                       gradient: const LinearGradient(
                           colors: [AppColors.primary, AppColors.accent]),
                       borderRadius: BorderRadius.circular(4),
                     ),
                     child: const Text('AI',
-                        style: TextStyle(color: Colors.white, fontSize: 8,
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 8,
                             fontWeight: FontWeight.w700)),
                   ),
                 ],
@@ -1419,76 +1450,19 @@ class _ConversationScreenState extends State<ConversationScreen> {
         ),
       ]),
       actions: [
-        if (!_isAIMode && !_aiJoined)
-          Padding(
-            padding: const EdgeInsets.only(right: 6, top: 8, bottom: 8),
-            child: GestureDetector(
-              onTap: _inviteAI,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: AppColors.primary.withOpacity(0.3)),
-                ),
-                child: _convInitializing
-                    ? const SizedBox(width: 16, height: 16,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: AppColors.primary))
-                    : const Row(mainAxisSize: MainAxisSize.min, children: [
-                        Icon(Icons.auto_awesome, color: AppColors.primary, size: 13),
-                        SizedBox(width: 4),
-                        Text('Invite AI', style: TextStyle(
-                            color: AppColors.primary, fontSize: 11,
-                            fontWeight: FontWeight.w600)),
-                      ]),
-              ),
-            ),
-          ),
-
-        if (!_isAIMode && _aiJoined)
-          Padding(
-            padding: const EdgeInsets.only(right: 6, top: 8, bottom: 8),
-            child: GestureDetector(
-              onTap: _removingAI ? null : _removeAI,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: AppColors.success.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: AppColors.success.withOpacity(0.4)),
-                ),
-                child: _removingAI
-                    ? const SizedBox(width: 16, height: 16,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: AppColors.success))
-                    : Row(mainAxisSize: MainAxisSize.min, children: const [
-                        Icon(Icons.auto_awesome,
-                            color: AppColors.success, size: 13),
-                        SizedBox(width: 4),
-                        Text('AI Active',
-                            style: TextStyle(
-                                color: AppColors.success, fontSize: 11,
-                                fontWeight: FontWeight.w600)),
-                        SizedBox(width: 4),
-                        Icon(Icons.close_rounded,
-                            color: AppColors.success, size: 12),
-                      ]),
-              ),
-            ),
-          ),
-
         IconButton(
           icon: Icon(Iconsax.call, color: text, size: 20),
-          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-              content: Text('Voice calls coming soon 📞'),
-              duration: Duration(seconds: 1))),
+          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                  content: Text('Voice calls coming soon 📞'),
+                  duration: Duration(seconds: 1))),
         ),
         IconButton(
           icon: Icon(Iconsax.video, color: text, size: 20),
-          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-              content: Text('Video calls coming soon 🎥'),
-              duration: Duration(seconds: 1))),
+          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                  content: Text('Video calls coming soon 🎥'),
+                  duration: Duration(seconds: 1))),
         ),
       ],
       bottom: PreferredSize(
@@ -1501,24 +1475,23 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // ─────────────────────────────────────────────────────────────────────────
   // Input bar
   // ─────────────────────────────────────────────────────────────────────────
-  Widget _buildInputBar(bool isDark, Color card, Color border,
-      Color text, Color sub, Color surf) {
+  Widget _buildInputBar(bool isDark, Color card, Color border, Color text,
+      Color sub, Color surf) {
     final hintText = _isAIMode
         ? 'Ask your wealth mentor...'
-        : _aiJoined
-            ? 'Message or "@ai ${widget.name}"...'
-            : 'Message ${widget.name}...';
+        : 'Message ${widget.name}...';
 
     return Container(
-      decoration: BoxDecoration(
-          color: card, border: Border(top: BorderSide(color: border))),
+      decoration:
+          BoxDecoration(color: card, border: Border(top: BorderSide(color: border))),
       padding: EdgeInsets.fromLTRB(
           12, 8, 12, MediaQuery.of(context).padding.bottom + 8),
       child: Row(children: [
         IconButton(
           icon: Icon(Iconsax.image, color: sub, size: 22),
           onPressed: () async {
-            final file = await ImagePicker().pickImage(source: ImageSource.gallery);
+            final file =
+                await ImagePicker().pickImage(source: ImageSource.gallery);
             if (file != null && mounted) {
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                 content: Text('Photo selected ✅ — media upload coming soon'),
@@ -1532,14 +1505,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
           child: TextField(
             controller: _textCtrl,
             style: TextStyle(fontSize: 14, color: text),
-            maxLines: 5, minLines: 1,
+            maxLines: 5,
+            minLines: 1,
             textCapitalization: TextCapitalization.sentences,
             enabled: !_isSending,
             decoration: InputDecoration(
               hintText : hintText,
               hintStyle: TextStyle(color: sub, fontSize: 13),
-              filled   : true, fillColor: surf,
-              border   : OutlineInputBorder(
+              filled   : true,
+              fillColor: surf,
+              border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(24),
                   borderSide: BorderSide.none),
               contentPadding:
@@ -1552,7 +1527,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
         GestureDetector(
           onTap: _isSending
               ? null
-              : () { HapticFeedback.lightImpact(); _onSend(); },
+              : () {
+                  HapticFeedback.lightImpact();
+                  _onSend();
+                },
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 200),
             width: 44, height: 44,
@@ -1566,10 +1544,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
             ),
             child: Center(
               child: _isSending
-                  ? const SizedBox(width: 18, height: 18,
+                  ? const SizedBox(
+                      width: 18, height: 18,
                       child: CircularProgressIndicator(
                           strokeWidth: 2, color: Colors.white))
-                  : const Icon(Icons.send_rounded, color: Colors.white, size: 18),
+                  : const Icon(Icons.send_rounded,
+                      color: Colors.white, size: 18),
             ),
           ),
         ),
@@ -1580,11 +1560,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // ─────────────────────────────────────────────────────────────────────────
   // Message bubble
   // ─────────────────────────────────────────────────────────────────────────
-  Widget _buildBubble(_Msg m, bool isDark, Color textColor, Color surfColor) {
+  Widget _buildBubble(
+      _Msg m, bool isDark, Color textColor, Color surfColor) {
     final aiBg    = isDark ? const Color(0xFF1A1A2E) : Colors.grey.shade100;
     final errorBg = isDark ? const Color(0xFF2D1515) : const Color(0xFFFFF0F0);
     final avatarIsUrl = m.avatar.startsWith('http') && m.avatar.length > 10;
-
     final bubbleBg = m.isError ? errorBg : m.isMe ? AppColors.userBubble : aiBg;
 
     return Padding(
@@ -1599,7 +1579,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
               child: Row(mainAxisSize: MainAxisSize.min, children: [
                 Text(m.sender,
                     style: TextStyle(
-                      fontSize: 11, fontWeight: FontWeight.w600,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
                       color: m.isAI ? AppColors.primary : AppColors.warning,
                     )),
                 if (m.isAI) ...[
@@ -1618,7 +1599,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 Container(
                   width: 28, height: 28,
                   decoration: BoxDecoration(
-                    gradient: avatarIsUrl ? null
+                    gradient: avatarIsUrl
+                        ? null
                         : const LinearGradient(
                             colors: [AppColors.primary, AppColors.accent]),
                     image: avatarIsUrl
@@ -1627,9 +1609,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
                         : null,
                     shape: BoxShape.circle,
                   ),
-                  child: avatarIsUrl ? null
-                      : Center(child: Text(m.avatar,
-                          style: const TextStyle(fontSize: 14))),
+                  child: avatarIsUrl
+                      ? null
+                      : Center(
+                          child: Text(m.avatar,
+                              style: const TextStyle(fontSize: 14))),
                 ),
                 const SizedBox(width: 8),
               ],
@@ -1645,7 +1629,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   child: Container(
                     constraints: BoxConstraints(
                         maxWidth: MediaQuery.of(context).size.width * 0.75),
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
                     decoration: BoxDecoration(
                       color: bubbleBg,
                       borderRadius: BorderRadius.only(
@@ -1654,10 +1639,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
                         bottomLeft : Radius.circular(m.isMe ? 18 : 4),
                         bottomRight: Radius.circular(m.isMe ? 4  : 18),
                       ),
-                      boxShadow: [BoxShadow(
-                        color: Colors.black.withOpacity(0.06),
-                        blurRadius: 6, offset: const Offset(0, 2),
-                      )],
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.06),
+                          blurRadius: 6,
+                          offset: const Offset(0, 2),
+                        )
+                      ],
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1666,8 +1654,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
                           child: (m.isMe || !m.isAI)
                               ? Text(m.displayText,
                                   style: TextStyle(
-                                    color  : m.isMe ? Colors.white : textColor,
-                                    fontSize: 14, height: 1.5,
+                                    color: m.isMe ? Colors.white : textColor,
+                                    fontSize: 14,
+                                    height: 1.5,
                                   ))
                               : MarkdownBody(
                                   data: m.displayText,
@@ -1681,7 +1670,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                                       color: isDark
                                           ? const Color(0xFFE8E8F0)
                                           : Colors.black87,
-                                      fontSize: 14, height: 1.55,
+                                      fontSize: 14,
+                                      height: 1.55,
                                     ),
                                     strong: const TextStyle(
                                       fontWeight: FontWeight.w700,
@@ -1717,7 +1707,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                               const SizedBox(width: 4),
                               Text('Failed · Tap to retry',
                                   style: TextStyle(
-                                    fontSize: 10, color: AppColors.error,
+                                    fontSize: 10,
+                                    color: AppColors.error,
                                     fontWeight: FontWeight.w500,
                                   )),
                             ]),
@@ -1751,30 +1742,36 @@ class _ConversationScreenState extends State<ConversationScreen> {
         Container(
           width: 28, height: 28,
           decoration: const BoxDecoration(
-            gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]),
+            gradient: LinearGradient(
+                colors: [AppColors.primary, AppColors.accent]),
             shape: BoxShape.circle,
           ),
-          child: const Center(child: Text('🤖',
-              style: TextStyle(fontSize: 14))),
+          child:
+              const Center(child: Text('🤖', style: TextStyle(fontSize: 14))),
         ),
         const SizedBox(width: 8),
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+          padding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
           decoration: BoxDecoration(
             color: isDark ? AppColors.aiBubble : surfColor,
             borderRadius: BorderRadius.circular(18),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
-            children: List.generate(3, (i) => Container(
-              margin: const EdgeInsets.symmetric(horizontal: 2),
-              width: 6, height: 6,
-              decoration: const BoxDecoration(
-                  color: AppColors.primary, shape: BoxShape.circle),
-            ).animate(onPlay: (c) => c.repeat())
-              .fadeIn(delay: Duration(milliseconds: i * 200))
-              .then()
-              .fadeOut()),
+            children: List.generate(
+              3,
+              (i) => Container(
+                margin: const EdgeInsets.symmetric(horizontal: 2),
+                width: 6, height: 6,
+                decoration: const BoxDecoration(
+                    color: AppColors.primary, shape: BoxShape.circle),
+              )
+                  .animate(onPlay: (c) => c.repeat())
+                  .fadeIn(delay: Duration(milliseconds: i * 200))
+                  .then()
+                  .fadeOut(),
+            ),
           ),
         ),
       ]),
@@ -1798,14 +1795,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
             Container(
               width: 80, height: 80,
               decoration: const BoxDecoration(
-                gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]),
+                gradient: LinearGradient(
+                    colors: [AppColors.primary, AppColors.accent]),
                 shape: BoxShape.circle,
               ),
-              child: const Center(child: Text('🤖', style: TextStyle(fontSize: 40))),
+              child: const Center(
+                  child: Text('🤖', style: TextStyle(fontSize: 40))),
             ).animate().scale(duration: 400.ms, curve: Curves.elasticOut),
             const SizedBox(height: 20),
             Text('Your AI Wealth Mentor',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800,
+                style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
                     color: textColor),
                 textAlign: TextAlign.center),
             const SizedBox(height: 8),
@@ -1818,30 +1819,35 @@ class _ConversationScreenState extends State<ConversationScreen> {
             ),
             const SizedBox(height: 32),
             Text('Try asking:',
-                style: TextStyle(fontSize: 12, color: subColor,
+                style: TextStyle(
+                    fontSize: 12,
+                    color: subColor,
                     fontWeight: FontWeight.w600)),
             const SizedBox(height: 10),
             ...prompts.map((p) => GestureDetector(
-              onTap: () {
-                _textCtrl.text = p.substring(3).trim();
-                _onSend();
-              },
-              child: Container(
-                margin: const EdgeInsets.only(bottom: 8),
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withOpacity(0.07),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: AppColors.primary.withOpacity(0.18)),
-                ),
-                child: Text(p,
-                    style: TextStyle(
-                        fontSize: 13,
-                        color: isDark ? Colors.white70 : Colors.black87,
-                        height: 1.4)),
-              ).animate().fadeIn(
-                  delay: Duration(milliseconds: prompts.indexOf(p) * 80)),
-            )),
+                  onTap: () {
+                    _textCtrl.text = p.substring(3).trim();
+                    _onSend();
+                  },
+                  child: Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(0.07),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                          color: AppColors.primary.withOpacity(0.18)),
+                    ),
+                    child: Text(p,
+                        style: TextStyle(
+                            fontSize: 13,
+                            color: isDark ? Colors.white70 : Colors.black87,
+                            height: 1.4)),
+                  ).animate().fadeIn(
+                      delay:
+                          Duration(milliseconds: prompts.indexOf(p) * 80)),
+                )),
           ],
         ),
       );
@@ -1854,16 +1860,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
           const Text('👋', style: TextStyle(fontSize: 56)),
           const SizedBox(height: 16),
           Text('Say hello!',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600,
+              style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
                   color: textColor)),
           const SizedBox(height: 8),
           Text('Start a conversation below',
               style: TextStyle(fontSize: 14, color: subColor)),
-          if (_aiJoined) ...[
-            const SizedBox(height: 16),
-            Text('Use "@ai your message" to ask AI',
-                style: TextStyle(fontSize: 12, color: AppColors.primary)),
-          ],
         ]),
       ),
     );
@@ -1872,47 +1875,36 @@ class _ConversationScreenState extends State<ConversationScreen> {
   String _formatTime(DateTime dt) {
     final local = dt.toLocal();
     return '${local.hour.toString().padLeft(2, '0')}:'
-           '${local.minute.toString().padLeft(2, '0')}';
+        '${local.minute.toString().padLeft(2, '0')}';
   }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// _AIJoinedBanner
-// ─────────────────────────────────────────────────────────────────────────────
-class _AIJoinedBanner extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) => Container(
-    width: double.infinity,
-    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-    color: AppColors.primary.withOpacity(0.08),
-    child: const Row(children: [
-      Icon(Icons.auto_awesome, color: AppColors.primary, size: 14),
-      SizedBox(width: 8),
-      Text('RiseUp AI is in this conversation',
-          style: TextStyle(fontSize: 12, color: AppColors.primary,
-              fontWeight: FontWeight.w500)),
-    ]),
-  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // _QuotaRibbon
 // ─────────────────────────────────────────────────────────────────────────────
 class _QuotaRibbon extends StatefulWidget {
-  final bool isPremium, inLockout;
+  final bool isPremium, inDailyLockout, inCycleLockout;
   final int  freeUsed, freeTotal;
   final int  cycleAds, adsPerCycle;
   final int  cycleMsgs, msgsPerCycle;
-  final int  totalAdMsgs, maxAdMsgs;
-  final String? lockoutUntil;
+  final int  totalResponses, maxResponses;
+  final String? cycleLockoutUntil;
+  final String? dailyLockoutUntil;
 
   const _QuotaRibbon({
-    required this.isPremium,    required this.inLockout,
-    required this.freeUsed,     required this.freeTotal,
-    required this.cycleAds,     required this.adsPerCycle,
-    required this.cycleMsgs,    required this.msgsPerCycle,
-    required this.totalAdMsgs,  required this.maxAdMsgs,
-    this.lockoutUntil,
+    required this.isPremium,
+    required this.inDailyLockout,
+    required this.inCycleLockout,
+    required this.freeUsed,
+    required this.freeTotal,
+    required this.cycleAds,
+    required this.adsPerCycle,
+    required this.cycleMsgs,
+    required this.msgsPerCycle,
+    required this.totalResponses,
+    required this.maxResponses,
+    this.cycleLockoutUntil,
+    this.dailyLockoutUntil,
   });
 
   @override
@@ -1926,7 +1918,7 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
   @override
   void initState() {
     super.initState();
-    if (widget.inLockout && widget.lockoutUntil != null) _startTimer();
+    if (widget.inCycleLockout || widget.inDailyLockout) _startTimer();
   }
 
   void _startTimer() {
@@ -1936,7 +1928,10 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
 
   void _update() {
     if (!mounted) return;
-    final exp  = DateTime.tryParse(widget.lockoutUntil ?? '');
+    final lockStr = widget.inDailyLockout
+        ? widget.dailyLockoutUntil
+        : widget.cycleLockoutUntil;
+    final exp = DateTime.tryParse(lockStr ?? '');
     if (exp == null) return;
     final diff = exp.difference(DateTime.now());
     if (diff.isNegative) { setState(() => _countdown = ''); return; }
@@ -1953,50 +1948,72 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
   Widget build(BuildContext context) {
     if (widget.isPremium) return const SizedBox.shrink();
 
-    if (widget.inLockout) {
-      return _ribbon(Icons.lock_rounded, AppColors.error,
-          'AI locked${_countdown.isNotEmpty ? ' · resets in $_countdown' : ''}',
-          AppColors.error.withOpacity(0.08));
+    if (widget.inDailyLockout) {
+      return _ribbon(
+        Icons.lock_rounded,
+        AppColors.error,
+        'Daily limit reached${_countdown.isNotEmpty ? ' · resets in $_countdown' : ''}',
+        AppColors.error.withOpacity(0.08),
+      );
+    }
+
+    if (widget.inCycleLockout) {
+      return _ribbon(
+        Icons.hourglass_bottom_rounded,
+        AppColors.warning,
+        'Take a break${_countdown.isNotEmpty ? ' · unlocks in $_countdown' : ''}',
+        AppColors.warning.withOpacity(0.08),
+      );
     }
 
     final freeLeft = widget.freeTotal - widget.freeUsed;
     if (freeLeft > 0) {
-      return _ribbon(Icons.chat_bubble_outline_rounded, AppColors.primary,
-          '$freeLeft free message${freeLeft == 1 ? '' : 's'} remaining',
-          AppColors.primary.withOpacity(0.06));
+      return _ribbon(
+        Icons.chat_bubble_outline_rounded,
+        AppColors.primary,
+        '$freeLeft free message${freeLeft == 1 ? '' : 's'} remaining',
+        AppColors.primary.withOpacity(0.06),
+      );
     }
 
     if (widget.cycleAds >= widget.adsPerCycle) {
       final left = widget.msgsPerCycle - widget.cycleMsgs;
-      return _ribbon(Icons.lock_open_rounded, AppColors.success,
-          '$left message${left == 1 ? '' : 's'} left in this session',
-          Colors.transparent);
+      return _ribbon(
+        Icons.lock_open_rounded,
+        AppColors.success,
+        '$left message${left == 1 ? '' : 's'} left · ${widget.totalResponses}/${widget.maxResponses} today',
+        Colors.transparent,
+      );
     }
 
     return const SizedBox.shrink();
   }
 
   Widget _ribbon(IconData icon, Color color, String label, Color bg) =>
-    Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-      color: bg,
-      child: Row(children: [
-        Icon(icon, size: 13, color: color),
-        const SizedBox(width: 6),
-        Expanded(
-          child: Text(label,
-              style: TextStyle(fontSize: 12, color: color,
-                  fontWeight: FontWeight.w500)),
-        ),
-        GestureDetector(
-          onTap: () => GoRouter.of(context).go('/premium'),
-          child: const Text('Go Premium',
-              style: TextStyle(fontSize: 11, color: AppColors.primary,
-                  fontWeight: FontWeight.w600)),
-        ),
-      ]),
-    );
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+        color: bg,
+        child: Row(children: [
+          Icon(icon, size: 13, color: color),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(label,
+                style: TextStyle(
+                    fontSize: 12,
+                    color: color,
+                    fontWeight: FontWeight.w500)),
+          ),
+          GestureDetector(
+            onTap: () => GoRouter.of(context).go('/premium'),
+            child: const Text('Go Premium',
+                style: TextStyle(
+                    fontSize: 11,
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w600)),
+          ),
+        ]),
+      );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2006,16 +2023,16 @@ class _AdGateSheet extends StatefulWidget {
   final int cycleAdsWatched;
   final int adsPerCycle;
   final int msgsPerCycle;
-  final int totalAdMsgs;
-  final int maxAdMsgs;
+  final int totalResponses;
+  final int maxResponses;
   final Future<void> Function() onAdWatched;
 
   const _AdGateSheet({
     required this.cycleAdsWatched,
     required this.adsPerCycle,
     required this.msgsPerCycle,
-    required this.totalAdMsgs,
-    required this.maxAdMsgs,
+    required this.totalResponses,
+    required this.maxResponses,
     required this.onAdWatched,
   });
 
@@ -2037,7 +2054,8 @@ class _AdGateSheetState extends State<_AdGateSheet> {
     if (_watching || _cycleComplete) return;
 
     if (!adService.isRewardedReady) {
-      setState(() => _error = 'Ad not ready. Please wait a moment and try again.');
+      setState(() =>
+          _error = 'Ad not ready. Please wait a moment and try again.');
       return;
     }
 
@@ -2070,12 +2088,11 @@ class _AdGateSheetState extends State<_AdGateSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bg     = isDark ? AppColors.bgCard : Colors.white;
-    final text   = isDark ? Colors.white     : Colors.black87;
-    final sub    = isDark ? Colors.white60   : Colors.black54;
-    final msgsLeft = widget.msgsPerCycle;
-    final adsMsgLimit = widget.maxAdMsgs - widget.totalAdMsgs;
+    final isDark    = Theme.of(context).brightness == Brightness.dark;
+    final bg        = isDark ? AppColors.bgCard : Colors.white;
+    final text      = isDark ? Colors.white     : Colors.black87;
+    final sub       = isDark ? Colors.white60   : Colors.black54;
+    final remaining = widget.maxResponses - widget.totalResponses;
 
     return Container(
       decoration: BoxDecoration(
@@ -2094,7 +2111,8 @@ class _AdGateSheetState extends State<_AdGateSheet> {
         AnimatedSwitcher(
           duration: const Duration(milliseconds: 300),
           child: _success
-              ? const Text('🎉', style: TextStyle(fontSize: 56), key: ValueKey('success'))
+              ? const Text('🎉',
+                  style: TextStyle(fontSize: 56), key: ValueKey('success'))
               : Container(
                   key: const ValueKey('robot'),
                   width: 72, height: 72,
@@ -2103,26 +2121,27 @@ class _AdGateSheetState extends State<_AdGateSheet> {
                         colors: [AppColors.primary, AppColors.accent]),
                     shape: BoxShape.circle,
                   ),
-                  child: const Center(child: Text('🤖',
-                      style: TextStyle(fontSize: 36))),
+                  child: const Center(
+                      child: Text('🤖', style: TextStyle(fontSize: 36))),
                 ),
         ),
         const SizedBox(height: 16),
 
         Text(
           _success ? 'Unlocked! 🚀' : 'Unlock AI Messages',
-          style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: text),
+          style:
+              TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: text),
         ),
         const SizedBox(height: 8),
         if (!_success) ...[
           Text(
-            'Watch $_adsRemaining more ad${_adsRemaining == 1 ? '' : 's'} to unlock $msgsLeft messages.',
+            'Watch $_adsRemaining more ad${_adsRemaining == 1 ? '' : 's'} to unlock ${widget.msgsPerCycle} messages.',
             style: TextStyle(fontSize: 14, color: sub, height: 1.5),
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 4),
           Text(
-            '${adsMsgLimit > 0 ? adsMsgLimit : 0} ad-messages left before 4hr rest',
+            '$remaining responses left before daily reset',
             style: TextStyle(fontSize: 11, color: sub),
           ),
           const SizedBox(height: 8),
@@ -2161,7 +2180,8 @@ class _AdGateSheetState extends State<_AdGateSheet> {
             child: ElevatedButton.icon(
               onPressed: _watching ? null : _watchAd,
               icon: _watching
-                  ? const SizedBox(width: 18, height: 18,
+                  ? const SizedBox(
+                      width: 18, height: 18,
                       child: CircularProgressIndicator(
                           strokeWidth: 2, color: Colors.white))
                   : const Icon(Icons.play_circle_fill_rounded, size: 20),
@@ -2213,13 +2233,18 @@ class _AdGateSheetState extends State<_AdGateSheet> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// _LockoutSheet
+// _LockoutSheet  (handles both 3hr cycle lock and 24hr daily lock)
 // ─────────────────────────────────────────────────────────────────────────────
 class _LockoutSheet extends StatefulWidget {
-  final String lockoutUntil;
+  final String       lockoutUntil;
+  final bool         isDaily;
   final VoidCallback onUpgrade;
 
-  const _LockoutSheet({required this.lockoutUntil, required this.onUpgrade});
+  const _LockoutSheet({
+    required this.lockoutUntil,
+    required this.isDaily,
+    required this.onUpgrade,
+  });
 
   @override
   State<_LockoutSheet> createState() => _LockoutSheetState();
@@ -2240,7 +2265,10 @@ class _LockoutSheetState extends State<_LockoutSheet> {
   void _update() {
     if (!mounted) return;
     final exp  = DateTime.tryParse(widget.lockoutUntil);
-    if (exp == null) { setState(() { _countdown = '—'; _expired = true; }); return; }
+    if (exp == null) {
+      setState(() { _countdown = '—'; _expired = true; });
+      return;
+    }
     final diff = exp.difference(DateTime.now());
     if (diff.isNegative) {
       setState(() { _countdown = 'Ready!'; _expired = true; });
@@ -2262,6 +2290,20 @@ class _LockoutSheetState extends State<_LockoutSheet> {
     final text   = isDark ? Colors.white     : Colors.black87;
     final sub    = isDark ? Colors.white60   : Colors.black54;
 
+    final title = _expired
+        ? (widget.isDaily ? 'Daily Limit Reset! ✅' : 'Break Over! ✅')
+        : (widget.isDaily ? 'Daily Limit Reached' : 'Time for a Break ⏸️');
+
+    final emoji = _expired ? '✅' : (widget.isDaily ? '🔒' : '⏸️');
+
+    final bodyText = _expired
+        ? (widget.isDaily
+            ? 'Your daily limit has reset. Watch ads to keep chatting!'
+            : 'Your break is over — watch ads to unlock more messages!')
+        : (widget.isDaily
+            ? 'You\'ve used all $_kMaxResponses responses today. Come back tomorrow or upgrade for unlimited access.'
+            : 'Nice work! Take a 3-hour break, then you can watch ads to unlock more messages. Or upgrade for unlimited access.');
+
     return Container(
       decoration: BoxDecoration(
           color: bg,
@@ -2275,36 +2317,38 @@ class _LockoutSheetState extends State<_LockoutSheet> {
                 color: isDark ? Colors.white24 : Colors.black12,
                 borderRadius: BorderRadius.circular(2))),
         const SizedBox(height: 24),
-        Text(_expired ? '✅' : '⏸️',
-            style: const TextStyle(fontSize: 52)),
+        Text(emoji, style: const TextStyle(fontSize: 52)),
         const SizedBox(height: 12),
-        Text(
-          _expired ? 'AI Messages Ready!' : '4-Hour Rest Period',
-          style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: text),
-        ),
+        Text(title,
+            style: TextStyle(
+                fontSize: 20, fontWeight: FontWeight.w800, color: text)),
         const SizedBox(height: 8),
         Text(
-          _expired
-              ? 'Your ad-message limit has reset. You can watch ads for more messages again!'
-              : 'You used all ${_kMaxAdMessages} ad-messages. '
-                'Take a short break — your limit resets automatically.',
+          bodyText,
           style: TextStyle(fontSize: 14, color: sub, height: 1.5),
           textAlign: TextAlign.center,
         ),
         if (!_expired) ...[
           const SizedBox(height: 24),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
             decoration: BoxDecoration(
                 color: AppColors.primary.withOpacity(0.08),
                 borderRadius: BorderRadius.circular(16)),
             child: Column(children: [
-              Text('Resets in', style: TextStyle(fontSize: 12, color: sub)),
+              Text(
+                widget.isDaily ? 'Resets in' : 'Unlocks in',
+                style: TextStyle(fontSize: 12, color: sub),
+              ),
               const SizedBox(height: 6),
               Text(_countdown,
                   style: TextStyle(
-                      fontSize: 32, fontWeight: FontWeight.w800, color: text,
-                      fontFamily: 'monospace', letterSpacing: 2)),
+                      fontSize: 32,
+                      fontWeight: FontWeight.w800,
+                      color: text,
+                      fontFamily: 'monospace',
+                      letterSpacing: 2)),
             ]),
           ),
         ],
@@ -2330,7 +2374,9 @@ class _LockoutSheetState extends State<_LockoutSheet> {
         TextButton(
           onPressed: () => Navigator.pop(context),
           child: Text(
-            _expired ? 'Start chatting!' : 'Come back later',
+            _expired
+                ? 'Start chatting!'
+                : (widget.isDaily ? 'Come back tomorrow' : 'Come back later'),
             style: TextStyle(color: sub, fontSize: 13),
           ),
         ),
