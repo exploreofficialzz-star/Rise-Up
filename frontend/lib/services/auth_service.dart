@@ -1,7 +1,7 @@
 // frontend/lib/services/auth_service.dart
-// v2.0 — Facebook-style device-bound silent refresh
+// v2.1 — fixed kApiBaseUrl reference, removed AppConstants.baseUrl
 //
-// Flow:
+// Facebook-style device-bound silent refresh flow:
 //  1. initialize() called in main() before runApp()
 //  2. Valid token     → authenticated immediately → /home
 //  3. Expired token   → silent refresh via /auth/refresh + device ID
@@ -35,9 +35,9 @@ class AuthService extends ChangeNotifier {
 
   // ── State ─────────────────────────────────────────────────────────────
   AuthStatus _status = AuthStatus.unknown;
-  AuthStatus get status          => _status;
-  bool get isAuthenticated       => _status == AuthStatus.authenticated;
-  bool get isUnauthenticated     => _status == AuthStatus.unauthenticated;
+  AuthStatus get status        => _status;
+  bool get isAuthenticated     => _status == AuthStatus.authenticated;
+  bool get isUnauthenticated   => _status == AuthStatus.unauthenticated;
 
   StreamSubscription<AuthState>? _supabaseSub;
 
@@ -73,9 +73,8 @@ class AuthService extends ChangeNotifier {
       // ── 3. Access token expired — try silent refresh ─────────────────
       if (refresh != null) {
         final refreshed = await _silentRefresh(refresh);
-        // refreshed == null means network error → keep user logged in
+        // null = network error → keep user logged in, retry next open
         if (refreshed == null) {
-          // No network: optimistically authenticated, retry next open
           _setStatus(AuthStatus.authenticated);
         } else {
           _setStatus(
@@ -101,6 +100,7 @@ class AuthService extends ChangeNotifier {
   // ── JWT helpers ───────────────────────────────────────────────────────
 
   /// Decodes the JWT exp claim and returns true if it's in the past.
+  /// Adds 30-second buffer to avoid edge-case races at expiry boundary.
   bool _isTokenExpired(String token) {
     try {
       final parts = token.split('.');
@@ -111,25 +111,24 @@ class AuthService extends ChangeNotifier {
       final map = json.decode(payload) as Map<String, dynamic>;
       final exp = map['exp'] as int?;
       if (exp == null) return false;
-      // Add 30-second buffer to avoid edge-case races
       return DateTime.now().millisecondsSinceEpoch ~/ 1000 >= (exp - 30);
     } catch (_) {
       return true; // Malformed token — treat as expired
     }
   }
 
-  /// Hits POST /auth/refresh with the refresh token + device ID.
+  /// Hits POST /auth/refresh with refresh token + device ID.
   ///
   /// Returns:
-  ///   true  — refreshed successfully, new tokens saved
-  ///   false — server explicitly rejected (revoked/invalid) → go to login
-  ///   null  — network error → caller decides (keep user logged in)
+  ///   true  — refreshed OK, new tokens saved
+  ///   false — server explicitly rejected (401/403) → go to login
+  ///   null  — network/timeout error → caller keeps user logged in
   Future<bool?> _silentRefresh(String refreshToken) async {
     try {
       final deviceId = await deviceService.getDeviceId();
 
       final response = await http.post(
-        Uri.parse('${AppConstants.baseUrl}/auth/refresh'),
+        Uri.parse('$kApiBaseUrl/auth/refresh'),
         headers: {
           'Content-Type': 'application/json',
           'X-Device-ID':  deviceId,
@@ -138,7 +137,7 @@ class AuthService extends ChangeNotifier {
       ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
-        final body = json.decode(response.body) as Map<String, dynamic>;
+        final body       = json.decode(response.body) as Map<String, dynamic>;
         final newAccess  = body['access_token']  as String?;
         final newRefresh = body['refresh_token'] as String?;
         final userId     = body['user_id']       as String?;
@@ -161,12 +160,12 @@ class AuthService extends ChangeNotifier {
         return false;
       }
 
-      // 5xx or unexpected — treat as network error, don't log out
+      // 5xx or unexpected status — treat as network error, don't log out
       return null;
     } on TimeoutException {
-      return null; // Network timeout — keep user in
+      return null;
     } catch (_) {
-      return null; // Any other network failure — keep user in
+      return null;
     }
   }
 
@@ -184,12 +183,12 @@ class AuthService extends ChangeNotifier {
             // sends a valid JWT on every request
             await Future.wait([
               storageService.write(
-                key: _kAccess, value: session.accessToken),
+                  key: _kAccess, value: session.accessToken),
               if (session.refreshToken != null)
                 storageService.write(
-                  key: _kRefresh, value: session.refreshToken!),
+                    key: _kRefresh, value: session.refreshToken!),
               storageService.write(
-                key: _kUserId, value: session.user.id),
+                  key: _kUserId, value: session.user.id),
             ]);
             _setStatus(AuthStatus.authenticated);
           } else if (event == AuthChangeEvent.signedOut) {
@@ -201,7 +200,7 @@ class AuthService extends ChangeNotifier {
         },
       );
     } catch (_) {
-      // Supabase not yet initialised — backend JWT auth still works
+      // Supabase not yet initialised — backend JWT auth still works fine
     }
   }
 
@@ -218,7 +217,7 @@ class AuthService extends ChangeNotifier {
       storageService.write(key: _kRefresh, value: refreshToken),
       storageService.write(key: _kUserId,  value: userId),
     ]);
-    // Ensure device ID is generated and bound on first login
+    // Ensure device ID is generated and bound at first login
     await deviceService.getDeviceId();
     _setStatus(AuthStatus.authenticated);
     _listenToSupabase();
@@ -249,7 +248,7 @@ class AuthService extends ChangeNotifier {
 
   // ── Helpers ───────────────────────────────────────────────────────────
 
-  /// Clears tokens only — device ID intentionally kept.
+  /// Clears auth tokens only — device ID intentionally preserved.
   Future<void> _clearTokens() async {
     await Future.wait([
       storageService.delete(key: _kAccess),
@@ -258,7 +257,7 @@ class AuthService extends ChangeNotifier {
     ]);
   }
 
-  /// Full session wipe (logout / auth failed).
+  /// Full session wipe — used on logout and auth failure.
   Future<void> _clearSession() async {
     await storageService.deleteAll();
     _setStatus(AuthStatus.unauthenticated);
