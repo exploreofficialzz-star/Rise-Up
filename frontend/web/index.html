@@ -38,44 +38,32 @@
       z-index: 10 !important;
     }
 
-    /*
-     * #loading is now just a black background shown during Flutter's
-     * engine bootstrap (~300–800ms on web). It vanishes the instant
-     * Flutter paints its first frame, handing off to SplashScreen.dart
-     * which owns the full 5.5s branded experience on ALL platforms.
-     */
+    /* Black bridge — no transition, no animation, instant hide */
     #loading {
       position: fixed;
       inset: 0;
       background: #000000;
       z-index: 99999;
-      transition: opacity 0.2s ease;
     }
     #loading.hide {
-      opacity: 0;
-      pointer-events: none;
+      display: none;
     }
   </style>
 </head>
 <body>
 
-  <!-- Plain black screen during engine bootstrap only.
-       SplashScreen.dart takes over the moment Flutter renders. -->
   <div id="loading"></div>
 
   <script>
     function hideSplash() {
       var el = document.getElementById('loading');
-      if (el) {
-        el.classList.add('hide');
-        setTimeout(function () { el.remove(); }, 250);
-      }
+      if (el) el.classList.add('hide');
     }
 
-    // Hide the instant Flutter paints — SplashScreen.dart takes over
+    // Hide the instant Flutter paints its first frame
     window.addEventListener('flutter-first-frame', hideSplash);
 
-    // Hard fallback — should never be needed
+    // Hard fallback — should never fire
     setTimeout(hideSplash, 8000);
   </script>
 
