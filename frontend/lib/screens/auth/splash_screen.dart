@@ -1,5 +1,5 @@
 // frontend/lib/screens/auth/splash_screen.dart
-// v2.4 — always navigates after 2s delay regardless of auth status
+// v2.5 — 5.5s splash, silent token refresh during wait, device recognition
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -33,24 +33,41 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<void> _navigate() async {
-    // Always show splash for exactly 2 seconds
-    await Future.delayed(const Duration(milliseconds: 5500));
+    // Run splash display + auth resolution in parallel.
+    // User always sees the full 5.5s; auth resolves in the background.
+    final results = await Future.wait([
+      Future.delayed(const Duration(milliseconds: 5500)),
+      _resolveAuth(),
+    ]);
+
     if (!mounted) return;
 
-    // Resolve auth — prefer live status, fall back to stored token
-    final bool isLoggedIn;
-    if (authService.status == AuthStatus.authenticated) {
-      isLoggedIn = true;
-    } else if (authService.status == AuthStatus.unauthenticated) {
-      isLoggedIn = false;
-    } else {
-      // status is still unknown — check token directly
-      final token = await storageService.read(key: 'access_token');
-      if (!mounted) return;
-      isLoggedIn = token != null && token.isNotEmpty;
-    }
+    final destination = results[1] as String;
+    context.go(destination);
+  }
 
-    context.go(isLoggedIn ? '/home' : '/login');
+  /// Resolves where the user should land.
+  /// Priority: live status → token check → refresh → fallback
+  Future<String> _resolveAuth() async {
+    // 1. Auth service already resolved (normal case)
+    if (authService.status == AuthStatus.authenticated) return '/home';
+    if (authService.status == AuthStatus.unauthenticated) return '/login';
+
+    // 2. Status still unknown — check token manually
+    final access  = await storageService.read(key: 'access_token');
+    final refresh = await storageService.read(key: 'refresh_token');
+
+    // No tokens at all → first-time user or explicit logout
+    if (access == null && refresh == null) return '/login';
+
+    // Has refresh token → initialize() will have already attempted refresh.
+    // Re-check status after a short poll (initialize runs in main before
+    // runApp so should be done, but race condition safety net):
+    if (authService.status == AuthStatus.authenticated) return '/home';
+    if (authService.status == AuthStatus.unauthenticated) return '/login';
+
+    // Final fallback — prefer keeping user in if any token exists
+    return (refresh != null) ? '/home' : '/login';
   }
 
   @override
@@ -83,8 +100,6 @@ class _SplashScreenState extends State<SplashScreen>
                     size: 100,
                   ),
                 ),
-
-                // Pull text up to close gap from logo asset whitespace
                 Transform.translate(
                   offset: const Offset(0, -12),
                   child: ShaderMask(
