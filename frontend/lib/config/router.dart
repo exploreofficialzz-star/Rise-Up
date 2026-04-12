@@ -1,13 +1,14 @@
 // frontend/lib/config/router.dart
-// v5.1 — Fixed splash deadlock + instant auth routing
+// v5.2 — Splash controls its own 2s timing; router no longer boots it early
 //
-// Root cause of infinite splash:
-//  1. redirect returned null for /splash when status was known → never left
-//  2. refreshListenable only fires on STATUS CHANGES — since initialize()
-//     set the status before runApp(), no change ever fired → splash stuck
+// Root cause of splash never showing:
+//  authService.initialize() completes BEFORE runApp(), so status is already
+//  known on frame 1. v5.1's step-2 redirect immediately pushed to /home or
+//  /login before the splash Scaffold ever painted.
 //
-// Fix: redirect now actively routes AWAY from /splash the moment status
-// is known. No longer relies on a change event to escape splash.
+// Fix: redirect returns null for /splash regardless of auth status.
+//  splash_screen.dart v2.4 owns the 2s delay and calls context.go() itself.
+//  Router only sends unknown-status navigations TO /splash (step 1).
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -84,11 +85,7 @@ bool _isPublic(String location) =>
     location.startsWith('/verify-email');
 
 final router = GoRouter(
-  // Both mobile and web start at splash — router decides where to land
   initialLocation: '/splash',
-
-  // authService is a ChangeNotifier — GoRouter re-evaluates redirect
-  // on every login / logout / 401-failure notifyListeners() call
   refreshListenable: authService,
 
   // ── Global auth guard ────────────────────────────────────────────────
@@ -96,19 +93,18 @@ final router = GoRouter(
     final location = state.matchedLocation;
     final status   = authService.status;
 
-    // ── 1. Auth status not yet resolved (absolute max ~5ms on device) ──
-    // Keep user on splash until initialize() completes.
+    // ── 1. Auth still resolving → send everything to splash ───────────
+    // initialize() typically completes in <5ms so this is momentary.
     if (status == AuthStatus.unknown) {
       return location == '/splash' ? null : '/splash';
     }
 
-    // ── 2. Auth resolved — actively leave splash ───────────────────────
-    // FIX: Without this block, redirect returns null for /splash when
-    // status is already known, so the app never leaves the splash screen.
-    // refreshListenable only fires on CHANGES; since initialize() set the
-    // status before runApp(), no change ever fires → infinite splash.
+    // ── 2. On splash with known status → do NOT redirect ──────────────
+    // splash_screen.dart v2.4 owns the 2-second delay and calls
+    // context.go('/home') or context.go('/login') itself after it elapses.
+    // If we redirect here the splash never renders even one frame.
     if (location == '/splash') {
-      return status == AuthStatus.authenticated ? '/home' : '/login';
+      return null;
     }
 
     // ── 3. Unauthenticated on protected route → /login ─────────────────
