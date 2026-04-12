@@ -1,5 +1,5 @@
 // frontend/lib/screens/auth/splash_screen.dart
-// v2.2 — Logo and RiseUp text tightened up
+// v2.3 — 2 second splash visibility before router navigates
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -33,9 +33,12 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<void> _navigate() async {
-    await Future.delayed(const Duration(milliseconds: 500));
+    // Show splash for 2 seconds before letting the router navigate
+    await Future.delayed(const Duration(milliseconds: 2000));
     if (!mounted) return;
 
+    // Safety net — only needed if authService.initialize() somehow
+    // hasn't completed yet (extremely rare, storage reads take <5ms)
     if (authService.status == AuthStatus.unknown) {
       final token = await storageService.read(key: 'access_token');
       if (!mounted) return;
@@ -76,8 +79,7 @@ class _SplashScreenState extends State<SplashScreen>
                   ),
                 ),
 
-                // Pull text up by -12px to close the gap caused by
-                // internal whitespace at the bottom of the logo asset
+                // Pull text up to close gap from logo asset whitespace
                 Transform.translate(
                   offset: const Offset(0, -12),
                   child: ShaderMask(
