@@ -34,7 +34,7 @@ class _SplashScreenState extends State<SplashScreen>
 
   Future<void> _navigate() async {
     // Always show splash for exactly 2 seconds
-    await Future.delayed(const Duration(milliseconds: 2000));
+    await Future.delayed(const Duration(milliseconds: 5500));
     if (!mounted) return;
 
     // Resolve auth — prefer live status, fall back to stored token
