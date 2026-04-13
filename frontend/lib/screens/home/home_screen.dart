@@ -1,28 +1,31 @@
 // frontend/lib/screens/home/home_screen.dart
-// v8.0 — Production Ready — Web + Native + YouTube-Style Caching
+// v9.0 — Production Ready — Full Feature Pack
 //
-// FIXED v8.0:
-//  1. SILENT FEED FAILURE → _error[tab] state: shows actual API error in UI
-//     with a Retry button (was: catch swallowed error, showed "No posts yet")
-//  2. WEB COMPATIBILITY  → kIsWeb guards around VideoPlayerController,
-//     SharedPreferences, and all platform-specific code
-//  3. STATUS PARALLELISM → status + profile + feed load simultaneously via
-//     Future.wait(); status items cached in SharedPreferences
-//  4. YOUTUBE/FACEBOOK CACHE → two-layer cache (memory map + SharedPrefs):
-//     · Tab data survives tab switches (AutomaticKeepAliveClientMixin)
-//     · Feed resumes from cache instantly; background refresh only
-//     · cacheExtent=3000 keeps 3 screens alive above/below viewport
-//     · ListView.builder never rebuilds already-visible items
-//  5. NETWORK RETRY      → exponential back-off, max 3 attempts per fetch
-//  6. STATUS UPLOAD SPEED → optimistic local insert before server confirms
-//  7. POST CARD STABILITY → all widget keys include post.id to prevent
-//     scroll-position drift after list mutation
-//  8. PAGINATION FIX     → guard against duplicate loads with _paginationFired
-//     debounce (3 s); also resets cleanly on refresh
-//  9. GREEN-FRAME VIDEO  → VideoPreloadManager green-frame fix preserved;
-//     skipped on web (uses HtmlElementView instead)
-// 10. ALL EXISTING FEATURES PRESERVED — zero removals
+// NEW in v9.0:
+//  1. LARGER ACTION BUTTONS   → padded pill containers + Material ripple for instant reaction
+//  2. CONTENT SEARCH          → 🔍 icon (Icons.search_rounded) opens full PostSearch screen;
+//                               debounced live results, recent searches, NOT Explore tab
+//  3. NOTIFICATION BADGE      → unread count badge on bell; loads from API; clears on tap
+//  4. ASK AI CLEANUP          → removed gradient emoji box; clean icon-only left accent
+//  5. AD CRASH FIX            → entire ad flow wrapped in try-catch; every callback guarded
+//                               with `if (!mounted) return` before setState/navigation
+//  6. DELETE CRASH FIX        → ScaffoldMessenger captured BEFORE async gap; onPostDeleted
+//                               guarded with mounted; safe context usage throughout
+//  7. POST BACKGROUND COLORS  → PostModel.backgroundColor; text-only posts with bg rendered
+//                               in a full-width colored card (Facebook-style); no-bg default
+//  8. LINK OVERLAY ON MEDIA   → when post has media + link, link is a clickable overlay strip
+//                               at the bottom of the image/video; standalone _LinkCard only
+//                               when no media present
+//  9. IN-APP LINKS            → all link opens now try LaunchMode.inAppWebView first (Chrome
+//                               Custom Tab / SFSafariViewController), external as fallback;
+//                               web always opens external
+// 10. AI IMAGE EXTRACTION     → image posts inject mediaUrl into AI prompt; AI asked to
+//                               extract + incorporate visible text and visual information
+// 11. VIDEO AI CONTEXT        → video posts pass URL + content metadata in AI prompt for
+//                               content-aware, video-aware coaching insights
+// + ALL v8.0 FEATURES PRESERVED (YouTube-cache, green-frame fix, error retry, etc.)
 
+import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:math';
@@ -43,9 +46,6 @@ import '../../services/ad_manager.dart';
 import '../../widgets/ad_widgets.dart';
 import 'create_status_screen.dart';
 
-// Conditionally import video packages only on non-web platforms.
-// On web, VideoPlayerController is not supported without video_player_web
-// plugin config, so we guard every usage with kIsWeb.
 import 'package:video_player/video_player.dart';
 import 'package:chewie/chewie.dart';
 import 'package:photo_view/photo_view.dart';
@@ -78,9 +78,11 @@ class StageInfo {
 // Post Model
 // ─────────────────────────────────────────────────────────────────────────────
 class PostModel {
-  final String id, name, username, time, avatar, avatarUrl, tag;
-  String content;
+  final String  id, name, username, time, avatar, avatarUrl, tag;
+  String        content;
   final String? mediaUrl, mediaType, linkUrl, linkTitle;
+  // v9.0: background color for text-only colored posts (hex e.g. "#6C5CE7")
+  final String? backgroundColor;
   int  likes, comments, shares;
   final bool verified, isPremiumPost;
   bool isLiked, isSaved, isFollowing;
@@ -91,6 +93,7 @@ class PostModel {
     required this.time,     required this.avatar,   this.avatarUrl = '',
     required this.tag,      required this.content,
     this.mediaUrl,          this.mediaType,         this.linkUrl,  this.linkTitle,
+    this.backgroundColor,
     required this.likes,    required this.comments, required this.shares,
     this.verified      = false,
     this.isPremiumPost = false,
@@ -121,18 +124,19 @@ class PostModel {
     if (raw == '🔗 Link post' || raw == 'Link post') raw = '';
 
     return PostModel(
-      id:        d['id']?.toString() ?? '',
-      name:      name,
-      username:  '@${name.toLowerCase().replaceAll(' ', '')}',
-      time:      t,
-      avatar:    stageInfo['emoji'] as String,
-      avatarUrl: profile['avatar_url']?.toString() ?? '',
-      tag:       d['tag']?.toString() ?? '💰 Wealth',
-      content:   raw,
-      mediaUrl:  d['media_url']?.toString(),
-      mediaType: d['media_type']?.toString(),
-      linkUrl:   d['link_url']?.toString(),
-      linkTitle: d['link_title']?.toString(),
+      id:              d['id']?.toString() ?? '',
+      name:            name,
+      username:        '@${name.toLowerCase().replaceAll(' ', '')}',
+      time:            t,
+      avatar:          stageInfo['emoji'] as String,
+      avatarUrl:       profile['avatar_url']?.toString() ?? '',
+      tag:             d['tag']?.toString() ?? '💰 Wealth',
+      content:         raw,
+      mediaUrl:        d['media_url']?.toString(),
+      mediaType:       d['media_type']?.toString(),
+      linkUrl:         d['link_url']?.toString(),
+      linkTitle:       d['link_title']?.toString(),
+      backgroundColor: d['background_color']?.toString(),
       likes:    (d['likes_count']    as num?)?.toInt() ?? 0,
       comments: (d['comments_count'] as num?)?.toInt() ?? 0,
       shares:   (d['shares_count']   as num?)?.toInt() ?? 0,
@@ -147,8 +151,7 @@ class PostModel {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VideoPreloadManager — YouTube-style proactive preloading
-// SKIPPED on web (kIsWeb == true) — VideoPlayerController is native-only.
+// VideoPreloadManager — YouTube-style proactive preloading (native only)
 // ─────────────────────────────────────────────────────────────────────────────
 final videoPreloadManager = _VideoPreloadManager();
 
@@ -161,7 +164,7 @@ class _PreloadEntry {
   _PreloadEntry(this.url);
 
   Future<void> init() async {
-    if (kIsWeb) return; // ← web guard
+    if (kIsWeb) return;
     try {
       final c = VideoPlayerController.networkUrl(Uri.parse(url));
       await c.initialize();
@@ -192,18 +195,15 @@ class _VideoPreloadManager {
   static const int _maxReady = 4;
 
   void preload(String url) {
-    if (kIsWeb)                    return; // ← web guard
-    if (url.isEmpty)               return;
-    if (_pool.containsKey(url))    return;
-    if (_loading.contains(url))    return;
-
+    if (kIsWeb)                  return;
+    if (url.isEmpty)             return;
+    if (_pool.containsKey(url))  return;
+    if (_loading.contains(url))  return;
     _loading.add(url);
     final entry = _PreloadEntry(url);
-
     entry.init().then((_) {
       _loading.remove(url);
       if (!entry.isReady) return;
-
       while (_pool.length >= _maxReady) {
         final oldest = _pool.keys.first;
         _pool[oldest]?.dispose();
@@ -214,7 +214,7 @@ class _VideoPreloadManager {
   }
 
   VideoPlayerController? claim(String url) {
-    if (kIsWeb) return null; // ← web guard
+    if (kIsWeb) return null;
     final entry = _pool[url];
     if (entry == null || !entry.isReady || entry.controller == null) return null;
     final c = entry.controller!;
@@ -287,16 +287,16 @@ class _PostCardSkeleton extends StatelessWidget {
         AspectRatio(aspectRatio: 16 / 9, child: _Sh(h: double.infinity, r: 12)),
         const SizedBox(height: 14),
         Row(children: const [
-          _Sh(w: 55, h: 18, r: 9), SizedBox(width: 18),
-          _Sh(w: 55, h: 18, r: 9), SizedBox(width: 18),
-          _Sh(w: 55, h: 18, r: 9), Spacer(),
-          _Sh(w: 22, h: 22, r: 11),
+          _Sh(w: 72, h: 34, r: 17), SizedBox(width: 10),
+          _Sh(w: 72, h: 34, r: 17), SizedBox(width: 10),
+          _Sh(w: 72, h: 34, r: 17), Spacer(),
+          _Sh(w: 34, h: 34, r: 17),
         ]),
         const SizedBox(height: 12),
         Row(children: const [
-          Expanded(child: _Sh(h: 36, r: 10)),
+          Expanded(child: _Sh(h: 38, r: 10)),
           SizedBox(width: 8),
-          Expanded(child: _Sh(h: 36, r: 10)),
+          Expanded(child: _Sh(h: 38, r: 10)),
         ]),
       ]),
     );
@@ -352,12 +352,15 @@ class _HomeScreenState extends State<HomeScreen>
   static const int      _maxAds    = 5;
   static const Duration _lockDur   = Duration(hours: 4);
 
+  // ── Notification badge ────────────────────────────────────────────────────
+  int _notifCount = 0;
+
   // ── Cache keys ────────────────────────────────────────────────────────────
-  static const _kQ   = 'riseup_ai_quota_v1';
-  static const _kP   = 'riseup_profile_cache_v1';
-  static const _kF   = 'riseup_feed_for_you_v2';
-  static const _kSt  = 'riseup_status_cache_v1';     // NEW: status cache
-  static const _kFw  = 'riseup_followed_users';
+  static const _kQ  = 'riseup_ai_quota_v1';
+  static const _kP  = 'riseup_profile_cache_v1';
+  static const _kF  = 'riseup_feed_for_you_v2';
+  static const _kSt = 'riseup_status_cache_v1';
+  static const _kFw = 'riseup_followed_users';
 
   // ── Status ────────────────────────────────────────────────────────────────
   List<dynamic> _statusUsers  = [];
@@ -366,7 +369,6 @@ class _HomeScreenState extends State<HomeScreen>
   // ── Feed state ────────────────────────────────────────────────────────────
   final _feeds   = <String, List<PostModel>>{'for_you': [], 'following': [], 'trending': []};
   final _loading = <String, bool>            {'for_you': false, 'following': false, 'trending': false};
-  // NEW: per-tab error state — shows the actual error instead of "No posts yet"
   final _errors  = <String, String?>         {'for_you': null,  'following': null,  'trending': null};
   final _offsets = <String, int>             {'for_you': 0,     'following': 0,     'trending': 0};
   final _hasMore = <String, bool>            {'for_you': true,  'following': true,  'trending': true};
@@ -382,14 +384,9 @@ class _HomeScreenState extends State<HomeScreen>
       ..addListener(() {
         if (_tab.indexIsChanging) return;
         final t = _tabs[_tab.index];
-        // Only load if empty AND no error (error shows retry button)
         if (_feeds[t]!.isEmpty && _errors[t] == null) _loadFeed(t);
       });
-    // Restore cache immediately for instant UI (no blank screen)
-    _restoreCache().then((_) {
-      // Then kick off real network refresh in parallel
-      _refreshAll();
-    });
+    _restoreCache().then((_) => _refreshAll());
   }
 
   @override
@@ -413,13 +410,11 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  // ── Cache restore — shows data INSTANTLY before network ──────────────────
+  // ── Cache restore ─────────────────────────────────────────────────────────
   Future<void> _restoreCache() async {
-    // On web SharedPreferences is JS localStorage — still works
     try {
       final p = await SharedPreferences.getInstance();
 
-      // Profile
       try {
         final r = p.getString(_kP);
         if (r != null && mounted) {
@@ -427,7 +422,6 @@ class _HomeScreenState extends State<HomeScreen>
         }
       } catch (_) {}
 
-      // Status users
       try {
         final r = p.getString(_kSt);
         if (r != null && mounted) {
@@ -438,7 +432,6 @@ class _HomeScreenState extends State<HomeScreen>
         }
       } catch (_) {}
 
-      // Feed (for_you only)
       try {
         final r = p.getString(_kF);
         if (r != null) {
@@ -452,7 +445,6 @@ class _HomeScreenState extends State<HomeScreen>
         }
       } catch (_) {}
 
-      // AI quota
       try {
         final r = p.getString(_kQ);
         if (r != null) {
@@ -469,23 +461,31 @@ class _HomeScreenState extends State<HomeScreen>
         }
       } catch (_) {}
 
-      // Follows
       try {
         final fw = p.getStringList(_kFw) ?? [];
         if (mounted) setState(() { for (final u in fw) _follows[u] = true; });
       } catch (_) {}
 
-    } catch (_) {
-      // SharedPreferences init failure (very rare) — proceed without cache
-    }
+    } catch (_) {}
   }
 
-  // ── Parallel refresh — profile + status + feed all at once ───────────────
+  // ── Parallel refresh ──────────────────────────────────────────────────────
   Future<void> _refreshAll() => Future.wait([
     _loadProfile(),
     _loadStatus(),
     _loadFeed('for_you', refresh: true),
+    _loadNotifCount(),
   ]);
+
+  // ── Notification count ─────────────────────────────────────────────────────
+  Future<void> _loadNotifCount() async {
+    try {
+      final d = await api.get('/notifications/unread-count');
+      if (mounted) {
+        setState(() => _notifCount = (d['count'] as num?)?.toInt() ?? 0);
+      }
+    } catch (_) {}
+  }
 
   Future<void> _saveQuota() async {
     try {
@@ -511,17 +511,12 @@ class _HomeScreenState extends State<HomeScreen>
     } catch (_) {}
   }
 
-  // NEW: status loads in parallel, caches result
   Future<void> _loadStatus() async {
     try {
       final d = await api.get('/posts/status/feed');
       final users = ((d as Map<String, dynamic>?)?['users'] as List?) ?? [];
       if (mounted) {
-        setState(() {
-          _statusUsers  = users;
-          _statusLoaded = true;
-        });
-        // Cache status for instant restore on next launch
+        setState(() { _statusUsers = users; _statusLoaded = true; });
         try {
           final p = await SharedPreferences.getInstance();
           await p.setString(_kSt, jsonEncode(users));
@@ -532,19 +527,16 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  // ── Feed loader — now stores and shows actual errors ─────────────────────
   Future<void> _loadFeed(String tab, {bool refresh = false}) async {
     if (_loading[tab] == true) return;
     if (refresh) {
       _offsets[tab] = 0;
       _hasMore[tab] = true;
-      // Clear error on explicit refresh
       if (mounted) setState(() => _errors[tab] = null);
     }
     if (!(_hasMore[tab] ?? true)) return;
     if (mounted) setState(() { _loading[tab] = true; _errors[tab] = null; });
 
-    // Retry with exponential back-off (up to 3 attempts)
     int    attempts = 0;
     Object? lastErr;
     List?   raws;
@@ -555,18 +547,14 @@ class _HomeScreenState extends State<HomeScreen>
         final d = await api.getFeed(tab: tab, limit: 20, offset: _offsets[tab]!);
         raws    = (d['posts'] as List?) ?? [];
         lastErr = null;
-        break; // success
+        break;
       } catch (e) {
         lastErr = e;
-        if (attempts < 3) {
-          // Wait 1s, 2s before retrying
-          await Future.delayed(Duration(seconds: attempts));
-        }
+        if (attempts < 3) await Future.delayed(Duration(seconds: attempts));
       }
     }
 
     if (lastErr != null) {
-      // ALL retries failed — show a real error message
       if (mounted) {
         setState(() {
           _loading[tab] = false;
@@ -606,7 +594,6 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  // Converts raw exceptions into user-friendly messages
   String _friendlyError(Object e) {
     final s = e.toString();
     if (s.contains('SocketException') || s.contains('Failed host lookup')) {
@@ -627,7 +614,6 @@ class _HomeScreenState extends State<HomeScreen>
     if (s.contains('404')) {
       return 'Feed endpoint not found. Check API config.';
     }
-    // Truncate overly long technical errors
     final clean = s.replaceAll('Exception: ', '').replaceAll('ApiException: ', '');
     return clean.length > 100 ? '${clean.substring(0, 100)}…' : clean;
   }
@@ -664,7 +650,6 @@ class _HomeScreenState extends State<HomeScreen>
     } catch (_) {}
   }
 
-  // ── Derived state ─────────────────────────────────────────────────────────
   bool get _isPremium => (_profile['subscription_tier'] ?? 'free') == 'premium';
   int  get _aiLeft    => (_freeLimit - _aiUsed).clamp(0, _freeLimit);
   bool get _adLocked  {
@@ -752,7 +737,6 @@ class _HomeScreenState extends State<HomeScreen>
     api.sharePost(post.id).catchError((_) {
       if (mounted) setState(() => post.shares = (post.shares - 1).clamp(0, 999999));
     });
-    // Brain signal: shares reveal high engagement — fire-and-forget
     if (post.content.isNotEmpty) {
       api.recordInteractionSignal(
         action:      'share',
@@ -762,17 +746,19 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  // ── AI ────────────────────────────────────────────────────────────────────
+  // ── AI — v9.0: full try-catch around ad flow + mounted guards everywhere ──
   Future<void> _handleAI(PostModel post, {required bool isPrivate}) async {
     if (_isPremium) { await _execAI(post, priv: isPrivate); return; }
     if (_aiUsed < _freeLimit) {
+      if (!mounted) return;
       setState(() => _aiUsed++);
       await _saveQuota();
-      await _execAI(post, priv: isPrivate);
+      if (mounted) await _execAI(post, priv: isPrivate);
       return;
     }
     if (_adLocked) { _showLockout(); return; }
     if (_adsWatched >= _maxAds) {
+      if (!mounted) return;
       setState(() => _adLockout = DateTime.now().add(_lockDur));
       await _saveQuota();
       _showLockout();
@@ -780,20 +766,28 @@ class _HomeScreenState extends State<HomeScreen>
     }
     final ok = await _showAdPrompt();
     if (!ok || !mounted) return;
-    await adService.showRewardedAd(
-      featureKey: 'post_ai',
-      onRewarded: () async {
-        setState(() { _aiUsed = 0; _adsWatched++; });
-        await _saveQuota();
-        if (mounted) await _execAI(post, priv: isPrivate);
-      },
-      onDismissed: () {
-        if (mounted) _snack('Watch the full ad to unlock AI.', AppColors.error);
-      },
-    );
+
+    // v9.0 FIX: wrap entire ad call in try-catch; all callbacks guard mounted
+    try {
+      await adService.showRewardedAd(
+        featureKey: 'post_ai',
+        onRewarded: () async {
+          if (!mounted) return; // ← guard before setState
+          setState(() { _aiUsed = 0; _adsWatched++; });
+          await _saveQuota();
+          if (mounted) await _execAI(post, priv: isPrivate);
+        },
+        onDismissed: () {
+          if (mounted) _snack('Watch the full ad to unlock AI.', AppColors.error);
+        },
+      );
+    } catch (e) {
+      if (mounted) _snack('Ad failed to load. Please try again.', AppColors.error);
+    }
   }
 
   Future<void> _execAI(PostModel post, {required bool priv}) async {
+    if (!mounted) return;
     if (priv) {
       context.push('/conversation/ai'
           '?name=${Uri.encodeComponent("RiseUp AI")}'
@@ -805,10 +799,14 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
+  // v9.0: AI-aware of image & video content
   Future<void> _postAIComment(PostModel post) async {
     if (!mounted) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+    // Capture messenger before async operations (v9.0 crash fix)
+    final messenger = ScaffoldMessenger.of(context);
+
+    messenger.showSnackBar(SnackBar(
       content: Row(children: const [
         SizedBox(width: 18, height: 18,
             child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
@@ -819,30 +817,61 @@ class _HomeScreenState extends State<HomeScreen>
       duration: const Duration(seconds: 120),
     ));
 
+    // v9.0: build media-aware context
+    final StringBuffer promptBuf = StringBuffer();
+    promptBuf.write('A RiseUp community member posted: "${post.content}"');
+
+    if (post.mediaUrl != null && post.mediaUrl!.isNotEmpty) {
+      if (post.mediaType == 'image') {
+        promptBuf.write('\n\nThe post includes an image at: ${post.mediaUrl}. '
+            'If you are able to access the image URL, extract any visible text, '
+            'prices, charts, numbers, or key information from it and incorporate '
+            'that context into your wealth-building insight.');
+      } else if (post.mediaType == 'video') {
+        promptBuf.write('\n\nThe post includes a video at: ${post.mediaUrl}. '
+            'Use the post content and any available metadata to provide '
+            'video-context-aware wealth-building insights (e.g. if it appears '
+            'to be a tutorial, product demo, or market analysis video).');
+      }
+    }
+
+    if (post.linkUrl != null && post.linkUrl!.isNotEmpty) {
+      promptBuf.write('\n\nA link was also shared: ${post.linkUrl}');
+      if (post.linkTitle != null && post.linkTitle!.isNotEmpty) {
+        promptBuf.write(' (titled "${post.linkTitle}")');
+      }
+      promptBuf.write('. Consider this resource in your response if relevant.');
+    }
+
+    promptBuf.write('\n\nGive a concise (2–3 sentence) actionable wealth-building insight. '
+        'Be specific and helpful.');
+
     String err = '';
     try {
       final res = await api.chat(
-        message: 'A RiseUp community member posted: "${post.content}"\n\n'
-            'Give a concise (2–3 sentence) actionable wealth-building insight. '
-            'Be specific and helpful.',
-        mode: 'general', // valid: general | workflow | coach | agent
+        message: promptBuf.toString(),
+        mode: 'general',
       );
       final txt = (res['content'] as String?)?.trim() ?? '';
       if (txt.isEmpty) throw Exception('Empty AI response');
       await api.addComment(post.id, 'RiseUp AI: $txt', isAI: true, isPinned: true);
       if (mounted) setState(() => post.comments++);
-      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      messenger.hideCurrentSnackBar();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      messenger.showSnackBar(SnackBar(
         content: const Text('AI insight pinned in comments!'),
         backgroundColor: AppColors.success,
         duration: const Duration(seconds: 3),
         action: SnackBarAction(
           label: 'View',
           textColor: Colors.white,
-          onPressed: () => context.push('/comments/${post.id}'
-              '?content=${Uri.encodeComponent(post.content)}'
-              '&author=${Uri.encodeComponent(post.name)}'),
+          onPressed: () {
+            if (mounted) {
+              context.push('/comments/${post.id}'
+                  '?content=${Uri.encodeComponent(post.content)}'
+                  '&author=${Uri.encodeComponent(post.name)}');
+            }
+          },
         ),
       ));
       return;
@@ -868,13 +897,13 @@ class _HomeScreenState extends State<HomeScreen>
       }
     }
 
-    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    messenger.hideCurrentSnackBar();
     if (!mounted) return;
-    _snack(
-      err.isEmpty ? 'AI request failed. Please try again.' : err,
-      AppColors.error,
+    messenger.showSnackBar(SnackBar(
+      content: Text(err.isEmpty ? 'AI request failed. Please try again.' : err),
+      backgroundColor: AppColors.error,
       duration: const Duration(seconds: 5),
-    );
+    ));
   }
 
   String _parseValidationError(String raw) {
@@ -896,6 +925,7 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Future<bool> _showAdPrompt() async {
+    if (!mounted) return false;
     final dark = Theme.of(context).brightness == Brightness.dark;
     return await showDialog<bool>(
         context: context,
@@ -930,6 +960,7 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _showLockout() {
+    if (!mounted) return;
     final dark = Theme.of(context).brightness == Brightness.dark;
     final diff = _adLockout != null
         ? _adLockout!.difference(DateTime.now())
@@ -960,7 +991,7 @@ class _HomeScreenState extends State<HomeScreen>
                     borderRadius: BorderRadius.circular(10))),
             onPressed: () {
               Navigator.pop(context);
-              context.push('/premium');
+              if (mounted) context.push('/premium');
             },
             child: const Text('Go Premium',
                 style: TextStyle(color: Colors.white))),
@@ -1039,19 +1070,53 @@ class _HomeScreenState extends State<HomeScreen>
                       color: AppColors.primary,
                       fontSize: 11,
                       fontWeight: FontWeight.w600))),
+
+          // v9.0: Search icon → full content search, NOT explore tab
           IconButton(
-            icon: Icon(Iconsax.search_normal, color: ico, size: 20),
+            icon: Icon(Icons.search_rounded, color: ico, size: 22),
+            tooltip: 'Search posts',
             onPressed: () {
               HapticFeedback.lightImpact();
-              context.go('/explore');
+              Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => _ContentSearchScreen(isDark: dark)));
             },
           ),
-          IconButton(
-            icon: Icon(Iconsax.notification, color: ico, size: 20),
-            onPressed: () {
-              HapticFeedback.lightImpact();
-              context.go('/notifications');
-            },
+
+          // v9.0: Notification bell with badge
+          Stack(
+            children: [
+              IconButton(
+                icon: Icon(Icons.notifications_rounded, color: ico, size: 22),
+                tooltip: 'Notifications',
+                onPressed: () {
+                  HapticFeedback.lightImpact();
+                  if (mounted) setState(() => _notifCount = 0);
+                  context.go('/notifications');
+                },
+              ),
+              if (_notifCount > 0)
+                Positioned(
+                  right: 8, top: 8,
+                  child: IgnorePointer(
+                    child: Container(
+                      width: 17, height: 17,
+                      decoration: BoxDecoration(
+                          color: AppColors.error, shape: BoxShape.circle,
+                          border: Border.all(
+                              color: card, width: 1.5)),
+                      child: Center(
+                        child: Text(
+                          _notifCount > 9 ? '9+' : '$_notifCount',
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 9,
+                              fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
           const SizedBox(width: 4),
         ],
@@ -1084,16 +1149,13 @@ class _HomeScreenState extends State<HomeScreen>
                               onTap: () => Navigator.push(
                                 context,
                                 MaterialPageRoute(
-                                    builder: (_) =>
-                                        const CreateStatusScreen()),
+                                    builder: (_) => const CreateStatusScreen()),
                               ).then((_) => _loadStatus()),
                             );
                           }
-                          final u = _statusUsers[i - 1]
-                              as Map<String, dynamic>;
+                          final u = _statusUsers[i - 1] as Map<String, dynamic>;
                           return _StoryItem(
-                              user: u,
-                              isDark: dark,
+                              user: u, isDark: dark,
                               onTap: () => _viewStatus(u));
                         },
                       ),
@@ -1112,8 +1174,7 @@ class _HomeScreenState extends State<HomeScreen>
               unselectedLabelColor: sub,
               indicatorColor: AppColors.primary,
               indicatorWeight: 2.5,
-              labelStyle: const TextStyle(
-                  fontSize: 13, fontWeight: FontWeight.w600),
+              labelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
               tabs: const [
                 Tab(text: 'For You'),
                 Tab(text: 'Following'),
@@ -1127,91 +1188,76 @@ class _HomeScreenState extends State<HomeScreen>
         Expanded(
           child: TabBarView(
             controller: _tab,
-            children: _tabs
-                .map((tab) => _FeedTab(
-                      key: PageStorageKey(tab),
-                      tab: tab,
-                      posts: _feeds[tab]!,
-                      isLoading: _loading[tab] == true,
-                      hasMore: _hasMore[tab] ?? true,
-                      // NEW: pass error string
-                      errorMsg: _errors[tab],
-                      isDark: dark,
-                      cardColor: card,
-                      borderColor: border,
-                      textColor: txt,
-                      subColor: sub,
-                      isPremium: _isPremium,
-                      aiRemaining: _aiLeft,
-                      needsAd: _aiLeft <= 0 && !_isPremium,
-                      currentUserId: _profile['id']?.toString() ?? '',
-                      followState: _follows,
-                      onLoadMore: () => _loadFeed(tab),
-                      onRefresh: () => _loadFeed(tab, refresh: true),
-                      onAskAI: (p) => _handleAI(p, isPrivate: false),
-                      onPrivateChat: (p) => _handleAI(p, isPrivate: true),
-                      onFollow: _handleFollow,
-                      onShare: _handleShare,
-                      onPreloadVideos: _preloadFeedVideos,
-                      onPostDeleted: (id) => Future.microtask(() {
-                        if (mounted) setState(() {
-                          for (final t in _tabs) {
-                            _feeds[t]!.removeWhere((p) => p.id == id);
-                          }
-                        });
-                      }),
-                      onLike: (p) async {
-                        HapticFeedback.mediumImpact();
-                        setState(() {
-                          p.isLiked  = !p.isLiked;
-                          p.likes   += p.isLiked ? 1 : -1;
-                        });
-                        try {
-                          final r = await api.toggleLike(p.id);
-                          if (mounted) {
-                            setState(() => p.isLiked = r['liked'] == true);
-                          }
-                          // Brain signal: fire-and-forget, never blocks UI
-                          if (r['liked'] == true && p.content.isNotEmpty) {
-                            api.recordInteractionSignal(
-                              action:      'like',
-                              postId:      p.id,
-                              postContent: p.content,
-                            );
-                          }
-                        } catch (_) {
-                          if (mounted) setState(() {
-                            p.isLiked  = !p.isLiked;
-                            p.likes   += p.isLiked ? 1 : -1;
-                          });
-                        }
-                      },
-                      onSave: (p) async {
-                        HapticFeedback.mediumImpact();
-                        setState(() => p.isSaved = !p.isSaved);
-                        try {
-                          final r = await api.toggleSave(p.id);
-                          if (mounted) {
-                            setState(() => p.isSaved = r['saved'] == true);
-                          }
-                          // Brain signal: saved posts reveal strong interests
-                          if (r['saved'] == true && p.content.isNotEmpty) {
-                            api.recordInteractionSignal(
-                              action:      'save',
-                              postId:      p.id,
-                              postContent: p.content,
-                            );
-                          }
-                        } catch (_) {
-                          if (mounted) setState(() => p.isSaved = !p.isSaved);
-                        }
-                      },
-                      onComment: (p) => context.push(
-                          '/comments/${p.id}'
-                          '?content=${Uri.encodeComponent(p.content)}'
-                          '&author=${Uri.encodeComponent(p.name)}'),
-                    ))
-                .toList(),
+            children: _tabs.map((tab) => _FeedTab(
+              key: PageStorageKey(tab),
+              tab: tab,
+              posts: _feeds[tab]!,
+              isLoading: _loading[tab] == true,
+              hasMore: _hasMore[tab] ?? true,
+              errorMsg: _errors[tab],
+              isDark: dark,
+              cardColor: card,
+              borderColor: border,
+              textColor: txt,
+              subColor: sub,
+              isPremium: _isPremium,
+              aiRemaining: _aiLeft,
+              needsAd: _aiLeft <= 0 && !_isPremium,
+              currentUserId: _profile['id']?.toString() ?? '',
+              followState: _follows,
+              onLoadMore: () => _loadFeed(tab),
+              onRefresh: () => _loadFeed(tab, refresh: true),
+              onAskAI: (p) => _handleAI(p, isPrivate: false),
+              onPrivateChat: (p) => _handleAI(p, isPrivate: true),
+              onFollow: _handleFollow,
+              onShare: _handleShare,
+              onPreloadVideos: _preloadFeedVideos,
+              onPostDeleted: (id) => Future.microtask(() {
+                if (mounted) setState(() {
+                  for (final t in _tabs) {
+                    _feeds[t]!.removeWhere((p) => p.id == id);
+                  }
+                });
+              }),
+              onLike: (p) async {
+                HapticFeedback.mediumImpact();
+                setState(() {
+                  p.isLiked = !p.isLiked;
+                  p.likes  += p.isLiked ? 1 : -1;
+                });
+                try {
+                  final r = await api.toggleLike(p.id);
+                  if (mounted) setState(() => p.isLiked = r['liked'] == true);
+                  if (r['liked'] == true && p.content.isNotEmpty) {
+                    api.recordInteractionSignal(
+                      action: 'like', postId: p.id, postContent: p.content);
+                  }
+                } catch (_) {
+                  if (mounted) setState(() {
+                    p.isLiked = !p.isLiked;
+                    p.likes  += p.isLiked ? 1 : -1;
+                  });
+                }
+              },
+              onSave: (p) async {
+                HapticFeedback.mediumImpact();
+                setState(() => p.isSaved = !p.isSaved);
+                try {
+                  final r = await api.toggleSave(p.id);
+                  if (mounted) setState(() => p.isSaved = r['saved'] == true);
+                  if (r['saved'] == true && p.content.isNotEmpty) {
+                    api.recordInteractionSignal(
+                      action: 'save', postId: p.id, postContent: p.content);
+                  }
+                } catch (_) {
+                  if (mounted) setState(() => p.isSaved = !p.isSaved);
+                }
+              },
+              onComment: (p) => context.push(
+                  '/comments/${p.id}'
+                  '?content=${Uri.encodeComponent(p.content)}'
+                  '&author=${Uri.encodeComponent(p.name)}'),
+            )).toList(),
           ),
         ),
       ]),
@@ -1220,7 +1266,269 @@ class _HomeScreenState extends State<HomeScreen>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Feed Tab — YouTube/Facebook style: keeps alive, never reloads on tab switch
+// v9.0: Content Search Screen — searches posts, NOT navigate to Explore tab
+// ─────────────────────────────────────────────────────────────────────────────
+class _ContentSearchScreen extends StatefulWidget {
+  final bool isDark;
+  const _ContentSearchScreen({super.key, required this.isDark});
+  @override
+  State<_ContentSearchScreen> createState() => _ContentSearchScreenState();
+}
+
+class _ContentSearchScreenState extends State<_ContentSearchScreen> {
+  final TextEditingController _ctrl  = TextEditingController();
+  final FocusNode             _focus = FocusNode();
+  List<PostModel> _results  = [];
+  List<String>    _recent   = [];
+  bool            _loading  = false;
+  bool            _searched = false;
+  Timer?          _debounce;
+
+  static const _kRecent = 'riseup_search_recent_v1';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRecent();
+    WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _focus.requestFocus());
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    _focus.dispose();
+    _debounce?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadRecent() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      if (mounted) setState(() => _recent = p.getStringList(_kRecent) ?? []);
+    } catch (_) {}
+  }
+
+  Future<void> _saveRecent(String q) async {
+    try {
+      final p    = await SharedPreferences.getInstance();
+      final list = [q, ..._recent.where((r) => r != q)].take(10).toList();
+      await p.setStringList(_kRecent, list);
+      if (mounted) setState(() => _recent = list);
+    } catch (_) {}
+  }
+
+  Future<void> _removeRecent(String q) async {
+    try {
+      final p    = await SharedPreferences.getInstance();
+      final list = _recent.where((r) => r != q).toList();
+      await p.setStringList(_kRecent, list);
+      if (mounted) setState(() => _recent = list);
+    } catch (_) {}
+  }
+
+  void _onChanged(String val) {
+    _debounce?.cancel();
+    if (val.trim().isEmpty) {
+      if (mounted) setState(() { _results = []; _searched = false; });
+      return;
+    }
+    _debounce = Timer(const Duration(milliseconds: 420), () => _search(val.trim()));
+  }
+
+  Future<void> _search(String q) async {
+    if (q.isEmpty || !mounted) return;
+    setState(() { _loading = true; _searched = true; });
+    await _saveRecent(q);
+    try {
+      final d = await api.get('/posts/search?q=${Uri.encodeComponent(q)}&limit=30');
+      final posts = ((d['posts'] as List?) ?? [])
+          .map((x) => PostModel.fromApi(x as Map<String, dynamic>))
+          .toList();
+      if (mounted) setState(() { _results = posts; _loading = false; });
+    } catch (_) {
+      if (mounted) setState(() { _results = []; _loading = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext ctx) {
+    final dark   = widget.isDark;
+    final bg     = dark ? Colors.black : Colors.white;
+    final card   = dark ? AppColors.bgCard : Colors.white;
+    final border = dark ? AppColors.bgSurface : Colors.grey.shade200;
+    final sub    = dark ? Colors.white.withOpacity(0.54) : Colors.black45;
+    final txt    = dark ? Colors.white : Colors.black87;
+
+    return Scaffold(
+      backgroundColor: bg,
+      appBar: AppBar(
+        backgroundColor: card,
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
+        leading: IconButton(
+          icon: Icon(Icons.arrow_back_rounded,
+              color: dark ? Colors.white70 : Colors.black54),
+          onPressed: () => Navigator.pop(ctx),
+        ),
+        titleSpacing: 0,
+        title: Container(
+          height: 40,
+          margin: const EdgeInsets.only(right: 16),
+          decoration: BoxDecoration(
+            color: dark ? AppColors.bgSurface : Colors.grey.shade100,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: TextField(
+            controller: _ctrl,
+            focusNode:  _focus,
+            onChanged:  _onChanged,
+            onSubmitted: (v) => _search(v.trim()),
+            style: TextStyle(
+                fontSize: 14,
+                color: txt,
+                fontWeight: FontWeight.w500),
+            decoration: InputDecoration(
+              hintText:    'Search posts, hashtags, people…',
+              hintStyle:   TextStyle(color: sub, fontSize: 13),
+              prefixIcon:  Icon(Icons.search_rounded, color: sub, size: 18),
+              suffixIcon:  _ctrl.text.isNotEmpty
+                  ? IconButton(
+                      icon: Icon(Icons.close_rounded, color: sub, size: 16),
+                      onPressed: () {
+                        _ctrl.clear();
+                        if (mounted) setState(() { _results = []; _searched = false; });
+                        _focus.requestFocus();
+                      })
+                  : null,
+              filled:      false,
+              border:      InputBorder.none,
+              contentPadding: const EdgeInsets.symmetric(vertical: 10),
+            ),
+          ),
+        ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Divider(height: 1, color: border),
+        ),
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator(
+              color: AppColors.primary, strokeWidth: 2))
+          : !_searched
+              ? _recentView(dark, sub, txt, border)
+              : _results.isEmpty
+                  ? _emptyView(sub)
+                  : _resultsView(dark, card, border, txt, sub),
+    );
+  }
+
+  Widget _recentView(bool dark, Color sub, Color txt, Color border) {
+    if (_recent.isEmpty) {
+      return Center(
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Icon(Icons.search_rounded, size: 52, color: sub.withOpacity(0.4)),
+          const SizedBox(height: 12),
+          Text('Search posts, hashtags & people',
+              style: TextStyle(color: sub, fontSize: 14)),
+        ]),
+      );
+    }
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          child: Row(children: [
+            Text('Recent Searches',
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: sub,
+                    letterSpacing: 0.8)),
+            const Spacer(),
+            GestureDetector(
+              onTap: () async {
+                try {
+                  final p = await SharedPreferences.getInstance();
+                  await p.remove(_kRecent);
+                  if (mounted) setState(() => _recent = []);
+                } catch (_) {}
+              },
+              child: Text('Clear all',
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w600)),
+            ),
+          ]),
+        ),
+        ..._recent.map((q) => ListTile(
+          dense: true,
+          leading: Icon(Icons.history_rounded, size: 18, color: sub),
+          title: Text(q,
+              style: TextStyle(fontSize: 13, color: dark ? Colors.white : Colors.black87)),
+          trailing: IconButton(
+            icon: Icon(Icons.close_rounded, size: 14, color: sub),
+            onPressed: () => _removeRecent(q),
+          ),
+          onTap: () {
+            _ctrl.text = q;
+            _search(q);
+          },
+        )),
+      ],
+    );
+  }
+
+  Widget _emptyView(Color sub) => Center(
+    child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+      Text('📭', style: const TextStyle(fontSize: 48)),
+      const SizedBox(height: 12),
+      Text('No results found', style: TextStyle(color: sub, fontSize: 14)),
+      const SizedBox(height: 4),
+      Text('Try different keywords', style: TextStyle(color: sub, fontSize: 12)),
+    ]),
+  );
+
+  Widget _resultsView(bool dark, Color card, Color border, Color txt, Color sub) {
+    return ListView.separated(
+      itemCount: _results.length,
+      separatorBuilder: (_, __) =>
+          Divider(height: 8, thickness: 8, color: border),
+      itemBuilder: (ctx, i) {
+        final p = _results[i];
+        return PostCard(
+          key: ValueKey('search_${p.id}'),
+          post: p,
+          isDark: dark,
+          cardColor: card,
+          borderColor: border,
+          textColor: txt,
+          subColor: sub,
+          onAskAI:       (_) {},
+          onPrivateChat: (_) {},
+          onLike:        (_) {},
+          onSave:        (_) {},
+          onShare:       (_) {},
+          onComment: (post) => ctx.push(
+              '/comments/${post.id}'
+              '?content=${Uri.encodeComponent(post.content)}'
+              '&author=${Uri.encodeComponent(post.name)}'),
+          onFollow:      (_) {},
+          onPostDeleted: (_) {},
+          isPremium:     false,
+          aiRemaining:   0,
+          isFollowing:   p.isFollowing,
+          currentUserId: '',
+        );
+      },
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Feed Tab
 // ─────────────────────────────────────────────────────────────────────────────
 class _FeedTab extends StatefulWidget {
   final String           tab;
@@ -1229,7 +1537,7 @@ class _FeedTab extends StatefulWidget {
   final Color            cardColor, borderColor, textColor, subColor;
   final int              aiRemaining;
   final String           currentUserId;
-  final String?          errorMsg;  // NEW: real error message
+  final String?          errorMsg;
   final Map<String, bool> followState;
   final VoidCallback     onLoadMore, onRefresh;
   final Function(PostModel) onAskAI, onPrivateChat, onLike, onSave, onComment, onShare;
@@ -1265,7 +1573,7 @@ class _FeedTabState extends State<_FeedTab>
   int  _lastPreloadedIdx = 0;
 
   @override
-  bool get wantKeepAlive => true; // YouTube-style: never destroy tab state
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
@@ -1283,7 +1591,6 @@ class _FeedTabState extends State<_FeedTab>
     if (!_sc.hasClients) return;
     final pos = _sc.position;
 
-    // ── Pagination at 70% ─────────────────────────────────────────────────
     if (pos.pixels >= pos.maxScrollExtent * 0.7 &&
         !_paginationFired &&
         !widget.isLoading &&
@@ -1295,12 +1602,10 @@ class _FeedTabState extends State<_FeedTab>
       });
     }
 
-    // ── Proactive video preload (native only) ─────────────────────────────
     if (!kIsWeb) {
       const estimatedItemH = 500.0;
       final visibleIdx     = max(0, (pos.pixels / estimatedItemH).floor());
       final preloadFrom    = visibleIdx + 1;
-
       if (preloadFrom > _lastPreloadedIdx &&
           preloadFrom < widget.posts.length) {
         _lastPreloadedIdx = preloadFrom;
@@ -1315,7 +1620,7 @@ class _FeedTabState extends State<_FeedTab>
     final posts  = widget.posts;
     final border = widget.borderColor;
 
-    // ── Error state — NEW: shows actual error + retry button ──────────────
+    // Error state
     if (widget.errorMsg != null && posts.isEmpty) {
       return Center(
         child: Padding(
@@ -1330,10 +1635,7 @@ class _FeedTabState extends State<_FeedTab>
             Text(
               widget.errorMsg!,
               textAlign: TextAlign.center,
-              style: TextStyle(
-                  color: widget.subColor,
-                  fontSize: 14,
-                  height: 1.5),
+              style: TextStyle(color: widget.subColor, fontSize: 14, height: 1.5),
             ),
             const SizedBox(height: 20),
             ElevatedButton.icon(
@@ -1343,12 +1645,9 @@ class _FeedTabState extends State<_FeedTab>
                       borderRadius: BorderRadius.circular(12)),
                   padding: const EdgeInsets.symmetric(
                       horizontal: 24, vertical: 12)),
-              icon: const Icon(Icons.refresh_rounded,
-                  color: Colors.white, size: 18),
+              icon: const Icon(Icons.refresh_rounded, color: Colors.white, size: 18),
               label: const Text('Try Again',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w600)),
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
               onPressed: widget.onRefresh,
             ),
           ]),
@@ -1356,7 +1655,7 @@ class _FeedTabState extends State<_FeedTab>
       );
     }
 
-    // ── Loading skeleton ──────────────────────────────────────────────────
+    // Loading skeleton
     if (widget.isLoading && posts.isEmpty) {
       return ListView.separated(
         physics: const NeverScrollableScrollPhysics(),
@@ -1368,7 +1667,7 @@ class _FeedTabState extends State<_FeedTab>
       );
     }
 
-    // ── Empty state ───────────────────────────────────────────────────────
+    // Empty state
     if (posts.isEmpty) {
       return Center(
         child: Column(
@@ -1381,8 +1680,8 @@ class _FeedTabState extends State<_FeedTab>
           const SizedBox(height: 8),
           GestureDetector(
             onTap: widget.onRefresh,
-            child: Text('Refresh',
-                style: const TextStyle(
+            child: const Text('Refresh',
+                style: TextStyle(
                     color: AppColors.primary,
                     fontWeight: FontWeight.w600)),
           ),
@@ -1397,15 +1696,13 @@ class _FeedTabState extends State<_FeedTab>
       color: AppColors.primary,
       child: ListView.separated(
         controller: _sc,
-        // cacheExtent: keep 3 screens worth of items alive above + below.
-        // This is the key Facebook/YouTube behaviour — scrolling back is instant.
         cacheExtent: 3000,
         padding: EdgeInsets.zero,
         itemCount: total,
         separatorBuilder: (_, __) =>
             Divider(height: 8, thickness: 8, color: border),
         itemBuilder: (_, i) {
-          // ── Footer ──────────────────────────────────────────────────────
+          // Footer
           if (i == total - 1) {
             if (widget.isLoading) {
               return _PostCardSkeleton(isDark: widget.isDark);
@@ -1415,15 +1712,14 @@ class _FeedTabState extends State<_FeedTab>
                 padding: const EdgeInsets.all(20),
                 child: Center(
                   child: Text("You're all caught up ✓",
-                      style: TextStyle(
-                          color: widget.subColor, fontSize: 13)),
+                      style: TextStyle(color: widget.subColor, fontSize: 13)),
                 ),
               );
             }
             return const SizedBox(height: 40);
           }
 
-          // ── Ad slot ─────────────────────────────────────────────────────
+          // Ad slot
           if (adManager.shouldShowFeedAd(i)) {
             return FeedAdCard(
               isDark:      widget.isDark,
@@ -1434,7 +1730,7 @@ class _FeedTabState extends State<_FeedTab>
             );
           }
 
-          // ── Post card ────────────────────────────────────────────────────
+          // Post card
           final pi = adManager.realPostIndex(i);
           if (pi >= posts.length) return const SizedBox.shrink();
           final post = posts[pi];
@@ -1471,7 +1767,7 @@ class _FeedTabState extends State<_FeedTab>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Post Card
+// Post Card — v9.0 improvements
 // ─────────────────────────────────────────────────────────────────────────────
 class PostCard extends StatefulWidget {
   final PostModel        post;
@@ -1519,6 +1815,17 @@ class _PostCardState extends State<PostCard> {
   String get _displayContent {
     if (_expanded || !_isLong) return widget.post.content;
     return '${widget.post.content.substring(0, _collapseAt)}…';
+  }
+
+  // v9.0: parse background color safely
+  Color? get _bgColor {
+    final hex = widget.post.backgroundColor;
+    if (hex == null || hex.isEmpty) return null;
+    try {
+      return Color(int.parse(hex.replaceAll('#', '0xFF')));
+    } catch (_) {
+      return null;
+    }
   }
 
   void _edit() {
@@ -1584,8 +1891,7 @@ class _PostCardState extends State<PostCard> {
                 } catch (_) {}
               },
               child: const Text('Save Changes',
-                  style: TextStyle(
-                      color: Colors.white, fontWeight: FontWeight.w700))),
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700))),
           ),
           const SizedBox(height: 20),
         ]),
@@ -1593,6 +1899,7 @@ class _PostCardState extends State<PostCard> {
     );
   }
 
+  // v9.0 DELETE CRASH FIX: capture messenger before async gap; guard mounted
   void _delete() {
     showDialog(
       context: context,
@@ -1619,16 +1926,19 @@ class _PostCardState extends State<PostCard> {
             onPressed: () async {
               Navigator.pop(context);
               final id = widget.post.id;
+              // v9.0: capture messenger BEFORE the async gap
+              final messenger = ScaffoldMessenger.maybeOf(context);
               try {
                 await api.deletePost(id);
-                Future.microtask(() => widget.onPostDeleted(id));
-              } catch (_) {
+                // Only call onPostDeleted if still valid
                 if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                      content: Text('Failed to delete. Please try again.'),
-                      backgroundColor: AppColors.error,
-                      duration: Duration(seconds: 2)));
+                  widget.onPostDeleted(id);
                 }
+              } catch (_) {
+                messenger?.showSnackBar(const SnackBar(
+                    content: Text('Failed to delete. Please try again.'),
+                    backgroundColor: AppColors.error,
+                    duration: Duration(seconds: 2)));
               }
             },
             child: const Text('Delete',
@@ -1681,8 +1991,7 @@ class _PostCardState extends State<PostCard> {
               Clipboard.setData(ClipboardData(text: p.content));
               Navigator.pop(ctx);
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                  content: Text('Copied'),
-                  duration: Duration(seconds: 1)));
+                  content: Text('Copied'), duration: Duration(seconds: 1)));
             },
           ),
           ListTile(
@@ -1732,6 +2041,11 @@ class _PostCardState extends State<PostCard> {
   Widget build(BuildContext ctx) {
     final p  = widget.post;
     final sw = MediaQuery.of(ctx).size.width;
+    final bg = _bgColor;
+
+    // v9.0: has background color and no media = colored text card
+    final bool isColoredPost = bg != null &&
+        (p.mediaUrl == null || p.mediaUrl!.isEmpty);
 
     return Container(
       color: widget.cardColor,
@@ -1784,8 +2098,7 @@ class _PostCardState extends State<PostCard> {
                     ],
                   ]),
                   Text('${p.username} · ${p.time}',
-                      style:
-                          TextStyle(fontSize: 12, color: widget.subColor),
+                      style: TextStyle(fontSize: 12, color: widget.subColor),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis),
                 ]),
@@ -1834,8 +2147,8 @@ class _PostCardState extends State<PostCard> {
               // Tag chip
               Flexible(
                 child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 7, vertical: 3),
                   decoration: BoxDecoration(
                       color: AppColors.primary.withOpacity(0.1),
                       borderRadius: BorderRadius.circular(20)),
@@ -1857,29 +2170,53 @@ class _PostCardState extends State<PostCard> {
 
             const SizedBox(height: 12),
 
-            // ── Content ────────────────────────────────────────────────────
+            // ── Content — v9.0: colored background card OR regular ─────────
             if (p.content.isNotEmpty) ...[
-              _HTag(
-                  text: _displayContent,
-                  textColor: widget.isDark
-                      ? const Color(0xFFE8E8F0)
-                      : Colors.black87),
-              if (_isLong) ...[
-                const SizedBox(height: 4),
-                GestureDetector(
-                  onTap: () => setState(() => _expanded = !_expanded),
-                  child: Text(
-                    _expanded ? 'Read less' : 'Read more',
-                    style: const TextStyle(
-                        color: AppColors.primary,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600),
+              if (isColoredPost)
+                // Facebook-style colored post
+                Container(
+                  width: double.infinity,
+                  constraints: const BoxConstraints(minHeight: 110),
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: bg,
+                    borderRadius: BorderRadius.circular(14),
                   ),
-                ),
+                  child: Center(
+                    child: Text(
+                      p.content,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                          height: 1.55),
+                    ),
+                  ),
+                )
+              else ...[
+                _HTag(
+                    text: _displayContent,
+                    textColor: widget.isDark
+                        ? const Color(0xFFE8E8F0)
+                        : Colors.black87),
+                if (_isLong) ...[
+                  const SizedBox(height: 4),
+                  GestureDetector(
+                    onTap: () => setState(() => _expanded = !_expanded),
+                    child: Text(
+                      _expanded ? 'Read less' : 'Read more',
+                      style: const TextStyle(
+                          color: AppColors.primary,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ],
               ],
             ],
 
-            // ── Media ──────────────────────────────────────────────────────
+            // ── Media — v9.0: link overlay injected into _PostMedia ────────
             if (p.mediaUrl != null && p.mediaUrl!.isNotEmpty) ...[
               const SizedBox(height: 10),
               _PostMedia(
@@ -1887,18 +2224,23 @@ class _PostCardState extends State<PostCard> {
                 mediaType: p.mediaType ?? 'image',
                 isDark:    widget.isDark,
                 sw:        sw,
+                // v9.0: pass link for overlay inside media
+                linkUrl:   p.linkUrl,
+                linkTitle: p.linkTitle,
               ),
             ],
 
-            // ── Link card ──────────────────────────────────────────────────
-            if (p.linkUrl != null && p.linkUrl!.isNotEmpty) ...[
+            // ── Standalone link card — v9.0: only when NO media present ───
+            if (p.linkUrl != null &&
+                p.linkUrl!.isNotEmpty &&
+                (p.mediaUrl == null || p.mediaUrl!.isEmpty)) ...[
               const SizedBox(height: 10),
               _LinkCard(
-                url:   p.linkUrl!,
-                title: p.linkTitle,
+                url:    p.linkUrl!,
+                title:  p.linkTitle,
                 isDark: widget.isDark,
-                sub:   widget.subColor,
-                txt:   widget.textColor,
+                sub:    widget.subColor,
+                txt:    widget.textColor,
               ),
             ],
 
@@ -1909,39 +2251,58 @@ class _PostCardState extends State<PostCard> {
                     ? 14
                     : 4),
 
-            // ── Actions row ────────────────────────────────────────────────
+            // ── v9.0: Larger action buttons with background + ripple ───────
             Row(children: [
               _ActBtn(
-                icon:  p.isLiked
+                icon:     p.isLiked
                     ? Icons.favorite_rounded
                     : Icons.favorite_border_rounded,
-                label: _fmt(p.likes),
-                color: p.isLiked ? Colors.red : widget.subColor,
+                label:    _fmt(p.likes),
+                color:    p.isLiked ? Colors.red : widget.subColor,
+                bgColor:  p.isLiked
+                    ? Colors.red.withOpacity(0.10)
+                    : widget.subColor.withOpacity(0.07),
                 onTap: () => widget.onLike(p),
               ),
-              const SizedBox(width: 18),
+              const SizedBox(width: 8),
               _ActBtn(
-                icon:  Iconsax.message,
-                label: _fmt(p.comments),
-                color: widget.subColor,
+                icon:    Iconsax.message,
+                label:   _fmt(p.comments),
+                color:   widget.subColor,
+                bgColor: widget.subColor.withOpacity(0.07),
                 onTap: () => widget.onComment(p),
               ),
-              const SizedBox(width: 18),
+              const SizedBox(width: 8),
               _ActBtn(
-                icon:  Iconsax.send_1,
-                label: _fmt(p.shares),
-                color: widget.subColor,
+                icon:    Iconsax.send_1,
+                label:   _fmt(p.shares),
+                color:   widget.subColor,
+                bgColor: widget.subColor.withOpacity(0.07),
                 onTap: () => widget.onShare(p),
               ),
               const Spacer(),
-              GestureDetector(
-                onTap: () => widget.onSave(p),
-                child: Icon(
-                  p.isSaved
-                      ? Iconsax.archive_tick
-                      : Iconsax.archive_add,
-                  color: p.isSaved ? AppColors.primary : widget.subColor,
-                  size: 20,
+              // Save button — also with padded background
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(22),
+                  onTap: () => widget.onSave(p),
+                  child: Container(
+                    padding: const EdgeInsets.all(9),
+                    decoration: BoxDecoration(
+                      color: p.isSaved
+                          ? AppColors.primary.withOpacity(0.12)
+                          : widget.subColor.withOpacity(0.07),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      p.isSaved
+                          ? Iconsax.archive_tick
+                          : Iconsax.archive_add,
+                      color: p.isSaved ? AppColors.primary : widget.subColor,
+                      size: 20,
+                    ),
+                  ),
                 ),
               ),
             ]),
@@ -1949,7 +2310,7 @@ class _PostCardState extends State<PostCard> {
           ]),
         ),
 
-        // ── AI buttons row ─────────────────────────────────────────────────
+        // ── AI buttons row — v9.0: no emoji, clean layout ─────────────────
         Container(
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
           decoration: BoxDecoration(
@@ -1964,7 +2325,7 @@ class _PostCardState extends State<PostCard> {
               child: GestureDetector(
                 onTap: () => widget.onAskAI(p),
                 child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 9),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
                   decoration: BoxDecoration(
                     color: AppColors.primary.withOpacity(
                         widget.isDark ? 0.15 : 0.08),
@@ -1976,15 +2337,9 @@ class _PostCardState extends State<PostCard> {
                   child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                    Container(
-                      width: 18, height: 18,
-                      decoration: BoxDecoration(
-                          gradient: const LinearGradient(
-                              colors: [AppColors.primary, AppColors.accent]),
-                          borderRadius: BorderRadius.circular(5)),
-                      child: const Icon(Icons.auto_awesome,
-                          color: Colors.white, size: 10),
-                    ),
+                    // v9.0: clean icon — no gradient emoji box
+                    Icon(Icons.auto_awesome_rounded,
+                        color: AppColors.primary, size: 15),
                     const SizedBox(width: 6),
                     const Flexible(
                       child: Text('Ask RiseUp AI',
@@ -2010,7 +2365,7 @@ class _PostCardState extends State<PostCard> {
               child: GestureDetector(
                 onTap: () => widget.onPrivateChat(p),
                 child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 9),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
                   decoration: BoxDecoration(
                     color: AppColors.accent.withOpacity(
                         widget.isDark ? 0.15 : 0.08),
@@ -2046,8 +2401,7 @@ class _PostCardState extends State<PostCard> {
 class _Avatar extends StatelessWidget {
   final String url, fallback;
   final double size;
-  const _Avatar(
-      {required this.url, required this.fallback, required this.size});
+  const _Avatar({required this.url, required this.fallback, required this.size});
 
   @override
   Widget build(BuildContext ctx) => Container(
@@ -2069,9 +2423,7 @@ class _Avatar extends StatelessWidget {
 
   Widget _fb() => Container(
       color: AppColors.primary.withOpacity(0.15),
-      child: Center(
-          child: Text(fallback,
-              style: const TextStyle(fontSize: 20))));
+      child: Center(child: Text(fallback, style: const TextStyle(fontSize: 20))));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2106,9 +2458,9 @@ class _HTagState extends State<_HTag> {
         spans.add(TextSpan(
             text:  widget.text.substring(last, m.start),
             style: TextStyle(
-                color:  widget.textColor,
+                color:    widget.textColor,
                 fontSize: 14.5,
-                height: 1.6)));
+                height:   1.6)));
       }
       final token  = m.group(0)!;
       final isHash = token.startsWith('#');
@@ -2151,31 +2503,155 @@ class _HTagState extends State<_HTag> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Post Media dispatcher
+// v9.0: Link overlay widget — shown at bottom of image/video media
 // ─────────────────────────────────────────────────────────────────────────────
-class _PostMedia extends StatelessWidget {
-  final String url, mediaType;
-  final bool   isDark;
-  final double sw;
-  const _PostMedia(
-      {required this.url,
-      required this.mediaType,
-      required this.isDark,
-      required this.sw});
+class _MediaLinkOverlay extends StatelessWidget {
+  final String  url;
+  final String? title;
+
+  const _MediaLinkOverlay({required this.url, this.title});
+
+  String get _domain {
+    try { return Uri.parse(url).host.replaceFirst('www.', ''); } catch (_) { return url; }
+  }
+
+  Future<void> _open(BuildContext ctx) async {
+    final uri = Uri.parse(url.startsWith('http') ? url : 'https://$url');
+    if (kIsWeb) {
+      try { await launchUrl(uri, mode: LaunchMode.externalApplication); } catch (_) {}
+      return;
+    }
+    // v9.0: in-app browser first, external as fallback
+    try {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.inAppWebView);
+        return;
+      }
+    } catch (_) {}
+    try { await launchUrl(uri, mode: LaunchMode.externalApplication); } catch (_) {}
+  }
 
   @override
-  Widget build(BuildContext ctx) => ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: mediaType == 'video'
-            ? (kIsWeb
-                // On web: show a tap-to-open placeholder (no native VideoPlayer)
-                ? _WebVideoPlaceholder(url: url, isDark: isDark)
-                : _VidThumb(url: url, isDark: isDark))
-            : _ImgThumb(url: url, isDark: isDark),
-      );
+  Widget build(BuildContext ctx) => GestureDetector(
+    onTap: () => _open(ctx),
+    child: Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Colors.transparent, Colors.black.withOpacity(0.82)],
+        ),
+        borderRadius: const BorderRadius.only(
+          bottomLeft:  Radius.circular(12),
+          bottomRight: Radius.circular(12),
+        ),
+      ),
+      padding: const EdgeInsets.fromLTRB(12, 18, 12, 10),
+      child: Row(children: [
+        Container(
+          width: 28, height: 28,
+          decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.18),
+              borderRadius: BorderRadius.circular(7)),
+          child: const Icon(Icons.language_rounded,
+              color: Colors.white, size: 16),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+            if (title != null && title!.isNotEmpty)
+              Text(title!,
+                  style: const TextStyle(
+                      color:      Colors.white,
+                      fontSize:   12,
+                      fontWeight: FontWeight.w700,
+                      height:     1.3),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis),
+            Text(_domain,
+                style: TextStyle(
+                    color:    Colors.white.withOpacity(0.7),
+                    fontSize: 10),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
+          ]),
+        ),
+        const SizedBox(width: 6),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white.withOpacity(0.4))),
+          child: const Row(mainAxisSize: MainAxisSize.min, children: [
+            Text('Open', style: TextStyle(
+                color: Colors.white, fontSize: 10, fontWeight: FontWeight.w700)),
+            SizedBox(width: 3),
+            Icon(Icons.open_in_new_rounded, color: Colors.white, size: 10),
+          ]),
+        ),
+      ]),
+    ),
+  );
 }
 
-// ── Web video placeholder — opens video in browser tab ──────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Post Media dispatcher — v9.0: accepts link overlay params
+// ─────────────────────────────────────────────────────────────────────────────
+class _PostMedia extends StatelessWidget {
+  final String  url, mediaType;
+  final bool    isDark;
+  final double  sw;
+  final String? linkUrl;   // v9.0
+  final String? linkTitle; // v9.0
+
+  const _PostMedia({
+    required this.url,
+    required this.mediaType,
+    required this.isDark,
+    required this.sw,
+    this.linkUrl,
+    this.linkTitle,
+  });
+
+  @override
+  Widget build(BuildContext ctx) {
+    final hasLink = linkUrl != null && linkUrl!.isNotEmpty;
+    final media   = ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: mediaType == 'video'
+          ? (kIsWeb
+              ? _WebVideoPlaceholder(url: url, isDark: isDark)
+              : _VidThumb(url: url, isDark: isDark))
+          : _ImgThumb(url: url, isDark: isDark),
+    );
+
+    if (!hasLink) return media;
+
+    // v9.0: link overlay positioned at bottom of media
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: Stack(
+        children: [
+          mediaType == 'video'
+              ? (kIsWeb
+                  ? _WebVideoPlaceholder(url: url, isDark: isDark)
+                  : _VidThumb(url: url, isDark: isDark))
+              : _ImgThumb(url: url, isDark: isDark),
+          Positioned(
+            bottom: 0, left: 0, right: 0,
+            child: _MediaLinkOverlay(url: linkUrl!, title: linkTitle),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Web video placeholder ─────────────────────────────────────────────────────
 class _WebVideoPlaceholder extends StatelessWidget {
   final String url;
   final bool   isDark;
@@ -2219,7 +2695,7 @@ class _WebVideoPlaceholder extends StatelessWidget {
       );
 }
 
-// ── Image thumbnail ─────────────────────────────────────────────────────────
+// ── Image thumbnail ───────────────────────────────────────────────────────────
 class _ImgThumb extends StatelessWidget {
   final String url;
   final bool   isDark;
@@ -2240,13 +2716,9 @@ class _ImgThumb extends StatelessWidget {
               fit: BoxFit.cover,
               width: double.infinity,
               placeholder: (_, __) => Container(
-                  color: isDark
-                      ? Colors.grey.shade900
-                      : Colors.grey.shade200),
+                  color: isDark ? Colors.grey.shade900 : Colors.grey.shade200),
               errorWidget: (_, __, ___) => Container(
-                  color: isDark
-                      ? Colors.grey.shade900
-                      : Colors.grey.shade200,
+                  color: isDark ? Colors.grey.shade900 : Colors.grey.shade200,
                   child: const Center(
                       child: Icon(Icons.broken_image_rounded,
                           color: Colors.white54, size: 36))),
@@ -2256,12 +2728,11 @@ class _ImgThumb extends StatelessWidget {
       );
 }
 
-// ── Video thumbnail — uses VideoPreloadManager (native only) ─────────────────
+// ── Video thumbnail ───────────────────────────────────────────────────────────
 class _VidThumb extends StatefulWidget {
   final String url;
   final bool   isDark;
   const _VidThumb({required this.url, required this.isDark});
-
   @override
   State<_VidThumb> createState() => _VidThumbState();
 }
@@ -2272,26 +2743,19 @@ class _VidThumbState extends State<_VidThumb> {
   bool _err   = false;
 
   @override
-  void initState() {
-    super.initState();
-    if (!kIsWeb) _init();
-  }
+  void initState() { super.initState(); if (!kIsWeb) _init(); }
 
   Future<void> _init() async {
-    // Step 1: try preloaded controller
     final preloaded = videoPreloadManager.claim(widget.url);
     if (preloaded != null) {
       if (!mounted) { preloaded.dispose(); return; }
       setState(() { _c = preloaded; _ready = true; });
       return;
     }
-
-    // Step 2: init fresh controller with green-frame fix
     try {
       final c = VideoPlayerController.networkUrl(Uri.parse(widget.url));
       await c.initialize();
       if (!mounted) { c.dispose(); return; }
-
       await c.setVolume(0);
       await c.play();
       await Future.delayed(const Duration(milliseconds: 500));
@@ -2299,7 +2763,6 @@ class _VidThumbState extends State<_VidThumb> {
       await c.pause();
       await c.seekTo(Duration.zero);
       if (!mounted) { c.dispose(); return; }
-
       setState(() { _c = c; _ready = true; });
     } catch (_) {
       if (mounted) setState(() => _err = true);
@@ -2307,17 +2770,13 @@ class _VidThumbState extends State<_VidThumb> {
   }
 
   @override
-  void dispose() {
-    _c?.dispose();
-    super.dispose();
-  }
+  void dispose() { _c?.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext ctx) {
     final ratio = (_ready && _c != null && _c!.value.aspectRatio > 0)
         ? _c!.value.aspectRatio.clamp(0.5, 2.0)
         : 16 / 9;
-
     return GestureDetector(
       onTap: () => Navigator.push(ctx,
           MaterialPageRoute(
@@ -2329,9 +2788,7 @@ class _VidThumbState extends State<_VidThumb> {
           if (_err)
             Positioned.fill(
               child: Container(
-                color: widget.isDark
-                    ? Colors.grey.shade900
-                    : Colors.grey.shade200,
+                color: widget.isDark ? Colors.grey.shade900 : Colors.grey.shade200,
                 child: const Center(
                     child: Icon(Icons.broken_image_rounded,
                         color: Colors.white54, size: 36)),
@@ -2342,9 +2799,7 @@ class _VidThumbState extends State<_VidThumb> {
           else
             Positioned.fill(
               child: Container(
-                color: widget.isDark
-                    ? Colors.grey.shade900
-                    : Colors.grey.shade200,
+                color: widget.isDark ? Colors.grey.shade900 : Colors.grey.shade200,
                 child: const Center(
                   child: SizedBox(
                     width: 28, height: 28,
@@ -2354,7 +2809,6 @@ class _VidThumbState extends State<_VidThumb> {
                 ),
               ),
             ),
-
           Positioned.fill(
             child: Center(
               child: Container(
@@ -2370,12 +2824,10 @@ class _VidThumbState extends State<_VidThumb> {
               ),
             ),
           ),
-
           Positioned(
             bottom: 10, right: 10,
             child: Container(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 8, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
                   color: Colors.black.withOpacity(0.7),
                   borderRadius: BorderRadius.circular(8)),
@@ -2397,9 +2849,7 @@ class _VidThumbState extends State<_VidThumb> {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Full-screen video player (native only; web opens in browser)
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Full-screen video player ──────────────────────────────────────────────────
 class _VidFull extends StatefulWidget {
   final String url;
   const _VidFull({super.key, required this.url});
@@ -2418,7 +2868,6 @@ class _VidFullState extends State<_VidFull> {
 
   Future<void> _init() async {
     if (kIsWeb) {
-      // On web, open in browser
       try {
         await launchUrl(Uri.parse(widget.url),
             mode: LaunchMode.externalApplication);
@@ -2465,22 +2914,17 @@ class _VidFullState extends State<_VidFull> {
       elevation: 0,
       iconTheme: const IconThemeData(color: Colors.white),
       title: const Text('Video',
-          style: TextStyle(
-              color: Colors.white,
-              fontSize: 16,
+          style: TextStyle(color: Colors.white, fontSize: 16,
               fontWeight: FontWeight.w600)),
     ),
     body: Center(
       child: _err
-          ? const Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.error_outline_rounded,
-                    color: Colors.white54, size: 64),
-                SizedBox(height: 16),
-                Text('Could not load video',
-                    style: TextStyle(color: Colors.white70, fontSize: 16)),
-              ])
+          ? const Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(Icons.error_outline_rounded, color: Colors.white54, size: 64),
+              SizedBox(height: 16),
+              Text('Could not load video',
+                  style: TextStyle(color: Colors.white70, fontSize: 16)),
+            ])
           : _ready && _ch != null
               ? Chewie(controller: _ch!)
               : const CircularProgressIndicator(
@@ -2489,9 +2933,7 @@ class _VidFullState extends State<_VidFull> {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Full-screen image viewer
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Full-screen image viewer ──────────────────────────────────────────────────
 class _ImgView extends StatelessWidget {
   final String url;
   const _ImgView({super.key, required this.url});
@@ -2533,7 +2975,7 @@ class _ImgView extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Link preview card
+// v9.0: Link card — in-app browser first, external fallback
 // ─────────────────────────────────────────────────────────────────────────────
 class _LinkCard extends StatelessWidget {
   final String  url;
@@ -2541,27 +2983,32 @@ class _LinkCard extends StatelessWidget {
   final bool    isDark;
   final Color   sub, txt;
 
-  const _LinkCard(
-      {required this.url,
-      this.title,
-      required this.isDark,
-      required this.sub,
-      required this.txt});
+  const _LinkCard({
+    required this.url,
+    this.title,
+    required this.isDark,
+    required this.sub,
+    required this.txt,
+  });
 
   String get _domain {
-    try { return Uri.parse(url).host; } catch (_) { return url; }
+    try { return Uri.parse(url).host.replaceFirst('www.', ''); } catch (_) { return url; }
   }
 
   Future<void> _open(BuildContext ctx) async {
-    final uri =
-        Uri.parse(url.startsWith('http') ? url : 'https://$url');
-    try {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } catch (_) {
-      try {
-        await launchUrl(uri, mode: LaunchMode.inAppWebView);
-      } catch (_) {}
+    final uri = Uri.parse(url.startsWith('http') ? url : 'https://$url');
+    if (kIsWeb) {
+      try { await launchUrl(uri, mode: LaunchMode.externalApplication); } catch (_) {}
+      return;
     }
+    // v9.0: in-app browser first for native
+    try {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.inAppWebView);
+        return;
+      }
+    } catch (_) {}
+    try { await launchUrl(uri, mode: LaunchMode.externalApplication); } catch (_) {}
   }
 
   @override
@@ -2573,8 +3020,7 @@ class _LinkCard extends StatelessWidget {
           decoration: BoxDecoration(
             color: isDark ? AppColors.bgSurface : Colors.grey.shade100,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-                color: AppColors.primary.withOpacity(0.18)),
+            border: Border.all(color: AppColors.primary.withOpacity(0.18)),
           ),
           child: Row(children: [
             Container(
@@ -2613,36 +3059,53 @@ class _LinkCard extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Action button
+// v9.0: Action button — larger with background pill + Material ripple
 // ─────────────────────────────────────────────────────────────────────────────
 class _ActBtn extends StatelessWidget {
   final IconData     icon;
   final String       label;
   final Color        color;
+  final Color        bgColor;
   final VoidCallback onTap;
-  const _ActBtn(
-      {required this.icon,
-      required this.label,
-      required this.color,
-      required this.onTap});
+
+  const _ActBtn({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.bgColor,
+    required this.onTap,
+  });
 
   @override
-  Widget build(BuildContext ctx) => GestureDetector(
-        onTap: onTap,
-        child: Row(children: [
-          Icon(icon, color: color, size: 20),
+  Widget build(BuildContext ctx) => Material(
+    color: Colors.transparent,
+    child: InkWell(
+      borderRadius: BorderRadius.circular(22),
+      onTap: () { HapticFeedback.lightImpact(); onTap(); },
+      splashColor: color.withOpacity(0.15),
+      highlightColor: color.withOpacity(0.08),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
+        decoration: BoxDecoration(
+          color:        bgColor,
+          borderRadius: BorderRadius.circular(22),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, color: color, size: 21),
           const SizedBox(width: 5),
           Text(label,
               style: TextStyle(
-                  color: color,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500)),
+                  color:      color,
+                  fontSize:   13,
+                  fontWeight: FontWeight.w600)),
         ]),
-      );
+      ),
+    ),
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// App Drawer
+// App Drawer (unchanged)
 // ─────────────────────────────────────────────────────────────────────────────
 class _AppDrawer extends StatelessWidget {
   final Map<String, dynamic> profile;
@@ -2824,8 +3287,7 @@ class _AppDrawer extends StatelessWidget {
                 child: Container(
                   padding: const EdgeInsets.all(13),
                   decoration: BoxDecoration(
-                    color: AppColors.primary
-                        .withOpacity(isDark ? 0.12 : 0.07),
+                    color: AppColors.primary.withOpacity(isDark ? 0.12 : 0.07),
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(
                         color: AppColors.primary.withOpacity(0.25)),
@@ -2901,9 +3363,7 @@ class _DI extends StatelessWidget {
             Container(
               width: 36, height: 36,
               decoration: BoxDecoration(
-                  color: isDark
-                      ? AppColors.bgSurface
-                      : Colors.grey.shade100,
+                  color: isDark ? AppColors.bgSurface : Colors.grey.shade100,
                   borderRadius: BorderRadius.circular(9)),
               child: Icon(icon,
                   size: 17,
@@ -2938,8 +3398,7 @@ class _DI extends StatelessWidget {
                     ),
                   ],
                 ]),
-                Text(sub,
-                    style: TextStyle(fontSize: 11, color: sc)),
+                Text(sub, style: TextStyle(fontSize: 11, color: sc)),
               ]),
             ),
             Icon(Icons.chevron_right_rounded,
@@ -2972,16 +3431,12 @@ class _StoryAdd extends StatelessWidget {
               width: 58, height: 58,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: isDark
-                    ? AppColors.bgSurface
-                    : Colors.grey.shade200,
+                color: isDark ? AppColors.bgSurface : Colors.grey.shade200,
                 border: Border.all(
-                    color: AppColors.primary.withOpacity(0.4),
-                    width: 1.5),
+                    color: AppColors.primary.withOpacity(0.4), width: 1.5),
               ),
               child: const Center(
-                  child: Icon(Icons.add,
-                      color: AppColors.primary, size: 24)),
+                  child: Icon(Icons.add, color: AppColors.primary, size: 24)),
             ),
             const SizedBox(height: 5),
             Text('You',
@@ -3000,8 +3455,7 @@ class _StoryItem extends StatelessWidget {
   final Map<String, dynamic> user;
   final bool                 isDark;
   final VoidCallback         onTap;
-  const _StoryItem(
-      {required this.user, required this.isDark, required this.onTap});
+  const _StoryItem({required this.user, required this.isDark, required this.onTap});
 
   @override
   Widget build(BuildContext ctx) {
@@ -3023,18 +3477,13 @@ class _StoryItem extends StatelessWidget {
                 shape: BoxShape.circle,
                 gradient: unseen
                     ? const LinearGradient(
-                        colors: [
-                          Color(0xFFFF6B00),
-                          Color(0xFF6C5CE7)
-                        ],
+                        colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)],
                         begin: Alignment.topLeft,
                         end:   Alignment.bottomRight)
                     : null,
                 color: unseen
                     ? null
-                    : (isDark
-                        ? AppColors.bgSurface
-                        : Colors.grey.shade300),
+                    : (isDark ? AppColors.bgSurface : Colors.grey.shade300),
               ),
               child: Padding(
                 padding: const EdgeInsets.all(2.5),
@@ -3102,7 +3551,7 @@ class _StoryItem extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Status viewer bottom sheet
+// Status viewer bottom sheet — v9.0: in-app link opening
 // ─────────────────────────────────────────────────────────────────────────────
 class _StatusViewSheet extends StatefulWidget {
   final Map<String, dynamic> user;
@@ -3145,15 +3594,20 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
     if (_idx > 0) setState(() { _idx--; _markViewed(); });
   }
 
+  // v9.0: in-app browser first
   Future<void> _openLink(String link) async {
     final uri = Uri.parse(link.startsWith('http') ? link : 'https://$link');
-    try {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } catch (_) {
-      try {
-        await launchUrl(uri, mode: LaunchMode.inAppWebView);
-      } catch (_) {}
+    if (kIsWeb) {
+      try { await launchUrl(uri, mode: LaunchMode.externalApplication); } catch (_) {}
+      return;
     }
+    try {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.inAppWebView);
+        return;
+      }
+    } catch (_) {}
+    try { await launchUrl(uri, mode: LaunchMode.externalApplication); } catch (_) {}
   }
 
   @override
@@ -3188,7 +3642,7 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
       ),
       child: Stack(children: [
 
-        // ── Background content ─────────────────────────────────────────────
+        // Background content
         if (media != null && mType == 'image')
           Positioned.fill(
             child: GestureDetector(
@@ -3239,7 +3693,7 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
             ),
           ),
 
-        // ── Progress bar ───────────────────────────────────────────────────
+        // Progress bar
         Positioned(
           top: 12, left: 12, right: 12,
           child: Row(
@@ -3261,7 +3715,7 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
           ),
         ),
 
-        // ── Caption overlay ────────────────────────────────────────────────
+        // Caption overlay
         if (media != null && text.isNotEmpty)
           Positioned(
             bottom: link != null ? 150 : 90,
@@ -3280,7 +3734,7 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
             ),
           ),
 
-        // ── Navigation tap zones ───────────────────────────────────────────
+        // Navigation tap zones
         Positioned(
           top: 0, bottom: 0, left: 0, width: sw * 0.3,
           child: GestureDetector(
@@ -3298,7 +3752,7 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
           ),
         ),
 
-        // ── Link card ──────────────────────────────────────────────────────
+        // Link card
         if (link != null)
           Positioned(
             bottom: 80, left: 16, right: 16,
@@ -3309,12 +3763,10 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
                 decoration: BoxDecoration(
                   color: Colors.black.withOpacity(0.7),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                      color: Colors.white.withOpacity(0.3)),
+                  border: Border.all(color: Colors.white.withOpacity(0.3)),
                 ),
                 child: Row(children: [
-                  const Icon(Icons.link_rounded,
-                      color: Colors.white, size: 18),
+                  const Icon(Icons.link_rounded, color: Colors.white, size: 18),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Column(
@@ -3344,7 +3796,7 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
             ),
           ),
 
-        // ── Header ────────────────────────────────────────────────────────
+        // Header
         Positioned(
           top: 24, left: 16, right: 16,
           child: Row(children: [
@@ -3363,9 +3815,7 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
                         fontWeight: FontWeight.w700,
                         fontSize:   13)),
                 Text(
-                  items.length == 1
-                      ? '1 status'
-                      : '${items.length} statuses',
+                  items.length == 1 ? '1 status' : '${items.length} statuses',
                   style: TextStyle(
                       color:    Colors.white.withOpacity(0.6),
                       fontSize: 11),
@@ -3378,7 +3828,6 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
             ),
           ]),
         ),
-
       ]),
     );
   }
@@ -3407,8 +3856,6 @@ class _StatusVidState extends State<_StatusVid> {
       final c = VideoPlayerController.networkUrl(Uri.parse(widget.url));
       await c.initialize();
       if (!mounted) { c.dispose(); return; }
-
-      // Green-frame fix: mute → play → 500ms → pause → seek(0) → unmute → loop → play
       await c.setVolume(0);
       await c.play();
       await Future.delayed(const Duration(milliseconds: 500));
@@ -3419,7 +3866,6 @@ class _StatusVidState extends State<_StatusVid> {
       await c.setLooping(true);
       await c.play();
       if (!mounted) { c.dispose(); return; }
-
       setState(() { _c = c; _ready = true; });
     } catch (_) {
       if (mounted) setState(() => _err = true);
