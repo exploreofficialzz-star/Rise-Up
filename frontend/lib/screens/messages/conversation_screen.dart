@@ -1,13 +1,15 @@
 // frontend/lib/screens/messages/conversation_screen.dart
-// Production v15.0 — APEX + Workflow delegation wired in
+// Production v16.0 — Quota ribbon fix · AppBar cleanup · AI error detection · Client-side delegation
 //
-// New in v15:
-//  • Detects "delegation" in AI response → shows Launch APEX / Build Workflow card
-//  • APEX launch uses handoff endpoint → opens AgentScreen with task pre-filled
-//  • Workflow launch opens WorkflowResearchScreen with goal pre-filled
-//  • Quick action bar: APEX shortcut + Workflow shortcut above input
-//  • Brain context indicator when AI searched internally
-//  • All v14.3 quota / ad gate logic preserved exactly
+// Fixes in v16:
+//  • QuotaRibbon: added missing "Watch X ads to continue" state (ribbon was disappearing after 3 free msgs)
+//  • AppBar: removed APEX flash button from top-right actions (kept call button only)
+//  • AI error detection: "technical difficulties" / "try again" responses are caught and shown
+//    as error bubbles with a Retry snackbar action — not silently displayed as normal AI messages
+//  • Client-side delegation inference: APEX/Workflow cards are triggered from message keywords
+//    as a fallback when the backend does not return a delegation field
+//  • _extractTask helper: pulls a clean short task string from AI message for pre-filling screens
+//  • All v15 quota / ad gate / scroll-lock / DM / history / caching logic preserved exactly
 
 // ignore_for_file: deprecated_member_use
 import 'dart:async';
@@ -29,7 +31,7 @@ import '../../services/ad_service.dart';
 import '../../services/api_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Constants (unchanged from v14.3)
+// Constants
 // ─────────────────────────────────────────────────────────────────────────────
 const int _kFreeMessages         = 3;
 const int _kAdsPerCycle          = 2;
@@ -47,6 +49,17 @@ const String _kMsgCacheTimePrefix = 'riseup_msgs_ctime_v1_';
 
 const int _kContextWindow   = 50;
 const int _kHistoryPageSize = 100;
+
+// Error phrases the backend AI may return when it is down
+const List<String> _kAiErrorPhrases = [
+  'experiencing technical difficulties',
+  'please try again in a moment',
+  'please try again later',
+  'service is temporarily unavailable',
+  'something went wrong',
+  'unable to process your request',
+  'i am currently unavailable',
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Delegation types
@@ -67,7 +80,7 @@ class _DelegationPayload {
   factory _DelegationPayload.fromJson(Map<String, dynamic> j, String fallbackSessionId) {
     final typeStr = j['type']?.toString() ?? '';
     return _DelegationPayload(
-      type:      typeStr == 'apex' ? _DelegationType.apex
+      type:      typeStr == 'apex'     ? _DelegationType.apex
                : typeStr == 'workflow' ? _DelegationType.workflow
                : _DelegationType.none,
       task:      j['task']?.toString() ?? j['goal']?.toString() ?? '',
@@ -141,8 +154,9 @@ class ConversationScreen extends StatefulWidget {
 }
 
 class _ConversationScreenState extends State<ConversationScreen> {
-  final _textCtrl = TextEditingController();
-  final _scroll   = ScrollController();
+  final _textCtrl  = TextEditingController();
+  final _scroll    = ScrollController();
+  final _inputFocus = FocusNode();
   final List<_Msg> _msgs = [];
 
   bool _historyLoaded    = false;
@@ -158,6 +172,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
   String? _lastPollTime;
   String? _cachedMyId;
   String? _cachedMyName;
+
+  // Pending text for retry after an error response
+  String? _lastSentText;
 
   Timer? _typingTimer;
   Timer? _pollTimer;
@@ -268,6 +285,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _typingTimer?.cancel();
     _pollTimer?.cancel();
     _textCtrl.dispose();
+    _inputFocus.dispose();
     _scroll.removeListener(_onScroll);
     _scroll.dispose();
     super.dispose();
@@ -551,6 +569,64 @@ class _ConversationScreenState extends State<ConversationScreen> {
     return window.map((m) => {'role': m.isMe ? 'user' : 'assistant', 'content': m.content}).toList();
   }
 
+  // ── Delegation inference (client-side fallback) ──────────────────────────
+  /// Called when the backend doesn't return a delegation field.
+  /// Scans AI message content for APEX / Workflow keywords and infers intent.
+  _DelegationPayload? _inferDelegation(String content, String sessionId) {
+    final lower = content.toLowerCase();
+
+    // APEX signals
+    final apexKeywords = [
+      'launch apex', "i'll use apex", 'apex will', 'let me use apex',
+      'autonomous agent', 'i\'ll do it for you', 'handle this for you',
+      'set it up for you', 'i\'ll set up', 'do it for you',
+      'apply for you', 'open the browser', 'fill out the form',
+      'create the account', 'sign you up', 'register for you',
+    ];
+    if (apexKeywords.any((k) => lower.contains(k))) {
+      return _DelegationPayload(
+        type: _DelegationType.apex,
+        task: _extractTask(content),
+        sessionId: sessionId,
+        message: content,
+      );
+    }
+
+    // Workflow signals
+    final workflowKeywords = [
+      'build you a workflow', 'create a workflow', 'build a plan',
+      'step-by-step plan', 'workflow engine', 'income plan',
+      "i'll build", 'let me build', 'create a roadmap',
+      'build a roadmap', 'action plan', 'build your plan',
+    ];
+    if (workflowKeywords.any((k) => lower.contains(k))) {
+      return _DelegationPayload(
+        type: _DelegationType.workflow,
+        task: _extractTask(content),
+        sessionId: sessionId,
+        message: content,
+      );
+    }
+
+    return null;
+  }
+
+  /// Extracts a clean, short task label from AI message content.
+  String _extractTask(String content) {
+    // Strip markdown bold/italic markers
+    var clean = content.replaceAll(RegExp(r'\*+'), '').trim();
+    // Take first sentence
+    final dot = clean.indexOf('.');
+    if (dot > 0 && dot < 120) clean = clean.substring(0, dot).trim();
+    return clean.length > 100 ? '${clean.substring(0, 97)}...' : clean;
+  }
+
+  /// Returns true if the AI content string is a known backend-error message.
+  bool _isAIBackendError(String content) {
+    final lower = content.toLowerCase().trim();
+    return _kAiErrorPhrases.any((phrase) => lower.contains(phrase));
+  }
+
   // ── Polling ──────────────────────────────────────────────────────────────
   void _startPolling() {
     _pollTimer?.cancel();
@@ -604,6 +680,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final text = _textCtrl.text.trim();
     if (text.isEmpty || _isSending) return;
     setState(() => _showQuickActions = false);
+    _lastSentText = text;
     if (_isAIMode) await _trySendAI(text);
     else await _sendDM(text);
   }
@@ -653,6 +730,19 @@ class _ConversationScreenState extends State<ConversationScreen> {
       final aiContent = (res['content'] ?? '').toString().trim();
       if (aiContent.isEmpty) throw Exception('Empty AI response');
 
+      // ── v16: Detect backend error responses ──────────────────────────────
+      if (_isAIBackendError(aiContent)) {
+        if (!mounted) return;
+        setState(() {
+          _aiResponding = false;
+          _msgs.removeWhere((m) => m.id == optimisticId);
+        });
+        _addErrorBubble('AI is temporarily unavailable. Please try again in a moment.');
+        _showRetrySnackbar(text, viaAIDM: viaAIDM, adUnlocked: adUnlocked);
+        return;
+      }
+      // ────────────────────────────────────────────────────────────────────
+
       await _savePollTime(DateTime.now().toUtc().toIso8601String());
 
       if (res['quota'] != null) {
@@ -691,13 +781,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
         }
       }
 
-      // Parse delegation from response
+      // ── v16: Parse delegation — backend first, then client-side inference ─
       _DelegationPayload? delegationPayload;
       final delegationMap = res['delegation'] as Map<String, dynamic>?;
       if (delegationMap != null) {
         delegationPayload = _DelegationPayload.fromJson(
             delegationMap, res['session_id']?.toString() ?? _aiConvId ?? '');
+        if (delegationPayload.type == _DelegationType.none) delegationPayload = null;
       }
+      delegationPayload ??= _inferDelegation(aiContent, res['session_id']?.toString() ?? _aiConvId ?? '');
+      // ────────────────────────────────────────────────────────────────────
 
       final brainUsed = res['brain_used'] == true;
 
@@ -727,13 +820,35 @@ class _ConversationScreenState extends State<ConversationScreen> {
         if (ok && mounted) await _sendAI(text, adUnlocked: adUnlocked,
             viaAIDM: viaAIDM, isContextMessage: isContextMessage, retried: true);
         else _addErrorBubble('Could not connect to AI. Please try again.');
-      } else _addErrorBubble('Failed (${e.statusCode}). Please try again.');
+      } else {
+        _addErrorBubble('Failed (${e.statusCode}). Please try again.');
+        _showRetrySnackbar(text, viaAIDM: viaAIDM, adUnlocked: adUnlocked);
+      }
     } catch (e) {
       debugPrint('[Conv] _sendAI error: $e');
       if (!mounted) return;
       setState(() { _aiResponding = false; _msgs.removeWhere((m) => m.id == optimisticId); });
       _addErrorBubble('Could not reach AI right now. Please try again.');
+      _showRetrySnackbar(text, viaAIDM: viaAIDM, adUnlocked: adUnlocked);
     }
+  }
+
+  /// Shows a Snackbar with a Retry button so the user doesn't have to retype.
+  void _showRetrySnackbar(String text, {bool viaAIDM = false, bool adUnlocked = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: const Text('Tap Retry to resend your message'),
+      duration: const Duration(seconds: 6),
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: AppColors.bgCard,
+      action: SnackBarAction(
+        label: 'Retry',
+        textColor: AppColors.primary,
+        onPressed: () {
+          if (mounted) _sendAI(text, adUnlocked: adUnlocked, viaAIDM: viaAIDM);
+        },
+      ),
+    ));
   }
 
   Future<void> _sendDM(String text) async {
@@ -856,7 +971,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
             Navigator.pop(ctx);
             _copyToClipboard(m.content, label: 'Copied');
           }),
-          if (!m.isMe && m.isAI)
+          if (!m.isMe && m.isAI && !m.isError)
             _menuItem(Icons.share_rounded, 'Share insight',
                 isDark ? Colors.white : Colors.black87, () {
               Navigator.pop(ctx);
@@ -880,11 +995,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // ── APEX / Workflow delegation ────────────────────────────────────────────
   Future<void> _launchApex(String task, String sessionId) async {
     HapticFeedback.mediumImpact();
-    // Call handoff endpoint to prepare APEX session
     try {
       final res = await api.post('/agent/handoff', {
-        'task':       task,
-        'source':     'mentor',
+        'task':           task,
+        'source':         'mentor',
         'source_conv_id': sessionId,
       });
       final apexSessionId = res['session_id']?.toString() ?? '';
@@ -899,10 +1013,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
         });
       }
     } catch (e) {
-      // Fallback: open agent screen with task pre-filled
-      if (mounted) {
-        context.push('/agent', extra: {'handoffTask': task});
-      }
+      debugPrint('[Conv] APEX handoff error: $e');
+      if (mounted) context.push('/agent', extra: {'handoffTask': task});
     }
   }
 
@@ -952,7 +1064,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // ═════════════════════════════════════════════════════════════════════════
   // BUILD
   // ═════════════════════════════════════════════════════════════════════════
-
   @override
   Widget build(BuildContext context) {
     final isDark      = Theme.of(context).brightness == Brightness.dark;
@@ -979,6 +1090,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
             totalResponses: _totalResponses, maxResponses: _kMaxResponses,
             cycleLockoutUntil: _quota['cycle_lockout_until'] as String?,
             dailyLockoutUntil: _quota['daily_lockout_until'] as String?,
+            onWatchAds: () => _showAdGate(_lastSentText ?? ''),
           ),
         Expanded(
           child: !_historyLoaded
@@ -1004,7 +1116,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       },
                     ),
         ),
-        // ── Quick action bar ──────────────────────────────────────────────
         if (_isAIMode && _showQuickActions)
           _QuickActionBar(
             isDark: isDark,
@@ -1017,9 +1128,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
   }
 
-  final _inputFocus = FocusNode();
-
   // ── AppBar ────────────────────────────────────────────────────────────────
+  // v16: removed the Iconsax.flash APEX shortcut button; kept call button only
   PreferredSizeWidget _buildAppBar(bool isDark, Color card, Color border, Color text, Color sub) {
     final displayName   = _isAIMode ? 'RiseUp AI Mentor' : widget.name;
     final displayAvatar = _isAIMode ? '🤖' : widget.avatar;
@@ -1048,37 +1158,29 @@ class _ConversationScreenState extends State<ConversationScreen> {
         const SizedBox(width: 10),
         Flexible(child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
           Row(mainAxisSize: MainAxisSize.min, children: [
-            Flexible(child: Text(displayName, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: text),
+            Flexible(child: Text(displayName,
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: text),
                 overflow: TextOverflow.ellipsis)),
             if (_isAIMode) ...[
               const SizedBox(width: 5),
-              Container(padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                 decoration: BoxDecoration(
                     gradient: const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
                     borderRadius: BorderRadius.circular(4)),
                 child: const Text('AI', style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.w700))),
             ],
           ]),
-          Text('Always online', style: const TextStyle(fontSize: 11, color: AppColors.success)),
+          const Text('Always online', style: TextStyle(fontSize: 11, color: AppColors.success)),
         ])),
       ]),
+      // v16: only the call button remains — flash/APEX button removed
       actions: [
-        if (_isAIMode)
-          IconButton(
-            icon: Icon(Iconsax.flash, color: AppColors.primary, size: 20),
-            tooltip: 'Launch APEX',
-            onPressed: () {
-              HapticFeedback.mediumImpact();
-              final lastUserMsg = _msgs.lastWhere((m) => m.isMe,
-                  orElse: () => _Msg(content: '', sender: '', avatar: '', isMe: true));
-              if (lastUserMsg.content.isNotEmpty)
-                _launchApex(lastUserMsg.content, _aiConvId ?? '');
-              else context.push('/agent');
-            },
-          ),
-        IconButton(icon: Icon(Iconsax.call, color: text, size: 20),
-            onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                content: Text('Voice calls coming soon 📞'), duration: Duration(seconds: 1)))),
+        IconButton(
+          icon: Icon(Iconsax.call, color: text, size: 20),
+          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Voice calls coming soon 📞'), duration: Duration(seconds: 1))),
+        ),
       ],
       bottom: PreferredSize(preferredSize: const Size.fromHeight(1),
           child: Divider(height: 1, color: border)),
@@ -1091,7 +1193,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
       decoration: BoxDecoration(color: card, border: Border(top: BorderSide(color: border))),
       padding: EdgeInsets.fromLTRB(12, 8, 12, MediaQuery.of(context).padding.bottom + 8),
       child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-        // Quick actions toggle
         if (_isAIMode)
           IconButton(
             icon: Icon(_showQuickActions ? Icons.close_rounded : Icons.auto_awesome_rounded,
@@ -1211,12 +1312,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
                     ),
                     child: (m.isMe || !m.isAI)
                         ? SelectionArea(child: Text(m.displayText, style: TextStyle(
-                            color: m.isMe ? Colors.white : textColor, fontSize: 14, height: 1.5)))
+                            color: m.isMe ? Colors.white
+                                : m.isError ? AppColors.error
+                                : textColor,
+                            fontSize: 14, height: 1.5)))
                         : SelectionArea(child: MarkdownBody(
                             data: m.displayText,
                             onTapLink: (text, href, title) { if (href != null) _openLink(href); },
                             styleSheet: MarkdownStyleSheet(
-                              p: TextStyle(color: isDark ? const Color(0xFFE8E8F0) : Colors.black87, fontSize: 14, height: 1.55),
+                              p: TextStyle(
+                                  color: m.isError ? AppColors.error
+                                      : isDark ? const Color(0xFFE8E8F0) : Colors.black87,
+                                  fontSize: 14, height: 1.55),
                               strong: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.primaryLight),
                               a: const TextStyle(color: AppColors.primary, decoration: TextDecoration.underline),
                               code: TextStyle(fontFamily: 'monospace',
@@ -1231,8 +1338,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
               ),
             ],
           ),
-          // ── Delegation card ─────────────────────────────────────────────
-          if (m.delegation != null && m.delegation!.type != _DelegationType.none)
+          // ── Delegation card (only on non-error AI messages) ──────────────
+          if (!m.isError && m.delegation != null && m.delegation!.type != _DelegationType.none)
             Padding(
               padding: const EdgeInsets.only(top: 8, left: 36),
               child: _DelegationCard(
@@ -1268,12 +1375,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
         const SizedBox(width: 8),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-          decoration: BoxDecoration(color: isDark ? AppColors.aiBubble : surfColor, borderRadius: BorderRadius.circular(18)),
+          decoration: BoxDecoration(
+              color: isDark ? AppColors.aiBubble : surfColor,
+              borderRadius: BorderRadius.circular(18)),
           child: Row(mainAxisSize: MainAxisSize.min,
             children: List.generate(3, (i) => Container(
               margin: const EdgeInsets.symmetric(horizontal: 2), width: 6, height: 6,
               decoration: const BoxDecoration(color: AppColors.primary, shape: BoxShape.circle))
-              .animate(onPlay: (c) => c.repeat()).fadeIn(delay: Duration(milliseconds: i * 200)).then().fadeOut())),
+              .animate(onPlay: (c) => c.repeat())
+              .fadeIn(delay: Duration(milliseconds: i * 200)).then().fadeOut())),
         ),
       ]),
     );
@@ -1290,7 +1400,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
         '🌍  Find phone sellers in Lagos',
         '💼  Apply to remote jobs for me',
       ];
-      return Container(color: isDark ? Colors.black : Colors.white,
+      return Container(
+        color: isDark ? Colors.black : Colors.white,
         child: ListView(padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32), children: [
           Container(width: 80, height: 80,
             decoration: const BoxDecoration(
@@ -1307,7 +1418,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
             firstName.isNotEmpty
                 ? 'Hey $firstName! Ask anything — or say "do it for me" to launch APEX.'
                 : 'Ask anything about money. Say "do it for me" to launch APEX.',
-            style: TextStyle(fontSize: 14, color: subColor, height: 1.6), textAlign: TextAlign.center),
+            style: TextStyle(fontSize: 14, color: subColor, height: 1.6),
+            textAlign: TextAlign.center),
           const SizedBox(height: 32),
           Text('Try:', style: TextStyle(fontSize: 12, color: subColor, fontWeight: FontWeight.w600)),
           const SizedBox(height: 10),
@@ -1325,7 +1437,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
               .animate().fadeIn(delay: Duration(milliseconds: prompts.indexOf(p) * 80)))),
         ]));
     }
-    return Container(color: isDark ? Colors.black : Colors.white,
+    return Container(
+      color: isDark ? Colors.black : Colors.white,
       child: Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
         const Text('👋', style: TextStyle(fontSize: 56)),
         const SizedBox(height: 16),
@@ -1337,18 +1450,17 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   String _formatTime(DateTime dt) {
     final l = dt.toLocal();
-    return '${l.hour.toString().padLeft(2,'0')}:${l.minute.toString().padLeft(2,'0')}';
+    return '${l.hour.toString().padLeft(2, '0')}:${l.minute.toString().padLeft(2, '0')}';
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Delegation Card — shown below AI bubble when APEX/Workflow triggered
+// Delegation Card
 // ─────────────────────────────────────────────────────────────────────────────
 class _DelegationCard extends StatelessWidget {
   final _DelegationPayload payload;
   final bool               isDark;
   final VoidCallback        onLaunch;
-
   const _DelegationCard({required this.payload, required this.isDark, required this.onLaunch});
 
   @override
@@ -1374,10 +1486,12 @@ class _DelegationCard extends StatelessWidget {
           Text(icon, style: const TextStyle(fontSize: 18)),
           const SizedBox(width: 8),
           Expanded(child: Text(label, style: TextStyle(
-              fontSize: 13, fontWeight: FontWeight.w700, color: isDark ? Colors.white : Colors.black87))),
+              fontSize: 13, fontWeight: FontWeight.w700,
+              color: isDark ? Colors.white : Colors.black87))),
         ]),
         const SizedBox(height: 4),
-        Text(desc, style: TextStyle(fontSize: 11, color: isDark ? Colors.white54 : Colors.black45, height: 1.4)),
+        Text(desc, style: TextStyle(fontSize: 11,
+            color: isDark ? Colors.white54 : Colors.black45, height: 1.4)),
         const SizedBox(height: 10),
         SizedBox(width: double.infinity, child: ElevatedButton(
           onPressed: onLaunch,
@@ -1409,11 +1523,11 @@ class _QuickActionBar extends StatelessWidget {
       color: bg,
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
       child: Row(children: [
-        _chip('🤖 APEX', 'Handle task for me', AppColors.primary, onApex),
+        _chip('🤖 APEX',     'Handle task for me',    AppColors.primary, onApex),
         const SizedBox(width: 8),
-        _chip('⚡ Workflow', 'Build income plan', AppColors.success, onWorkflow),
+        _chip('⚡ Workflow',  'Build income plan',     AppColors.success, onWorkflow),
         const SizedBox(width: 8),
-        _chip('🔍 Search', 'Find contacts / jobs', AppColors.info, onSearch),
+        _chip('🔍 Search',   'Find contacts / jobs',  AppColors.info,    onSearch),
       ]),
     );
   }
@@ -1423,7 +1537,8 @@ class _QuickActionBar extends StatelessWidget {
         child: GestureDetector(onTap: onTap,
           child: Container(
             padding: const EdgeInsets.symmetric(vertical: 8),
-            decoration: BoxDecoration(color: color.withOpacity(0.10),
+            decoration: BoxDecoration(
+                color: color.withOpacity(0.10),
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(color: color.withOpacity(0.25))),
             child: Text(label, textAlign: TextAlign.center,
@@ -1431,29 +1546,51 @@ class _QuickActionBar extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Quota ribbon, AdGateSheet, LockoutSheet — unchanged from v14.3
-// (copy the _QuotaRibbon, _AdGateSheet, _LockoutSheet classes from v14.3 here)
+// Quota Ribbon
+// v16 fix: added "Watch X ads to continue" state so ribbon doesn't vanish
 // ─────────────────────────────────────────────────────────────────────────────
-
 class _QuotaRibbon extends StatefulWidget {
   final bool isPremium, inDailyLockout, inCycleLockout;
-  final int freeUsed, freeTotal, cycleAds, adsPerCycle, cycleMsgs, msgsPerCycle;
-  final int totalResponses, maxResponses;
+  final int  freeUsed, freeTotal, cycleAds, adsPerCycle, cycleMsgs, msgsPerCycle;
+  final int  totalResponses, maxResponses;
   final String? cycleLockoutUntil, dailyLockoutUntil;
+  final VoidCallback onWatchAds;
+
   const _QuotaRibbon({
     required this.isPremium, required this.inDailyLockout, required this.inCycleLockout,
     required this.freeUsed, required this.freeTotal, required this.cycleAds,
     required this.adsPerCycle, required this.cycleMsgs, required this.msgsPerCycle,
     required this.totalResponses, required this.maxResponses,
+    required this.onWatchAds,
     this.cycleLockoutUntil, this.dailyLockoutUntil,
   });
-  @override State<_QuotaRibbon> createState() => _QuotaRibbonState();
+
+  @override
+  State<_QuotaRibbon> createState() => _QuotaRibbonState();
 }
 
 class _QuotaRibbonState extends State<_QuotaRibbon> {
-  Timer? _timer; String _countdown = '';
-  @override void initState() { super.initState(); if (widget.inCycleLockout || widget.inDailyLockout) _startTimer(); }
-  void _startTimer() { _update(); _timer = Timer.periodic(const Duration(seconds: 1), (_) => _update()); }
+  Timer? _timer;
+  String _countdown = '';
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.inCycleLockout || widget.inDailyLockout) _startTimer();
+  }
+
+  @override
+  void didUpdateWidget(_QuotaRibbon old) {
+    super.didUpdateWidget(old);
+    if ((widget.inCycleLockout || widget.inDailyLockout) && _timer == null) _startTimer();
+    if (!widget.inCycleLockout && !widget.inDailyLockout) { _timer?.cancel(); _timer = null; }
+  }
+
+  void _startTimer() {
+    _update();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _update());
+  }
+
   void _update() {
     if (!mounted) return;
     final lockStr = widget.inDailyLockout ? widget.dailyLockoutUntil : widget.cycleLockoutUntil;
@@ -1461,66 +1598,117 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
     if (exp == null) return;
     final diff = exp.difference(DateTime.now());
     if (diff.isNegative) { setState(() => _countdown = ''); return; }
-    final h = diff.inHours; final m = (diff.inMinutes % 60).toString().padLeft(2, '0');
+    final h = diff.inHours;
+    final m = (diff.inMinutes % 60).toString().padLeft(2, '0');
     final s = (diff.inSeconds % 60).toString().padLeft(2, '0');
     setState(() => _countdown = h > 0 ? '${h}h ${m}m' : '$m:$s');
   }
-  @override void dispose() { _timer?.cancel(); super.dispose(); }
+
+  @override
+  void dispose() { _timer?.cancel(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
     if (widget.isPremium) return const SizedBox.shrink();
+
+    // Lockout states
     if (widget.inDailyLockout)
       return _ribbon(Icons.lock_rounded, AppColors.error,
           'Daily limit reached${_countdown.isNotEmpty ? ' · resets in $_countdown' : ''}',
-          AppColors.error.withOpacity(0.08));
+          AppColors.error.withOpacity(0.08), null);
+
     if (widget.inCycleLockout)
       return _ribbon(Icons.hourglass_bottom_rounded, AppColors.warning,
           'Take a break${_countdown.isNotEmpty ? ' · unlocks in $_countdown' : ''}',
-          AppColors.warning.withOpacity(0.08));
+          AppColors.warning.withOpacity(0.08), null);
+
     final freeLeft = widget.freeTotal - widget.freeUsed;
+
+    // Free messages remaining
     if (freeLeft > 0)
       return _ribbon(Icons.chat_bubble_outline_rounded, AppColors.primary,
           '$freeLeft free message${freeLeft == 1 ? '' : 's'} remaining',
-          AppColors.primary.withOpacity(0.06));
+          AppColors.primary.withOpacity(0.06), null);
+
+    // v16 FIX: free msgs exhausted + not enough ads watched yet → prompt user to watch ads
+    if (widget.cycleAds < widget.adsPerCycle) {
+      final adsLeft = widget.adsPerCycle - widget.cycleAds;
+      return _ribbon(
+        Icons.play_circle_outline_rounded, AppColors.warning,
+        'Watch $adsLeft ad${adsLeft == 1 ? '' : 's'} to unlock ${widget.msgsPerCycle} messages',
+        AppColors.warning.withOpacity(0.08),
+        widget.onWatchAds,
+      );
+    }
+
+    // Cycle active: messages unlocked
     if (widget.cycleAds >= widget.adsPerCycle) {
       final left = widget.msgsPerCycle - widget.cycleMsgs;
-      return _ribbon(Icons.lock_open_rounded, AppColors.success,
-          '$left message${left == 1 ? '' : 's'} left · ${widget.totalResponses}/${widget.maxResponses} today',
-          Colors.transparent);
+      if (left > 0)
+        return _ribbon(Icons.lock_open_rounded, AppColors.success,
+            '$left message${left == 1 ? '' : 's'} left · ${widget.totalResponses}/${widget.maxResponses} today',
+            Colors.transparent, null);
     }
+
     return const SizedBox.shrink();
   }
 
-  Widget _ribbon(IconData icon, Color color, String label, Color bg) =>
-      Container(width: double.infinity, padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6), color: bg,
-        child: Row(children: [
-          Icon(icon, size: 13, color: color), const SizedBox(width: 6),
-          Expanded(child: Text(label, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w500))),
-          GestureDetector(onTap: () => GoRouter.of(context).go('/premium'),
-            child: const Text('Go Premium', style: TextStyle(fontSize: 11, color: AppColors.primary, fontWeight: FontWeight.w600))),
-        ]));
+  Widget _ribbon(IconData icon, Color color, String label, Color bg, VoidCallback? onTap) =>
+      GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          color: bg,
+          child: Row(children: [
+            Icon(icon, size: 13, color: color),
+            const SizedBox(width: 6),
+            Expanded(child: Text(label, style: TextStyle(
+                fontSize: 12, color: color, fontWeight: FontWeight.w500))),
+            if (onTap != null)
+              Text('Tap to watch', style: TextStyle(
+                  fontSize: 11, color: color, fontWeight: FontWeight.w700)),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: () => GoRouter.of(context).go('/premium'),
+              child: const Text('Go Premium', style: TextStyle(
+                  fontSize: 11, color: AppColors.primary, fontWeight: FontWeight.w600))),
+          ]),
+        ),
+      );
 }
 
-// AdGateSheet and LockoutSheet from v14.3 are preserved here unchanged.
-// (They are identical to the v14.3 versions — copy them in from the previous file.)
+// ─────────────────────────────────────────────────────────────────────────────
+// Ad Gate Sheet (unchanged from v14.3 / v15)
+// ─────────────────────────────────────────────────────────────────────────────
 class _AdGateSheet extends StatefulWidget {
   final int cycleAdsWatched, adsPerCycle, msgsPerCycle, totalResponses, maxResponses;
   final Future<void> Function() onAdWatched;
-  const _AdGateSheet({required this.cycleAdsWatched, required this.adsPerCycle,
-      required this.msgsPerCycle, required this.totalResponses, required this.maxResponses,
-      required this.onAdWatched});
-  @override State<_AdGateSheet> createState() => _AdGateSheetState();
+  const _AdGateSheet({
+    required this.cycleAdsWatched, required this.adsPerCycle,
+    required this.msgsPerCycle, required this.totalResponses, required this.maxResponses,
+    required this.onAdWatched,
+  });
+  @override
+  State<_AdGateSheet> createState() => _AdGateSheetState();
 }
+
 class _AdGateSheetState extends State<_AdGateSheet> {
-  int _localWatched = 0; bool _watching = false; String? _error; bool _success = false;
+  int     _localWatched = 0;
+  bool    _watching     = false;
+  String? _error;
+  bool    _success      = false;
+
   int  get _totalWatched  => widget.cycleAdsWatched + _localWatched;
   int  get _adsRemaining  => widget.adsPerCycle - _totalWatched;
   bool get _cycleComplete => _totalWatched >= widget.adsPerCycle;
 
   Future<void> _watchAd() async {
     if (_watching || _cycleComplete) return;
-    if (!adService.isRewardedReady) { setState(() => _error = 'Ad not ready. Try again in a moment.'); return; }
+    if (!adService.isRewardedReady) {
+      setState(() => _error = 'Ad not ready. Try again in a moment.');
+      return;
+    }
     setState(() { _watching = true; _error = null; });
     await adService.showRewardedAd(
       featureKey: 'ai_chat',
@@ -1544,19 +1732,26 @@ class _AdGateSheetState extends State<_AdGateSheet> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bg = isDark ? AppColors.bgCard : Colors.white;
-    final text = isDark ? Colors.white : Colors.black87;
-    final sub = isDark ? Colors.white60 : Colors.black54;
+    final bg   = isDark ? AppColors.bgCard : Colors.white;
+    final text = isDark ? Colors.white     : Colors.black87;
+    final sub  = isDark ? Colors.white60   : Colors.black54;
+
     return Container(
-      decoration: BoxDecoration(color: bg, borderRadius: const BorderRadius.vertical(top: Radius.circular(28))),
+      decoration: BoxDecoration(color: bg,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28))),
       padding: EdgeInsets.fromLTRB(24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(width: 40, height: 4, decoration: BoxDecoration(color: isDark ? Colors.white24 : Colors.black12, borderRadius: BorderRadius.circular(2))),
+        Container(width: 40, height: 4, decoration: BoxDecoration(
+            color: isDark ? Colors.white24 : Colors.black12,
+            borderRadius: BorderRadius.circular(2))),
         const SizedBox(height: 24),
-        _success ? const Text('🎉', style: TextStyle(fontSize: 56)) :
-        Container(width: 72, height: 72, decoration: const BoxDecoration(
-            gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]), shape: BoxShape.circle),
-            child: const Center(child: Text('🤖', style: TextStyle(fontSize: 36)))),
+        _success
+            ? const Text('🎉', style: TextStyle(fontSize: 56))
+            : Container(width: 72, height: 72,
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]),
+                  shape: BoxShape.circle),
+                child: const Center(child: Text('🤖', style: TextStyle(fontSize: 36)))),
         const SizedBox(height: 16),
         Text(_success ? 'Unlocked! 🚀' : 'Unlock AI Messages',
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: text)),
@@ -1565,99 +1760,141 @@ class _AdGateSheetState extends State<_AdGateSheet> {
           Text('Watch $_adsRemaining more ad${_adsRemaining == 1 ? '' : 's'} to unlock ${widget.msgsPerCycle} messages.',
               style: TextStyle(fontSize: 14, color: sub, height: 1.5), textAlign: TextAlign.center),
           const SizedBox(height: 8),
-          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            for (int i = 0; i < widget.adsPerCycle; i++) ...[
-              AnimatedContainer(duration: 300.ms, width: 28, height: 8,
-                  decoration: BoxDecoration(
-                      color: i < _totalWatched ? AppColors.success : AppColors.primary.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(4))),
-              if (i < widget.adsPerCycle - 1) const SizedBox(width: 6),
-            ],
-          ]),
+          Row(mainAxisAlignment: MainAxisAlignment.center,
+            children: List.generate(widget.adsPerCycle, (i) => Padding(
+              padding: EdgeInsets.only(right: i < widget.adsPerCycle - 1 ? 6 : 0),
+              child: AnimatedContainer(duration: 300.ms, width: 28, height: 8,
+                decoration: BoxDecoration(
+                  color: i < _totalWatched ? AppColors.success : AppColors.primary.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(4)))))),
         ],
-        if (_error != null) ...[const SizedBox(height: 8),
-          Text(_error!, style: const TextStyle(fontSize: 12, color: AppColors.error), textAlign: TextAlign.center)],
+        if (_error != null) ...[
+          const SizedBox(height: 8),
+          Text(_error!, style: const TextStyle(fontSize: 12, color: AppColors.error),
+              textAlign: TextAlign.center),
+        ],
         const SizedBox(height: 24),
         if (!_success) ...[
           SizedBox(width: double.infinity, child: ElevatedButton.icon(
             onPressed: _watching ? null : _watchAd,
-            icon: _watching ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+            icon: _watching
+                ? const SizedBox(width: 18, height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                 : const Icon(Icons.play_circle_fill_rounded, size: 20),
-            label: Text(_watching ? 'Loading ad...' : 'Watch Ad ${_totalWatched + 1} of ${widget.adsPerCycle}'),
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)))),
+            label: Text(_watching
+                ? 'Loading ad...'
+                : 'Watch Ad ${_totalWatched + 1} of ${widget.adsPerCycle}'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary, foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)))),
           const SizedBox(height: 12),
           SizedBox(width: double.infinity, child: OutlinedButton.icon(
             onPressed: () { Navigator.pop(context, false); GoRouter.of(context).go('/premium'); },
             icon: const Icon(Icons.workspace_premium_rounded, size: 18),
             label: const Text('Go Premium — Unlimited AI'),
-            style: OutlinedButton.styleFrom(foregroundColor: AppColors.gold, side: const BorderSide(color: AppColors.gold),
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))))),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: AppColors.gold, side: const BorderSide(color: AppColors.gold),
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))))),
           const SizedBox(height: 12),
-          TextButton(onPressed: () => Navigator.pop(context, false),
-              child: Text('Not now', style: TextStyle(color: sub, fontSize: 13))),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('Not now', style: TextStyle(color: sub, fontSize: 13))),
         ],
       ]),
     );
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Lockout Sheet (unchanged from v14.3 / v15)
+// ─────────────────────────────────────────────────────────────────────────────
 class _LockoutSheet extends StatefulWidget {
-  final String lockoutUntil; final bool isDaily; final VoidCallback onUpgrade;
+  final String lockoutUntil;
+  final bool   isDaily;
+  final VoidCallback onUpgrade;
   const _LockoutSheet({required this.lockoutUntil, required this.isDaily, required this.onUpgrade});
-  @override State<_LockoutSheet> createState() => _LockoutSheetState();
+  @override
+  State<_LockoutSheet> createState() => _LockoutSheetState();
 }
+
 class _LockoutSheetState extends State<_LockoutSheet> {
-  Timer? _timer; String _countdown = '--:--:--'; bool _expired = false;
-  @override void initState() { super.initState(); _update(); _timer = Timer.periodic(const Duration(seconds: 1), (_) => _update()); }
+  Timer?  _timer;
+  String  _countdown = '--:--:--';
+  bool    _expired   = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _update();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _update());
+  }
+
   void _update() {
     if (!mounted) return;
     final exp = DateTime.tryParse(widget.lockoutUntil);
     if (exp == null) { setState(() { _countdown = '—'; _expired = true; }); return; }
     final diff = exp.difference(DateTime.now());
     if (diff.isNegative) { setState(() { _countdown = 'Ready!'; _expired = true; }); return; }
-    final h = diff.inHours.toString().padLeft(2,'0');
-    final m = (diff.inMinutes % 60).toString().padLeft(2,'0');
-    final s = (diff.inSeconds % 60).toString().padLeft(2,'0');
+    final h = diff.inHours.toString().padLeft(2, '0');
+    final m = (diff.inMinutes % 60).toString().padLeft(2, '0');
+    final s = (diff.inSeconds % 60).toString().padLeft(2, '0');
     setState(() => _countdown = '$h:$m:$s');
   }
-  @override void dispose() { _timer?.cancel(); super.dispose(); }
+
+  @override
+  void dispose() { _timer?.cancel(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bg = isDark ? AppColors.bgCard : Colors.white;
-    final text = isDark ? Colors.white : Colors.black87;
-    final sub = isDark ? Colors.white60 : Colors.black54;
+    final bg   = isDark ? AppColors.bgCard : Colors.white;
+    final text = isDark ? Colors.white     : Colors.black87;
+    final sub  = isDark ? Colors.white60   : Colors.black54;
     final title = _expired
         ? (widget.isDaily ? 'Daily Limit Reset! ✅' : 'Break Over! ✅')
-        : (widget.isDaily ? 'Daily Limit Reached' : 'Time for a Break ⏸️');
+        : (widget.isDaily ? 'Daily Limit Reached'  : 'Time for a Break ⏸️');
+
     return Container(
-      decoration: BoxDecoration(color: bg, borderRadius: const BorderRadius.vertical(top: Radius.circular(28))),
+      decoration: BoxDecoration(color: bg,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28))),
       padding: EdgeInsets.fromLTRB(24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(width: 40, height: 4, decoration: BoxDecoration(color: isDark ? Colors.white24 : Colors.black12, borderRadius: BorderRadius.circular(2))),
+        Container(width: 40, height: 4, decoration: BoxDecoration(
+            color: isDark ? Colors.white24 : Colors.black12,
+            borderRadius: BorderRadius.circular(2))),
         const SizedBox(height: 24),
-        Text(_expired ? '✅' : (widget.isDaily ? '🔒' : '⏸️'), style: const TextStyle(fontSize: 52)),
+        Text(_expired ? '✅' : (widget.isDaily ? '🔒' : '⏸️'),
+            style: const TextStyle(fontSize: 52)),
         const SizedBox(height: 12),
         Text(title, style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: text)),
         const SizedBox(height: 8),
         Text(
           _expired
-              ? (widget.isDaily ? 'Daily limit reset. Watch ads to keep chatting!' : 'Break over — watch ads to unlock more!')
-              : (widget.isDaily ? 'Used all 30 responses today. Upgrade for unlimited.' : 'Take a 3-hour break, then watch ads for more.'),
-          style: TextStyle(fontSize: 14, color: sub, height: 1.5), textAlign: TextAlign.center),
+              ? (widget.isDaily
+                  ? 'Daily limit reset. Watch ads to keep chatting!'
+                  : 'Break over — watch ads to unlock more!')
+              : (widget.isDaily
+                  ? 'Used all 30 responses today. Upgrade for unlimited.'
+                  : 'Take a 3-hour break, then watch ads for more.'),
+          style: TextStyle(fontSize: 14, color: sub, height: 1.5),
+          textAlign: TextAlign.center),
         if (!_expired) ...[
           const SizedBox(height: 24),
-          Container(padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
-            decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.08), borderRadius: BorderRadius.circular(16)),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
+            decoration: BoxDecoration(
+                color: AppColors.primary.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(16)),
             child: Column(children: [
-              Text(widget.isDaily ? 'Resets in' : 'Unlocks in', style: TextStyle(fontSize: 12, color: sub)),
+              Text(widget.isDaily ? 'Resets in' : 'Unlocks in',
+                  style: TextStyle(fontSize: 12, color: sub)),
               const SizedBox(height: 6),
-              Text(_countdown, style: TextStyle(fontSize: 32, fontWeight: FontWeight.w800, color: text, fontFamily: 'monospace', letterSpacing: 2)),
+              Text(_countdown, style: TextStyle(
+                  fontSize: 32, fontWeight: FontWeight.w800,
+                  color: text, fontFamily: 'monospace', letterSpacing: 2)),
             ])),
         ],
         const SizedBox(height: 24),
@@ -1665,14 +1902,16 @@ class _LockoutSheetState extends State<_LockoutSheet> {
           onPressed: widget.onUpgrade,
           icon: const Icon(Icons.workspace_premium_rounded, size: 20),
           label: const Text('Upgrade — Unlimited AI Forever'),
-          style: ElevatedButton.styleFrom(backgroundColor: AppColors.gold, foregroundColor: Colors.black87,
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-              textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)))),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.gold, foregroundColor: Colors.black87,
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)))),
         const SizedBox(height: 12),
-        TextButton(onPressed: () => Navigator.pop(context),
-            child: Text(_expired ? 'Start chatting!' : 'Come back later',
-                style: TextStyle(color: sub, fontSize: 13))),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(_expired ? 'Start chatting!' : 'Come back later',
+              style: TextStyle(color: sub, fontSize: 13))),
       ]),
     );
   }
