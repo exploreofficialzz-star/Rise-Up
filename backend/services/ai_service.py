@@ -1,7 +1,20 @@
 """
-RiseUp AI Service — Global Wealth Intelligence Engine v3.0 (Production)
+RiseUp AI Service — Global Wealth Intelligence Engine v3.1 (Production)
 
-v3.0 Major Enhancements:
+v3.1 Patch Notes:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ - Groq: Removed 5 decommissioned models (deepseek-r1-distill-llama-70b,
+   llama-3.1-70b-versatile, llama3-70b-8192, mixtral-8x7b-32768,
+   gemma2-9b-it). Active fallback chain: llama-3.3-70b-versatile →
+   llama3-8b-8192 → llama-3.1-8b-instant (token-guarded).
+ - Groq: Added TOKEN_LIMIT_MAP — skips llama-3.1-8b-instant automatically
+   when estimated token count exceeds its 6K TPM ceiling.
+ - Gemini: Updated model list from deprecated gemini-1.5-flash to
+   gemini-2.0-flash → gemini-2.0-flash-lite → gemini-1.5-pro.
+ - Anthropic: Updated from deprecated claude-3-sonnet-20240229 to
+   claude-3-5-haiku-20241022 → claude-3-haiku-20240307.
+
+v3.0 Major Enhancements (carried forward):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  - RISEUP_MENTOR_PROMPT rebuilt from ground up with full 10,000-list
    awareness ($0 → $1B+ capital stages, online + offline)
@@ -22,14 +35,6 @@ v2.2 Bug Fixes (carried forward):
  - chat() accepts 'temperature' kwarg (market_pulse.py fix)
  - temperature flows through mentor_chat() → each model client
  - All model clients accept temperature param
-
-v2.1 Enhancements (carried forward):
- - Extended country database (Africa, Asia, LatAm, Europe, MENA, Oceania)
- - Language-aware system prompts
- - Timezone-aware context injection
- - Multi-currency income estimates
- - RISEUP_SYSTEM_PROMPT / ONBOARDING_PROMPT aliases
- - chat() wrapper, analyze_onboarding(), generate_roadmap() alias
 """
 
 import json
@@ -945,18 +950,9 @@ global_db = GlobalWealthDatabase()
 
 # ============================================================
 # SMART ONBOARDING MANAGER
-# Detects missing profile fields and injects natural questions
-# inline during normal chat — no separate onboarding screen needed.
 # ============================================================
 
 class SmartOnboardingManager:
-    """
-    Tracks which profile fields are missing and generates context-aware
-    prompts that ask for them naturally during conversation, without
-    interrupting the flow or making users feel interrogated.
-    """
-
-    # Ordered by importance — ask critical fields first
     CRITICAL_FIELDS = [
         ("country",         "country they live in"),
         ("monthly_income",  "current monthly income (any estimate is fine)"),
@@ -999,7 +995,6 @@ class SmartOnboardingManager:
 
     @staticmethod
     def is_profile_actionable(profile: Dict[str, Any]) -> bool:
-        """True when we have enough data to give personalized advice."""
         if not profile:
             return False
         missing_critical = SmartOnboardingManager.get_missing_critical(profile)
@@ -1007,21 +1002,14 @@ class SmartOnboardingManager:
 
     @staticmethod
     def build_onboarding_injection(profile: Dict[str, Any]) -> str:
-        """
-        Returns the snippet that gets appended to RISEUP_MENTOR_PROMPT
-        when profile is incomplete. Tells the AI exactly what to ask
-        and how to ask it naturally within its response.
-        """
-        missing_critical = SmartOnboardingManager.get_missing_critical(profile)
+        missing_critical   = SmartOnboardingManager.get_missing_critical(profile)
         missing_enrichment = SmartOnboardingManager.get_missing_enrichment(profile)
 
         if not missing_critical and not missing_enrichment:
-            return ""  # Profile is complete — no injection needed
+            return ""
 
         if missing_critical:
-            # Pick the top 1–2 most important missing fields
             to_ask = missing_critical[:2]
-            urgency = "CRITICAL"
             instruction = (
                 f"PROFILE INCOMPLETE — you MUST gather these before giving full advice:\n"
                 + "\n".join(f"  • {label}" for _, label in to_ask)
@@ -1034,29 +1022,21 @@ class SmartOnboardingManager:
                 '  - "What\'s the income number that would change your life in the next 90 days?"\n'
                 "NEVER ask more than ONE question at the end of your response."
             )
+            return f"\n\n[ONBOARDING STATUS — CRITICAL]\n{instruction}"
         else:
-            # Critical fields filled — enrich profile opportunistically
             to_ask = missing_enrichment[:1]
-            urgency = "ENRICHMENT"
             instruction = (
                 "Profile has core data. Optionally, if it fits naturally in context, "
                 f"you may ask ONE question to learn: {to_ask[0][1] if to_ask else 'nothing'}. "
                 "Do NOT force this if it doesn't flow naturally."
             )
-
-        return f"\n\n[ONBOARDING STATUS — {urgency}]\n{instruction}"
+            return f"\n\n[ONBOARDING STATUS — ENRICHMENT]\n{instruction}"
 
     @staticmethod
     def extract_profile_signals(message: str, current_profile: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Lightweight regex-based extractor that picks up profile signals
-        from user messages and updates the profile dict.
-        Called before sending to AI — reduces AI calls for simple signals.
-        """
         updates = {}
-        text = message.lower()
+        text    = message.lower()
 
-        # Country signals
         country_signals = {
             "nigeria": "NG", "lagos": "NG", "abuja": "NG",
             "ghana": "GH", "accra": "GH",
@@ -1081,7 +1061,6 @@ class SmartOnboardingManager:
                     updates["country"] = code
                     break
 
-        # Income signals — look for number + currency/income keywords
         income_patterns = [
             r"(?:earn|make|income|salary|month(?:ly)?)[^\d]*(\d[\d,\.]+)",
             r"(\d[\d,\.]+)\s*(?:per month|\/month|a month|monthly)",
@@ -1098,7 +1077,6 @@ class SmartOnboardingManager:
                     except ValueError:
                         pass
 
-        # Name signals
         name_match = re.search(r"(?:my name is|i['']m|call me)\s+([A-Za-z]+)", message, re.I)
         if name_match and not current_profile.get("full_name"):
             updates["full_name"] = name_match.group(1).title()
@@ -1319,8 +1297,6 @@ NEVER end with "let me know if you have more questions."
 ALWAYS end with forward motion.
 """
 
-# ── The onboarding prompt is now embedded as behavior above.
-# This alias exists for any router that still imports ONBOARDING_ARCHITECT_PROMPT.
 ONBOARDING_ARCHITECT_PROMPT = """You are conducting a RiseUp Wealth Architecture Assessment — a smart, conversational profile-building session embedded directly in the chat.
 
 YOUR GOAL: Build a complete financial profile through natural conversation. Ask 1–2 questions at a time. Never feel like a form.
@@ -1341,27 +1317,38 @@ RULES:
 START: "Hey! I'm your RiseUp AI Mentor 🚀 I'm about to match you to income opportunities from our 10,000-opportunity database — built for every budget from $0 to $1B+. What's your name and where are you based?"
 """
 
-# Canonical aliases — all routers use these
+# Canonical aliases
 RISEUP_SYSTEM_PROMPT = RISEUP_MENTOR_PROMPT
 ONBOARDING_PROMPT    = ONBOARDING_ARCHITECT_PROMPT
 
 
 # ============================================================
-# AI MODEL CLIENTS
+# AI MODEL CLIENTS  (v3.1 — updated model lists)
 # ============================================================
 
 class GroqClient:
-    NAME   = "groq"
-    FREE   = True
+    NAME = "groq"
+    FREE = True
+
+    # ── v3.1: Removed all decommissioned models.
+    # Active Groq models as of April 2026:
+    #   llama-3.3-70b-versatile — primary, best quality, 100K TPD limit
+    #   llama3-8b-8192          — smaller, higher throughput
+    #   llama-3.1-8b-instant    — last resort; 6K TPM hard cap — skip for large prompts
     MODELS = [
         "llama-3.3-70b-versatile",
-        "deepseek-r1-distill-llama-70b",
-        "llama-3.1-70b-versatile",
-        "llama3-70b-8192",
-        "mixtral-8x7b-32768",
-        "gemma2-9b-it",
+        "llama3-8b-8192",
         "llama-3.1-8b-instant",
     ]
+
+    # TPM caps per model (tokens per minute). Used to skip a model when the
+    # estimated prompt is too large. Conservative estimates — actual limits
+    # may be higher for your tier.
+    TPM_LIMITS: Dict[str, int] = {
+        "llama-3.3-70b-versatile": 6_000,   # on_demand tier
+        "llama3-8b-8192":          8_000,
+        "llama-3.1-8b-instant":    6_000,
+    }
 
     def __init__(self):
         self._client = None
@@ -1371,6 +1358,15 @@ class GroqClient:
             from groq import AsyncGroq
             self._client = AsyncGroq(api_key=settings.GROQ_API_KEY)
         return self._client
+
+    @staticmethod
+    def _estimate_tokens(messages: list, system: str) -> int:
+        """
+        Rough token estimate: ~0.75 tokens per character (GPT-style heuristic).
+        Used to skip models whose TPM cap is below the estimated prompt size.
+        """
+        total_chars = len(system) + sum(len(m.get("content", "")) for m in messages)
+        return int(total_chars * 0.75)
 
     async def chat(
         self,
@@ -1383,12 +1379,25 @@ class GroqClient:
         if not client:
             raise ValueError("Groq API key not configured")
 
-        preferred      = getattr(settings, "GROQ_MODEL", self.MODELS[0])
-        models_to_try  = [preferred] + [m for m in self.MODELS if m != preferred]
-        formatted      = [{"role": "system", "content": system}] + messages
-        last_err       = None
+        estimated_tokens = self._estimate_tokens(messages, system)
+        preferred        = getattr(settings, "GROQ_MODEL", self.MODELS[0])
+        models_to_try    = [preferred] + [m for m in self.MODELS if m != preferred]
+        formatted        = [{"role": "system", "content": system}] + messages
+        last_err         = None
 
         for model in models_to_try:
+            # Skip models whose TPM limit is smaller than the estimated prompt
+            tpm_limit = self.TPM_LIMITS.get(model, 999_999)
+            if estimated_tokens > tpm_limit:
+                logger.info(
+                    f"Groq: skipping {model} — estimated {estimated_tokens} tokens "
+                    f"exceeds {tpm_limit} TPM cap"
+                )
+                last_err = ValueError(
+                    f"Groq {model} skipped: prompt too large ({estimated_tokens} > {tpm_limit} TPM)"
+                )
+                continue
+
             try:
                 response = await client.chat.completions.create(
                     model=model, messages=formatted,
@@ -1404,9 +1413,15 @@ class GroqClient:
 
 
 class GeminiClient:
-    NAME   = "gemini"
-    MODELS = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro"]
-    FREE   = True
+    NAME = "gemini"
+    FREE = True
+
+    # ── v3.1: gemini-1.5-flash removed from v1beta (404). Updated to 2.0 line.
+    MODELS = [
+        "gemini-2.0-flash",       # primary — fast, capable, current
+        "gemini-2.0-flash-lite",  # lighter fallback
+        "gemini-1.5-pro",         # still available, higher quality for complex tasks
+    ]
 
     async def chat(
         self,
@@ -1482,9 +1497,14 @@ class OpenAIClient:
 
 
 class AnthropicClient:
-    NAME   = "anthropic"
-    MODELS = ["claude-3-haiku-20240307", "claude-3-sonnet-20240229"]
-    FREE   = False
+    NAME = "anthropic"
+    FREE = False
+
+    # ── v3.1: claude-3-sonnet-20240229 deprecated. Updated to current models.
+    MODELS = [
+        "claude-3-5-haiku-20241022",  # fast, cost-efficient, current
+        "claude-3-haiku-20240307",    # stable fallback
+    ]
 
     def __init__(self):
         self._client = None
@@ -1500,7 +1520,7 @@ class AnthropicClient:
         messages: list,
         system: str,
         max_tokens: int = 2048,
-        temperature: float = 0.7,  # Anthropic accepts but does not always use this
+        temperature: float = 0.7,
     ) -> str:
         client = self.get_client()
         if not client:
@@ -1520,7 +1540,7 @@ class AnthropicClient:
 
 
 # ============================================================
-# MAIN AI ENGINE  (v3.0)
+# MAIN AI ENGINE  (v3.0 — unchanged from v3.0 except model clients above)
 # ============================================================
 
 class RiseUpIntelligenceEngine:
@@ -1534,7 +1554,6 @@ class RiseUpIntelligenceEngine:
         self.onboarding      = SmartOnboardingManager()
         self._priority_order = self._build_priority()
 
-        # ── Global opportunity meta-index (supplements the 10,000 list)
         self.trending_global_opportunities = [
             {
                 "category":          "AI & Automation",
@@ -1733,7 +1752,7 @@ All capital stage thresholds are relative to {country.name}'s cost of living (in
         }
 
     # ──────────────────────────────────────────────────────────────────
-    # ROUTER-COMPATIBLE WRAPPER — v2.2 temperature fix (carried forward)
+    # ROUTER-COMPATIBLE WRAPPER
     # ──────────────────────────────────────────────────────────────────
     async def chat(
         self,
@@ -1743,10 +1762,6 @@ All capital stage thresholds are relative to {country.name}'s cost of living (in
         preferred_model: str = None,
         temperature: float = 0.7,
     ) -> Dict[str, Any]:
-        """
-        Router-compatible wrapper.
-        Accepts all kwargs used by market_pulse.py, ai_agent.py, and other callers.
-        """
         return await self.mentor_chat(
             messages=messages,
             system_prompt=system,
@@ -1763,12 +1778,8 @@ All capital stage thresholds are relative to {country.name}'s cost of living (in
         user_profile: Dict[str, Any] = None,
         additional_context: str = "",
     ) -> Dict[str, Any]:
-        """
-        Given a success model (person, platform, or business type),
-        generates a personalized replication strategy.
-        """
-        country  = self.db.get_country((user_profile or {}).get("country", "DEFAULT"))
-        language = (user_profile or {}).get("language", "en")
+        country   = self.db.get_country((user_profile or {}).get("country", "DEFAULT"))
+        language  = (user_profile or {}).get("language", "en")
         lang_note = f"Respond in language ISO: {language}." if language != "en" else ""
 
         mirror_prompt = f"""You are creating a MIRROR SUCCESS STRATEGY for a user who wants to replicate a proven success model.
@@ -1822,7 +1833,7 @@ Return ONLY valid JSON:
             messages=[{"role": "user", "content": f"Build me a mirror success strategy for: {success_model}"}],
             system_prompt=mirror_prompt,
             max_tokens=3_000,
-            user_profile=None,  # system already has profile context
+            user_profile=None,
         )
 
         try:
@@ -1898,12 +1909,7 @@ If the conversation does not contain enough data to build a profile, return: nul
         messages: list,
         current_profile: Dict[str, Any] = None,
     ) -> Optional[Dict[str, Any]]:
-        """
-        Lightweight version of analyze_onboarding.
-        Used to incrementally update profile from ongoing chat messages.
-        Merges extracted data into current_profile.
-        """
-        # First try fast regex extraction from the last few messages
+        signals = {}
         if messages:
             merged = dict(current_profile or {})
             for msg in messages[-5:]:
@@ -1915,7 +1921,6 @@ If the conversation does not contain enough data to build a profile, return: nul
             if signals:
                 return merged
 
-        # Fall back to AI extraction if regex didn't find anything new
         return await self.analyze_onboarding(messages)
 
     # ──────────────────────────────────────────────────────────────────
@@ -2067,7 +2072,6 @@ Return ONLY valid JSON:
         lang_note = f"Respond in language ISO: {language}." if language != "en" else ""
         savings   = profile.get("savings", 0)
 
-        # Determine capital stage for 10,000 list matching
         if savings == 0:
             capital_stage = "$0 — zero capital opportunities only"
         elif savings < 100:
@@ -2187,7 +2191,7 @@ Return ONLY a JSON array:
                 "$1K-$10K", "$10K-$100K", "$100K-$1M", "$1M-$1B+",
             ],
             "updated_at": datetime.now().isoformat(),
-            "source":     "RiseUp Intelligence Engine v3.0",
+            "source":     "RiseUp Intelligence Engine v3.1",
         }
 
     # ──────────────────────────────────────────────────────────────────
@@ -2246,7 +2250,6 @@ Return ONLY valid JSON:
         return asdict(self.db.get_country(country_code))
 
     def get_profile_completeness(self, profile: Dict[str, Any]) -> Dict[str, Any]:
-        """Returns a breakdown of profile completeness for the frontend."""
         missing_critical   = SmartOnboardingManager.get_missing_critical(profile)
         missing_enrichment = SmartOnboardingManager.get_missing_enrichment(profile)
         total_fields       = len(SmartOnboardingManager.CRITICAL_FIELDS) + len(SmartOnboardingManager.ENRICHMENT_FIELDS)
@@ -2267,7 +2270,7 @@ Return ONLY valid JSON:
 # ============================================================
 
 riseup_engine = RiseUpIntelligenceEngine()
-ai_service    = riseup_engine          # canonical alias — all routers import this
+ai_service    = riseup_engine   # canonical alias — all routers import this
 
 
 # ============================================================
