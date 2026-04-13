@@ -54,16 +54,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       // Fallback: SharedPreferences cached value
       final prefs = await SharedPreferences.getInstance();
-      var email =
+      final email =
           prefs.getString('user_email') ?? prefs.getString('email') ?? '';
-
-      if (email.isEmpty) {
-        try {
-          final profile = await api.getMyProfile();
-          email = profile?.email ?? '';
-          if (email.isNotEmpty) unawaited(prefs.setString('user_email', email));
-        } catch (_) {}
-      }
 
       if (mounted) setState(() { _userEmail = email; _loadingEmail = false; });
     } catch (_) {
