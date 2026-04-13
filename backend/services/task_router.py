@@ -412,7 +412,6 @@ WORKFLOW_TEMPLATES: Dict[str, WorkflowTemplate] = {
             {"key": "deadline",     "question": "Client deadline:",                           "type": "text"},
         ],
         estimated_tokens=200,
-        needs_browser=False,
     ),
 }
 
