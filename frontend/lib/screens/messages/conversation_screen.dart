@@ -1274,6 +1274,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
               margin: const EdgeInsets.symmetric(horizontal: 2), width: 6, height: 6,
               decoration: const BoxDecoration(color: AppColors.primary, shape: BoxShape.circle))
               .animate(onPlay: (c) => c.repeat()).fadeIn(delay: Duration(milliseconds: i * 200)).then().fadeOut())),
+        ),
       ]),
     );
   }
