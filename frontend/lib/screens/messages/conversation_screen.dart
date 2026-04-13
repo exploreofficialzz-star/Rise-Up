@@ -1,15 +1,21 @@
 // frontend/lib/screens/messages/conversation_screen.dart
-// Production v16.0 — Quota ribbon fix · AppBar cleanup · AI error detection · Client-side delegation
-//
-// Fixes in v16:
-//  • QuotaRibbon: added missing "Watch X ads to continue" state (ribbon was disappearing after 3 free msgs)
-//  • AppBar: removed APEX flash button from top-right actions (kept call button only)
-//  • AI error detection: "technical difficulties" / "try again" responses are caught and shown
-//    as error bubbles with a Retry snackbar action — not silently displayed as normal AI messages
-//  • Client-side delegation inference: APEX/Workflow cards are triggered from message keywords
-//    as a fallback when the backend does not return a delegation field
-//  • _extractTask helper: pulls a clean short task string from AI message for pre-filling screens
-//  • All v15 quota / ad gate / scroll-lock / DM / history / caching logic preserved exactly
+// Production v17.0 — Brain-Aware AI Chat · /ai/chat endpoint · Full Brain Context UI
+// ═══════════════════════════════════════════════════════════════════════════════════
+// v17 Changes (over v16):
+//  • AI mode now routes to POST /ai/chat (brain-aware v3.0 endpoint)
+//  • _msgFromAIMap: parses role-based messages from /ai/conversations/{id}/messages
+//  • _ensureAIConv: fetches existing convs from GET /ai/conversations; /ai/chat
+//    creates a new one on first send — no separate create call needed
+//  • _loadAIHistory: loads from GET /ai/conversations/{id}/messages
+//  • _sendAI: posts to /ai/chat, persists returned conversation_id, parses all
+//    brain fields (intent, methods, marketplace, providers, escalation)
+//  • _BrainData model: carries brain search result alongside every AI message
+//  • _BrainCard widget: renders methods / marketplace / provider chips inline
+//  • Complementary-user row shown under AI messages when brain finds matches
+//  • brain_needs_external flag auto-generates a Workflow delegation card
+//  • _poll: AI mode uses /ai/conversations/{id}/messages + client-side since filter
+//  • All v16 quota / ad-gate / scroll-lock / DM / cache / error-detection preserved
+// ═══════════════════════════════════════════════════════════════════════════════════
 
 // ignore_for_file: deprecated_member_use
 import 'dart:async';
@@ -91,19 +97,66 @@ class _DelegationPayload {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Brain data model — carries brain search result alongside each AI message
+// ─────────────────────────────────────────────────────────────────────────────
+class _BrainData {
+  final String        intent;
+  final bool          internalFound;
+  final List<dynamic> methods;
+  final List<dynamic> marketplace;
+  final List<dynamic> serviceProviders;
+  final bool          needsExternal;
+  final String?       escalationReason;
+  final String?       suggestedTaskType;
+  final List<dynamic> complementaryUsers;
+
+  const _BrainData({
+    this.intent             = 'explore',
+    this.internalFound      = false,
+    this.methods            = const [],
+    this.marketplace        = const [],
+    this.serviceProviders   = const [],
+    this.needsExternal      = false,
+    this.escalationReason,
+    this.suggestedTaskType,
+    this.complementaryUsers = const [],
+  });
+
+  bool get hasResults =>
+      methods.isNotEmpty || marketplace.isNotEmpty || serviceProviders.isNotEmpty;
+
+  bool get hasComplementaryUsers => complementaryUsers.isNotEmpty;
+
+  factory _BrainData.fromResponse(Map<String, dynamic> res) {
+    return _BrainData(
+      intent:             res['brain_intent']?.toString()              ?? 'explore',
+      internalFound:      res['brain_internal_found']                  == true,
+      methods:            (res['brain_methods']            as List?)   ?? [],
+      marketplace:        (res['brain_marketplace']        as List?)   ?? [],
+      serviceProviders:   (res['brain_service_providers']  as List?)   ?? [],
+      needsExternal:      res['brain_needs_external']                  == true,
+      escalationReason:   res['brain_escalation_reason']?.toString(),
+      suggestedTaskType:  res['brain_suggested_task_type']?.toString(),
+      complementaryUsers: (res['complementary_users']      as List?)   ?? [],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Message model
 // ─────────────────────────────────────────────────────────────────────────────
 class _Msg {
-  final String id;
-  final String content;
-  final String sender;
-  final String avatar;
-  final bool isMe;
-  final bool isAI;
-  final bool isError;
-  final bool brainUsed;
+  final String  id;
+  final String  content;
+  final String  sender;
+  final String  avatar;
+  final bool    isMe;
+  final bool    isAI;
+  final bool    isError;
+  final bool    brainUsed;
   final DateTime time;
   _DelegationPayload? delegation;
+  _BrainData?         brainData;
   String displayText;
   bool   isTyping;
 
@@ -117,6 +170,7 @@ class _Msg {
     this.isError     = false,
     this.brainUsed   = false,
     this.delegation,
+    this.brainData,
     DateTime? time,
   })  : id          = id ?? 'local_${DateTime.now().microsecondsSinceEpoch}',
         displayText = content,
@@ -154,10 +208,10 @@ class ConversationScreen extends StatefulWidget {
 }
 
 class _ConversationScreenState extends State<ConversationScreen> {
-  final _textCtrl  = TextEditingController();
-  final _scroll    = ScrollController();
+  final _textCtrl   = TextEditingController();
+  final _scroll     = ScrollController();
   final _inputFocus = FocusNode();
-  final List<_Msg> _msgs = [];
+  final List<_Msg>  _msgs = [];
 
   bool _historyLoaded    = false;
   bool _aiResponding     = false;
@@ -172,8 +226,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
   String? _lastPollTime;
   String? _cachedMyId;
   String? _cachedMyName;
-
-  // Pending text for retry after an error response
   String? _lastSentText;
 
   Timer? _typingTimer;
@@ -229,10 +281,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   bool get _cycleActive => _cycleAds >= _kAdsPerCycle && _cycleMsgs < _kMsgsPerCycle;
 
-  // ── Cache helpers ────────────────────────────────────────────────────────
+  // ── Cache keys ────────────────────────────────────────────────────────────
   String get _convCacheKey     => '$_kMsgCachePrefix${_isAIMode ? 'ai' : widget.userId}';
   String get _convCacheTimeKey => '$_kMsgCacheTimePrefix${_isAIMode ? 'ai' : widget.userId}';
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Cache helpers
+  // ─────────────────────────────────────────────────────────────────────────
   Future<void> _saveMessageCache(List<_Msg> msgs) async {
     try {
       final prefs   = await SharedPreferences.getInstance();
@@ -256,16 +311,21 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (raw == null) return null;
       final list  = jsonDecode(raw) as List;
       return list.map((m) => _Msg(
-        id: m['id']?.toString(), content: m['content']?.toString() ?? '',
-        sender: m['sender']?.toString() ?? '', avatar: m['avatar']?.toString() ?? '',
-        isMe: m['isMe'] == true, isAI: m['isAI'] == true,
+        id:        m['id']?.toString(),
+        content:   m['content']?.toString()  ?? '',
+        sender:    m['sender']?.toString()   ?? '',
+        avatar:    m['avatar']?.toString()   ?? '',
+        isMe:      m['isMe']     == true,
+        isAI:      m['isAI']     == true,
         brainUsed: m['brainUsed'] == true,
-        time: DateTime.tryParse(m['time']?.toString() ?? '')?.toLocal(),
+        time:      DateTime.tryParse(m['time']?.toString() ?? '')?.toLocal(),
       )).toList();
     } catch (_) { return null; }
   }
 
-  // ── Lifecycle ────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Lifecycle
+  // ─────────────────────────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
@@ -293,17 +353,22 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   void _onScroll() {
     if (!_scroll.hasClients || _scrollLocked) return;
-    if (_scroll.position.pixels <= 120 && !_loadingMore && _hasMoreHistory && _historyLoaded) {
+    // Only load more for DM mode — AI history is not paginated
+    if (!_isAIMode &&
+        _scroll.position.pixels <= 120 &&
+        !_loadingMore && _hasMoreHistory && _historyLoaded) {
       _loadMoreHistory();
     }
   }
 
-  // ── Poll-time persistence ────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Poll-time persistence
+  // ─────────────────────────────────────────────────────────────────────────
   String get _pollKey => '$_kPollTimePrefix${widget.userId}';
 
   Future<void> _restorePollTime() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs   = await SharedPreferences.getInstance();
       _lastPollTime = prefs.getString(_pollKey);
     } catch (_) {}
   }
@@ -316,7 +381,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
     } catch (_) {}
   }
 
-  // ── Quota ────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Quota
+  // ─────────────────────────────────────────────────────────────────────────
   Future<void> _loadQuota() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -349,8 +416,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_kQuotaPrefsKey, jsonEncode({
-        'free_used': _freeUsed, 'cycle_ads': _cycleAds, 'cycle_msgs': _cycleMsgs,
-        'total_responses': _totalResponses,
+        'free_used':           _freeUsed,
+        'cycle_ads':           _cycleAds,
+        'cycle_msgs':          _cycleMsgs,
+        'total_responses':     _totalResponses,
         'cycle_lockout_until': _quota['cycle_lockout_until'],
         'daily_lockout_until': _quota['daily_lockout_until'],
       }));
@@ -375,17 +444,25 @@ class _ConversationScreenState extends State<ConversationScreen> {
       _quota['cycle_msgs']      = newCycleMsgs;
       _quota['total_responses'] = newTotalResponses;
       if (hitDailyMax) {
-        _quota['daily_lockout_until'] = DateTime.now().add(_kDailyLockoutDur).toIso8601String();
-        _quota['cycle_lockout_until'] = null; _quota['cycle_ads'] = 0; _quota['cycle_msgs'] = 0;
+        _quota['daily_lockout_until'] =
+            DateTime.now().add(_kDailyLockoutDur).toIso8601String();
+        _quota['cycle_lockout_until'] = null;
+        _quota['cycle_ads']           = 0;
+        _quota['cycle_msgs']          = 0;
       } else if (cycleExhausted) {
-        _quota['cycle_lockout_until'] = DateTime.now().add(_kCycleLockoutDur).toIso8601String();
-        _quota['cycle_ads'] = 0; _quota['cycle_msgs'] = 0;
+        _quota['cycle_lockout_until'] =
+            DateTime.now().add(_kCycleLockoutDur).toIso8601String();
+        _quota['cycle_ads']  = 0;
+        _quota['cycle_msgs'] = 0;
       }
     });
     await _saveQuota();
   }
 
-  // ── Ensure AI conv ───────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Ensure AI conversation (v17: uses GET /ai/conversations)
+  // /ai/chat creates a new conv on first send — no separate create call needed
+  // ─────────────────────────────────────────────────────────────────────────
   Future<bool> _ensureAIConv() async {
     if (_aiConvId != null && _aiConvId!.isNotEmpty) return true;
     if (mounted) setState(() => _convInitializing = true);
@@ -397,41 +474,61 @@ class _ConversationScreenState extends State<ConversationScreen> {
         if (mounted) setState(() => _convInitializing = false);
         return true;
       }
-      final convId = await api.getOrCreateAIConversation();
-      if (convId.isNotEmpty) {
-        _aiConvId = convId;
-        await prefs.setString(_kAiConvIdKey, convId);
-        if (mounted) setState(() => _convInitializing = false);
-        return true;
+      // Fetch existing conversations from GET /ai/conversations
+      final res  = await api.get('/ai/conversations');
+      final list = (res['conversations'] as List?) ?? [];
+      if (list.isNotEmpty) {
+        _aiConvId = list.first['id']?.toString() ?? '';
+        if (_aiConvId!.isNotEmpty) {
+          await prefs.setString(_kAiConvIdKey, _aiConvId!);
+        }
       }
-    } catch (e) { debugPrint('[Conv] _ensureAIConv error: $e'); }
+      // If no conv yet that's fine — /ai/chat will create one on first send
+      // and we'll persist the returned conversation_id at that point
+    } catch (e) {
+      debugPrint('[Conv] _ensureAIConv error: $e');
+    }
     if (mounted) setState(() => _convInitializing = false);
-    return false;
+    return true; // always allow send
   }
 
-  // ── History ──────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // History
+  // ─────────────────────────────────────────────────────────────────────────
   Future<void> _loadHistory() async {
     if (_historyLoaded) return;
     await _fetchMyInfo();
     final cached = await _loadMessageCache();
     if (cached != null && cached.isNotEmpty && mounted) {
-      setState(() { _msgs.clear(); _msgs.addAll(cached); _historyLoaded = true; });
-      WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) _scrollDown(jump: true); });
+      setState(() {
+        _msgs.clear();
+        _msgs.addAll(cached);
+        _historyLoaded = true;
+      });
+      WidgetsBinding.instance.addPostFrameCallback(
+          (_) { if (mounted) _scrollDown(jump: true); });
     }
     try {
       if (_isAIMode) await _loadAIHistory();
-      else await _loadDMHistory();
-    } catch (e) { debugPrint('[Conv] history error: $e'); }
-    finally {
+      else           await _loadDMHistory();
+    } catch (e) {
+      debugPrint('[Conv] history error: $e');
+    } finally {
       if (mounted && !_historyLoaded) {
         setState(() => _historyLoaded = true);
-        WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) _scrollDown(jump: true); });
+        WidgetsBinding.instance.addPostFrameCallback(
+            (_) { if (mounted) _scrollDown(jump: true); });
       }
     }
-    if (_isAIMode && widget.postContext != null && widget.postContext!.isNotEmpty) {
+    // Auto-inject post context as first message
+    if (_isAIMode &&
+        widget.postContext != null &&
+        widget.postContext!.isNotEmpty) {
       await _sendAI(
-        'I want to discuss a post: "${widget.postContext}"\nGive me a quick wealth insight.',
-        adUnlocked: false, isContextMessage: true,
+        'I want to discuss a post: "${widget.postContext}"\n'
+        'Give me a quick wealth insight.',
+        adUnlocked: false,
+        isContextMessage: true,
       );
     }
   }
@@ -448,25 +545,41 @@ class _ConversationScreenState extends State<ConversationScreen> {
     } catch (_) {}
   }
 
+  // v17: load AI history from GET /ai/conversations/{id}/messages
   Future<void> _loadAIHistory() async {
     await _ensureAIConv();
-    if (_aiConvId == null || _aiConvId!.isEmpty) return;
+    if (_aiConvId == null || _aiConvId!.isEmpty) {
+      _hasMoreHistory = false;
+      if (mounted) setState(() => _historyLoaded = true);
+      await _maybeShowFirstTimeGreeting();
+      return;
+    }
     try {
-      final msgs = await api.getDMMessages(_aiConvId!, limit: _kHistoryPageSize);
+      final res  = await api.get('/ai/conversations/$_aiConvId/messages');
+      final msgs = (res['messages'] as List?) ?? [];
       if (!mounted) return;
       if (msgs.isNotEmpty) {
         setState(() {
           _msgs.clear();
-          for (final m in msgs) _msgs.add(_msgFromMap(m, myId: _cachedMyId));
-          _hasMoreHistory = msgs.length >= _kHistoryPageSize;
+          for (final m in msgs) _msgs.add(_msgFromAIMap(m as Map));
+          _hasMoreHistory = false; // /ai/conversations endpoint doesn't paginate
+          _historyLoaded  = true;
         });
         await _savePollTime(msgs.last['created_at']?.toString() ?? '');
         await _saveMessageCache(_msgs);
+        WidgetsBinding.instance.addPostFrameCallback(
+            (_) { if (mounted) _scrollDown(jump: true); });
       } else {
         _hasMoreHistory = false;
+        if (mounted) setState(() => _historyLoaded = true);
         await _maybeShowFirstTimeGreeting();
       }
-    } catch (e) { debugPrint('[Conv] AI history error: $e'); }
+    } catch (e) {
+      debugPrint('[Conv] AI history error: $e');
+      _hasMoreHistory = false;
+      if (mounted) setState(() => _historyLoaded = true);
+      await _maybeShowFirstTimeGreeting();
+    }
   }
 
   Future<void> _loadDMHistory() async {
@@ -482,63 +595,116 @@ class _ConversationScreenState extends State<ConversationScreen> {
           _msgs.add(_msgFromMap(m, myId: _cachedMyId));
         }
         _hasMoreHistory = msgs.length >= _kHistoryPageSize;
+        _historyLoaded  = true;
       });
       await _savePollTime(msgs.last['created_at']?.toString() ?? '');
       await _saveMessageCache(_msgs);
-    } catch (e) { debugPrint('[Conv] DM history error: $e'); }
+      WidgetsBinding.instance.addPostFrameCallback(
+          (_) { if (mounted) _scrollDown(jump: true); });
+    } catch (e) {
+      debugPrint('[Conv] DM history error: $e');
+    }
   }
 
   Future<void> _loadMoreHistory() async {
-    if (_loadingMore || !_hasMoreHistory || _msgs.isEmpty) return;
+    if (_loadingMore || !_hasMoreHistory || _msgs.isEmpty || _isAIMode) return;
     setState(() => _loadingMore = true);
     try {
       final convId = _activeConvId;
-      if (convId == null || convId.isEmpty) { setState(() => _loadingMore = false); return; }
+      if (convId == null || convId.isEmpty) {
+        setState(() => _loadingMore = false);
+        return;
+      }
       final older = await api.getDMMessages(convId, limit: _kHistoryPageSize);
       if (!mounted) return;
       if (older.isEmpty || older.length < _kHistoryPageSize) {
         setState(() => _hasMoreHistory = false);
       } else {
-        final myId = await _getMyId();
+        final myId    = await _getMyId();
         final newMsgs = <_Msg>[];
         for (final m in older) {
           final st = m['sender_type']?.toString() ?? '';
-          if (!_isAIMode && (st == 'ai' || st == 'system')) continue;
+          if (st == 'ai' || st == 'system') continue;
           newMsgs.add(_msgFromMap(m, myId: myId));
         }
         setState(() => _msgs.insertAll(0, newMsgs));
       }
-    } catch (e) { debugPrint('[Conv] load more error: $e'); }
-    finally { if (mounted) setState(() => _loadingMore = false); }
+    } catch (e) {
+      debugPrint('[Conv] load more error: $e');
+    } finally {
+      if (mounted) setState(() => _loadingMore = false);
+    }
   }
 
   Future<void> _maybeShowFirstTimeGreeting() async {
-    if (_aiConvId == null) return;
+    if (_aiConvId == null && _aiConvId?.isEmpty != false) {
+      // No conv yet — greet with a local bubble (conv created on first send)
+      final greetKey = '${_kGreetedPrefix}new_user';
+      try {
+        final prefs       = await SharedPreferences.getInstance();
+        final alreadyDone = prefs.getBool(greetKey) ?? false;
+        if (alreadyDone) return;
+        await prefs.setBool(greetKey, true);
+        _showGreetingBubble();
+      } catch (_) {}
+      return;
+    }
     final greetKey = '$_kGreetedPrefix$_aiConvId';
     try {
       final prefs       = await SharedPreferences.getInstance();
       final alreadyDone = prefs.getBool(greetKey) ?? false;
       if (alreadyDone) return;
       await prefs.setBool(greetKey, true);
-      final firstName = _cachedMyName?.split(' ').first ?? 'there';
-      final greeting  =
-          'Hey $firstName 👋 Welcome to RiseUp!\n\n'
-          "I'm your AI Wealth Mentor — here to help you build income, grow wealth, "
-          'and level up your finances. 💰\n\n'
-          'I can also hand tasks to **APEX** — your autonomous AI agent that '
-          'opens browsers, fills forms, applies to jobs, and sets up accounts for you.\n\n'
-          'Ask me anything, or just say **"do it for me"** and I\'ll launch APEX. 🚀';
-      if (mounted) {
-        final greetMsg = _Msg(content: greeting, sender: 'RiseUp AI',
-            avatar: '🤖', isMe: false, isAI: true);
-        setState(() => _msgs.add(greetMsg));
-        _typeMessage(greetMsg);
-      }
+      _showGreetingBubble();
       await _savePollTime(DateTime.now().toUtc().toIso8601String());
-    } catch (e) { debugPrint('[Conv] greeting error: $e'); }
+    } catch (e) {
+      debugPrint('[Conv] greeting error: $e');
+    }
   }
 
-  // ── Message helpers ──────────────────────────────────────────────────────
+  void _showGreetingBubble() {
+    if (!mounted) return;
+    final firstName = _cachedMyName?.split(' ').first ?? 'there';
+    final greeting  =
+        'Hey $firstName 👋 Welcome to RiseUp!\n\n'
+        "I'm your AI Wealth Mentor — here to help you build income, grow wealth, "
+        'and level up your finances. 💰\n\n'
+        'I can also hand tasks to **APEX** — your autonomous AI agent that '
+        'opens browsers, fills forms, applies to jobs, and sets up accounts for you.\n\n'
+        'Ask me anything, or just say **"do it for me"** and I\'ll launch APEX. 🚀';
+    final greetMsg = _Msg(
+      content: greeting,
+      sender:  'RiseUp AI',
+      avatar:  '🤖',
+      isMe:    false,
+      isAI:    true,
+    );
+    setState(() => _msgs.add(greetMsg));
+    _typeMessage(greetMsg);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Message helpers
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /// Parses a role-based message map from /ai/conversations/{id}/messages
+  _Msg _msgFromAIMap(Map m) {
+    final id      = m['id']?.toString()      ?? '';
+    final role    = m['role']?.toString()    ?? '';
+    final content = m['content']?.toString() ?? '';
+    final isAI    = role == 'assistant';
+    return _Msg(
+      id:      id.isNotEmpty ? id : null,
+      content: content,
+      sender:  isAI ? 'RiseUp AI' : (_cachedMyName ?? 'You'),
+      avatar:  isAI ? '🤖' : '👤',
+      isMe:    !isAI,
+      isAI:    isAI,
+      time:    DateTime.tryParse(m['created_at']?.toString() ?? '')?.toLocal(),
+    );
+  }
+
+  /// Parses a sender_type-based message map from /api/v1/messages (DM mode)
   _Msg _msgFromMap(Map m, {required String? myId}) {
     final id         = m['id']?.toString()          ?? '';
     final senderId   = m['sender_id']?.toString()   ?? '';
@@ -547,13 +713,17 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final isMe       = !isAIMsg && myId != null && senderId == myId;
     final profile    = (m['profiles'] as Map?) ?? {};
     return _Msg(
-      id:     id.isNotEmpty ? id : null,
+      id:      id.isNotEmpty ? id : null,
       content: m['content']?.toString() ?? '',
-      sender: isAIMsg ? 'RiseUp AI' : isMe ? (_cachedMyName ?? 'You')
-              : (profile['full_name']?.toString() ?? widget.name),
-      avatar: isAIMsg ? '🤖' : isMe ? '👤' : (profile['avatar_url']?.toString() ?? widget.avatar),
-      isMe:   isMe, isAI: isAIMsg,
-      time: DateTime.tryParse(m['created_at']?.toString() ?? '')?.toLocal(),
+      sender: isAIMsg ? 'RiseUp AI'
+             : isMe   ? (_cachedMyName ?? 'You')
+             : (profile['full_name']?.toString() ?? widget.name),
+      avatar: isAIMsg ? '🤖'
+             : isMe   ? '👤'
+             : (profile['avatar_url']?.toString() ?? widget.avatar),
+      isMe:  isMe,
+      isAI:  isAIMsg,
+      time:  DateTime.tryParse(m['created_at']?.toString() ?? '')?.toLocal(),
     );
   }
 
@@ -565,34 +735,35 @@ class _ConversationScreenState extends State<ConversationScreen> {
   List<Map<String, String>> _buildAIContext() {
     final relevant = _msgs.where((m) => !m.isError && m.content.isNotEmpty).toList();
     final window   = relevant.length > _kContextWindow
-        ? relevant.sublist(relevant.length - _kContextWindow) : relevant;
-    return window.map((m) => {'role': m.isMe ? 'user' : 'assistant', 'content': m.content}).toList();
+        ? relevant.sublist(relevant.length - _kContextWindow)
+        : relevant;
+    return window
+        .map((m) => {'role': m.isMe ? 'user' : 'assistant', 'content': m.content})
+        .toList();
   }
 
-  // ── Delegation inference (client-side fallback) ──────────────────────────
-  /// Called when the backend doesn't return a delegation field.
-  /// Scans AI message content for APEX / Workflow keywords and infers intent.
+  // ─────────────────────────────────────────────────────────────────────────
+  // Delegation inference (client-side fallback)
+  // ─────────────────────────────────────────────────────────────────────────
   _DelegationPayload? _inferDelegation(String content, String sessionId) {
     final lower = content.toLowerCase();
 
-    // APEX signals
     final apexKeywords = [
       'launch apex', "i'll use apex", 'apex will', 'let me use apex',
-      'autonomous agent', 'i\'ll do it for you', 'handle this for you',
-      'set it up for you', 'i\'ll set up', 'do it for you',
+      'autonomous agent', "i'll do it for you", 'handle this for you',
+      'set it up for you', "i'll set up", 'do it for you',
       'apply for you', 'open the browser', 'fill out the form',
       'create the account', 'sign you up', 'register for you',
     ];
     if (apexKeywords.any((k) => lower.contains(k))) {
       return _DelegationPayload(
-        type: _DelegationType.apex,
-        task: _extractTask(content),
+        type:      _DelegationType.apex,
+        task:      _extractTask(content),
         sessionId: sessionId,
-        message: content,
+        message:   content,
       );
     }
 
-    // Workflow signals
     final workflowKeywords = [
       'build you a workflow', 'create a workflow', 'build a plan',
       'step-by-step plan', 'workflow engine', 'income plan',
@@ -601,88 +772,138 @@ class _ConversationScreenState extends State<ConversationScreen> {
     ];
     if (workflowKeywords.any((k) => lower.contains(k))) {
       return _DelegationPayload(
-        type: _DelegationType.workflow,
-        task: _extractTask(content),
+        type:      _DelegationType.workflow,
+        task:      _extractTask(content),
         sessionId: sessionId,
-        message: content,
+        message:   content,
       );
     }
-
     return null;
   }
 
-  /// Extracts a clean, short task label from AI message content.
   String _extractTask(String content) {
-    // Strip markdown bold/italic markers
     var clean = content.replaceAll(RegExp(r'\*+'), '').trim();
-    // Take first sentence
     final dot = clean.indexOf('.');
     if (dot > 0 && dot < 120) clean = clean.substring(0, dot).trim();
     return clean.length > 100 ? '${clean.substring(0, 97)}...' : clean;
   }
 
-  /// Returns true if the AI content string is a known backend-error message.
   bool _isAIBackendError(String content) {
     final lower = content.toLowerCase().trim();
     return _kAiErrorPhrases.any((phrase) => lower.contains(phrase));
   }
 
-  // ── Polling ──────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Polling (v17: AI mode uses /ai/conversations/{id}/messages)
+  // ─────────────────────────────────────────────────────────────────────────
   void _startPolling() {
     _pollTimer?.cancel();
-    _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) => _poll());
+    _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _poll());
   }
 
   Future<void> _poll() async {
     if (!_historyLoaded || _isSending || _loadingMore) return;
     final convId = _activeConvId;
     if (convId == null || convId.isEmpty) return;
+
     try {
-      final newMsgs = await api.getDMMessages(convId, since: _lastPollTime);
+      List<dynamic> newMsgs;
+
+      if (_isAIMode) {
+        // v17: AI mode — poll /ai/conversations/{id}/messages, filter client-side
+        final res = await api.get('/ai/conversations/$convId/messages');
+        final all = (res['messages'] as List?) ?? [];
+        if (_lastPollTime != null && _lastPollTime!.isNotEmpty) {
+          final since = DateTime.tryParse(_lastPollTime!);
+          newMsgs = since != null
+              ? all.where((m) {
+                  final t = DateTime.tryParse(
+                      (m as Map)['created_at']?.toString() ?? '');
+                  return t != null && t.isAfter(since);
+                }).toList()
+              : all;
+        } else {
+          newMsgs = all;
+        }
+      } else {
+        newMsgs = await api.getDMMessages(convId, since: _lastPollTime);
+      }
+
       if (!mounted || newMsgs.isEmpty) return;
       final myId         = await _getMyId();
       final existingIds  = _msgs.map((m) => m.id).toSet();
       final fingerprints = _msgs.map((m) => m.fingerprint).toSet();
       bool added = false;
+
       setState(() {
-        for (final m in newMsgs) {
-          final id         = m['id']?.toString()          ?? '';
-          final content    = m['content']?.toString()     ?? '';
-          final senderType = m['sender_type']?.toString() ?? '';
-          final senderId   = m['sender_id']?.toString()   ?? '';
-          final isAIMsg    = senderType == 'ai' || senderType == 'system';
-          final isMe       = !isAIMsg && myId != null && senderId == myId;
+        for (final raw in newMsgs) {
+          final m          = raw as Map;
+          final id         = m['id']?.toString() ?? '';
+          final content    = m['content']?.toString() ?? '';
+
+          // Normalise sender type across both endpoint formats
+          final String senderType;
+          if (_isAIMode) {
+            senderType = m['role']?.toString() == 'assistant' ? 'ai' : 'user';
+          } else {
+            senderType = m['sender_type']?.toString() ?? '';
+          }
+
+          final senderId = m['sender_id']?.toString() ?? '';
+          final isAIMsg  = senderType == 'ai' || senderType == 'system';
+          final isMe     = _isAIMode
+              ? senderType == 'user'
+              : (!isAIMsg && myId != null && senderId == myId);
+
           if (!_isAIMode && isAIMsg) continue;
           if (id.isEmpty || existingIds.contains(id)) continue;
           final fp = '${isMe ? "u" : "a"}:${content.trim().hashCode}';
           if (fingerprints.contains(fp)) continue;
-          if (isMe) {
-            final optIdx = _msgs.indexWhere(
-                (msg) => msg.id.startsWith('local_') && msg.isMe && msg.content == content);
+
+          // v16/v17: silently drop backend error messages from poll
+          if (isAIMsg && _isAIBackendError(content)) continue;
+
+          // Optimistic local message reconciliation (DM mode only)
+          if (!_isAIMode && isMe) {
+            final optIdx = _msgs.indexWhere((msg) =>
+                msg.id.startsWith('local_') &&
+                msg.isMe &&
+                msg.content == content);
             if (optIdx != -1) {
               final old = _msgs[optIdx];
-              _msgs[optIdx] = _Msg(id: id, content: old.content, sender: old.sender,
-                  avatar: old.avatar, isMe: true, time: old.time);
-              existingIds.add(id); fingerprints.add(fp); added = true; continue;
+              _msgs[optIdx] = _Msg(
+                  id: id, content: old.content,
+                  sender: old.sender, avatar: old.avatar,
+                  isMe: true, time: old.time);
+              existingIds.add(id); fingerprints.add(fp);
+              added = true; continue;
             }
           }
-          _msgs.add(_msgFromMap(m, myId: myId));
-          existingIds.add(id); fingerprints.add(fp); added = true;
+
+          _msgs.add(_isAIMode ? _msgFromAIMap(m) : _msgFromMap(m, myId: myId));
+          existingIds.add(id); fingerprints.add(fp);
+          added = true;
         }
       });
-      if (newMsgs.isNotEmpty) await _savePollTime(newMsgs.last['created_at']?.toString() ?? '');
+
+      if (newMsgs.isNotEmpty) {
+        await _savePollTime(
+            (newMsgs.last as Map)['created_at']?.toString() ?? '');
+      }
       if (added) { _scrollDown(); await _saveMessageCache(_msgs); }
     } catch (_) {}
   }
 
-  // ── Send routing ─────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Send routing
+  // ─────────────────────────────────────────────────────────────────────────
   Future<void> _onSend() async {
     final text = _textCtrl.text.trim();
     if (text.isEmpty || _isSending) return;
     setState(() => _showQuickActions = false);
     _lastSentText = text;
     if (_isAIMode) await _trySendAI(text);
-    else await _sendDM(text);
+    else           await _sendDM(text);
   }
 
   Future<void> _trySendAI(String text, {bool viaAIDM = false}) async {
@@ -696,6 +917,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
     await _sendAI(text, adUnlocked: false, viaAIDM: viaAIDM);
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // _sendAI — v17: routes to POST /ai/chat (brain-aware endpoint)
+  // ─────────────────────────────────────────────────────────────────────────
   Future<void> _sendAI(
     String text, {
     bool adUnlocked       = false,
@@ -703,34 +927,40 @@ class _ConversationScreenState extends State<ConversationScreen> {
     bool isContextMessage = false,
     bool retried          = false,
   }) async {
-    String? convId = viaAIDM ? widget.userId : _aiConvId;
-    if ((convId == null || convId.isEmpty) && !viaAIDM) {
-      final ok = await _ensureAIConv();
-      if (!ok) { _addErrorBubble('Could not connect to AI.'); return; }
-      convId = _aiConvId;
+    // Ensure we have a conv id (or will get one back from /ai/chat)
+    if (!viaAIDM && (_aiConvId == null || _aiConvId!.isEmpty)) {
+      await _ensureAIConv();
     }
-    if (convId == null || convId.isEmpty) { _addErrorBubble('Could not connect.'); return; }
 
     _textCtrl.clear();
-    final contextHistory = _buildAIContext();
-    final optimisticId   = 'local_${DateTime.now().microsecondsSinceEpoch}';
+    final optimisticId = 'local_${DateTime.now().microsecondsSinceEpoch}';
 
     setState(() {
-      _msgs.add(_Msg(id: optimisticId, content: text,
-          sender: _cachedMyName ?? 'You', avatar: '👤', isMe: true));
+      _msgs.add(_Msg(
+        id:      optimisticId,
+        content: text,
+        sender:  _cachedMyName ?? 'You',
+        avatar:  '👤',
+        isMe:    true,
+      ));
       _aiResponding = true;
     });
     _scrollDown();
 
     try {
-      final res = await api.sendAIMessageInDM(
-        convId, text, adUnlocked: adUnlocked, contextHistory: contextHistory,
-      );
+      // v17: POST /ai/chat — brain-aware endpoint
+      final res = await api.post('/ai/chat', {
+        'message':         text,
+        'conversation_id': (_aiConvId != null && _aiConvId!.isNotEmpty)
+                           ? _aiConvId
+                           : null,
+        'mode':            'chat',
+      });
 
       final aiContent = (res['content'] ?? '').toString().trim();
       if (aiContent.isEmpty) throw Exception('Empty AI response');
 
-      // ── v16: Detect backend error responses ──────────────────────────────
+      // v16/v17: Detect backend error responses
       if (_isAIBackendError(aiContent)) {
         if (!mounted) return;
         setState(() {
@@ -741,18 +971,20 @@ class _ConversationScreenState extends State<ConversationScreen> {
         _showRetrySnackbar(text, viaAIDM: viaAIDM, adUnlocked: adUnlocked);
         return;
       }
-      // ────────────────────────────────────────────────────────────────────
+
+      // Persist conversation_id returned by /ai/chat if new
+      final returnedConvId = res['conversation_id']?.toString() ?? '';
+      if (returnedConvId.isNotEmpty &&
+          (_aiConvId == null || _aiConvId!.isEmpty)) {
+        _aiConvId = returnedConvId;
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_kAiConvIdKey, _aiConvId!);
+      }
 
       await _savePollTime(DateTime.now().toUtc().toIso8601String());
 
-      if (res['quota'] != null) {
-        final q = res['quota'] as Map;
-        setState(() {
-          _quota['free_used']  = max(_freeUsed, (q['free_used'] as int?) ?? 0);
-          _quota['is_premium'] = q['is_premium'] ?? _quota['is_premium'];
-        });
-        await _saveQuota();
-      } else if (!_isPremium && !isContextMessage) {
+      // Quota accounting
+      if (!_isPremium && !isContextMessage) {
         if (_freeUsed < _kFreeMessages) {
           final newTotal = _totalResponses + 1;
           setState(() {
@@ -770,29 +1002,50 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
       if (!mounted) return;
 
-      // Update optimistic message id
-      final realUserMsgId = res['user_message_id']?.toString();
-      if (realUserMsgId != null && realUserMsgId.isNotEmpty) {
+      // Update optimistic message with server id
+      final realUserMsgId = res['message_id']?.toString() ?? '';
+      if (realUserMsgId.isNotEmpty) {
         final idx = _msgs.indexWhere((m) => m.id == optimisticId);
         if (idx != -1) {
           final old = _msgs[idx];
-          _msgs[idx] = _Msg(id: realUserMsgId, content: old.content,
-              sender: old.sender, avatar: old.avatar, isMe: true, time: old.time);
+          _msgs[idx] = _Msg(
+              id: realUserMsgId, content: old.content,
+              sender: old.sender, avatar: old.avatar,
+              isMe: true, time: old.time);
         }
       }
 
-      // ── v16: Parse delegation — backend first, then client-side inference ─
+      // ── v17: Parse brain data from response ──────────────────────────────
+      final brainData = _BrainData.fromResponse(res);
+
+      // Brain = internal found or model indicated brain usage
+      final brainUsed = brainData.internalFound || res['brain_used'] == true;
+
+      // ── Delegation: backend first, then client-side inference, then brain ─
+      final convIdForSession = returnedConvId.isNotEmpty
+          ? returnedConvId : (_aiConvId ?? '');
       _DelegationPayload? delegationPayload;
+
       final delegationMap = res['delegation'] as Map<String, dynamic>?;
       if (delegationMap != null) {
-        delegationPayload = _DelegationPayload.fromJson(
-            delegationMap, res['session_id']?.toString() ?? _aiConvId ?? '');
-        if (delegationPayload.type == _DelegationType.none) delegationPayload = null;
+        delegationPayload = _DelegationPayload.fromJson(delegationMap, convIdForSession);
+        if (delegationPayload.type == _DelegationType.none)
+          delegationPayload = null;
       }
-      delegationPayload ??= _inferDelegation(aiContent, res['session_id']?.toString() ?? _aiConvId ?? '');
-      // ────────────────────────────────────────────────────────────────────
 
-      final brainUsed = res['brain_used'] == true;
+      // Client-side inference fallback
+      delegationPayload ??= _inferDelegation(aiContent, convIdForSession);
+
+      // If brain says external search needed → auto-suggest workflow
+      if (delegationPayload == null && brainData.needsExternal) {
+        delegationPayload = _DelegationPayload(
+          type:      _DelegationType.workflow,
+          task:      _extractTask(aiContent),
+          sessionId: convIdForSession,
+          message:   aiContent,
+        );
+      }
+      // ─────────────────────────────────────────────────────────────────────
 
       final aiMsg = _Msg(
         content:    aiContent,
@@ -802,6 +1055,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         isAI:       true,
         brainUsed:  brainUsed,
         delegation: delegationPayload,
+        brainData:  brainData,
       );
       setState(() { _aiResponding = false; _msgs.add(aiMsg); });
       _typeMessage(aiMsg);
@@ -809,17 +1063,29 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
     } on ApiException catch (e) {
       if (!mounted) return;
-      setState(() { _aiResponding = false; _msgs.removeWhere((m) => m.id == optimisticId); });
-      if (e.statusCode == 402)      await _showAdGate(text, viaAIDM: viaAIDM);
-      else if (e.statusCode == 429) _showDailyLockoutSheet();
-      else if (e.statusCode == 403 && !retried) {
+      setState(() {
+        _aiResponding = false;
+        _msgs.removeWhere((m) => m.id == optimisticId);
+      });
+      if (e.statusCode == 402) {
+        await _showAdGate(text, viaAIDM: viaAIDM);
+      } else if (e.statusCode == 429) {
+        _showDailyLockoutSheet();
+      } else if (e.statusCode == 403 && !retried) {
+        // Conv may be stale — clear and retry once
         final prefs = await SharedPreferences.getInstance();
         await prefs.remove(_kAiConvIdKey);
         _aiConvId = null;
         final ok = await _ensureAIConv();
-        if (ok && mounted) await _sendAI(text, adUnlocked: adUnlocked,
-            viaAIDM: viaAIDM, isContextMessage: isContextMessage, retried: true);
-        else _addErrorBubble('Could not connect to AI. Please try again.');
+        if (ok && mounted) {
+          await _sendAI(text,
+              adUnlocked:       adUnlocked,
+              viaAIDM:          viaAIDM,
+              isContextMessage: isContextMessage,
+              retried:          true);
+        } else {
+          _addErrorBubble('Could not connect to AI. Please try again.');
+        }
       } else {
         _addErrorBubble('Failed (${e.statusCode}). Please try again.');
         _showRetrySnackbar(text, viaAIDM: viaAIDM, adUnlocked: adUnlocked);
@@ -827,14 +1093,17 @@ class _ConversationScreenState extends State<ConversationScreen> {
     } catch (e) {
       debugPrint('[Conv] _sendAI error: $e');
       if (!mounted) return;
-      setState(() { _aiResponding = false; _msgs.removeWhere((m) => m.id == optimisticId); });
+      setState(() {
+        _aiResponding = false;
+        _msgs.removeWhere((m) => m.id == optimisticId);
+      });
       _addErrorBubble('Could not reach AI right now. Please try again.');
       _showRetrySnackbar(text, viaAIDM: viaAIDM, adUnlocked: adUnlocked);
     }
   }
 
-  /// Shows a Snackbar with a Retry button so the user doesn't have to retype.
-  void _showRetrySnackbar(String text, {bool viaAIDM = false, bool adUnlocked = false}) {
+  void _showRetrySnackbar(
+      String text, {bool viaAIDM = false, bool adUnlocked = false}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: const Text('Tap Retry to resend your message'),
@@ -845,7 +1114,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
         label: 'Retry',
         textColor: AppColors.primary,
         onPressed: () {
-          if (mounted) _sendAI(text, adUnlocked: adUnlocked, viaAIDM: viaAIDM);
+          if (mounted)
+            _sendAI(text, adUnlocked: adUnlocked, viaAIDM: viaAIDM);
         },
       ),
     ));
@@ -856,8 +1126,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _textCtrl.clear();
     final optimisticId = 'local_${DateTime.now().millisecondsSinceEpoch}';
     setState(() {
-      _msgs.add(_Msg(id: optimisticId, content: text,
-          sender: _cachedMyName ?? 'You', avatar: '👤', isMe: true));
+      _msgs.add(_Msg(
+        id:      optimisticId,
+        content: text,
+        sender:  _cachedMyName ?? 'You',
+        avatar:  '👤',
+        isMe:    true,
+      ));
       _dmSending = true;
     });
     _scrollDown();
@@ -870,8 +1145,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
           final idx = _msgs.indexWhere((m) => m.id == optimisticId);
           if (idx != -1 && realId != null && realId.isNotEmpty) {
             final old = _msgs[idx];
-            _msgs[idx] = _Msg(id: realId, content: old.content,
-                sender: old.sender, avatar: old.avatar, isMe: true, time: old.time);
+            _msgs[idx] = _Msg(
+                id: realId, content: old.content,
+                sender: old.sender, avatar: old.avatar,
+                isMe: true, time: old.time);
           }
           _dmSending = false;
         });
@@ -885,8 +1162,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
         final idx = _msgs.indexWhere((m) => m.id == optimisticId);
         if (idx != -1) {
           final old = _msgs[idx];
-          _msgs[idx] = _Msg(id: optimisticId, content: old.content,
-              sender: old.sender, avatar: old.avatar, isMe: true, isError: true, time: old.time);
+          _msgs[idx] = _Msg(
+              id: optimisticId, content: old.content,
+              sender: old.sender, avatar: old.avatar,
+              isMe: true, isError: true, time: old.time);
         }
         _dmSending = false;
       });
@@ -895,12 +1174,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   void _addErrorBubble(String msg) {
     if (!mounted) return;
-    setState(() => _msgs.add(_Msg(content: msg, sender: 'RiseUp AI',
+    setState(() => _msgs.add(_Msg(
+        content: msg, sender: 'RiseUp AI',
         avatar: '🤖', isMe: false, isAI: true, isError: true)));
     _scrollDown();
   }
 
-  // ── Typing animation ─────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Typing animation
+  // ─────────────────────────────────────────────────────────────────────────
   void _typeMessage(_Msg msg) {
     msg.isTyping    = true;
     msg.displayText = '';
@@ -911,7 +1193,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (!mounted) { t.cancel(); return; }
       if (i >= msg.content.length) {
         t.cancel();
-        if (mounted) setState(() { msg.isTyping = false; msg.displayText = msg.content; _scrollLocked = false; });
+        if (mounted) setState(() {
+          msg.isTyping    = false;
+          msg.displayText = msg.content;
+          _scrollLocked   = false;
+        });
         WidgetsBinding.instance.addPostFrameCallback((_) => _scrollDown());
         return;
       }
@@ -931,7 +1217,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
     });
   }
 
-  // ── Link & copy helpers ───────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Link, copy & context-menu helpers
+  // ─────────────────────────────────────────────────────────────────────────
   Future<void> _openLink(String url) async {
     final uri = Uri.tryParse(url);
     if (uri == null) return;
@@ -946,8 +1234,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
     Clipboard.setData(ClipboardData(text: text));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('$label ✓'), duration: const Duration(seconds: 1),
-      behavior: SnackBarBehavior.floating, backgroundColor: AppColors.success,
+      content: Text('$label ✓'),
+      duration: const Duration(seconds: 1),
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: AppColors.success,
     ));
   }
 
@@ -955,7 +1245,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
     HapticFeedback.mediumImpact();
     final isDark = Theme.of(ctx).brightness == Brightness.dark;
     showModalBottomSheet(
-      context: ctx, backgroundColor: Colors.transparent, isScrollControlled: true,
+      context: ctx,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
       builder: (_) => Container(
         margin: const EdgeInsets.all(12),
         decoration: BoxDecoration(
@@ -963,9 +1255,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
             borderRadius: BorderRadius.circular(20)),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           const SizedBox(height: 8),
-          Container(width: 36, height: 4, decoration: BoxDecoration(
-              color: isDark ? Colors.white24 : Colors.black12,
-              borderRadius: BorderRadius.circular(2))),
+          Container(
+              width: 36, height: 4,
+              decoration: BoxDecoration(
+                  color: isDark ? Colors.white24 : Colors.black12,
+                  borderRadius: BorderRadius.circular(2))),
           _menuItem(Icons.copy_rounded, 'Copy message',
               isDark ? Colors.white : Colors.black87, () {
             Navigator.pop(ctx);
@@ -976,8 +1270,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 isDark ? Colors.white : Colors.black87, () {
               Navigator.pop(ctx);
               _copyToClipboard(
-                '💡 RiseUp AI:\n\n${m.content}\n\n— via RiseUp',
-                label: 'Copied to share!');
+                  '💡 RiseUp AI:\n\n${m.content}\n\n— via RiseUp',
+                  label: 'Copied to share!');
             }),
           SizedBox(height: MediaQuery.of(ctx).padding.bottom + 12),
         ]),
@@ -985,14 +1279,22 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
   }
 
-  Widget _menuItem(IconData icon, String label, Color textColor, VoidCallback onTap) =>
+  Widget _menuItem(
+          IconData icon, String label, Color textColor, VoidCallback onTap) =>
       ListTile(
         leading: Icon(icon, color: AppColors.primary, size: 20),
-        title: Text(label, style: TextStyle(color: textColor, fontSize: 14, fontWeight: FontWeight.w500)),
-        onTap: onTap, dense: true,
+        title: Text(label,
+            style: TextStyle(
+                color: textColor,
+                fontSize: 14,
+                fontWeight: FontWeight.w500)),
+        onTap: onTap,
+        dense: true,
       );
 
-  // ── APEX / Workflow delegation ────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // APEX / Workflow delegation
+  // ─────────────────────────────────────────────────────────────────────────
   Future<void> _launchApex(String task, String sessionId) async {
     HapticFeedback.mediumImpact();
     try {
@@ -1002,8 +1304,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
         'source_conv_id': sessionId,
       });
       final apexSessionId = res['session_id']?.toString() ?? '';
-      final questions     = (res['questions'] as List?)?.cast<Map<String, dynamic>>() ?? [];
-      final template      = res['template'] as Map<String, dynamic>?;
+      final questions     =
+          (res['questions'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+      final template = res['template'] as Map<String, dynamic>?;
       if (mounted) {
         context.push('/agent', extra: {
           'handoffTask':      task,
@@ -1023,15 +1326,21 @@ class _ConversationScreenState extends State<ConversationScreen> {
     context.push('/workflow/new', extra: {'prefillGoal': goal});
   }
 
-  // ── Ad gate & lockout ─────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Ad gate & lockout sheets
+  // ─────────────────────────────────────────────────────────────────────────
   Future<void> _showAdGate(String pendingText, {bool viaAIDM = false}) async {
     final success = await showModalBottomSheet<bool>(
-      context: context, isScrollControlled: true, isDismissible: true,
+      context: context,
+      isScrollControlled: true,
+      isDismissible: true,
       backgroundColor: Colors.transparent,
       builder: (_) => _AdGateSheet(
-        cycleAdsWatched: _cycleAds, adsPerCycle: _kAdsPerCycle,
-        msgsPerCycle: _kMsgsPerCycle, totalResponses: _totalResponses,
-        maxResponses: _kMaxResponses,
+        cycleAdsWatched: _cycleAds,
+        adsPerCycle:     _kAdsPerCycle,
+        msgsPerCycle:    _kMsgsPerCycle,
+        totalResponses:  _totalResponses,
+        maxResponses:    _kMaxResponses,
         onAdWatched: () async {
           if (!mounted) return;
           setState(() => _quota['cycle_ads'] = _cycleAds + 1);
@@ -1044,26 +1353,30 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   void _showCycleLockoutSheet() => showModalBottomSheet(
-    context: context, isScrollControlled: true, backgroundColor: Colors.transparent,
-    builder: (_) => _LockoutSheet(
-      lockoutUntil: (_quota['cycle_lockout_until'] as String?) ?? '',
-      isDaily: false,
-      onUpgrade: () { Navigator.pop(context); context.go('/premium'); },
-    ),
-  );
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (_) => _LockoutSheet(
+          lockoutUntil: (_quota['cycle_lockout_until'] as String?) ?? '',
+          isDaily:  false,
+          onUpgrade: () { Navigator.pop(context); context.go('/premium'); },
+        ),
+      );
 
   void _showDailyLockoutSheet() => showModalBottomSheet(
-    context: context, isScrollControlled: true, backgroundColor: Colors.transparent,
-    builder: (_) => _LockoutSheet(
-      lockoutUntil: (_quota['daily_lockout_until'] as String?) ?? '',
-      isDaily: true,
-      onUpgrade: () { Navigator.pop(context); context.go('/premium'); },
-    ),
-  );
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (_) => _LockoutSheet(
+          lockoutUntil: (_quota['daily_lockout_until'] as String?) ?? '',
+          isDaily:  true,
+          onUpgrade: () { Navigator.pop(context); context.go('/premium'); },
+        ),
+      );
 
-  // ═════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
   // BUILD
-  // ═════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
     final isDark      = Theme.of(context).brightness == Brightness.dark;
@@ -1079,22 +1392,31 @@ class _ConversationScreenState extends State<ConversationScreen> {
       appBar: _buildAppBar(isDark, cardColor, borderColor, textColor, subColor),
       body: Column(children: [
         if (_convInitializing)
-          LinearProgressIndicator(color: AppColors.primary.withOpacity(0.5), minHeight: 2,
+          LinearProgressIndicator(
+              color: AppColors.primary.withOpacity(0.5),
+              minHeight: 2,
               backgroundColor: Colors.transparent),
         if (_isAIMode && !_isPremium)
           _QuotaRibbon(
-            isPremium: _isPremium, inDailyLockout: _inDailyLockout, inCycleLockout: _inCycleLockout,
-            freeUsed: _freeUsed, freeTotal: _kFreeMessages,
-            cycleAds: _cycleAds, adsPerCycle: _kAdsPerCycle,
-            cycleMsgs: _cycleMsgs, msgsPerCycle: _kMsgsPerCycle,
-            totalResponses: _totalResponses, maxResponses: _kMaxResponses,
-            cycleLockoutUntil: _quota['cycle_lockout_until'] as String?,
-            dailyLockoutUntil: _quota['daily_lockout_until'] as String?,
+            isPremium:          _isPremium,
+            inDailyLockout:     _inDailyLockout,
+            inCycleLockout:     _inCycleLockout,
+            freeUsed:           _freeUsed,
+            freeTotal:          _kFreeMessages,
+            cycleAds:           _cycleAds,
+            adsPerCycle:        _kAdsPerCycle,
+            cycleMsgs:          _cycleMsgs,
+            msgsPerCycle:       _kMsgsPerCycle,
+            totalResponses:     _totalResponses,
+            maxResponses:       _kMaxResponses,
+            cycleLockoutUntil:  _quota['cycle_lockout_until'] as String?,
+            dailyLockoutUntil:  _quota['daily_lockout_until'] as String?,
             onWatchAds: () => _showAdGate(_lastSentText ?? ''),
           ),
         Expanded(
           child: !_historyLoaded
-              ? const Center(child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2))
+              ? const Center(child: CircularProgressIndicator(
+                    color: AppColors.primary, strokeWidth: 2))
               : _msgs.isEmpty
                   ? _buildEmptyState(isDark, subColor, textColor)
                   : ListView.builder(
@@ -1103,132 +1425,216 @@ class _ConversationScreenState extends State<ConversationScreen> {
                           ? const NeverScrollableScrollPhysics()
                           : const AlwaysScrollableScrollPhysics(),
                       padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-                      itemCount: _msgs.length + (_aiResponding ? 1 : 0) + (_loadingMore ? 1 : 0),
+                      itemCount: _msgs.length +
+                          (_aiResponding ? 1 : 0) +
+                          (_loadingMore  ? 1 : 0),
                       itemBuilder: (_, i) {
                         if (_loadingMore && i == 0)
-                          return const Padding(padding: EdgeInsets.symmetric(vertical: 12),
-                              child: Center(child: SizedBox(width: 20, height: 20,
-                                  child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary))));
+                          return const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 12),
+                              child: Center(
+                                  child: SizedBox(
+                                      width: 20, height: 20,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: AppColors.primary))));
                         final msgIdx = _loadingMore ? i - 1 : i;
                         if (msgIdx == _msgs.length)
                           return _buildTypingIndicator(isDark, surfColor);
-                        return _buildBubble(_msgs[msgIdx], isDark, textColor, surfColor);
+                        return _buildBubble(
+                            _msgs[msgIdx], isDark, textColor, surfColor);
                       },
                     ),
         ),
         if (_isAIMode && _showQuickActions)
           _QuickActionBar(
-            isDark: isDark,
-            onApex:     () { setState(() => _showQuickActions = false); _textCtrl.text = 'Do it for me: '; _inputFocus.requestFocus(); },
-            onWorkflow: () { setState(() => _showQuickActions = false); _textCtrl.text = 'Build me a plan: '; _inputFocus.requestFocus(); },
-            onSearch:   () { setState(() => _showQuickActions = false); _textCtrl.text = 'Find me: '; _inputFocus.requestFocus(); },
+            isDark:     isDark,
+            onApex:     () {
+              setState(() => _showQuickActions = false);
+              _textCtrl.text = 'Do it for me: ';
+              _inputFocus.requestFocus();
+            },
+            onWorkflow: () {
+              setState(() => _showQuickActions = false);
+              _textCtrl.text = 'Build me a plan: ';
+              _inputFocus.requestFocus();
+            },
+            onSearch:   () {
+              setState(() => _showQuickActions = false);
+              _textCtrl.text = 'Find me: ';
+              _inputFocus.requestFocus();
+            },
           ).animate().fadeIn(duration: 200.ms).slideY(begin: 0.1, end: 0),
         _buildInputBar(isDark, cardColor, borderColor, textColor, subColor, surfColor),
       ]),
     );
   }
 
-  // ── AppBar ────────────────────────────────────────────────────────────────
-  // v16: removed the Iconsax.flash APEX shortcut button; kept call button only
-  PreferredSizeWidget _buildAppBar(bool isDark, Color card, Color border, Color text, Color sub) {
+  // ─────────────────────────────────────────────────────────────────────────
+  // AppBar
+  // ─────────────────────────────────────────────────────────────────────────
+  PreferredSizeWidget _buildAppBar(
+      bool isDark, Color card, Color border, Color text, Color sub) {
     final displayName   = _isAIMode ? 'RiseUp AI Mentor' : widget.name;
     final displayAvatar = _isAIMode ? '🤖' : widget.avatar;
     final avatarIsUrl   = !_isAIMode && displayAvatar.startsWith('http');
+
     return AppBar(
-      backgroundColor: card, elevation: 0, surfaceTintColor: Colors.transparent,
+      backgroundColor: card,
+      elevation: 0,
+      surfaceTintColor: Colors.transparent,
       leading: IconButton(
         icon: Icon(Icons.arrow_back_ios_new_rounded, color: text, size: 18),
-        onPressed: () => Navigator.of(context).canPop() ? context.pop() : context.go('/messages'),
+        onPressed: () =>
+            Navigator.of(context).canPop() ? context.pop() : context.go('/messages'),
       ),
       title: Row(children: [
         Stack(children: [
           Container(
             width: 36, height: 36,
             decoration: BoxDecoration(
-              gradient: avatarIsUrl ? null : const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
-              image: avatarIsUrl ? DecorationImage(image: NetworkImage(widget.avatar), fit: BoxFit.cover) : null,
+              gradient: avatarIsUrl
+                  ? null
+                  : const LinearGradient(
+                      colors: [AppColors.primary, AppColors.accent]),
+              image: avatarIsUrl
+                  ? DecorationImage(
+                      image: NetworkImage(widget.avatar), fit: BoxFit.cover)
+                  : null,
               shape: BoxShape.circle,
             ),
-            child: avatarIsUrl ? null : Center(child: Text(displayAvatar, style: const TextStyle(fontSize: 18))),
+            child: avatarIsUrl
+                ? null
+                : Center(
+                    child: Text(displayAvatar,
+                        style: const TextStyle(fontSize: 18))),
           ),
-          Positioned(bottom: 0, right: 0, child: Container(width: 10, height: 10,
-            decoration: BoxDecoration(color: AppColors.success, shape: BoxShape.circle,
-                border: Border.all(color: card, width: 1.5)))),
+          Positioned(
+              bottom: 0, right: 0,
+              child: Container(
+                  width: 10, height: 10,
+                  decoration: BoxDecoration(
+                      color: AppColors.success,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: card, width: 1.5)))),
         ]),
         const SizedBox(width: 10),
-        Flexible(child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-          Row(mainAxisSize: MainAxisSize.min, children: [
-            Flexible(child: Text(displayName,
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: text),
-                overflow: TextOverflow.ellipsis)),
-            if (_isAIMode) ...[
-              const SizedBox(width: 5),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                decoration: BoxDecoration(
-                    gradient: const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
-                    borderRadius: BorderRadius.circular(4)),
-                child: const Text('AI', style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.w700))),
+        Flexible(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(mainAxisSize: MainAxisSize.min, children: [
+                Flexible(
+                    child: Text(displayName,
+                        style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: text),
+                        overflow: TextOverflow.ellipsis)),
+                if (_isAIMode) ...[
+                  const SizedBox(width: 5),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 5, vertical: 1),
+                    decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                            colors: [AppColors.primary, AppColors.accent]),
+                        borderRadius: BorderRadius.circular(4)),
+                    child: const Text('AI',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 8,
+                            fontWeight: FontWeight.w700))),
+                ],
+              ]),
+              const Text('Always online',
+                  style: TextStyle(fontSize: 11, color: AppColors.success)),
             ],
-          ]),
-          const Text('Always online', style: TextStyle(fontSize: 11, color: AppColors.success)),
-        ])),
+          ),
+        ),
       ]),
-      // v16: only the call button remains — flash/APEX button removed
       actions: [
         IconButton(
           icon: Icon(Iconsax.call, color: text, size: 20),
-          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-              content: Text('Voice calls coming soon 📞'), duration: Duration(seconds: 1))),
+          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                  content: Text('Voice calls coming soon 📞'),
+                  duration: Duration(seconds: 1))),
         ),
       ],
-      bottom: PreferredSize(preferredSize: const Size.fromHeight(1),
+      bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
           child: Divider(height: 1, color: border)),
     );
   }
 
-  // ── Input bar ─────────────────────────────────────────────────────────────
-  Widget _buildInputBar(bool isDark, Color card, Color border, Color text, Color sub, Color surf) {
+  // ─────────────────────────────────────────────────────────────────────────
+  // Input bar
+  // ─────────────────────────────────────────────────────────────────────────
+  Widget _buildInputBar(bool isDark, Color card, Color border,
+      Color text, Color sub, Color surf) {
     return Container(
-      decoration: BoxDecoration(color: card, border: Border(top: BorderSide(color: border))),
-      padding: EdgeInsets.fromLTRB(12, 8, 12, MediaQuery.of(context).padding.bottom + 8),
+      decoration: BoxDecoration(
+          color: card,
+          border: Border(top: BorderSide(color: border))),
+      padding: EdgeInsets.fromLTRB(
+          12, 8, 12, MediaQuery.of(context).padding.bottom + 8),
       child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
         if (_isAIMode)
           IconButton(
-            icon: Icon(_showQuickActions ? Icons.close_rounded : Icons.auto_awesome_rounded,
-                color: _showQuickActions ? AppColors.primary : sub, size: 22),
-            onPressed: () => setState(() => _showQuickActions = !_showQuickActions),
+            icon: Icon(
+                _showQuickActions
+                    ? Icons.close_rounded
+                    : Icons.auto_awesome_rounded,
+                color:
+                    _showQuickActions ? AppColors.primary : sub,
+                size: 22),
+            onPressed: () =>
+                setState(() => _showQuickActions = !_showQuickActions),
           )
         else
           IconButton(
             icon: Icon(Iconsax.image, color: sub, size: 22),
             onPressed: () async {
-              final file = await ImagePicker().pickImage(source: ImageSource.gallery);
+              final file = await ImagePicker()
+                  .pickImage(source: ImageSource.gallery);
               if (file != null && mounted)
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                  content: Text('Photo selected ✅ — media upload coming soon')));
+                    content: Text(
+                        'Photo selected ✅ — media upload coming soon')));
             },
           ),
         Expanded(
           child: TextField(
-            controller: _textCtrl, focusNode: _inputFocus,
-            style: TextStyle(fontSize: 14, color: text),
-            maxLines: 5, minLines: 1,
+            controller:  _textCtrl,
+            focusNode:   _inputFocus,
+            style:       TextStyle(fontSize: 14, color: text),
+            maxLines:    5,
+            minLines:    1,
             textCapitalization: TextCapitalization.sentences,
             enabled: !_isSending,
             decoration: InputDecoration(
-              hintText:  _isAIMode ? 'Ask your wealth mentor...' : 'Message ${widget.name}...',
+              hintText: _isAIMode
+                  ? 'Ask your wealth mentor...'
+                  : 'Message ${widget.name}...',
               hintStyle: TextStyle(color: sub, fontSize: 13),
-              filled: true, fillColor: surf,
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              filled:    true,
+              fillColor: surf,
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(24),
+                  borderSide: BorderSide.none),
+              contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 16, vertical: 10),
             ),
             onSubmitted: _isSending ? null : (_) => _onSend(),
           ),
         ),
         const SizedBox(width: 8),
         GestureDetector(
-          onTap: _isSending ? null : () { HapticFeedback.lightImpact(); _onSend(); },
+          onTap: _isSending
+              ? null
+              : () { HapticFeedback.lightImpact(); _onSend(); },
           child: AnimatedContainer(
             duration: 200.ms,
             width: 44, height: 44,
@@ -1238,18 +1644,26 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   : [AppColors.primary, AppColors.accent]),
               borderRadius: BorderRadius.circular(22),
             ),
-            child: Center(child: _isSending
-                ? const SizedBox(width: 18, height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                : const Icon(Icons.send_rounded, color: Colors.white, size: 18)),
+            child: Center(
+              child: _isSending
+                  ? const SizedBox(
+                      width: 18, height: 18,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white))
+                  : const Icon(Icons.send_rounded,
+                      color: Colors.white, size: 18),
+            ),
           ),
         ),
       ]),
     );
   }
 
-  // ── Message bubble ────────────────────────────────────────────────────────
-  Widget _buildBubble(_Msg m, bool isDark, Color textColor, Color surfColor) {
+  // ─────────────────────────────────────────────────────────────────────────
+  // Message bubble
+  // ─────────────────────────────────────────────────────────────────────────
+  Widget _buildBubble(
+      _Msg m, bool isDark, Color textColor, Color surfColor) {
     final aiBg    = isDark ? const Color(0xFF1A1A2E) : Colors.grey.shade100;
     final errorBg = isDark ? const Color(0xFF2D1515) : const Color(0xFFFFF0F0);
     final bubbleBg = m.isError ? errorBg : m.isMe ? AppColors.userBubble : aiBg;
@@ -1258,49 +1672,84 @@ class _ConversationScreenState extends State<ConversationScreen> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 14),
       child: Column(
-        crossAxisAlignment: m.isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        crossAxisAlignment:
+            m.isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
         children: [
+          // Sender label
           if (!m.isMe)
             Padding(
               padding: const EdgeInsets.only(bottom: 4, left: 36),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Text(m.sender, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
-                    color: m.isAI ? AppColors.primary : AppColors.warning)),
+                Text(m.sender,
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: m.isAI
+                            ? AppColors.primary
+                            : AppColors.warning)),
                 if (m.isAI) ...[
                   const SizedBox(width: 3),
-                  const Icon(Icons.auto_awesome, size: 10, color: AppColors.primary),
+                  const Icon(Icons.auto_awesome,
+                      size: 10, color: AppColors.primary),
                 ],
                 if (m.brainUsed) ...[
                   const SizedBox(width: 4),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 5, vertical: 1),
                     decoration: BoxDecoration(
-                      gradient: const LinearGradient(colors: [Color(0xFF6C5CE7), Color(0xFF00B894)]),
-                      borderRadius: BorderRadius.circular(4)),
-                    child: const Text('🧠 Brain', style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.w700))),
+                        gradient: const LinearGradient(colors: [
+                          Color(0xFF6C5CE7),
+                          Color(0xFF00B894)
+                        ]),
+                        borderRadius: BorderRadius.circular(4)),
+                    child: const Text('🧠 Brain',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 8,
+                            fontWeight: FontWeight.w700))),
                 ],
               ]),
             ),
+
+          // Bubble row
           Row(
-            mainAxisAlignment: m.isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
+            mainAxisAlignment:
+                m.isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               if (!m.isMe) ...[
-                Container(width: 28, height: 28,
+                Container(
+                  width: 28, height: 28,
                   decoration: BoxDecoration(
-                    gradient: avatarIsUrl ? null : const LinearGradient(colors: [AppColors.primary, AppColors.accent]),
-                    image: avatarIsUrl ? DecorationImage(image: NetworkImage(m.avatar), fit: BoxFit.cover) : null,
+                    gradient: avatarIsUrl
+                        ? null
+                        : const LinearGradient(
+                            colors: [AppColors.primary, AppColors.accent]),
+                    image: avatarIsUrl
+                        ? DecorationImage(
+                            image: NetworkImage(m.avatar),
+                            fit: BoxFit.cover)
+                        : null,
                     shape: BoxShape.circle,
                   ),
-                  child: avatarIsUrl ? null : Center(child: Text(m.avatar, style: const TextStyle(fontSize: 14)))),
+                  child: avatarIsUrl
+                      ? null
+                      : Center(
+                          child: Text(m.avatar,
+                              style: const TextStyle(fontSize: 14))),
+                ),
                 const SizedBox(width: 8),
               ],
               Flexible(
                 child: GestureDetector(
                   onLongPress: () => _showBubbleMenu(context, m),
                   child: Container(
-                    constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    constraints: BoxConstraints(
+                        maxWidth:
+                            MediaQuery.of(context).size.width * 0.75),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
                     decoration: BoxDecoration(
                       color: bubbleBg,
                       borderRadius: BorderRadius.only(
@@ -1308,38 +1757,70 @@ class _ConversationScreenState extends State<ConversationScreen> {
                         topRight:    const Radius.circular(18),
                         bottomLeft:  Radius.circular(m.isMe ? 18 : 4),
                         bottomRight: Radius.circular(m.isMe ? 4  : 18)),
-                      boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 6, offset: const Offset(0, 2))],
+                      boxShadow: [
+                        BoxShadow(
+                            color: Colors.black.withOpacity(0.05),
+                            blurRadius: 6,
+                            offset: const Offset(0, 2))
+                      ],
                     ),
                     child: (m.isMe || !m.isAI)
-                        ? SelectionArea(child: Text(m.displayText, style: TextStyle(
-                            color: m.isMe ? Colors.white
-                                : m.isError ? AppColors.error
-                                : textColor,
-                            fontSize: 14, height: 1.5)))
-                        : SelectionArea(child: MarkdownBody(
-                            data: m.displayText,
-                            onTapLink: (text, href, title) { if (href != null) _openLink(href); },
-                            styleSheet: MarkdownStyleSheet(
-                              p: TextStyle(
-                                  color: m.isError ? AppColors.error
-                                      : isDark ? const Color(0xFFE8E8F0) : Colors.black87,
-                                  fontSize: 14, height: 1.55),
-                              strong: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.primaryLight),
-                              a: const TextStyle(color: AppColors.primary, decoration: TextDecoration.underline),
-                              code: TextStyle(fontFamily: 'monospace',
-                                  backgroundColor: isDark ? const Color(0xFF2A2A3E) : Colors.grey.shade200, fontSize: 13),
-                              codeblockDecoration: BoxDecoration(
-                                  color: isDark ? const Color(0xFF0D1117) : Colors.grey.shade900,
-                                  borderRadius: BorderRadius.circular(8)),
-                              codeblockPadding: const EdgeInsets.all(12),
-                            ))),
+                        ? SelectionArea(
+                            child: Text(m.displayText,
+                                style: TextStyle(
+                                    color: m.isMe
+                                        ? Colors.white
+                                        : m.isError
+                                            ? AppColors.error
+                                            : textColor,
+                                    fontSize: 14,
+                                    height:   1.5)))
+                        : SelectionArea(
+                            child: MarkdownBody(
+                              data: m.displayText,
+                              onTapLink: (text, href, title) {
+                                if (href != null) _openLink(href);
+                              },
+                              styleSheet: MarkdownStyleSheet(
+                                p: TextStyle(
+                                    color: m.isError
+                                        ? AppColors.error
+                                        : isDark
+                                            ? const Color(0xFFE8E8F0)
+                                            : Colors.black87,
+                                    fontSize: 14,
+                                    height:   1.55),
+                                strong: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.primaryLight),
+                                a: const TextStyle(
+                                    color: AppColors.primary,
+                                    decoration: TextDecoration.underline),
+                                code: TextStyle(
+                                    fontFamily: 'monospace',
+                                    backgroundColor: isDark
+                                        ? const Color(0xFF2A2A3E)
+                                        : Colors.grey.shade200,
+                                    fontSize: 13),
+                                codeblockDecoration: BoxDecoration(
+                                    color: isDark
+                                        ? const Color(0xFF0D1117)
+                                        : Colors.grey.shade900,
+                                    borderRadius:
+                                        BorderRadius.circular(8)),
+                                codeblockPadding:
+                                    const EdgeInsets.all(12),
+                              ))),
                   ),
                 ),
               ),
             ],
           ),
-          // ── Delegation card (only on non-error AI messages) ──────────────
-          if (!m.isError && m.delegation != null && m.delegation!.type != _DelegationType.none)
+
+          // ── Delegation card ───────────────────────────────────────────
+          if (!m.isError &&
+              m.delegation != null &&
+              m.delegation!.type != _DelegationType.none)
             Padding(
               padding: const EdgeInsets.only(top: 8, left: 36),
               child: _DelegationCard(
@@ -1347,16 +1828,49 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 isDark:  isDark,
                 onLaunch: () {
                   if (m.delegation!.type == _DelegationType.apex)
-                    _launchApex(m.delegation!.task, m.delegation!.sessionId);
+                    _launchApex(
+                        m.delegation!.task, m.delegation!.sessionId);
                   else
                     _launchWorkflow(m.delegation!.task);
                 },
               ),
             ),
+
+          // ── v17: Brain result card ────────────────────────────────────
+          if (!m.isError && m.isAI && m.brainData != null && m.brainData!.hasResults && !m.isTyping)
+            Padding(
+              padding: const EdgeInsets.only(top: 6, left: 36),
+              child: _BrainCard(
+                  brainData: m.brainData!, isDark: isDark),
+            ),
+
+          // ── v17: Complementary user suggestions ───────────────────────
+          if (!m.isError &&
+              m.isAI &&
+              m.brainData != null &&
+              m.brainData!.hasComplementaryUsers &&
+              !m.isTyping)
+            Padding(
+              padding: const EdgeInsets.only(top: 6, left: 36),
+              child: _ComplementaryUsersRow(
+                  users: m.brainData!.complementaryUsers,
+                  isDark: isDark,
+                  onTap: (userId, name, avatar) {
+                    context.push('/messages/$userId',
+                        extra: {'name': name, 'avatar': avatar});
+                  }),
+            ),
+
+          // Timestamp
           Padding(
-            padding: EdgeInsets.only(top: 4, left: m.isMe ? 0 : 40, right: m.isMe ? 4 : 0),
+            padding: EdgeInsets.only(
+                top: 4,
+                left: m.isMe ? 0 : 40,
+                right: m.isMe ? 4 : 0),
             child: Text(_formatTime(m.time),
-                style: TextStyle(fontSize: 10, color: isDark ? Colors.white24 : Colors.black26)),
+                style: TextStyle(
+                    fontSize: 10,
+                    color: isDark ? Colors.white24 : Colors.black26)),
           ),
         ],
       ),
@@ -1367,23 +1881,34 @@ class _ConversationScreenState extends State<ConversationScreen> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 14),
       child: Row(children: [
-        Container(width: 28, height: 28,
+        Container(
+          width: 28, height: 28,
           decoration: const BoxDecoration(
-            gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]),
-            shape: BoxShape.circle),
-          child: const Center(child: Text('🤖', style: TextStyle(fontSize: 14)))),
+              gradient: LinearGradient(
+                  colors: [AppColors.primary, AppColors.accent]),
+              shape: BoxShape.circle),
+          child: const Center(
+              child: Text('🤖', style: TextStyle(fontSize: 14)))),
         const SizedBox(width: 8),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
           decoration: BoxDecoration(
               color: isDark ? AppColors.aiBubble : surfColor,
               borderRadius: BorderRadius.circular(18)),
-          child: Row(mainAxisSize: MainAxisSize.min,
-            children: List.generate(3, (i) => Container(
-              margin: const EdgeInsets.symmetric(horizontal: 2), width: 6, height: 6,
-              decoration: const BoxDecoration(color: AppColors.primary, shape: BoxShape.circle))
-              .animate(onPlay: (c) => c.repeat())
-              .fadeIn(delay: Duration(milliseconds: i * 200)).then().fadeOut())),
+          child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: List.generate(
+                  3,
+                  (i) => Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 2),
+                        width: 6, height: 6,
+                        decoration: const BoxDecoration(
+                            color: AppColors.primary,
+                            shape: BoxShape.circle))
+                      .animate(onPlay: (c) => c.repeat())
+                      .fadeIn(delay: Duration(milliseconds: i * 200))
+                      .then()
+                      .fadeOut())),
         ),
       ]),
     );
@@ -1402,55 +1927,291 @@ class _ConversationScreenState extends State<ConversationScreen> {
       ];
       return Container(
         color: isDark ? Colors.black : Colors.white,
-        child: ListView(padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32), children: [
-          Container(width: 80, height: 80,
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]),
-              shape: BoxShape.circle),
-            child: const Center(child: Text('🤖', style: TextStyle(fontSize: 40))))
-            .animate().scale(duration: 400.ms, curve: Curves.elasticOut),
-          const SizedBox(height: 20),
-          Text('Your AI Wealth Mentor + APEX Agent',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: textColor),
-              textAlign: TextAlign.center),
-          const SizedBox(height: 8),
-          Text(
-            firstName.isNotEmpty
-                ? 'Hey $firstName! Ask anything — or say "do it for me" to launch APEX.'
-                : 'Ask anything about money. Say "do it for me" to launch APEX.',
-            style: TextStyle(fontSize: 14, color: subColor, height: 1.6),
-            textAlign: TextAlign.center),
-          const SizedBox(height: 32),
-          Text('Try:', style: TextStyle(fontSize: 12, color: subColor, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 10),
-          ...prompts.map((p) => GestureDetector(
-            onTap: () { _textCtrl.text = p.substring(3).trim(); _onSend(); },
-            child: Container(
-              margin: const EdgeInsets.only(bottom: 8),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(
-                color: AppColors.primary.withOpacity(0.07),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppColors.primary.withOpacity(0.18))),
-              child: Text(p, style: TextStyle(fontSize: 13,
-                  color: isDark ? Colors.white70 : Colors.black87, height: 1.4)))
-              .animate().fadeIn(delay: Duration(milliseconds: prompts.indexOf(p) * 80)))),
-        ]));
+        child: ListView(
+            padding: const EdgeInsets.symmetric(
+                horizontal: 24, vertical: 32),
+            children: [
+              Container(
+                      width: 80, height: 80,
+                      decoration: const BoxDecoration(
+                          gradient: LinearGradient(colors: [
+                            AppColors.primary,
+                            AppColors.accent
+                          ]),
+                          shape: BoxShape.circle),
+                      child: const Center(
+                          child: Text('🤖',
+                              style: TextStyle(fontSize: 40))))
+                  .animate()
+                  .scale(duration: 400.ms, curve: Curves.elasticOut),
+              const SizedBox(height: 20),
+              Text('Your AI Wealth Mentor + APEX Agent',
+                  style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                      color: textColor),
+                  textAlign: TextAlign.center),
+              const SizedBox(height: 8),
+              Text(
+                firstName.isNotEmpty
+                    ? 'Hey $firstName! Ask anything — or say "do it for me" to launch APEX.'
+                    : 'Ask anything about money. Say "do it for me" to launch APEX.',
+                style: TextStyle(
+                    fontSize: 14, color: subColor, height: 1.6),
+                textAlign: TextAlign.center),
+              const SizedBox(height: 32),
+              Text('Try:',
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: subColor,
+                      fontWeight: FontWeight.w600)),
+              const SizedBox(height: 10),
+              ...prompts.map((p) => GestureDetector(
+                    onTap: () {
+                      _textCtrl.text = p.substring(3).trim();
+                      _onSend();
+                    },
+                    child: Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 12),
+                          decoration: BoxDecoration(
+                              color: AppColors.primary.withOpacity(0.07),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(
+                                  color: AppColors.primary
+                                      .withOpacity(0.18))),
+                          child: Text(p,
+                              style: TextStyle(
+                                  fontSize: 13,
+                                  color: isDark
+                                      ? Colors.white70
+                                      : Colors.black87,
+                                  height: 1.4)))
+                        .animate()
+                        .fadeIn(
+                            delay: Duration(
+                                milliseconds:
+                                    prompts.indexOf(p) * 80)))),
+            ]));
     }
     return Container(
       color: isDark ? Colors.black : Colors.white,
-      child: Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        const Text('👋', style: TextStyle(fontSize: 56)),
-        const SizedBox(height: 16),
-        Text('Say hello!', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: textColor)),
-        const SizedBox(height: 8),
-        Text('Start a conversation below', style: TextStyle(fontSize: 14, color: subColor)),
-      ])));
+      child: Center(
+          child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+            const Text('👋', style: TextStyle(fontSize: 56)),
+            const SizedBox(height: 16),
+            Text('Say hello!',
+                style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                    color: textColor)),
+            const SizedBox(height: 8),
+            Text('Start a conversation below',
+                style: TextStyle(fontSize: 14, color: subColor)),
+          ])));
   }
 
   String _formatTime(DateTime dt) {
     final l = dt.toLocal();
-    return '${l.hour.toString().padLeft(2, '0')}:${l.minute.toString().padLeft(2, '0')}';
+    return '${l.hour.toString().padLeft(2, '0')}:'
+        '${l.minute.toString().padLeft(2, '0')}';
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Brain Card — v17: shows methods / marketplace / providers from brain search
+// ─────────────────────────────────────────────────────────────────────────────
+class _BrainCard extends StatelessWidget {
+  final _BrainData brainData;
+  final bool       isDark;
+
+  const _BrainCard({required this.brainData, required this.isDark});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = const Color(0xFF6C5CE7);
+    final items = <Map<String, String>>[];
+
+    for (final m in brainData.methods.take(3)) {
+      final map = m as Map;
+      items.add({
+        'icon':  '💡',
+        'label': map['title']?.toString() ?? map['name']?.toString() ?? '',
+        'sub':   map['category']?.toString() ?? 'Method',
+      });
+    }
+    for (final m in brainData.marketplace.take(2)) {
+      final map = m as Map;
+      items.add({
+        'icon':  '🛒',
+        'label': map['title']?.toString() ?? '',
+        'sub':   map['type']?.toString() ?? 'Marketplace',
+      });
+    }
+    for (final m in brainData.serviceProviders.take(2)) {
+      final map = m as Map;
+      items.add({
+        'icon':  '🔧',
+        'label': map['name']?.toString() ?? '',
+        'sub':   map['service']?.toString() ?? 'Provider',
+      });
+    }
+
+    if (items.isEmpty) return const SizedBox.shrink();
+
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 300),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+            colors: [color.withOpacity(0.10), color.withOpacity(0.04)]),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withOpacity(0.25)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Text('🧠', style: TextStyle(fontSize: 13)),
+          const SizedBox(width: 6),
+          Text('RiseUp Brain Found',
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: isDark ? Colors.white70 : Colors.black87)),
+        ]),
+        const SizedBox(height: 8),
+        ...items.map((item) => Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(children: [
+                Text(item['icon']!, style: const TextStyle(fontSize: 14)),
+                const SizedBox(width: 8),
+                Expanded(
+                    child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                      Text(item['label']!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: isDark
+                                  ? Colors.white
+                                  : Colors.black87)),
+                      Text(item['sub']!,
+                          style: TextStyle(
+                              fontSize: 10,
+                              color: isDark
+                                  ? Colors.white38
+                                  : Colors.black38)),
+                    ])),
+              ]),
+            )),
+      ]),
+    ).animate().fadeIn(duration: 300.ms).slideY(begin: 0.1, end: 0);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Complementary Users Row — v17
+// ─────────────────────────────────────────────────────────────────────────────
+class _ComplementaryUsersRow extends StatelessWidget {
+  final List<dynamic> users;
+  final bool          isDark;
+  final void Function(String userId, String name, String avatar) onTap;
+
+  const _ComplementaryUsersRow({
+    required this.users,
+    required this.isDark,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (users.isEmpty) return const SizedBox.shrink();
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: Text('👥 People who can help',
+            style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: isDark ? Colors.white54 : Colors.black45)),
+      ),
+      SizedBox(
+        height: 72,
+        child: ListView.builder(
+          scrollDirection: Axis.horizontal,
+          itemCount: users.length,
+          itemBuilder: (_, i) {
+            final u      = users[i] as Map;
+            final userId = u['user_id']?.toString()  ?? u['id']?.toString() ?? '';
+            final name   = u['full_name']?.toString() ?? u['username']?.toString() ?? 'User';
+            final avatar = u['avatar_url']?.toString() ?? '';
+            final reason = u['match_reason']?.toString() ?? '';
+            final isUrl  = avatar.startsWith('http');
+
+            return GestureDetector(
+              onTap: () => onTap(userId, name, avatar),
+              child: Container(
+                width: 60,
+                margin: EdgeInsets.only(right: i < users.length - 1 ? 10 : 0),
+                child: Column(children: [
+                  Container(
+                    width: 42, height: 42,
+                    decoration: BoxDecoration(
+                      gradient: isUrl
+                          ? null
+                          : const LinearGradient(
+                              colors: [AppColors.primary, AppColors.accent]),
+                      image: isUrl
+                          ? DecorationImage(
+                              image: NetworkImage(avatar),
+                              fit: BoxFit.cover)
+                          : null,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                          color: AppColors.primary.withOpacity(0.4),
+                          width: 1.5),
+                    ),
+                    child: isUrl
+                        ? null
+                        : Center(
+                            child: Text(name.isNotEmpty
+                                ? name[0].toUpperCase() : '👤',
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700))),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(name.split(' ').first,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontSize: 10,
+                          color: isDark ? Colors.white70 : Colors.black87,
+                          fontWeight: FontWeight.w500)),
+                  if (reason.isNotEmpty)
+                    Text(reason,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 8,
+                            color: isDark
+                                ? Colors.white38
+                                : Colors.black38)),
+                ]),
+              ),
+            );
+          },
+        ),
+      ),
+    ]).animate().fadeIn(duration: 300.ms);
   }
 }
 
@@ -1461,7 +2222,8 @@ class _DelegationCard extends StatelessWidget {
   final _DelegationPayload payload;
   final bool               isDark;
   final VoidCallback        onLaunch;
-  const _DelegationCard({required this.payload, required this.isDark, required this.onLaunch});
+  const _DelegationCard(
+      {required this.payload, required this.isDark, required this.onLaunch});
 
   @override
   Widget build(BuildContext context) {
@@ -1477,7 +2239,8 @@ class _DelegationCard extends StatelessWidget {
       constraints: const BoxConstraints(maxWidth: 300),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        gradient: LinearGradient(colors: [color.withOpacity(0.10), color.withOpacity(0.05)]),
+        gradient: LinearGradient(
+            colors: [color.withOpacity(0.10), color.withOpacity(0.05)]),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: color.withOpacity(0.30)),
       ),
@@ -1485,25 +2248,36 @@ class _DelegationCard extends StatelessWidget {
         Row(children: [
           Text(icon, style: const TextStyle(fontSize: 18)),
           const SizedBox(width: 8),
-          Expanded(child: Text(label, style: TextStyle(
-              fontSize: 13, fontWeight: FontWeight.w700,
-              color: isDark ? Colors.white : Colors.black87))),
+          Expanded(
+              child: Text(label,
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: isDark ? Colors.white : Colors.black87))),
         ]),
         const SizedBox(height: 4),
-        Text(desc, style: TextStyle(fontSize: 11,
-            color: isDark ? Colors.white54 : Colors.black45, height: 1.4)),
+        Text(desc,
+            style: TextStyle(
+                fontSize: 11,
+                color: isDark ? Colors.white54 : Colors.black45,
+                height: 1.4)),
         const SizedBox(height: 10),
-        SizedBox(width: double.infinity, child: ElevatedButton(
-          onPressed: onLaunch,
-          style: ElevatedButton.styleFrom(
-            backgroundColor: color, foregroundColor: Colors.white,
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
-          child: Text(label),
-        )),
+        SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: onLaunch,
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: color,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                  textStyle: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w700)),
+              child: Text(label),
+            )),
       ]),
-    ).animate().fadeIn(duration: 300.ms).slideY(begin: 0.1, end: 0, duration: 300.ms);
+    ).animate().fadeIn(duration: 300.ms).slideY(begin: 0.1, end: 0);
   }
 }
 
@@ -1513,8 +2287,12 @@ class _DelegationCard extends StatelessWidget {
 class _QuickActionBar extends StatelessWidget {
   final bool         isDark;
   final VoidCallback onApex, onWorkflow, onSearch;
-  const _QuickActionBar({required this.isDark, required this.onApex,
-      required this.onWorkflow, required this.onSearch});
+  const _QuickActionBar({
+    required this.isDark,
+    required this.onApex,
+    required this.onWorkflow,
+    required this.onSearch,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1523,31 +2301,37 @@ class _QuickActionBar extends StatelessWidget {
       color: bg,
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
       child: Row(children: [
-        _chip('🤖 APEX',     'Handle task for me',    AppColors.primary, onApex),
+        _chip('🤖 APEX',    'Handle task for me',   AppColors.primary, onApex),
         const SizedBox(width: 8),
-        _chip('⚡ Workflow',  'Build income plan',     AppColors.success, onWorkflow),
+        _chip('⚡ Workflow', 'Build income plan',    AppColors.success, onWorkflow),
         const SizedBox(width: 8),
-        _chip('🔍 Search',   'Find contacts / jobs',  AppColors.info,    onSearch),
+        _chip('🔍 Search',  'Find contacts / jobs', AppColors.info,    onSearch),
       ]),
     );
   }
 
   Widget _chip(String label, String tooltip, Color color, VoidCallback onTap) =>
-      Expanded(child: Tooltip(message: tooltip,
-        child: GestureDetector(onTap: onTap,
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            decoration: BoxDecoration(
-                color: color.withOpacity(0.10),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: color.withOpacity(0.25))),
-            child: Text(label, textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w700))))));
+      Expanded(
+          child: Tooltip(
+              message: tooltip,
+              child: GestureDetector(
+                  onTap: onTap,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    decoration: BoxDecoration(
+                        color: color.withOpacity(0.10),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: color.withOpacity(0.25))),
+                    child: Text(label,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 11,
+                            color: color,
+                            fontWeight: FontWeight.w700))))));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Quota Ribbon
-// v16 fix: added "Watch X ads to continue" state so ribbon doesn't vanish
+// Quota Ribbon (v16 fix preserved)
 // ─────────────────────────────────────────────────────────────────────────────
 class _QuotaRibbon extends StatefulWidget {
   final bool isPremium, inDailyLockout, inCycleLockout;
@@ -1557,12 +2341,20 @@ class _QuotaRibbon extends StatefulWidget {
   final VoidCallback onWatchAds;
 
   const _QuotaRibbon({
-    required this.isPremium, required this.inDailyLockout, required this.inCycleLockout,
-    required this.freeUsed, required this.freeTotal, required this.cycleAds,
-    required this.adsPerCycle, required this.cycleMsgs, required this.msgsPerCycle,
-    required this.totalResponses, required this.maxResponses,
+    required this.isPremium,
+    required this.inDailyLockout,
+    required this.inCycleLockout,
+    required this.freeUsed,
+    required this.freeTotal,
+    required this.cycleAds,
+    required this.adsPerCycle,
+    required this.cycleMsgs,
+    required this.msgsPerCycle,
+    required this.totalResponses,
+    required this.maxResponses,
     required this.onWatchAds,
-    this.cycleLockoutUntil, this.dailyLockoutUntil,
+    this.cycleLockoutUntil,
+    this.dailyLockoutUntil,
   });
 
   @override
@@ -1570,8 +2362,8 @@ class _QuotaRibbon extends StatefulWidget {
 }
 
 class _QuotaRibbonState extends State<_QuotaRibbon> {
-  Timer? _timer;
-  String _countdown = '';
+  Timer?  _timer;
+  String  _countdown = '';
 
   @override
   void initState() {
@@ -1582,8 +2374,12 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
   @override
   void didUpdateWidget(_QuotaRibbon old) {
     super.didUpdateWidget(old);
-    if ((widget.inCycleLockout || widget.inDailyLockout) && _timer == null) _startTimer();
-    if (!widget.inCycleLockout && !widget.inDailyLockout) { _timer?.cancel(); _timer = null; }
+    if ((widget.inCycleLockout || widget.inDailyLockout) && _timer == null)
+      _startTimer();
+    if (!widget.inCycleLockout && !widget.inDailyLockout) {
+      _timer?.cancel();
+      _timer = null;
+    }
   }
 
   void _startTimer() {
@@ -1593,7 +2389,9 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
 
   void _update() {
     if (!mounted) return;
-    final lockStr = widget.inDailyLockout ? widget.dailyLockoutUntil : widget.cycleLockoutUntil;
+    final lockStr = widget.inDailyLockout
+        ? widget.dailyLockoutUntil
+        : widget.cycleLockoutUntil;
     final exp = DateTime.tryParse(lockStr ?? '');
     if (exp == null) return;
     final diff = exp.difference(DateTime.now());
@@ -1611,7 +2409,6 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
   Widget build(BuildContext context) {
     if (widget.isPremium) return const SizedBox.shrink();
 
-    // Lockout states
     if (widget.inDailyLockout)
       return _ribbon(Icons.lock_rounded, AppColors.error,
           'Daily limit reached${_countdown.isNotEmpty ? ' · resets in $_countdown' : ''}',
@@ -1624,13 +2421,11 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
 
     final freeLeft = widget.freeTotal - widget.freeUsed;
 
-    // Free messages remaining
     if (freeLeft > 0)
       return _ribbon(Icons.chat_bubble_outline_rounded, AppColors.primary,
           '$freeLeft free message${freeLeft == 1 ? '' : 's'} remaining',
           AppColors.primary.withOpacity(0.06), null);
 
-    // v16 FIX: free msgs exhausted + not enough ads watched yet → prompt user to watch ads
     if (widget.cycleAds < widget.adsPerCycle) {
       final adsLeft = widget.adsPerCycle - widget.cycleAds;
       return _ribbon(
@@ -1641,7 +2436,6 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
       );
     }
 
-    // Cycle active: messages unlocked
     if (widget.cycleAds >= widget.adsPerCycle) {
       final left = widget.msgsPerCycle - widget.cycleMsgs;
       if (left > 0)
@@ -1653,7 +2447,8 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
     return const SizedBox.shrink();
   }
 
-  Widget _ribbon(IconData icon, Color color, String label, Color bg, VoidCallback? onTap) =>
+  Widget _ribbon(IconData icon, Color color, String label,
+      Color bg, VoidCallback? onTap) =>
       GestureDetector(
         onTap: onTap,
         child: Container(
@@ -1663,32 +2458,46 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
           child: Row(children: [
             Icon(icon, size: 13, color: color),
             const SizedBox(width: 6),
-            Expanded(child: Text(label, style: TextStyle(
-                fontSize: 12, color: color, fontWeight: FontWeight.w500))),
+            Expanded(child: Text(label,
+                style: TextStyle(
+                    fontSize: 12,
+                    color: color,
+                    fontWeight: FontWeight.w500))),
             if (onTap != null)
-              Text('Tap to watch', style: TextStyle(
-                  fontSize: 11, color: color, fontWeight: FontWeight.w700)),
+              Text('Tap to watch',
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: color,
+                      fontWeight: FontWeight.w700)),
             const SizedBox(width: 8),
             GestureDetector(
               onTap: () => GoRouter.of(context).go('/premium'),
-              child: const Text('Go Premium', style: TextStyle(
-                  fontSize: 11, color: AppColors.primary, fontWeight: FontWeight.w600))),
+              child: const Text('Go Premium',
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w600))),
           ]),
         ),
       );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Ad Gate Sheet (unchanged from v14.3 / v15)
+// Ad Gate Sheet
 // ─────────────────────────────────────────────────────────────────────────────
 class _AdGateSheet extends StatefulWidget {
   final int cycleAdsWatched, adsPerCycle, msgsPerCycle, totalResponses, maxResponses;
   final Future<void> Function() onAdWatched;
+
   const _AdGateSheet({
-    required this.cycleAdsWatched, required this.adsPerCycle,
-    required this.msgsPerCycle, required this.totalResponses, required this.maxResponses,
+    required this.cycleAdsWatched,
+    required this.adsPerCycle,
+    required this.msgsPerCycle,
+    required this.totalResponses,
+    required this.maxResponses,
     required this.onAdWatched,
   });
+
   @override
   State<_AdGateSheet> createState() => _AdGateSheetState();
 }
@@ -1724,7 +2533,10 @@ class _AdGateSheetState extends State<_AdGateSheet> {
       },
       onDismissed: () {
         if (!mounted) return;
-        setState(() { _watching = false; _error = 'Watch the full ad to unlock messages.'; });
+        setState(() {
+          _watching = false;
+          _error    = 'Watch the full ad to unlock messages.';
+        });
       },
     );
   }
@@ -1737,71 +2549,107 @@ class _AdGateSheetState extends State<_AdGateSheet> {
     final sub  = isDark ? Colors.white60   : Colors.black54;
 
     return Container(
-      decoration: BoxDecoration(color: bg,
+      decoration: BoxDecoration(
+          color: bg,
           borderRadius: const BorderRadius.vertical(top: Radius.circular(28))),
-      padding: EdgeInsets.fromLTRB(24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
+      padding: EdgeInsets.fromLTRB(
+          24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(width: 40, height: 4, decoration: BoxDecoration(
-            color: isDark ? Colors.white24 : Colors.black12,
-            borderRadius: BorderRadius.circular(2))),
+        Container(
+            width: 40, height: 4,
+            decoration: BoxDecoration(
+                color: isDark ? Colors.white24 : Colors.black12,
+                borderRadius: BorderRadius.circular(2))),
         const SizedBox(height: 24),
         _success
             ? const Text('🎉', style: TextStyle(fontSize: 56))
-            : Container(width: 72, height: 72,
+            : Container(
+                width: 72, height: 72,
                 decoration: const BoxDecoration(
-                  gradient: LinearGradient(colors: [AppColors.primary, AppColors.accent]),
-                  shape: BoxShape.circle),
-                child: const Center(child: Text('🤖', style: TextStyle(fontSize: 36)))),
+                    gradient: LinearGradient(
+                        colors: [AppColors.primary, AppColors.accent]),
+                    shape: BoxShape.circle),
+                child: const Center(
+                    child: Text('🤖', style: TextStyle(fontSize: 36)))),
         const SizedBox(height: 16),
         Text(_success ? 'Unlocked! 🚀' : 'Unlock AI Messages',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: text)),
+            style: TextStyle(
+                fontSize: 20, fontWeight: FontWeight.w800, color: text)),
         const SizedBox(height: 8),
         if (!_success) ...[
-          Text('Watch $_adsRemaining more ad${_adsRemaining == 1 ? '' : 's'} to unlock ${widget.msgsPerCycle} messages.',
-              style: TextStyle(fontSize: 14, color: sub, height: 1.5), textAlign: TextAlign.center),
+          Text(
+              'Watch $_adsRemaining more ad${_adsRemaining == 1 ? '' : 's'} '
+              'to unlock ${widget.msgsPerCycle} messages.',
+              style:     TextStyle(fontSize: 14, color: sub, height: 1.5),
+              textAlign: TextAlign.center),
           const SizedBox(height: 8),
-          Row(mainAxisAlignment: MainAxisAlignment.center,
-            children: List.generate(widget.adsPerCycle, (i) => Padding(
-              padding: EdgeInsets.only(right: i < widget.adsPerCycle - 1 ? 6 : 0),
-              child: AnimatedContainer(duration: 300.ms, width: 28, height: 8,
-                decoration: BoxDecoration(
-                  color: i < _totalWatched ? AppColors.success : AppColors.primary.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(4)))))),
+          Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(widget.adsPerCycle, (i) => Padding(
+                    padding: EdgeInsets.only(
+                        right: i < widget.adsPerCycle - 1 ? 6 : 0),
+                    child: AnimatedContainer(
+                        duration: 300.ms,
+                        width: 28, height: 8,
+                        decoration: BoxDecoration(
+                          color: i < _totalWatched
+                              ? AppColors.success
+                              : AppColors.primary.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(4)))))),
         ],
         if (_error != null) ...[
           const SizedBox(height: 8),
-          Text(_error!, style: const TextStyle(fontSize: 12, color: AppColors.error),
+          Text(_error!,
+              style:     const TextStyle(fontSize: 12, color: AppColors.error),
               textAlign: TextAlign.center),
         ],
         const SizedBox(height: 24),
         if (!_success) ...[
-          SizedBox(width: double.infinity, child: ElevatedButton.icon(
-            onPressed: _watching ? null : _watchAd,
-            icon: _watching
-                ? const SizedBox(width: 18, height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                : const Icon(Icons.play_circle_fill_rounded, size: 20),
-            label: Text(_watching
-                ? 'Loading ad...'
-                : 'Watch Ad ${_totalWatched + 1} of ${widget.adsPerCycle}'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary, foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-              textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)))),
+          SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _watching ? null : _watchAd,
+                icon: _watching
+                    ? const SizedBox(
+                        width: 18, height: 18,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.play_circle_fill_rounded, size: 20),
+                label: Text(_watching
+                    ? 'Loading ad...'
+                    : 'Watch Ad ${_totalWatched + 1} of ${widget.adsPerCycle}'),
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: Colors.white,
+                    padding:
+                        const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
+                    textStyle: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w700)))),
           const SizedBox(height: 12),
-          SizedBox(width: double.infinity, child: OutlinedButton.icon(
-            onPressed: () { Navigator.pop(context, false); GoRouter.of(context).go('/premium'); },
-            icon: const Icon(Icons.workspace_premium_rounded, size: 18),
-            label: const Text('Go Premium — Unlimited AI'),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: AppColors.gold, side: const BorderSide(color: AppColors.gold),
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))))),
+          SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.pop(context, false);
+                  GoRouter.of(context).go('/premium');
+                },
+                icon: const Icon(
+                    Icons.workspace_premium_rounded, size: 18),
+                label: const Text('Go Premium — Unlimited AI'),
+                style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.gold,
+                    side: const BorderSide(color: AppColors.gold),
+                    padding:
+                        const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14))))),
           const SizedBox(height: 12),
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: Text('Not now', style: TextStyle(color: sub, fontSize: 13))),
+            child: Text('Not now',
+                style: TextStyle(color: sub, fontSize: 13))),
         ],
       ]),
     );
@@ -1809,13 +2657,18 @@ class _AdGateSheetState extends State<_AdGateSheet> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Lockout Sheet (unchanged from v14.3 / v15)
+// Lockout Sheet
 // ─────────────────────────────────────────────────────────────────────────────
 class _LockoutSheet extends StatefulWidget {
-  final String lockoutUntil;
-  final bool   isDaily;
+  final String       lockoutUntil;
+  final bool         isDaily;
   final VoidCallback onUpgrade;
-  const _LockoutSheet({required this.lockoutUntil, required this.isDaily, required this.onUpgrade});
+  const _LockoutSheet({
+    required this.lockoutUntil,
+    required this.isDaily,
+    required this.onUpgrade,
+  });
+
   @override
   State<_LockoutSheet> createState() => _LockoutSheetState();
 }
@@ -1835,9 +2688,15 @@ class _LockoutSheetState extends State<_LockoutSheet> {
   void _update() {
     if (!mounted) return;
     final exp = DateTime.tryParse(widget.lockoutUntil);
-    if (exp == null) { setState(() { _countdown = '—'; _expired = true; }); return; }
+    if (exp == null) {
+      setState(() { _countdown = '—'; _expired = true; });
+      return;
+    }
     final diff = exp.difference(DateTime.now());
-    if (diff.isNegative) { setState(() { _countdown = 'Ready!'; _expired = true; }); return; }
+    if (diff.isNegative) {
+      setState(() { _countdown = 'Ready!'; _expired = true; });
+      return;
+    }
     final h = diff.inHours.toString().padLeft(2, '0');
     final m = (diff.inMinutes % 60).toString().padLeft(2, '0');
     final s = (diff.inSeconds % 60).toString().padLeft(2, '0');
@@ -1858,18 +2717,24 @@ class _LockoutSheetState extends State<_LockoutSheet> {
         : (widget.isDaily ? 'Daily Limit Reached'  : 'Time for a Break ⏸️');
 
     return Container(
-      decoration: BoxDecoration(color: bg,
+      decoration: BoxDecoration(
+          color: bg,
           borderRadius: const BorderRadius.vertical(top: Radius.circular(28))),
-      padding: EdgeInsets.fromLTRB(24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
+      padding: EdgeInsets.fromLTRB(
+          24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(width: 40, height: 4, decoration: BoxDecoration(
-            color: isDark ? Colors.white24 : Colors.black12,
-            borderRadius: BorderRadius.circular(2))),
+        Container(
+            width: 40, height: 4,
+            decoration: BoxDecoration(
+                color: isDark ? Colors.white24 : Colors.black12,
+                borderRadius: BorderRadius.circular(2))),
         const SizedBox(height: 24),
         Text(_expired ? '✅' : (widget.isDaily ? '🔒' : '⏸️'),
             style: const TextStyle(fontSize: 52)),
         const SizedBox(height: 12),
-        Text(title, style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: text)),
+        Text(title,
+            style: TextStyle(
+                fontSize: 20, fontWeight: FontWeight.w800, color: text)),
         const SizedBox(height: 8),
         Text(
           _expired
@@ -1879,12 +2744,13 @@ class _LockoutSheetState extends State<_LockoutSheet> {
               : (widget.isDaily
                   ? 'Used all 30 responses today. Upgrade for unlimited.'
                   : 'Take a 3-hour break, then watch ads for more.'),
-          style: TextStyle(fontSize: 14, color: sub, height: 1.5),
+          style:     TextStyle(fontSize: 14, color: sub, height: 1.5),
           textAlign: TextAlign.center),
         if (!_expired) ...[
           const SizedBox(height: 24),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
+            padding: const EdgeInsets.symmetric(
+                horizontal: 28, vertical: 16),
             decoration: BoxDecoration(
                 color: AppColors.primary.withOpacity(0.08),
                 borderRadius: BorderRadius.circular(16)),
@@ -1892,21 +2758,31 @@ class _LockoutSheetState extends State<_LockoutSheet> {
               Text(widget.isDaily ? 'Resets in' : 'Unlocks in',
                   style: TextStyle(fontSize: 12, color: sub)),
               const SizedBox(height: 6),
-              Text(_countdown, style: TextStyle(
-                  fontSize: 32, fontWeight: FontWeight.w800,
-                  color: text, fontFamily: 'monospace', letterSpacing: 2)),
+              Text(_countdown,
+                  style: TextStyle(
+                      fontSize: 32,
+                      fontWeight: FontWeight.w800,
+                      color: text,
+                      fontFamily: 'monospace',
+                      letterSpacing: 2)),
             ])),
         ],
         const SizedBox(height: 24),
-        SizedBox(width: double.infinity, child: ElevatedButton.icon(
-          onPressed: widget.onUpgrade,
-          icon: const Icon(Icons.workspace_premium_rounded, size: 20),
-          label: const Text('Upgrade — Unlimited AI Forever'),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: AppColors.gold, foregroundColor: Colors.black87,
-            padding: const EdgeInsets.symmetric(vertical: 16),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-            textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)))),
+        SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: widget.onUpgrade,
+              icon: const Icon(
+                  Icons.workspace_premium_rounded, size: 20),
+              label: const Text('Upgrade — Unlimited AI Forever'),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.gold,
+                  foregroundColor: Colors.black87,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
+                  textStyle: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w700)))),
         const SizedBox(height: 12),
         TextButton(
           onPressed: () => Navigator.pop(context),
