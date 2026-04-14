@@ -1,0 +1,6 @@
+<!--  frontend/android/app/src/main/res/values/colors.xml  -->
+<!--  Creates the notification_color resource referenced in AndroidManifest.xml  -->
+<resources>
+<!--  Amber primary — notification icon tint in the status bar  -->
+<color name="notification_color">#FFB830</color>
+</resources>
