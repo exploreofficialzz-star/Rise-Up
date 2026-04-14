@@ -627,26 +627,28 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>> createPost({
-    required String content,
-    required String tag,
-    String? mediaUrl,
-    String? mediaType,
-    String? linkUrl,
-    String? linkTitle,
-  }) async {
-    try {
-      final r = await _dio.post('/posts', data: {
-        'content': content,
-        'tag':     tag,
-        if (mediaUrl  != null && mediaUrl.isNotEmpty)  'media_url':  mediaUrl,
-        if (mediaType != null && mediaType.isNotEmpty) 'media_type': mediaType,
-        if (linkUrl   != null && linkUrl.isNotEmpty)   'link_url':   linkUrl,
-        if (linkTitle != null && linkTitle.isNotEmpty) 'link_title': linkTitle,
-      });
-      return r.data as Map<String, dynamic>;
-    } catch (e) { throw _handleError(e); }
+  required String content,
+  required String tag,
+  String? mediaUrl,
+  String? mediaType,
+  String? linkUrl,
+  String? linkTitle,
+  String? backgroundColor,   // ← NEW PARAMETER
+}) async {
+  try {
+    final r = await _dio.post('/posts', data: {
+      'content': content,
+      'tag':     tag,
+      if (mediaUrl  != null && mediaUrl.isNotEmpty)  'media_url':  mediaUrl,
+      if (mediaType != null && mediaType.isNotEmpty) 'media_type': mediaType,
+      if (linkUrl   != null && linkUrl.isNotEmpty)   'link_url':   linkUrl,
+      if (linkTitle != null && linkTitle.isNotEmpty) 'link_title': linkTitle,
+      if (backgroundColor != null) 'background_color': backgroundColor, // ← NEW FIELD
+    });
+    return r.data as Map<String, dynamic>;
+  } catch (e) { throw _handleError(e); }
   }
-
+  
   Future<Map<String, dynamic>> updatePost(
     String postId, {
     String? content,
