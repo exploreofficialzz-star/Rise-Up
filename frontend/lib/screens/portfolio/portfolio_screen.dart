@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart'; // Added for kIsWeb
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -5,12 +6,11 @@ import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
-// ad_manager.dart lives one level above the ads/ folder.
 import '../../services/ad_manager.dart';
-// Conditional import: on mobile this gives us NativeAdWidget from the real
-// AdMob implementation; on web the platform stub is used instead, which
-// defines a no-op NativeAdWidget so the code compiles cleanly.
+
+// Updated Conditional import: supports both legacy JS (html) and modern WASM (js_interop)
 import '../../services/ads/ad_service_mobile.dart'
+    if (dart.library.js_interop) '../../services/ads/ad_service_web.dart'
     if (dart.library.html) '../../services/ads/ad_service_web.dart';
 
 class PortfolioScreen extends StatefulWidget {
@@ -20,15 +20,13 @@ class PortfolioScreen extends StatefulWidget {
 }
 
 class _PortfolioScreenState extends State<PortfolioScreen> {
-  List _items = [];
-  Map _stats = {};
-  Map _bio = {};
+  List<dynamic> _items = [];
+  Map<String, dynamic> _stats = {};
+  Map<String, dynamic> _bio = {};
   bool _loading = true;
   bool _generatingBio = false;
 
   // ── Ad state ───────────────────────────────────────────────
-  // Tracks whether the interstitial was already fired once this session
-  // so we don't blast the user on repeated taps.
   bool _bioAdFired = false;
 
   @override
@@ -43,8 +41,8 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
       final data = await api.get('/portfolio/');
       if (mounted) {
         setState(() {
-          _items = (data as Map?)?['items'] as List? ?? [];
-          _stats = data?['stats'] as Map? ?? {};
+          _items = (data as Map?)?['items'] as List<dynamic>? ?? [];
+          _stats = Map<String, dynamic>.from((data as Map?)?['stats'] ?? {});
           _loading = false;
         });
       }
@@ -55,18 +53,10 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
 
   // ── Bio generation with interstitial gate ─────────────────
   Future<void> _generateBio() async {
-    // Premium users skip ads entirely.
     if (!adManager.isPremium && !_bioAdFired) {
       setState(() => _generatingBio = true);
-
-      // Fire interstitial before the AI work begins.
-      // forceInterstitial() is non-blocking from the UX side — the ad will
-      // show as a full-screen overlay; after dismissal the bio loads.
       await adManager.forceInterstitial();
-
-      // Mark fired so repeat taps in the same session skip it.
       _bioAdFired = true;
-
       if (!mounted) return;
     } else {
       setState(() => _generatingBio = true);
@@ -76,7 +66,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
       final data = await api.post('/portfolio/ai-bio', {});
       if (mounted) {
         setState(() {
-          _bio = (data as Map?)?['bio'] as Map? ?? {};
+          _bio = Map<String, dynamic>.from((data as Map?)?['bio'] ?? {});
           _generatingBio = false;
         });
       }
@@ -310,8 +300,6 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                                     fontWeight: FontWeight.w700,
                                     color: text)),
                             const Spacer(),
-                            // Show "Ad" badge for free users so they know
-                            // an interstitial is coming — transparent UX.
                             if (!adManager.isPremium && _bio.isEmpty)
                               Container(
                                 padding: const EdgeInsets.symmetric(
@@ -459,7 +447,6 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     );
   }
 
-  // Extracted so the native ad can slot in cleanly after.
   List<Widget> _buildProjectList(bool isDark, Color text, Color sub) {
     final colors = [
       AppColors.primary,
@@ -562,8 +549,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     }).toList();
   }
 
-  Widget _statBox(
-          String label, String value, Color color, bool isDark) =>
+  Widget _statBox(String label, String value, Color color, bool isDark) =>
       Expanded(
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 14),
@@ -585,13 +571,6 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
       );
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  Inline Native Ad Card
-//  Wraps NativeAdWidget in a styled container that blends with
-//  the portfolio card aesthetic while clearly labelling it as
-//  sponsored content (AdMob policy compliance).
-// ═══════════════════════════════════════════════════════════════
-
 class _InlineNativeAdCard extends StatefulWidget {
   final bool isDark;
   const _InlineNativeAdCard({required this.isDark});
@@ -601,20 +580,17 @@ class _InlineNativeAdCard extends StatefulWidget {
 }
 
 class _InlineNativeAdCardState extends State<_InlineNativeAdCard> {
-  // NativeAdWidget handles its own load lifecycle.
-  // We just need to know if it has loaded to show the container.
-  bool _adLoaded = false;
-
   @override
   Widget build(BuildContext context) {
+    // Failsafe: Completely skip the widget tree logic on web builds
+    if (kIsWeb) return const SizedBox.shrink();
+
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      // ── Sponsored label ─────────────────────────────────────
       Padding(
         padding: const EdgeInsets.only(bottom: 6),
         child: Row(children: [
           Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
             decoration: BoxDecoration(
               color: Colors.grey.withOpacity(0.15),
               borderRadius: BorderRadius.circular(4),
@@ -623,20 +599,13 @@ class _InlineNativeAdCardState extends State<_InlineNativeAdCard> {
                 style: TextStyle(
                     fontSize: 9,
                     fontWeight: FontWeight.w700,
-                    color: widget.isDark
-                        ? Colors.white38
-                        : Colors.black38,
+                    color: widget.isDark ? Colors.white38 : Colors.black38,
                     letterSpacing: 0.8)),
           ),
         ]),
       ),
-
-      // ── Ad container ───────────────────────────────────────
       Container(
         width: double.infinity,
-        // Constrain height so the card doesn't collapse when the ad
-        // hasn't loaded yet. NativeAdWidget returns SizedBox.shrink()
-        // on failure, so this won't leave a blank gap.
         constraints: const BoxConstraints(minHeight: 0),
         decoration: BoxDecoration(
           color: widget.isDark ? AppColors.bgCard : Colors.white,
@@ -651,8 +620,6 @@ class _InlineNativeAdCardState extends State<_InlineNativeAdCard> {
                 spreadRadius: -2)
           ],
         ),
-        // ── Use the production NativeAdWidget from ad_service_mobile ──
-        // It self-manages load / failure / dispose.
         child: ClipRRect(
           borderRadius: AppRadius.lg,
           child: NativeAdWidget(factoryId: 'riseup_native'),
