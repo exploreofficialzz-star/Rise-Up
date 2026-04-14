@@ -5,8 +5,13 @@ import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
-import '../../services/ads/ad_service.dart';
-import '../../services/ads/ad_manager.dart';
+// ad_manager.dart lives one level above the ads/ folder.
+import '../../services/ad_manager.dart';
+// Conditional import: on mobile this gives us NativeAdWidget from the real
+// AdMob implementation; on web the platform stub is used instead, which
+// defines a no-op NativeAdWidget so the code compiles cleanly.
+import '../../services/ads/ad_service_mobile.dart'
+    if (dart.library.html) '../../services/ads/ad_service_web.dart';
 
 class PortfolioScreen extends StatefulWidget {
   const PortfolioScreen({super.key});
