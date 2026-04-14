@@ -1,3 +1,4 @@
+// frontend/lib/screens/settings/settings_screen.dart
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,7 +10,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
-import '../../utils/storage_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -39,31 +39,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await Future.wait([_loadUserEmail(), _loadPreferences()]);
   }
 
-  // ── Load user email ────────────────────────────────────────────────────────
+  // ── Load user email ──────────────────────────────────────────────────────
   Future<void> _loadUserEmail() async {
     try {
-      // Supabase auth session is most reliable
       final supaEmail =
           Supabase.instance.client.auth.currentUser?.email ?? '';
       if (supaEmail.isNotEmpty) {
-        if (mounted) setState(() { _userEmail = supaEmail; _loadingEmail = false; });
+        if (mounted) {
+          setState(() {
+            _userEmail    = supaEmail;
+            _loadingEmail = false;
+          });
+        }
         final prefs = await SharedPreferences.getInstance();
         unawaited(prefs.setString('user_email', supaEmail));
         return;
       }
 
-      // Fallback: SharedPreferences cached value
       final prefs = await SharedPreferences.getInstance();
       final email =
           prefs.getString('user_email') ?? prefs.getString('email') ?? '';
-
-      if (mounted) setState(() { _userEmail = email; _loadingEmail = false; });
+      if (mounted) {
+        setState(() {
+          _userEmail    = email;
+          _loadingEmail = false;
+        });
+      }
     } catch (_) {
       if (mounted) setState(() => _loadingEmail = false);
     }
   }
 
-  // ── Load persisted notification / privacy prefs ────────────────────────────
+  // ── Load persisted prefs ─────────────────────────────────────────────────
   Future<void> _loadPreferences() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -84,7 +91,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(key, value);
-      // TODO: sync to backend notification-prefs endpoint when available
     } catch (_) {}
   }
 
@@ -92,11 +98,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(key, value);
-      // TODO: sync to backend profile privacy endpoint when available
     } catch (_) {}
   }
 
-  // ── Change Password (bottom sheet) ────────────────────────────────────────
+  // ── Change Password ──────────────────────────────────────────────────────
   void _showChangePassword(
       BuildContext ctx, bool isDark, Color text, Color sub) {
     showModalBottomSheet(
@@ -108,7 +113,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  // ── Email Address dialog ───────────────────────────────────────────────────
+  // ── Email Info dialog ────────────────────────────────────────────────────
   void _showEmailInfo(
       BuildContext ctx, bool isDark, Color text, Color sub) {
     showDialog(
@@ -118,7 +123,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         shape:
             RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: Text('Email Address',
-            style: TextStyle(fontWeight: FontWeight.w700, color: text)),
+            style:
+                TextStyle(fontWeight: FontWeight.w700, color: text)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -128,26 +134,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 8),
             Container(
               width: double.infinity,
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 12, vertical: 10),
               decoration: BoxDecoration(
                 color: AppColors.primary.withOpacity(0.08),
                 borderRadius: BorderRadius.circular(10),
-                border:
-                    Border.all(color: AppColors.primary.withOpacity(0.2)),
+                border: Border.all(
+                    color: AppColors.primary.withOpacity(0.2)),
               ),
               child: Text(
                 _loadingEmail
                     ? 'Loading…'
                     : (_userEmail.isNotEmpty ? _userEmail : '—'),
                 style: TextStyle(
-                    fontWeight: FontWeight.w600, color: text, fontSize: 14),
+                    fontWeight: FontWeight.w600,
+                    color: text,
+                    fontSize: 14),
               ),
             ),
             const SizedBox(height: 12),
             Text(
               'To change your email address, please contact our support team.',
-              style: TextStyle(color: sub, fontSize: 12, height: 1.5),
+              style: TextStyle(
+                  color: sub, fontSize: 12, height: 1.5),
             ),
           ],
         ),
@@ -156,15 +165,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onPressed: () => Navigator.pop(ctx),
             child: const Text('Close',
                 style: TextStyle(
-                    color: AppColors.primary, fontWeight: FontWeight.w600)),
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w600)),
           ),
         ],
       ),
     );
   }
 
-  // ── Help & Support bottom sheet ────────────────────────────────────────────
-  void _showHelp(BuildContext ctx, bool isDark, Color text, Color sub) {
+  // ── Help & Support ───────────────────────────────────────────────────────
+  void _showHelp(
+      BuildContext ctx, bool isDark, Color text, Color sub) {
     showModalBottomSheet(
       context: ctx,
       isScrollControlled: true,
@@ -173,24 +184,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
         padding: const EdgeInsets.fromLTRB(24, 20, 24, 40),
         decoration: BoxDecoration(
           color: isDark ? AppColors.bgCard : Colors.white,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          borderRadius:
+              const BorderRadius.vertical(top: Radius.circular(24)),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Handle bar
             Container(
-              width: 36,
-              height: 4,
+              width: 36, height: 4,
               decoration: BoxDecoration(
                   color: Colors.grey.shade400,
                   borderRadius: BorderRadius.circular(4)),
             ),
             const SizedBox(height: 24),
-
             Container(
-              width: 56,
-              height: 56,
+              width: 56, height: 56,
               decoration: BoxDecoration(
                   color: AppColors.primary.withOpacity(0.12),
                   borderRadius: BorderRadius.circular(16)),
@@ -198,7 +206,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   color: AppColors.primary, size: 28),
             ),
             const SizedBox(height: 16),
-
             Text('Customer Support',
                 style: TextStyle(
                     fontSize: 18,
@@ -208,54 +215,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Text(
               'Our dedicated support team is here to assist you with any questions, account issues, or feedback about RiseUp.',
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 13, color: sub, height: 1.6),
+              style:
+                  TextStyle(fontSize: 13, color: sub, height: 1.6),
             ),
             const SizedBox(height: 20),
-
-            // Email card
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
                 color: AppColors.primary.withOpacity(0.06),
                 borderRadius: BorderRadius.circular(14),
-                border:
-                    Border.all(color: AppColors.primary.withOpacity(0.18)),
+                border: Border.all(
+                    color: AppColors.primary.withOpacity(0.18)),
               ),
               child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(children: [
-                      const Icon(Iconsax.sms,
-                          color: AppColors.primary, size: 15),
-                      const SizedBox(width: 6),
-                      Text('Support Email',
-                          style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.primary)),
-                    ]),
-                    const SizedBox(height: 6),
-                    Text(_kSupportEmail,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(children: [
+                    const Icon(Iconsax.sms,
+                        color: AppColors.primary, size: 15),
+                    const SizedBox(width: 6),
+                    Text('Support Email',
                         style: TextStyle(
-                            fontSize: 13,
+                            fontSize: 11,
                             fontWeight: FontWeight.w600,
-                            color: text)),
-                    const SizedBox(height: 4),
-                    Text('Response within 3 business days',
-                        style: TextStyle(fontSize: 11, color: sub)),
+                            color: AppColors.primary)),
                   ]),
+                  const SizedBox(height: 6),
+                  Text(_kSupportEmail,
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: text)),
+                  const SizedBox(height: 4),
+                  Text('Response within 3 business days',
+                      style:
+                          TextStyle(fontSize: 11, color: sub)),
+                ],
+              ),
             ),
             const SizedBox(height: 10),
-
-            // Notice
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: Colors.amber.withOpacity(0.08),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.amber.withOpacity(0.2)),
+                border: Border.all(
+                    color: Colors.amber.withOpacity(0.2)),
               ),
               child: Row(children: [
                 const Icon(Icons.info_outline_rounded,
@@ -264,14 +271,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 Expanded(
                   child: Text(
                     'Please include your registered email and a brief description of the issue for faster assistance.',
-                    style: TextStyle(fontSize: 11, color: sub, height: 1.5),
+                    style: TextStyle(
+                        fontSize: 11, color: sub, height: 1.5),
                   ),
                 ),
               ]),
             ),
             const SizedBox(height: 20),
-
-            // Buttons
             Row(children: [
               Expanded(
                 child: OutlinedButton(
@@ -279,13 +285,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     Clipboard.setData(
                         const ClipboardData(text: _kSupportEmail));
                     Navigator.pop(ctx);
-                    ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(
-                      content: Text('Email copied to clipboard'),
-                      behavior: SnackBarBehavior.floating,
-                    ));
+                    ScaffoldMessenger.of(ctx).showSnackBar(
+                      const SnackBar(
+                        content: Text('Email copied to clipboard'),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
                   },
                   style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 13),
+                    padding:
+                        const EdgeInsets.symmetric(vertical: 13),
                     side: BorderSide(
                         color: AppColors.primary.withOpacity(0.5)),
                     shape: RoundedRectangleBorder(
@@ -303,7 +312,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: DecoratedBox(
                   decoration: BoxDecoration(
                     gradient: const LinearGradient(
-                        colors: [AppColors.primary, AppColors.accent]),
+                        colors: [
+                          AppColors.primary,
+                          AppColors.accent
+                        ]),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: ElevatedButton(
@@ -311,15 +323,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       final uri = Uri(
                           scheme: 'mailto',
                           path: _kSupportEmail,
-                          query: 'subject=RiseUp%20Support%20Request');
+                          query:
+                              'subject=RiseUp%20Support%20Request');
                       if (await canLaunchUrl(uri)) {
                         await launchUrl(uri);
                       } else {
-                        Clipboard.setData(
-                            const ClipboardData(text: _kSupportEmail));
+                        Clipboard.setData(const ClipboardData(
+                            text: _kSupportEmail));
                         if (ctx.mounted) {
                           Navigator.pop(ctx);
-                          ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(
+                          ScaffoldMessenger.of(ctx)
+                              .showSnackBar(const SnackBar(
                             content: Text(
                                 'Email copied — open your mail app to contact support'),
                             behavior: SnackBarBehavior.floating,
@@ -330,7 +344,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.transparent,
                       shadowColor: Colors.transparent,
-                      padding: const EdgeInsets.symmetric(vertical: 13),
+                      padding:
+                          const EdgeInsets.symmetric(vertical: 13),
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12)),
                     ),
@@ -349,15 +364,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  // ── Sign Out ───────────────────────────────────────────────────────────────
+  // ── Sign Out ─────────────────────────────────────────────────────────────
   Future<void> _logout() async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+
     final confirm = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: isDark ? AppColors.bgCard : Colors.white,
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20)),
         title: Text('Sign Out?',
             style: TextStyle(
                 fontWeight: FontWeight.w700,
@@ -365,20 +381,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
         content: Text(
           'You will need to sign back in to access your account.',
           style: TextStyle(
-              color: isDark ? Colors.white60 : Colors.black54, height: 1.5),
+              color: isDark ? Colors.white60 : Colors.black54,
+              height: 1.5),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
             child: Text('Cancel',
                 style: TextStyle(
-                    color: isDark ? Colors.white54 : Colors.black45)),
+                    color:
+                        isDark ? Colors.white54 : Colors.black45)),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
             child: const Text('Sign Out',
                 style: TextStyle(
-                    color: AppColors.error, fontWeight: FontWeight.w700)),
+                    color: AppColors.error,
+                    fontWeight: FontWeight.w700)),
           ),
         ],
       ),
@@ -386,22 +405,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     if (confirm != true || !mounted) return;
 
-    // Clear local storage — non-blocking, errors do not block navigation
-    try { await storageService.deleteAll(); } catch (_) {}
-    try { await api.signOut(); } catch (_) {}
-    // Always redirect regardless of any upstream error
+    // api.signOut() → authService.onLogout() → _clearTokens() +
+    // notifyListeners() → GoRouter redirect handles navigation.
+    // storageService.deleteAll() is intentionally NOT called here —
+    // auth_service.dart is designed to wipe auth tokens only.
+    try {
+      await api.signOut();
+    } catch (_) {}
+
+    // Belt-and-suspenders fallback in case GoRouter redirect hasn't
+    // fired yet (e.g. slow listener propagation).
     if (mounted) context.go('/login');
   }
 
-  // ── Build ──────────────────────────────────────────────────────────────────
+  // ── Build ────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    final isDark      = Theme.of(context).brightness == Brightness.dark;
-    final bgColor     = isDark ? Colors.black : Colors.grey.shade50;
-    final cardColor   = isDark ? AppColors.bgCard : Colors.white;
-    final borderColor = isDark ? AppColors.bgSurface : Colors.grey.shade200;
-    final textColor   = isDark ? Colors.white : Colors.black87;
-    final subColor    = isDark ? Colors.white54 : Colors.black45;
+    final isDark       = Theme.of(context).brightness == Brightness.dark;
+    final bgColor      = isDark ? Colors.black : Colors.grey.shade50;
+    final cardColor    = isDark ? AppColors.bgCard : Colors.white;
+    final borderColor  =
+        isDark ? AppColors.bgSurface : Colors.grey.shade200;
+    final textColor    = isDark ? Colors.white : Colors.black87;
+    final subColor     = isDark ? Colors.white54 : Colors.black45;
 
     return Scaffold(
       backgroundColor: bgColor,
@@ -428,46 +454,56 @@ class _SettingsScreenState extends State<SettingsScreen> {
         children: [
           const SizedBox(height: 16),
 
-          // ── Account ─────────────────────────────────
+          // ── Account ───────────────────────────────────
           _Section('Account', textColor),
           _Tile(
             icon: Iconsax.user_edit,
             label: 'Edit Profile',
             sub: 'Name, bio, location, photo',
-            textColor: textColor, subColor: subColor,
-            cardColor: cardColor, borderColor: borderColor,
+            textColor: textColor,
+            subColor: subColor,
+            cardColor: cardColor,
+            borderColor: borderColor,
             onTap: () => context.push('/edit-profile'),
           ),
           _Tile(
             icon: Iconsax.lock,
             label: 'Change Password',
             sub: 'Update your password',
-            textColor: textColor, subColor: subColor,
-            cardColor: cardColor, borderColor: borderColor,
-            onTap: () =>
-                _showChangePassword(context, isDark, textColor, subColor),
+            textColor: textColor,
+            subColor: subColor,
+            cardColor: cardColor,
+            borderColor: borderColor,
+            onTap: () => _showChangePassword(
+                context, isDark, textColor, subColor),
           ),
           _Tile(
             icon: Iconsax.sms,
             label: 'Email Address',
             sub: _loadingEmail
                 ? 'Loading…'
-                : (_userEmail.isNotEmpty ? _userEmail : 'Manage your email'),
-            textColor: textColor, subColor: subColor,
-            cardColor: cardColor, borderColor: borderColor,
-            onTap: () => _showEmailInfo(context, isDark, textColor, subColor),
+                : (_userEmail.isNotEmpty
+                    ? _userEmail
+                    : 'Manage your email'),
+            textColor: textColor,
+            subColor: subColor,
+            cardColor: cardColor,
+            borderColor: borderColor,
+            onTap: () =>
+                _showEmailInfo(context, isDark, textColor, subColor),
           ),
           _Tile(
             icon: Iconsax.crown,
             label: 'Upgrade to Premium',
             sub: 'Unlock unlimited AI access',
-            textColor: textColor, subColor: subColor,
-            cardColor: cardColor, borderColor: borderColor,
-            // push preserves the back stack → back arrow returns to Settings
+            textColor: textColor,
+            subColor: subColor,
+            cardColor: cardColor,
+            borderColor: borderColor,
             onTap: () => context.push('/premium'),
             trailing: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
                 gradient: const LinearGradient(
                     colors: [AppColors.primary, AppColors.accent]),
@@ -483,15 +519,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const SizedBox(height: 16),
 
-          // ── Notifications ────────────────────────────
+          // ── Notifications ─────────────────────────────
           _Section('Notifications', textColor),
           _SwitchTile(
             icon: Iconsax.notification,
             label: 'New Posts',
             sub: 'From people you follow',
             value: _notifPosts,
-            textColor: textColor, subColor: subColor,
-            cardColor: cardColor, borderColor: borderColor,
+            textColor: textColor,
+            subColor: subColor,
+            cardColor: cardColor,
+            borderColor: borderColor,
             onChanged: (v) {
               setState(() => _notifPosts = v);
               _saveNotifPref('notif_posts', v);
@@ -502,8 +540,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             label: 'Comments',
             sub: 'On your posts',
             value: _notifComments,
-            textColor: textColor, subColor: subColor,
-            cardColor: cardColor, borderColor: borderColor,
+            textColor: textColor,
+            subColor: subColor,
+            cardColor: cardColor,
+            borderColor: borderColor,
             onChanged: (v) {
               setState(() => _notifComments = v);
               _saveNotifPref('notif_comments', v);
@@ -514,8 +554,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             label: 'New Followers',
             sub: 'When someone follows you',
             value: _notifFollows,
-            textColor: textColor, subColor: subColor,
-            cardColor: cardColor, borderColor: borderColor,
+            textColor: textColor,
+            subColor: subColor,
+            cardColor: cardColor,
+            borderColor: borderColor,
             onChanged: (v) {
               setState(() => _notifFollows = v);
               _saveNotifPref('notif_follows', v);
@@ -526,8 +568,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             label: 'AI Responses',
             sub: 'RiseUp AI activity',
             value: _notifAI,
-            textColor: textColor, subColor: subColor,
-            cardColor: cardColor, borderColor: borderColor,
+            textColor: textColor,
+            subColor: subColor,
+            cardColor: cardColor,
+            borderColor: borderColor,
             onChanged: (v) {
               setState(() => _notifAI = v);
               _saveNotifPref('notif_ai', v);
@@ -536,15 +580,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const SizedBox(height: 16),
 
-          // ── Privacy ──────────────────────────────────
+          // ── Privacy ───────────────────────────────────
           _Section('Privacy', textColor),
           _SwitchTile(
             icon: Iconsax.lock,
             label: 'Private Account',
             sub: 'Only followers see your posts',
             value: _privateAccount,
-            textColor: textColor, subColor: subColor,
-            cardColor: cardColor, borderColor: borderColor,
+            textColor: textColor,
+            subColor: subColor,
+            cardColor: cardColor,
+            borderColor: borderColor,
             onChanged: (v) {
               setState(() => _privateAccount = v);
               _savePrivacyPref('privacy_private', v);
@@ -555,8 +601,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             label: 'Show Online Status',
             sub: "Let others see when you're active",
             value: _showOnline,
-            textColor: textColor, subColor: subColor,
-            cardColor: cardColor, borderColor: borderColor,
+            textColor: textColor,
+            subColor: subColor,
+            cardColor: cardColor,
+            borderColor: borderColor,
             onChanged: (v) {
               setState(() => _showOnline = v);
               _savePrivacyPref('privacy_online', v);
@@ -565,38 +613,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const SizedBox(height: 16),
 
-          // ── Support ──────────────────────────────────
+          // ── Support ───────────────────────────────────
           _Section('Support', textColor),
           _Tile(
             icon: Iconsax.message_question,
             label: 'Help & Support',
             sub: 'Contact our customer care team',
-            textColor: textColor, subColor: subColor,
-            cardColor: cardColor, borderColor: borderColor,
-            onTap: () => _showHelp(context, isDark, textColor, subColor),
+            textColor: textColor,
+            subColor: subColor,
+            cardColor: cardColor,
+            borderColor: borderColor,
+            onTap: () =>
+                _showHelp(context, isDark, textColor, subColor),
           ),
           _Tile(
             icon: Iconsax.shield_tick,
             label: 'Privacy Policy',
             sub: 'How we protect your data',
-            textColor: textColor, subColor: subColor,
-            cardColor: cardColor, borderColor: borderColor,
-            // push preserves the back stack → back arrow returns to Settings
+            textColor: textColor,
+            subColor: subColor,
+            cardColor: cardColor,
+            borderColor: borderColor,
             onTap: () => context.push('/privacy'),
           ),
           _Tile(
             icon: Iconsax.document_text,
             label: 'Terms of Service',
             sub: 'Our terms and conditions',
-            textColor: textColor, subColor: subColor,
-            cardColor: cardColor, borderColor: borderColor,
-            // push preserves the back stack → back arrow returns to Settings
+            textColor: textColor,
+            subColor: subColor,
+            cardColor: cardColor,
+            borderColor: borderColor,
             onTap: () => context.push('/terms'),
           ),
 
           const SizedBox(height: 16),
 
-          // ── Sign Out ─────────────────────────────────
+          // ── Sign Out ──────────────────────────────────
           Container(
             margin: const EdgeInsets.fromLTRB(16, 0, 16, 32),
             child: GestureDetector(
@@ -606,8 +659,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 decoration: BoxDecoration(
                   color: AppColors.error.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(14),
-                  border:
-                      Border.all(color: AppColors.error.withOpacity(0.3)),
+                  border: Border.all(
+                      color: AppColors.error.withOpacity(0.3)),
                 ),
                 child: const Center(
                   child: Text('Sign Out',
@@ -625,21 +678,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 }
 
-// ── Change Password Sheet ──────────────────────────────────────────────────────
+// ── Change Password Sheet ────────────────────────────────────────────────────
 class _ChangePasswordSheet extends StatefulWidget {
   final bool isDark;
   final Color text, sub;
   const _ChangePasswordSheet(
       {required this.isDark, required this.text, required this.sub});
   @override
-  State<_ChangePasswordSheet> createState() => _ChangePasswordSheetState();
+  State<_ChangePasswordSheet> createState() =>
+      _ChangePasswordSheetState();
 }
 
 class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
-  final _formKey      = GlobalKey<FormState>();
-  final _currentCtrl  = TextEditingController();
-  final _newCtrl      = TextEditingController();
-  final _confirmCtrl  = TextEditingController();
+  final _formKey     = GlobalKey<FormState>();
+  final _currentCtrl = TextEditingController();
+  final _newCtrl     = TextEditingController();
+  final _confirmCtrl = TextEditingController();
 
   bool _showCurrent = false;
   bool _showNew     = false;
@@ -657,7 +711,10 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
 
   Future<void> _submit() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
-    setState(() { _loading = true; _errorMsg = null; });
+    setState(() {
+      _loading  = true;
+      _errorMsg = null;
+    });
 
     try {
       final email =
@@ -701,17 +758,20 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final cardColor   = widget.isDark ? AppColors.bgCard : Colors.white;
+    final cardColor   =
+        widget.isDark ? AppColors.bgCard : Colors.white;
     final borderColor =
         widget.isDark ? AppColors.bgSurface : Colors.grey.shade200;
 
     return Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom),
       child: Container(
         padding: const EdgeInsets.fromLTRB(24, 20, 24, 40),
         decoration: BoxDecoration(
           color: cardColor,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          borderRadius:
+              const BorderRadius.vertical(top: Radius.circular(24)),
         ),
         child: Form(
           key: _formKey,
@@ -719,7 +779,6 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Handle bar
               Center(
                 child: Container(
                   width: 36, height: 4,
@@ -729,19 +788,20 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
                 ),
               ),
               const SizedBox(height: 20),
-
               Text('Change Password',
                   style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.w700,
                       color: widget.text)),
               const SizedBox(height: 4),
-              Text('Enter your current password, then choose a new one.',
+              Text(
+                  'Enter your current password, then choose a new one.',
                   style: TextStyle(
-                      fontSize: 12, color: widget.sub, height: 1.4)),
+                      fontSize: 12,
+                      color: widget.sub,
+                      height: 1.4)),
               const SizedBox(height: 20),
 
-              // Current password
               _PasswordField(
                 controller: _currentCtrl,
                 label: 'Current Password',
@@ -761,7 +821,6 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
               ),
               const SizedBox(height: 12),
 
-              // New password
               _PasswordField(
                 controller: _newCtrl,
                 label: 'New Password',
@@ -786,7 +845,6 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
               ),
               const SizedBox(height: 12),
 
-              // Confirm new password
               _PasswordField(
                 controller: _confirmCtrl,
                 label: 'Confirm New Password',
@@ -808,7 +866,6 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
                 },
               ),
 
-              // Inline error banner
               if (_errorMsg != null) ...[
                 const SizedBox(height: 12),
                 Container(
@@ -828,7 +885,8 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
                     Expanded(
                       child: Text(_errorMsg!,
                           style: const TextStyle(
-                              color: AppColors.error, fontSize: 12)),
+                              color: AppColors.error,
+                              fontSize: 12)),
                     ),
                   ]),
                 ),
@@ -836,13 +894,15 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
 
               const SizedBox(height: 20),
 
-              // Submit
               SizedBox(
                 width: double.infinity,
                 child: DecoratedBox(
                   decoration: BoxDecoration(
                     gradient: const LinearGradient(
-                        colors: [AppColors.primary, AppColors.accent]),
+                        colors: [
+                          AppColors.primary,
+                          AppColors.accent
+                        ]),
                     borderRadius: BorderRadius.circular(14),
                   ),
                   child: ElevatedButton(
@@ -857,7 +917,8 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
                     ),
                     child: _loading
                         ? const SizedBox(
-                            width: 20, height: 20,
+                            width: 20,
+                            height: 20,
                             child: CircularProgressIndicator(
                                 color: Colors.white, strokeWidth: 2))
                         : const Text('Update Password',
@@ -876,7 +937,7 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
   }
 }
 
-// ── Reusable password text field ───────────────────────────────────────────────
+// ── Reusable password field ──────────────────────────────────────────────────
 class _PasswordField extends StatelessWidget {
   final TextEditingController controller;
   final String label;
@@ -899,72 +960,76 @@ class _PasswordField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => TextFormField(
-    controller: controller,
-    obscureText: obscure,
-    style: TextStyle(color: textColor, fontSize: 14),
-    validator: validator,
-    decoration: InputDecoration(
-      labelText: label,
-      labelStyle: TextStyle(color: subColor, fontSize: 13),
-      filled: true,
-      fillColor: isDark
-          ? AppColors.bgSurface.withOpacity(0.5)
-          : Colors.grey.shade50,
-      border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: borderColor)),
-      enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: borderColor, width: 0.8)),
-      focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide:
-              const BorderSide(color: AppColors.primary, width: 1.5)),
-      errorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(
-              color: AppColors.error.withOpacity(0.7), width: 1)),
-      focusedErrorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide:
-              const BorderSide(color: AppColors.error, width: 1.5)),
-      contentPadding:
-          const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-      suffixIcon: IconButton(
-        icon: Icon(
-          obscure ? Iconsax.eye_slash : Iconsax.eye,
-          color: subColor, size: 18,
+        controller: controller,
+        obscureText: obscure,
+        style: TextStyle(color: textColor, fontSize: 14),
+        validator: validator,
+        decoration: InputDecoration(
+          labelText: label,
+          labelStyle: TextStyle(color: subColor, fontSize: 13),
+          filled: true,
+          fillColor: isDark
+              ? AppColors.bgSurface.withOpacity(0.5)
+              : Colors.grey.shade50,
+          border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: borderColor)),
+          enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide:
+                  BorderSide(color: borderColor, width: 0.8)),
+          focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(
+                  color: AppColors.primary, width: 1.5)),
+          errorBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(
+                  color: AppColors.error.withOpacity(0.7),
+                  width: 1)),
+          focusedErrorBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(
+                  color: AppColors.error, width: 1.5)),
+          contentPadding: const EdgeInsets.symmetric(
+              horizontal: 14, vertical: 14),
+          suffixIcon: IconButton(
+            icon: Icon(
+              obscure ? Iconsax.eye_slash : Iconsax.eye,
+              color: subColor,
+              size: 18,
+            ),
+            onPressed: onToggle,
+          ),
         ),
-        onPressed: onToggle,
-      ),
-    ),
-  );
+      );
 }
 
-// ── Section header ─────────────────────────────────────────────────────────────
+// ── Section header ───────────────────────────────────────────────────────────
 class _Section extends StatelessWidget {
   final String title;
   final Color textColor;
   const _Section(this.title, this.textColor);
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-    child: Text(title,
-        style: const TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w700,
-            color: AppColors.primary,
-            letterSpacing: 0.5)),
-  );
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+        child: Text(title,
+            style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: AppColors.primary,
+                letterSpacing: 0.5)),
+      );
 }
 
-// ── Standard tappable row ──────────────────────────────────────────────────────
+// ── Standard tappable row ────────────────────────────────────────────────────
 class _Tile extends StatelessWidget {
   final IconData icon;
   final String label, sub;
   final Color textColor, subColor, cardColor, borderColor;
   final VoidCallback onTap;
   final Widget? trailing;
+
   const _Tile({
     required this.icon,
     required this.label,
@@ -979,52 +1044,58 @@ class _Tile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => GestureDetector(
-    onTap: onTap,
-    child: Container(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 2),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      decoration: BoxDecoration(
-          color: cardColor,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: borderColor, width: 0.5)),
-      child: Row(children: [
-        Container(
-          width: 36, height: 36,
+        onTap: onTap,
+        child: Container(
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 2),
+          padding: const EdgeInsets.symmetric(
+              horizontal: 16, vertical: 14),
           decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(10)),
-          child: Icon(icon, color: AppColors.primary, size: 18),
+              color: cardColor,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: borderColor, width: 0.5)),
+          child: Row(children: [
+            Container(
+              width: 36, height: 36,
+              decoration: BoxDecoration(
+                  color: AppColors.primary.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(10)),
+              child:
+                  Icon(icon, color: AppColors.primary, size: 18),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label,
+                      style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: textColor)),
+                  Text(sub,
+                      style:
+                          TextStyle(fontSize: 12, color: subColor),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
+                ],
+              ),
+            ),
+            trailing ??
+                Icon(Icons.chevron_right_rounded,
+                    color: subColor, size: 20),
+          ]),
         ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(label,
-                    style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: textColor)),
-                Text(sub,
-                    style: TextStyle(fontSize: 12, color: subColor),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
-              ]),
-        ),
-        trailing ??
-            Icon(Icons.chevron_right_rounded, color: subColor, size: 20),
-      ]),
-    ),
-  );
+      );
 }
 
-// ── Toggle row ─────────────────────────────────────────────────────────────────
+// ── Toggle row ───────────────────────────────────────────────────────────────
 class _SwitchTile extends StatelessWidget {
   final IconData icon;
   final String label, sub;
   final bool value;
   final Color textColor, subColor, cardColor, borderColor;
   final Function(bool) onChanged;
+
   const _SwitchTile({
     required this.icon,
     required this.label,
@@ -1039,35 +1110,41 @@ class _SwitchTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-    margin: const EdgeInsets.fromLTRB(16, 0, 16, 2),
-    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-    decoration: BoxDecoration(
-        color: cardColor,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: borderColor, width: 0.5)),
-    child: Row(children: [
-      Container(
-        width: 36, height: 36,
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 2),
+        padding: const EdgeInsets.symmetric(
+            horizontal: 16, vertical: 10),
         decoration: BoxDecoration(
-            color: AppColors.primary.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(10)),
-        child: Icon(icon, color: AppColors.primary, size: 18),
-      ),
-      const SizedBox(width: 12),
-      Expanded(
-        child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label,
-                  style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: textColor)),
-              Text(sub, style: TextStyle(fontSize: 12, color: subColor)),
-            ]),
-      ),
-      Switch.adaptive(
-          value: value, onChanged: onChanged, activeColor: AppColors.primary),
-    ]),
-  );
+            color: cardColor,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: borderColor, width: 0.5)),
+        child: Row(children: [
+          Container(
+            width: 36, height: 36,
+            decoration: BoxDecoration(
+                color: AppColors.primary.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10)),
+            child: Icon(icon, color: AppColors.primary, size: 18),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label,
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: textColor)),
+                Text(sub,
+                    style:
+                        TextStyle(fontSize: 12, color: subColor)),
+              ],
+            ),
+          ),
+          Switch.adaptive(
+              value: value,
+              onChanged: onChanged,
+              activeColor: AppColors.primary),
+        ]),
+      );
 }
