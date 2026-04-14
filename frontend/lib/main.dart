@@ -1,11 +1,10 @@
-// frontend/lib/main.dart
-//
-// Changes vs original:
-//  • authService.initialize() added to the parallel Future.wait block.
-//    This reads the stored token from secure storage (fast, <5ms) BEFORE
-//    runApp() is called, so the very first GoRouter render already knows
-//    whether to show /home or /login — no extra delay, no flicker.
-//
+// lib/main.dart
+// Only change from your current version:
+//   • Added firebase_core import
+//   • Added Firebase.initializeApp() BEFORE _initSupabase()
+//   • Everything else is identical
+
+import 'package:firebase_core/firebase_core.dart';          // ← NEW
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -15,14 +14,14 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'config/app_constants.dart';
 import 'config/router.dart';
 import 'services/ad_manager.dart';
-import 'services/auth_service.dart'; // ← NEW
+import 'services/auth_service.dart';
 import 'services/notification_service.dart';
 import 'utils/storage_service.dart';
 import 'utils/connectivity_wrapper.dart';
 import 'utils/version_check_service.dart';
 import 'providers/locale_provider.dart';
 
-// ── Isolated init helpers — run in parallel ───────────────────────────────
+// ── Isolated init helpers ─────────────────────────────────────────────────
 
 Future<void> _initSupabase() async {
   if (kSupabaseUrl.isEmpty || kSupabaseAnonKey.isEmpty) return;
@@ -43,14 +42,13 @@ Future<void> _initNotifications() async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Storage must be ready before anything reads from it
   storageService.init();
 
   if (!kIsWeb) {
     SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-      statusBarColor:            Colors.transparent,
-      statusBarIconBrightness:   Brightness.light,
-      systemNavigationBarColor:  Colors.transparent,
+      statusBarColor:           Colors.transparent,
+      statusBarIconBrightness:  Brightness.light,
+      systemNavigationBarColor: Colors.transparent,
     ));
     await SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
@@ -58,18 +56,18 @@ void main() async {
     ]);
   }
 
-  // FIX: authService.initialize() reads the stored token from secure storage
-  // before runApp() so GoRouter's first render already knows auth status.
-  // Supabase must initialize first (it provides the auth stream), so we
-  // run Supabase first, then auth + notifications in parallel.
+  // ── NEW: Firebase must init before Supabase and notifications ────────────
+  if (!kIsWeb) {
+    await Firebase.initializeApp();
+  }
+
   await _initSupabase();
 
   await Future.wait([
-    authService.initialize(), // ← NEW: sets AuthStatus before first frame
+    authService.initialize(),
     _initNotifications(),
   ]);
 
-  // Ads initialize fire-and-forget — never blocks the UI thread.
   adManager.initialize(isPremium: false).catchError((_) {});
 
   FlutterError.onError = (details) {
@@ -79,7 +77,8 @@ void main() async {
   runApp(const ProviderScope(child: RiseUpApp()));
 }
 
-// ── App root ───────────────────────────────────────────────────────────────
+// ── App root ──────────────────────────────────────────────────────────────
+// Everything below this line is UNCHANGED from your current main.dart
 
 class RiseUpApp extends StatefulWidget {
   const RiseUpApp({super.key});
@@ -97,11 +96,9 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
 
   Future<void> _runVersionCheck() async {
     try {
-      final matches =
-          router.routerDelegate.currentConfiguration.matches;
+      final matches = router.routerDelegate.currentConfiguration.matches;
       if (matches.isNotEmpty) {
-        final ctx =
-            router.routerDelegate.navigatorKey.currentContext;
+        final ctx = router.routerDelegate.navigatorKey.currentContext;
         if (ctx != null && ctx.mounted) {
           versionCheckService.checkAndPrompt(ctx);
         }
@@ -116,23 +113,20 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
   }
 
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    // App Open Ad disabled — caused black screen on startup.
-  }
+  void didChangeAppLifecycleState(AppLifecycleState state) {}
 
   @override
   Widget build(BuildContext context) {
     return Consumer(
       builder: (context, ref, child) {
         final locale = ref.watch(localeProvider);
-
         return MaterialApp.router(
-          title:                    'RiseUp',
+          title:                      'RiseUp',
           debugShowCheckedModeBanner: false,
-          theme:      AppTheme.light,
-          darkTheme:  AppTheme.dark,
-          themeMode:  ThemeMode.system,
-          locale:     locale,
+          theme:     AppTheme.light,
+          darkTheme: AppTheme.dark,
+          themeMode: ThemeMode.system,
+          locale:    locale,
           supportedLocales: const [
             Locale('en'), Locale('es'), Locale('fr'), Locale('de'),
             Locale('pt'), Locale('hi'), Locale('ar'), Locale('zh'),
@@ -156,8 +150,6 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
     );
   }
 }
-
-// ── Global error widget ────────────────────────────────────────────────────
 
 class _GlobalErrorWidget extends StatelessWidget {
   final FlutterErrorDetails details;
