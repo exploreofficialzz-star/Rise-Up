@@ -2,21 +2,20 @@
 //
 // Changes vs original:
 //  • _addAuthInterceptor: when refresh fails → authService.onAuthenticationFailed()
-//    This clears storage AND triggers GoRouter to redirect to /login instantly.
-//    Previously the bad token stayed in storage and EVERY subsequent call failed
-//    with "authentication error" until the user manually killed the app.
 //  • signIn now calls authService.onLoginSuccess()
 //  • signOut now calls authService.onLogout()
+//  • registerFcmToken updated to named parameters    ← NEW (matches notification_service.dart)
+//  • unregisterFcmToken added                        ← NEW
 //
 import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:path/path.dart' as p;
 import '../config/app_constants.dart';
 import '../utils/storage_service.dart';
-import 'auth_service.dart'; // ← NEW
+import 'auth_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Custom exception so every screen can handle errors uniformly
+// Custom exception
 // ─────────────────────────────────────────────────────────────────────────────
 class ApiException implements Exception {
   final int? statusCode;
@@ -65,7 +64,7 @@ Map<String, String> _mimeFromPath(String filePath) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ApiService — singleton, Dio-based, JWT + refresh token aware
+// ApiService
 // ─────────────────────────────────────────────────────────────────────────────
 class ApiService {
   static final ApiService _instance = ApiService._internal();
@@ -114,7 +113,6 @@ class ApiService {
           _isRefreshing = false;
 
           if (refreshed) {
-            // Token refreshed — retry the original request
             final token = await storageService.read(key: 'access_token');
             error.requestOptions.headers['Authorization'] = 'Bearer $token';
             try {
@@ -124,11 +122,6 @@ class ApiService {
               return handler.next(error);
             }
           } else {
-            // FIX: Refresh also failed — session is dead.
-            // Clear tokens + flip auth state → GoRouter redirects to /login.
-            // Previously this was a silent failure that left bad tokens in
-            // storage, causing every subsequent call to show "authentication
-            // error" until the user killed and reinstalled the app.
             await authService.onAuthenticationFailed();
             return handler.next(error);
           }
@@ -233,17 +226,13 @@ class ApiService {
           key: 'refresh_token', value: data['refresh_token'] as String);
       await storageService.write(
           key: 'user_id', value: data['user_id'] as String);
-
-      // FIX: Tell authService login succeeded → GoRouter redirect fires → /home
       authService.onLoginSuccess();
-
       return data;
     } catch (e) { throw _handleError(e); }
   }
 
   Future<void> signOut() async {
     try { await _dio.post('/auth/signout', data: {}); } catch (_) {}
-    // FIX: Use authService.onLogout() which also clears Supabase session
     await authService.onLogout();
   }
 
@@ -957,13 +946,25 @@ class ApiService {
 
   // ── Notifications ─────────────────────────────────────────────────────────
 
-  Future<Map<String, dynamic>> registerFcmToken(
-      String token, String platform) async {
+  // ← UPDATED: changed to named parameters to match notification_service.dart
+  Future<void> registerFcmToken({
+    required String token,
+    required String platform,
+  }) async {
     try {
-      final res = await _dio.post('/notifications/register-token',
+      await _dio.post('/notifications/register-token',
           data: {'token': token, 'platform': platform});
-      return res.data as Map<String, dynamic>;
-    } catch (e) { throw _handleError(e); }
+    } catch (_) {
+      // Non-fatal — app works without push if registration fails
+    }
+  }
+
+  // ← NEW: called by notification_service.dart on logout
+  Future<void> unregisterFcmToken(String token) async {
+    try {
+      await _dio.delete('/notifications/unregister-token',
+          queryParameters: {'token': token});
+    } catch (_) {}
   }
 
   Future<Map<String, dynamic>> getNotifications({int limit = 30}) async {
