@@ -1,14 +1,12 @@
 // frontend/lib/config/router.dart
-// v5.2 — Splash controls its own 2s timing; router no longer boots it early
+// v6.0 — Persistent-session auth guard (Facebook/Instagram/YouTube model)
 //
-// Root cause of splash never showing:
-//  authService.initialize() completes BEFORE runApp(), so status is already
-//  known on frame 1. v5.1's step-2 redirect immediately pushed to /home or
-//  /login before the splash Scaffold ever painted.
-//
-// Fix: redirect returns null for /splash regardless of auth status.
-//  splash_screen.dart v2.4 owns the 2s delay and calls context.go() itself.
-//  Router only sends unknown-status navigations TO /splash (step 1).
+// Routing rules:
+//  • unknown status     → /splash (auth resolves there, then navigates)
+//  • authenticated      → never redirected to /login from any route
+//  • unauthenticated    → protected routes redirect to /login
+//  • authenticated on   → redirected away from /login and /register
+//    /login or /register
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -69,8 +67,8 @@ import '../screens/methods/methods_brain_screen.dart';
 import '../screens/marketplace/marketplace_screen.dart';
 import '../main_shell.dart';
 
-// Routes that never require authentication
-const _publicRoutes = {
+// Routes accessible without authentication
+const _publicRoutes = <String>{
   '/splash',
   '/login',
   '/register',
@@ -86,39 +84,37 @@ bool _isPublic(String location) =>
 
 final router = GoRouter(
   initialLocation: '/splash',
-  refreshListenable: authService,
+  refreshListenable: authService, // Rebuilds on every AuthStatus change
 
-  // ── Global auth guard ────────────────────────────────────────────────
   redirect: (context, state) {
     final location = state.matchedLocation;
     final status   = authService.status;
 
-    // ── 1. Auth still resolving → send everything to splash ───────────
-    // initialize() typically completes in <5ms so this is momentary.
+    // ── 1. Auth still resolving → hold at splash ──────────────────────
+    // initialize() is called before runApp() so this is only momentary.
     if (status == AuthStatus.unknown) {
       return location == '/splash' ? null : '/splash';
     }
 
-    // ── 2. On splash with known status → do NOT redirect ──────────────
-    // splash_screen.dart v2.4 owns the 2-second delay and calls
-    // context.go('/home') or context.go('/login') itself after it elapses.
-    // If we redirect here the splash never renders even one frame.
+    // ── 2. On splash with known status → let splash screen navigate ───
+    // SplashScreen owns the delay and calls context.go() itself after the
+    // minimum display time. Redirecting here would skip the animation.
     if (location == '/splash') {
       return null;
     }
 
-    // ── 3. Unauthenticated on protected route → /login ─────────────────
+    // ── 3. Unauthenticated on a protected route → /login ──────────────
     if (status == AuthStatus.unauthenticated && !_isPublic(location)) {
       return '/login';
     }
 
-    // ── 4. Authenticated on login/register → skip to home ──────────────
+    // ── 4. Authenticated and trying to access auth screens → /home ────
     if (status == AuthStatus.authenticated &&
         (location == '/login' || location == '/register')) {
       return '/home';
     }
 
-    // No redirect needed
+    // No redirect — let navigation proceed
     return null;
   },
 
@@ -126,7 +122,7 @@ final router = GoRouter(
       _ErrorPage(error: state.error?.toString()),
 
   routes: [
-    // ── Public ──────────────────────────────────────────────────────────
+    // ── Public / auth routes ────────────────────────────────────────────
     GoRoute(path: '/splash',          builder: (_, __) => const SplashScreen()),
     GoRoute(path: '/login',           builder: (_, __) => const LoginScreen()),
     GoRoute(path: '/register',        builder: (_, __) => const RegisterScreen()),
@@ -141,7 +137,7 @@ final router = GoRouter(
     GoRoute(path: '/terms',      builder: (_, __) => const TermsScreen()),
     GoRoute(path: '/onboarding', builder: (_, __) => const OnboardingChatScreen()),
 
-    // ── Full-screen modals (outside shell so no bottom nav) ─────────────
+    // ── Full-screen modals (no bottom nav) ──────────────────────────────
     GoRoute(path: '/premium', builder: (_, __) => const PremiumScreen()),
     GoRoute(
       path: '/comments/:postId',
@@ -157,16 +153,16 @@ final router = GoRouter(
         final extra = s.extra as Map<String, String?>? ?? {};
         return ConversationScreen(
           userId:      s.pathParameters['userId']!,
-          name:        s.uri.queryParameters['name']       ?? extra['name']       ?? 'User',
-          avatar:      s.uri.queryParameters['avatar']     ?? extra['avatar']     ?? '🙂',
-          isAI:        s.uri.queryParameters['isAI']       == 'true',
-          postContext: s.uri.queryParameters['postContext'] ?? extra['postContext'],
-          postAuthor:  s.uri.queryParameters['postAuthor']  ?? extra['postAuthor'],
+          name:        s.uri.queryParameters['name']        ?? extra['name']        ?? 'User',
+          avatar:      s.uri.queryParameters['avatar']      ?? extra['avatar']      ?? '🙂',
+          isAI:        s.uri.queryParameters['isAI']        == 'true',
+          postContext: s.uri.queryParameters['postContext']  ?? extra['postContext'],
+          postAuthor:  s.uri.queryParameters['postAuthor']   ?? extra['postAuthor'],
         );
       },
     ),
 
-    // ── Main shell (bottom nav) ─────────────────────────────────────────
+    // ── Main shell with bottom nav ──────────────────────────────────────
     ShellRoute(
       builder: (context, state, child) => MainShell(child: child),
       routes: [
@@ -176,7 +172,6 @@ final router = GoRouter(
         GoRoute(path: '/create',    builder: (_, __) => const CreatePostScreen()),
         GoRoute(path: '/messages',  builder: (_, __) => const MessagesScreen()),
         GoRoute(path: '/profile',   builder: (_, __) => const ProfileScreen()),
-
         GoRoute(
           path: '/user-profile/:id',
           builder: (_, s) =>
@@ -210,7 +205,6 @@ final router = GoRouter(
           ),
         ),
         GoRoute(path: '/create-status', builder: (_, __) => const CreateStatusScreen()),
-
         GoRoute(path: '/tasks',    builder: (_, __) => const TasksScreen()),
         GoRoute(path: '/skills',   builder: (_, __) => const SkillsScreen()),
         GoRoute(
@@ -218,30 +212,28 @@ final router = GoRouter(
           builder: (_, s) =>
               SkillDetailScreen(moduleId: s.pathParameters['id']!),
         ),
-        GoRoute(path: '/roadmap',      builder: (_, __) => const RoadmapScreen()),
-        GoRoute(path: '/earnings',     builder: (_, __) => const EarningsScreen()),
-        GoRoute(path: '/analytics',    builder: (_, __) => const AnalyticsScreen()),
-        GoRoute(path: '/achievements', builder: (_, __) => const AchievementsScreen()),
-        GoRoute(path: '/goals',        builder: (_, __) => const GoalsScreen()),
-        GoRoute(path: '/expenses',     builder: (_, __) => const ExpensesScreen()),
-        GoRoute(path: '/referrals',    builder: (_, __) => const ReferralsScreen()),
-        GoRoute(path: '/streak',       builder: (_, __) => const StreakScreen()),
-        GoRoute(path: '/contracts',    builder: (_, __) => const ContractsScreen()),
-        GoRoute(path: '/crm',          builder: (_, __) => const CrmScreen()),
-        GoRoute(path: '/challenges',   builder: (_, __) => const ChallengesScreen()),
-        GoRoute(path: '/portfolio',    builder: (_, __) => const PortfolioScreen()),
-        GoRoute(path: '/memory',       builder: (_, __) => const IncomeMemoryScreen()),
-        GoRoute(path: '/collaboration',builder: (_, __) => const CollaborationScreen()),
-
-        GoRoute(path: '/workflow',     builder: (_, __) => const WorkflowHubScreen()),
-        GoRoute(path: '/workflow/new', builder: (_, __) => const WorkflowResearchScreen()),
+        GoRoute(path: '/roadmap',       builder: (_, __) => const RoadmapScreen()),
+        GoRoute(path: '/earnings',      builder: (_, __) => const EarningsScreen()),
+        GoRoute(path: '/analytics',     builder: (_, __) => const AnalyticsScreen()),
+        GoRoute(path: '/achievements',  builder: (_, __) => const AchievementsScreen()),
+        GoRoute(path: '/goals',         builder: (_, __) => const GoalsScreen()),
+        GoRoute(path: '/expenses',      builder: (_, __) => const ExpensesScreen()),
+        GoRoute(path: '/referrals',     builder: (_, __) => const ReferralsScreen()),
+        GoRoute(path: '/streak',        builder: (_, __) => const StreakScreen()),
+        GoRoute(path: '/contracts',     builder: (_, __) => const ContractsScreen()),
+        GoRoute(path: '/crm',           builder: (_, __) => const CrmScreen()),
+        GoRoute(path: '/challenges',    builder: (_, __) => const ChallengesScreen()),
+        GoRoute(path: '/portfolio',     builder: (_, __) => const PortfolioScreen()),
+        GoRoute(path: '/memory',        builder: (_, __) => const IncomeMemoryScreen()),
+        GoRoute(path: '/collaboration', builder: (_, __) => const CollaborationScreen()),
+        GoRoute(path: '/workflow',      builder: (_, __) => const WorkflowHubScreen()),
+        GoRoute(path: '/workflow/new',  builder: (_, __) => const WorkflowResearchScreen()),
         GoRoute(
           path: '/workflow/:id',
           builder: (_, s) => WorkflowDetailScreen(
             workflowId: s.pathParameters['id']!,
           ),
         ),
-
         GoRoute(
           path: '/agent',
           builder: (_, s) {
@@ -259,7 +251,6 @@ final router = GoRouter(
             );
           },
         ),
-
         GoRoute(path: '/pulse',       builder: (_, __) => const MarketPulseScreen()),
         GoRoute(path: '/methods',     builder: (_, __) => const MethodsBrainScreen()),
         GoRoute(path: '/marketplace', builder: (_, __) => const MarketplaceScreen()),
