@@ -633,18 +633,19 @@ class ApiService {
   String? mediaType,
   String? linkUrl,
   String? linkTitle,
-  String? backgroundColor,   // ← NEW PARAMETER
+  Map<String, dynamic>? extra,   // ← ADD THIS LINE
 }) async {
   try {
-    final r = await _dio.post('/posts', data: {
+    final body = <String, dynamic>{
       'content': content,
       'tag':     tag,
       if (mediaUrl  != null && mediaUrl.isNotEmpty)  'media_url':  mediaUrl,
       if (mediaType != null && mediaType.isNotEmpty) 'media_type': mediaType,
       if (linkUrl   != null && linkUrl.isNotEmpty)   'link_url':   linkUrl,
       if (linkTitle != null && linkTitle.isNotEmpty) 'link_title': linkTitle,
-      if (backgroundColor != null) 'background_color': backgroundColor, // ← NEW FIELD
-    });
+      if (extra != null) ...extra,   // ← ADD THIS LINE (spreads extra fields into body)
+    };
+    final r = await _dio.post('/posts', data: body);
     return r.data as Map<String, dynamic>;
   } catch (e) { throw _handleError(e); }
   }
