@@ -1,4 +1,3 @@
-// lib/services/ads/ad_service_web.dart
 // ─────────────────────────────────────────────────────────────
 //  Web Ad Service — Complete no-op stubs.
 //
@@ -52,7 +51,7 @@ class AdService implements AdServiceBase {
 
   /// No sticky banner on web — returns empty widget.
   @override
-  Widget getStickyBanner(BuildContext context) => const SizedBox.shrink();
+  Widget getStickyBanner(BuildContext context, {Color? backgroundColor}) => const SizedBox.shrink();
 
   // ── Native ─────────────────────────────────────────────────
   @override
@@ -66,3 +65,29 @@ class AdService implements AdServiceBase {
 /// Global singleton — mirrors the mobile export so all call-sites
 /// are identical across platforms.
 final adService = AdService();
+
+// ─────────────────────────────────────────────────────────────
+//  STUB WIDGETS — REQUIRED FOR WEB COMPILATION
+//  Prevents "Method 'NativeAdWidget' isn't defined" errors.
+// ─────────────────────────────────────────────────────────────
+
+class NativeAdWidget extends StatelessWidget {
+  final String factoryId;
+  const NativeAdWidget({super.key, this.factoryId = 'riseup_native'});
+
+  @override
+  Widget build(BuildContext context) {
+    // Returns an invisible box to satisfy the compiler on Web builds
+    return const SizedBox.shrink();
+  }
+}
+
+class BannerAdWidget extends StatelessWidget {
+  const BannerAdWidget({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    // Returns an invisible box to satisfy the compiler on Web builds
+    return const SizedBox.shrink();
+  }
+}
