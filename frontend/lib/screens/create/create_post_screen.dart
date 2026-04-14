@@ -610,17 +610,26 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     if (_hasScamContent(content)) { _showErr('⚠️ Post violates community guidelines.'); return; }
     setState(() => _loading = true);
     try {
-      // v7.0: Extract background color hex for colored text posts
-      final String? bgColorHex = _activeBackgroundColorHex;
+      // v7.0: Extract background color hex for colored text posts.
+      // Pass via the 'extra' map so api.createPost() can forward it to the
+      // backend without requiring a new named parameter on every call site.
+      // ─────────────────────────────────────────────────────────────────────
+      // TODO: Once api_service.dart is updated to accept `backgroundColor`,
+      // replace the extra map with: backgroundColor: _activeBackgroundColorHex
+      // ─────────────────────────────────────────────────────────────────────
+      final Map<String, dynamic> extraFields = {
+        if (_activeBackgroundColorHex != null)
+          'background_color': _activeBackgroundColorHex,
+      };
 
       final postResult = await api.createPost(
-        content:         content.isNotEmpty ? content : (_linkPreview != null ? '🔗 ${_linkPreview!.title}' : '📷 Post'),
-        tag:             _topic,
-        mediaUrl:        _mediaUrl,
-        mediaType:       _mediaUrl != null ? _mediaType : null,
-        linkUrl:         _linkEnabled ? _linkPreview?.url : null,
-        linkTitle:       _linkEnabled ? _linkPreview?.title : null,
-        backgroundColor: bgColorHex,   // v7.0: pass color to API
+        content:    content.isNotEmpty ? content : (_linkPreview != null ? '🔗 ${_linkPreview!.title}' : '📷 Post'),
+        tag:        _topic,
+        mediaUrl:   _mediaUrl,
+        mediaType:  _mediaUrl != null ? _mediaType : null,
+        linkUrl:    _linkEnabled ? _linkPreview?.url : null,
+        linkTitle:  _linkEnabled ? _linkPreview?.title : null,
+        extra:      extraFields.isNotEmpty ? extraFields : null,
       );
 
       // Brain signal
