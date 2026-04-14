@@ -1,48 +1,53 @@
-// lib/services/notification_service.dart
+// frontend/lib/services/notification_service.dart
+// v2.0 — Full FCM + Local notification service
 //
-// Full FCM push notification service — replaces the local-only version.
-// Uses the user's default notification sound exactly like WhatsApp/YouTube.
-//
-// What this does:
-//  • Requests OS permission on first launch (Android 13+ / iOS)
-//  • Creates a high-importance Android channel (default device sound)
-//  • Shows foreground notifications via flutter_local_notifications
-//  • Handles background + terminated notification taps via GoRouter
-//  • Registers/refreshes the FCM token with your backend automatically
-//  • Deletes the token on logout
+// NEW in v2.0:
+//  • showLocalNotification() — plays device DEFAULT notification tone
+//    (same as WhatsApp/Facebook — no custom sound file needed).
+//    Called by CreatePostScreen and HomeScreen's SoundService when a post
+//    or status is published successfully.
+//  • All v1.0 features preserved: FCM token registration, background handler,
+//    Android channel, foreground banners, tap routing, token refresh.
 
 import 'dart:io';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:go_router/go_router.dart';
 
-import '../config/router.dart';        // for router.go() on tap
-import 'api_service.dart';             // for registerFcmToken / deleteFcmToken
+import '../config/router.dart';
+import 'api_service.dart';
 
-// ─── Background handler ────────────────────────────────────────────────────
-// MUST be a top-level function (not a class method).
-// FCM calls this when the app is in the background / terminated.
-// The OS shows the notification automatically using the device default sound.
+// ─── Background handler (top-level — required by FCM) ────────────────────────
 @pragma('vm:entry-point')
 Future<void> _firebaseBackgroundHandler(RemoteMessage message) async {
-  // Nothing extra needed — the OS already shows the notification.
-  // Add data-only message handling here if required.
+  // OS shows the notification automatically using the device default sound.
 }
 
-// ─── Android notification channel ─────────────────────────────────────────
-// No `sound` parameter → device default notification tone (same as WhatsApp).
+// ─── Android notification channel ────────────────────────────────────────────
+// No `sound` parameter → device DEFAULT notification tone (same as WhatsApp).
 const _channel = AndroidNotificationChannel(
-  'riseup_main',          // id  — must match what FCM server sends
-  'RiseUp Notifications', // visible name in Android Settings
+  'riseup_main',
+  'RiseUp Notifications',
   description: 'Likes, messages, streaks and reminders from RiseUp',
-  importance: Importance.high,
-  playSound: true,        // true + no custom sound = OS default tone
+  importance:      Importance.high,
+  playSound:       true,    // true + no custom sound = OS default tone
   enableVibration: true,
-  showBadge: true,
+  showBadge:       true,
 );
 
-// ─── Service ───────────────────────────────────────────────────────────────
+// ─── v2.0: Dedicated channel for post/status published sounds ────────────────
+// Same as above — device default tone, highest importance for immediate banner.
+const _publishChannel = AndroidNotificationChannel(
+  'riseup_publish',
+  'RiseUp Post Published',
+  description: 'Sound when your post or status goes live',
+  importance:      Importance.high,
+  playSound:       true,
+  enableVibration: true,
+  showBadge:       false,
+);
+
+// ─── Service ──────────────────────────────────────────────────────────────────
 class NotificationService {
   NotificationService._();
   static final NotificationService _instance = NotificationService._();
@@ -51,107 +56,117 @@ class NotificationService {
   final _fcm   = FirebaseMessaging.instance;
   final _local = FlutterLocalNotificationsPlugin();
 
-  // Stores a deep-link route from a notification tap that arrived while the
-  // app was terminated. router.dart reads this after the Navigator is ready.
+  bool   _initialized = false;
   String? pendingRoute;
 
   // ── initialize() ─────────────────────────────────────────────────────────
-  // Call this once in main.dart AFTER Firebase.initializeApp().
   Future<void> initialize() async {
-    if (kIsWeb) return; // Web uses a separate service worker flow
+    if (kIsWeb || _initialized) return;
+    _initialized = true;
 
-    // 1. Register the background handler before anything else
+    // 1. Background handler
     FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
 
-    // 2. Request permission (Android 13+ / iOS)
+    // 2. Request permission
     final settings = await _fcm.requestPermission(
-      alert:       true,
-      badge:       true,
-      sound:       true,
-      provisional: false, // provisional = silent delivery on iOS until tapped
+      alert: true, badge: true, sound: true, provisional: false,
     );
-
-    // Silent exit if user denied — do not crash
     if (settings.authorizationStatus == AuthorizationStatus.denied) return;
 
-    // 3. Create the Android channel
-    await _local
-        .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
-        ?.createNotificationChannel(_channel);
+    // 3. Create Android channels
+    final androidPlugin = _local.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+    await androidPlugin?.createNotificationChannel(_channel);
+    await androidPlugin?.createNotificationChannel(_publishChannel);
 
     // 4. Init flutter_local_notifications
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
     const iosInit = DarwinInitializationSettings(
-      requestAlertPermission: true,
-      requestBadgePermission: true,
-      requestSoundPermission: true,
-      defaultPresentSound:    true, // iOS foreground: use device default tone
+      requestAlertPermission: true, requestBadgePermission: true, requestSoundPermission: true,
+      defaultPresentSound: true,   // iOS: device default tone
     );
     await _local.initialize(
       const InitializationSettings(android: androidInit, iOS: iosInit),
-      onDidReceiveNotificationResponse: (response) {
-        // Notification tapped while app is in foreground
-        _handleTap(response.payload);
-      },
+      onDidReceiveNotificationResponse: (response) => _handleTap(response.payload),
     );
 
-    // 5. iOS: show notifications while app is in foreground
-    await _fcm.setForegroundNotificationPresentationOptions(
-      alert: true,
-      badge: true,
-      sound: true,
-    );
+    // 5. iOS foreground
+    await _fcm.setForegroundNotificationPresentationOptions(alert: true, badge: true, sound: true);
 
-    // 6. Foreground message listener
+    // 6. Listeners
     FirebaseMessaging.onMessage.listen(_onForegroundMessage);
+    FirebaseMessaging.onMessageOpenedApp.listen((msg) => _handleTap(msg.data['route'] as String?));
 
-    // 7. Tap when app is in background (not terminated)
-    FirebaseMessaging.onMessageOpenedApp.listen((msg) {
-      _handleTap(msg.data['route'] as String?);
-    });
-
-    // 8. App launched from terminated state via notification tap
+    // 7. Terminated tap
     final initial = await _fcm.getInitialMessage();
-    if (initial != null) {
-      pendingRoute = initial.data['route'] as String?;
-    }
+    if (initial != null) pendingRoute = initial.data['route'] as String?;
 
-    // 9. Register token with backend
+    // 8. Token
     await _registerToken();
-
-    // 10. Auto-refresh token
     _fcm.onTokenRefresh.listen(_sendTokenToBackend);
   }
 
-  // ── Foreground notification display ──────────────────────────────────────
+  // ── v2.0: showLocalNotification() ────────────────────────────────────────
+  /// Show an immediate local notification using the device's DEFAULT
+  /// notification sound — no custom audio file required.
+  /// Used by SoundService.post() and SoundService.statusPost().
+  Future<void> showLocalNotification({
+    required int    id,
+    required String title,
+    required String body,
+    String? payload,
+    bool    usePublishChannel = true,  // publish channel for post sounds
+  }) async {
+    if (kIsWeb) return;
+    try {
+      final channelId   = usePublishChannel ? _publishChannel.id : _channel.id;
+      final channelName = usePublishChannel ? _publishChannel.name : _channel.name;
+
+      await _local.show(
+        id, title, body,
+        NotificationDetails(
+          android: AndroidNotificationDetails(
+            channelId, channelName,
+            importance:       Importance.high,
+            priority:         Priority.high,
+            icon:             '@mipmap/ic_launcher',
+            playSound:        true,       // OS default sound
+            enableVibration:  true,
+            // No `sound` field → falls back to device default ringtone
+            styleInformation: const DefaultStyleInformation(true, true),
+          ),
+          iOS: const DarwinNotificationDetails(
+            presentAlert: true,
+            presentBadge: false,
+            presentSound: true,
+            // sound: null → iOS default notification tone
+          ),
+        ),
+        payload: payload,
+      );
+    } catch (e) {
+      // Non-fatal — sound failure must never crash the app
+    }
+  }
+
+  // ── Foreground message → local banner ─────────────────────────────────────
   void _onForegroundMessage(RemoteMessage message) {
     final n = message.notification;
     if (n == null) return;
-
     _local.show(
-      // Stable unique ID — prevents duplicate banners for the same event
-      n.hashCode,
-      n.title,
-      n.body,
+      n.hashCode, n.title, n.body,
       NotificationDetails(
         android: AndroidNotificationDetails(
-          _channel.id,
-          _channel.name,
+          _channel.id, _channel.name,
           channelDescription: _channel.description,
-          importance:    Importance.high,
-          priority:      Priority.high,
-          icon:          '@mipmap/ic_launcher',
-          playSound:     true,   // no sound = OS default tone
+          importance:      Importance.high,
+          priority:        Priority.high,
+          icon:            '@mipmap/ic_launcher',
+          playSound:       true,
           enableVibration: true,
-          // Heads-up banner (like WhatsApp)
           fullScreenIntent: false,
         ),
         iOS: const DarwinNotificationDetails(
-          presentAlert: true,
-          presentBadge: true,
-          presentSound: true,
-          // sound: null → default iOS notification tone
+          presentAlert: true, presentBadge: true, presentSound: true,
         ),
       ),
       payload: message.data['route'] as String?,
@@ -161,20 +176,12 @@ class NotificationService {
   // ── Tap routing ──────────────────────────────────────────────────────────
   void _handleTap(String? route) {
     if (route == null || route.isEmpty) return;
-    // Try to navigate immediately; if navigator isn't ready yet, store it
     try {
       final ctx = router.routerDelegate.navigatorKey.currentContext;
-      if (ctx != null) {
-        router.go(route);
-      } else {
-        pendingRoute = route;
-      }
-    } catch (_) {
-      pendingRoute = route;
-    }
+      if (ctx != null) { router.go(route); } else { pendingRoute = route; }
+    } catch (_) { pendingRoute = route; }
   }
 
-  // Consume pendingRoute once the first authenticated screen loads
   void consumePendingRoute() {
     if (pendingRoute == null) return;
     final route = pendingRoute!;
@@ -190,9 +197,7 @@ class NotificationService {
     try {
       final token = await _fcm.getToken();
       if (token != null) await _sendTokenToBackend(token);
-    } catch (e) {
-      // Non-fatal — app works without push
-    }
+    } catch (_) {}
   }
 
   Future<void> _sendTokenToBackend(String token) async {
@@ -202,7 +207,6 @@ class NotificationService {
     } catch (_) {}
   }
 
-  /// Call on logout so the user stops receiving notifications on this device
   Future<void> onLogout() async {
     if (kIsWeb) return;
     try {
@@ -212,13 +216,8 @@ class NotificationService {
     } catch (_) {}
   }
 
-  // ── Helpers ──────────────────────────────────────────────────────────────
-  Future<String?> getToken() => _fcm.getToken();
-
-  Future<void> cancelAll() async {
-    if (kIsWeb) return;
-    await _local.cancelAll();
-  }
+  Future<String?> getToken()  => _fcm.getToken();
+  Future<void>    cancelAll() async { if (!kIsWeb) await _local.cancelAll(); }
 }
 
 final notificationService = NotificationService();
