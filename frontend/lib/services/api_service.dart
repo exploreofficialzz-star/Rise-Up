@@ -122,7 +122,7 @@ class ApiService {
               return handler.next(error);
             }
           } else {
-            await authService.onAuthenticationFailed();
+           await authService.onLogout();
             return handler.next(error);
           }
         }
