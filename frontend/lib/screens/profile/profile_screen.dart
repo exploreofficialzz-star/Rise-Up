@@ -1425,6 +1425,7 @@ class _ProfilePostsTabState extends State<_ProfilePostsTab>
           borderColor:   widget.borderColor,
           textColor:     widget.textColor,
           subColor:      widget.subColor,
+          onView:        () => Navigator.pushNamed(context, '/post-detail', arguments: post.id), // ← ADD THIS LINE
           onAskAI:       widget.onAskAI,
           onPrivateChat: widget.onPrivateChat,
           onLike:        widget.onLike,
