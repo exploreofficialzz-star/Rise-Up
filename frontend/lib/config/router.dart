@@ -1,14 +1,14 @@
 // frontend/lib/config/router.dart
-// v6.0 — Persistent-session auth guard (Facebook/Instagram/YouTube model)
+// v7.0 — Split AI Mentor / DM screens; onboarding removed
 //
-// Routing rules:
-//  • unknown status     → /splash (auth resolves there, then navigates)
-//  • authenticated      → never redirected to /login from any route
-//  • unauthenticated    → protected routes redirect to /login
-//  • authenticated on   → redirected away from /login and /register
-//    /login or /register
+// Changes from v6:
+//  • /onboarding route and import removed
+//  • /ai-mentor  route added  → AiMentorScreen (full-screen modal, no shell)
+//  • /dm/:convId route added  → DmConversationScreen (full-screen modal, no shell)
+//  • /conversation/:userId kept for legacy deep-links / post-context AI flows
+//  • _publicRoutes updated to remove /onboarding
+//  • All redirects identical to v6
 
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../config/app_constants.dart';
@@ -18,7 +18,6 @@ import '../screens/auth/login_screen.dart';
 import '../screens/auth/register_screen.dart';
 import '../screens/auth/forgot_password_screen.dart';
 import '../screens/auth/verify_email_screen.dart';
-import '../screens/onboarding/onboarding_chat_screen.dart';
 import '../screens/home/home_screen.dart';
 import '../screens/dashboard/dashboard_screen.dart';
 import '../screens/chat/chat_screen.dart';
@@ -30,7 +29,8 @@ import '../screens/comments/comments_screen.dart';
 import '../screens/premium/premium_screen.dart';
 import '../screens/settings/settings_screen.dart';
 import '../screens/messages/messages_screen.dart';
-import '../screens/messages/conversation_screen.dart';
+import '../screens/messages/ai_mentor_screen.dart';
+import '../screens/messages/dm_conversation_screen.dart';
 import '../screens/live/live_screen.dart';
 import '../screens/groups/groups_screen.dart';
 import '../screens/groups/group_detail_screen.dart';
@@ -75,7 +75,7 @@ const _publicRoutes = <String>{
   '/forgot-password',
   '/privacy',
   '/terms',
-  '/onboarding',
+  // NOTE: /onboarding intentionally removed — onboarding is now inline in AI chat
 };
 
 bool _isPublic(String location) =>
@@ -84,37 +84,31 @@ bool _isPublic(String location) =>
 
 final router = GoRouter(
   initialLocation: '/splash',
-  refreshListenable: authService, // Rebuilds on every AuthStatus change
+  refreshListenable: authService,
 
   redirect: (context, state) {
     final location = state.matchedLocation;
     final status   = authService.status;
 
-    // ── 1. Auth still resolving → hold at splash ──────────────────────
-    // initialize() is called before runApp() so this is only momentary.
+    // 1. Auth still resolving → hold at splash
     if (status == AuthStatus.unknown) {
       return location == '/splash' ? null : '/splash';
     }
 
-    // ── 2. On splash with known status → let splash screen navigate ───
-    // SplashScreen owns the delay and calls context.go() itself after the
-    // minimum display time. Redirecting here would skip the animation.
-    if (location == '/splash') {
-      return null;
-    }
+    // 2. On splash with known status → let SplashScreen navigate
+    if (location == '/splash') return null;
 
-    // ── 3. Unauthenticated on a protected route → /login ──────────────
+    // 3. Unauthenticated on protected route → /login
     if (status == AuthStatus.unauthenticated && !_isPublic(location)) {
       return '/login';
     }
 
-    // ── 4. Authenticated and trying to access auth screens → /home ────
+    // 4. Authenticated on auth screens → /home
     if (status == AuthStatus.authenticated &&
         (location == '/login' || location == '/register')) {
       return '/home';
     }
 
-    // No redirect — let navigation proceed
     return null;
   },
 
@@ -122,7 +116,7 @@ final router = GoRouter(
       _ErrorPage(error: state.error?.toString()),
 
   routes: [
-    // ── Public / auth routes ────────────────────────────────────────────
+    // ── Public / auth routes ───────────────────────────────────────────
     GoRoute(path: '/splash',          builder: (_, __) => const SplashScreen()),
     GoRoute(path: '/login',           builder: (_, __) => const LoginScreen()),
     GoRoute(path: '/register',        builder: (_, __) => const RegisterScreen()),
@@ -133,12 +127,12 @@ final router = GoRouter(
         email: s.uri.queryParameters['email'] ?? '',
       ),
     ),
-    GoRoute(path: '/privacy',    builder: (_, __) => const PrivacyPolicyScreen()),
-    GoRoute(path: '/terms',      builder: (_, __) => const TermsScreen()),
-    GoRoute(path: '/onboarding', builder: (_, __) => const OnboardingChatScreen()),
+    GoRoute(path: '/privacy', builder: (_, __) => const PrivacyPolicyScreen()),
+    GoRoute(path: '/terms',   builder: (_, __) => const TermsScreen()),
 
-    // ── Full-screen modals (no bottom nav) ──────────────────────────────
+    // ── Full-screen modals (no bottom nav) ─────────────────────────────
     GoRoute(path: '/premium', builder: (_, __) => const PremiumScreen()),
+
     GoRoute(
       path: '/comments/:postId',
       builder: (_, s) => CommentsScreen(
@@ -147,22 +141,60 @@ final router = GoRouter(
         postAuthor:  s.uri.queryParameters['author']  ?? '',
       ),
     ),
+
+    // ── AI Mentor — dedicated full-screen chat (no shell) ──────────────
     GoRoute(
-      path: '/conversation/:userId',
+      path: '/ai-mentor',
+      builder: (_, s) => AiMentorScreen(
+        postContext: s.uri.queryParameters['postContext'],
+        postAuthor:  s.uri.queryParameters['postAuthor'],
+      ),
+    ),
+
+    // ── DM conversation — user-to-user private chat (no shell) ────────
+    // Path:  /dm/:conversationId
+    // Query: name, otherId, avatar (optional)
+    GoRoute(
+      path: '/dm/:conversationId',
       builder: (_, s) {
-        final extra = s.extra as Map<String, String?>? ?? {};
-        return ConversationScreen(
-          userId:      s.pathParameters['userId']!,
-          name:        s.uri.queryParameters['name']        ?? extra['name']        ?? 'User',
-          avatar:      s.uri.queryParameters['avatar']      ?? extra['avatar']      ?? '🙂',
-          isAI:        s.uri.queryParameters['isAI']        == 'true',
-          postContext: s.uri.queryParameters['postContext']  ?? extra['postContext'],
-          postAuthor:  s.uri.queryParameters['postAuthor']   ?? extra['postAuthor'],
+        final extra = s.extra as Map<String, dynamic>? ?? {};
+        return DmConversationScreen(
+          conversationId: s.pathParameters['conversationId']!,
+          name:           s.uri.queryParameters['name']    ?? extra['name']?.toString()    ?? 'User',
+          avatar:         s.uri.queryParameters['avatar']  ?? extra['avatar']?.toString()  ?? '',
+          otherUserId:    s.uri.queryParameters['otherId'] ?? extra['otherId']?.toString() ?? '',
         );
       },
     ),
 
-    // ── Main shell with bottom nav ──────────────────────────────────────
+    // ── Legacy /conversation/:userId kept for backward-compat deep-links ──
+    // (e.g. post-context AI chat launched from feed). Routes to AiMentorScreen
+    // if userId == 'ai', otherwise opens DM lookup flow.
+    GoRoute(
+      path: '/conversation/:userId',
+      builder: (_, s) {
+        final userId  = s.pathParameters['userId']!;
+        final extra   = s.extra as Map<String, String?>? ?? {};
+        final isAI    = userId == 'ai' || s.uri.queryParameters['isAI'] == 'true';
+
+        if (isAI) {
+          return AiMentorScreen(
+            postContext: s.uri.queryParameters['postContext'] ?? extra['postContext'],
+            postAuthor:  s.uri.queryParameters['postAuthor']  ?? extra['postAuthor'],
+          );
+        }
+
+        // For human DM: userId IS already the conversationId in existing code paths
+        return DmConversationScreen(
+          conversationId: userId,
+          name:    s.uri.queryParameters['name']   ?? extra['name']   ?? 'User',
+          avatar:  s.uri.queryParameters['avatar'] ?? extra['avatar'] ?? '',
+          otherUserId: '',
+        );
+      },
+    ),
+
+    // ── Main shell with bottom nav ─────────────────────────────────────
     ShellRoute(
       builder: (context, state, child) => MainShell(child: child),
       routes: [
@@ -174,8 +206,7 @@ final router = GoRouter(
         GoRoute(path: '/profile',   builder: (_, __) => const ProfileScreen()),
         GoRoute(
           path: '/user-profile/:id',
-          builder: (_, s) =>
-              UserProfileScreen(userId: s.pathParameters['id']!),
+          builder: (_, s) => UserProfileScreen(userId: s.pathParameters['id']!),
         ),
         GoRoute(path: '/edit-profile',  builder: (_, __) => const EditProfileScreen()),
         GoRoute(path: '/settings',      builder: (_, __) => const SettingsScreen()),
@@ -205,12 +236,11 @@ final router = GoRouter(
           ),
         ),
         GoRoute(path: '/create-status', builder: (_, __) => const CreateStatusScreen()),
-        GoRoute(path: '/tasks',    builder: (_, __) => const TasksScreen()),
-        GoRoute(path: '/skills',   builder: (_, __) => const SkillsScreen()),
+        GoRoute(path: '/tasks',         builder: (_, __) => const TasksScreen()),
+        GoRoute(path: '/skills',        builder: (_, __) => const SkillsScreen()),
         GoRoute(
           path: '/skills/:id',
-          builder: (_, s) =>
-              SkillDetailScreen(moduleId: s.pathParameters['id']!),
+          builder: (_, s) => SkillDetailScreen(moduleId: s.pathParameters['id']!),
         ),
         GoRoute(path: '/roadmap',       builder: (_, __) => const RoadmapScreen()),
         GoRoute(path: '/earnings',      builder: (_, __) => const EarningsScreen()),
@@ -230,9 +260,8 @@ final router = GoRouter(
         GoRoute(path: '/workflow/new',  builder: (_, __) => const WorkflowResearchScreen()),
         GoRoute(
           path: '/workflow/:id',
-          builder: (_, s) => WorkflowDetailScreen(
-            workflowId: s.pathParameters['id']!,
-          ),
+          builder: (_, s) =>
+              WorkflowDetailScreen(workflowId: s.pathParameters['id']!),
         ),
         GoRoute(
           path: '/agent',
@@ -268,29 +297,22 @@ class _ErrorPage extends StatelessWidget {
   Widget build(BuildContext ctx) {
     return Scaffold(
       body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.error_outline, size: 64, color: Colors.red),
-            const SizedBox(height: 16),
-            const Text(
-              'Page not found',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            if (error != null) ...[
-              const SizedBox(height: 8),
-              Text(
-                error!,
-                style: const TextStyle(color: Colors.grey, fontSize: 12),
-              ),
-            ],
-            const SizedBox(height: 24),
-            ElevatedButton(
-              onPressed: () => ctx.go('/home'),
-              child: const Text('Go Home'),
-            ),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.error_outline, size: 64, color: Colors.red),
+          const SizedBox(height: 16),
+          const Text('Page not found',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          if (error != null) ...[
+            const SizedBox(height: 8),
+            Text(error!, style: const TextStyle(color: Colors.grey, fontSize: 12)),
           ],
-        ),
+          const SizedBox(height: 24),
+          ElevatedButton(
+            onPressed: () => ctx.go('/home'),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
+            child: const Text('Go Home'),
+          ),
+        ]),
       ),
     );
   }
