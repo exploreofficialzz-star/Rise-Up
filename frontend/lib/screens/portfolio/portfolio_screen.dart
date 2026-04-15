@@ -1,4 +1,14 @@
-import 'package:flutter/foundation.dart'; // Added for kIsWeb
+// frontend/lib/screens/portfolio/portfolio_screen.dart
+// ─────────────────────────────────────────────────────────────
+//  RiseUp — Portfolio Screen  (PRODUCTION READY)
+//  Fix: AdMob native ad "assets outside native ad view" resolved
+//   • Removed ClipRRect wrapper around NativeAdWidget
+//   • Added explicit SizedBox height (320) so AdMob can measure
+//     the view boundary correctly
+//   • borderRadius applied to outer Container only, never clips ad
+// ─────────────────────────────────────────────────────────────
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -8,7 +18,6 @@ import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 import '../../services/ad_manager.dart';
 
-// Updated Conditional import: supports both legacy JS (html) and modern WASM (js_interop)
 import '../../services/ads/ad_service_mobile.dart'
     if (dart.library.js_interop) '../../services/ads/ad_service_web.dart'
     if (dart.library.html) '../../services/ads/ad_service_web.dart';
@@ -26,7 +35,6 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
   bool _loading = true;
   bool _generatingBio = false;
 
-  // ── Ad state ───────────────────────────────────────────────
   bool _bioAdFired = false;
 
   @override
@@ -51,7 +59,6 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     }
   }
 
-  // ── Bio generation with interstitial gate ─────────────────
   Future<void> _generateBio() async {
     if (!adManager.isPremium && !_bioAdFired) {
       setState(() => _generatingBio = true);
@@ -76,11 +83,11 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
   }
 
   void _showAddProjectSheet() {
-    final titleCtrl = TextEditingController();
-    final serviceCtrl = TextEditingController();
+    final titleCtrl     = TextEditingController();
+    final serviceCtrl   = TextEditingController();
     final challengeCtrl = TextEditingController();
-    final resultCtrl = TextEditingController();
-    final amountCtrl = TextEditingController();
+    final resultCtrl    = TextEditingController();
+    final amountCtrl    = TextEditingController();
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     showModalBottomSheet(
@@ -88,7 +95,8 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        padding:
+            EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
         child: Container(
           height: MediaQuery.of(context).size.height * 0.75,
           padding: const EdgeInsets.all(20),
@@ -96,7 +104,8 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
             color: isDark ? AppColors.bgCard : Colors.white,
             borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
           ),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('Add Project',
                 style: TextStyle(
                     fontSize: 18,
@@ -107,11 +116,15 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
               child: ListView(children: [
                 _buildField(titleCtrl, 'Project title *', isDark),
                 const SizedBox(height: 10),
-                _buildField(serviceCtrl, 'Service type (e.g. Logo Design)', isDark),
+                _buildField(
+                    serviceCtrl, 'Service type (e.g. Logo Design)', isDark),
                 const SizedBox(height: 10),
-                _buildField(challengeCtrl, 'Challenge solved for client', isDark, maxLines: 2),
+                _buildField(
+                    challengeCtrl, 'Challenge solved for client', isDark,
+                    maxLines: 2),
                 const SizedBox(height: 10),
-                _buildField(resultCtrl, 'Result achieved (be specific)', isDark, maxLines: 2),
+                _buildField(resultCtrl, 'Result achieved (be specific)', isDark,
+                    maxLines: 2),
                 const SizedBox(height: 10),
                 _buildField(amountCtrl, 'Amount earned (\$USD)', isDark,
                     type: TextInputType.number),
@@ -137,7 +150,8 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                   _load();
                 },
                 child: const Text('Add Project',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                    style: TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.w700)),
               ),
             ),
           ]),
@@ -157,26 +171,29 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
         controller: c,
         maxLines: maxLines,
         keyboardType: type,
-        style: TextStyle(color: isDark ? Colors.white : Colors.black87),
+        style:
+            TextStyle(color: isDark ? Colors.white : Colors.black87),
         decoration: InputDecoration(
           hintText: hint,
-          hintStyle:
-              TextStyle(color: isDark ? Colors.white38 : Colors.black38, fontSize: 13),
+          hintStyle: TextStyle(
+              color: isDark ? Colors.white38 : Colors.black38, fontSize: 13),
           filled: true,
           fillColor: isDark ? AppColors.bgSurface : Colors.grey.shade100,
           border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide.none),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         ),
       );
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bg = isDark ? Colors.black : Colors.white;
+    final bg   = isDark ? Colors.black : Colors.white;
     final card = isDark ? AppColors.bgCard : Colors.white;
     final text = isDark ? Colors.white : Colors.black87;
-    final sub = isDark ? Colors.white54 : Colors.black45;
+    final sub  = isDark ? Colors.white54 : Colors.black45;
 
     return Scaffold(
       backgroundColor: bg,
@@ -191,23 +208,28 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
           const Text('🎨', style: TextStyle(fontSize: 22)),
           const SizedBox(width: 10),
           Text('Portfolio',
-              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: text)),
+              style: TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w700,
+                  color: text)),
         ]),
         actions: [
           IconButton(
-              icon: const Icon(Icons.add_rounded, color: AppColors.primary, size: 26),
+              icon: const Icon(Icons.add_rounded,
+                  color: AppColors.primary, size: 26),
               onPressed: _showAddProjectSheet),
         ],
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+          ? const Center(
+              child: CircularProgressIndicator(color: AppColors.primary))
           : RefreshIndicator(
               onRefresh: _load,
               color: AppColors.primary,
               child: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                  // ── Share link banner ────────────────────────────────
+                  // ── Share link banner ──────────────────────────────
                   Container(
                     padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
@@ -237,10 +259,12 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                       GestureDetector(
                         onTap: () {
                           Clipboard.setData(
-                              const ClipboardData(text: 'riseup.app/portfolio'));
-                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                              content: Text('✅ Link copied!'),
-                              backgroundColor: AppColors.success));
+                              const ClipboardData(
+                                  text: 'riseup.app/portfolio'));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                  content: Text('✅ Link copied!'),
+                                  backgroundColor: AppColors.success));
                         },
                         child: Container(
                           padding: const EdgeInsets.symmetric(
@@ -249,7 +273,8 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                               color: Colors.white.withOpacity(0.2),
                               borderRadius: AppRadius.pill),
                           child: const Row(children: [
-                            Icon(Icons.copy_rounded, color: Colors.white, size: 14),
+                            Icon(Icons.copy_rounded,
+                                color: Colors.white, size: 14),
                             SizedBox(width: 6),
                             Text('Copy Link',
                                 style: TextStyle(
@@ -263,20 +288,24 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                   ).animate().fadeIn(),
                   const SizedBox(height: 16),
 
-                  // ── Stats ───────────────────────────────────────────
+                  // ── Stats ──────────────────────────────────────────
                   if (_stats.isNotEmpty)
                     Row(children: [
-                      _statBox('Projects',
+                      _statBox(
+                          'Projects',
                           _stats['total_projects']?.toString() ?? '0',
-                          AppColors.primary, isDark),
+                          AppColors.primary,
+                          isDark),
                       const SizedBox(width: 10),
-                      _statBox('Total Value',
+                      _statBox(
+                          'Total Value',
                           '\$${_stats['total_value_usd'] ?? 0}',
-                          AppColors.success, isDark),
+                          AppColors.success,
+                          isDark),
                     ]),
                   const SizedBox(height: 16),
 
-                  // ── AI Bio section ──────────────────────────────────
+                  // ── AI Bio section ─────────────────────────────────
                   Container(
                     padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
@@ -308,19 +337,24 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                                   color: Colors.orange.withOpacity(0.15),
                                   borderRadius: AppRadius.pill,
                                   border: Border.all(
-                                      color: Colors.orange.withOpacity(0.3)),
+                                      color:
+                                          Colors.orange.withOpacity(0.3)),
                                 ),
                                 child: const Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      Icon(Icons.play_circle_outline_rounded,
-                                          color: Colors.orange, size: 10),
+                                      Icon(
+                                          Icons
+                                              .play_circle_outline_rounded,
+                                          color: Colors.orange,
+                                          size: 10),
                                       SizedBox(width: 3),
                                       Text('Ad',
                                           style: TextStyle(
                                               color: Colors.orange,
                                               fontSize: 10,
-                                              fontWeight: FontWeight.w700)),
+                                              fontWeight:
+                                                  FontWeight.w700)),
                                     ]),
                               ),
                           ]),
@@ -329,10 +363,11 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                             GestureDetector(
                               onTap: _generatingBio ? null : _generateBio,
                               child: Container(
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 10),
+                                padding: const EdgeInsets.symmetric(
+                                    vertical: 10),
                                 decoration: BoxDecoration(
-                                    color: AppColors.accent.withOpacity(0.1),
+                                    color: AppColors.accent
+                                        .withOpacity(0.1),
                                     borderRadius: AppRadius.pill,
                                     border: Border.all(
                                         color: AppColors.accent
@@ -342,9 +377,10 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                                       ? const SizedBox(
                                           width: 20,
                                           height: 20,
-                                          child: CircularProgressIndicator(
-                                              color: AppColors.accent,
-                                              strokeWidth: 2))
+                                          child:
+                                              CircularProgressIndicator(
+                                                  color: AppColors.accent,
+                                                  strokeWidth: 2))
                                       : const Text(
                                           '✨ Generate My Professional Bio',
                                           style: TextStyle(
@@ -357,32 +393,40 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                           else ...[
                             Text(_bio['short_bio']?.toString() ?? '',
                                 style: TextStyle(
-                                    fontSize: 13, color: text, height: 1.5)),
+                                    fontSize: 13,
+                                    color: text,
+                                    height: 1.5)),
                             const SizedBox(height: 8),
                             if (_bio['linkedin_headline'] != null)
                               Row(children: [
                                 const Icon(Icons.work_outline_rounded,
-                                    size: 14, color: AppColors.textMuted),
+                                    size: 14,
+                                    color: AppColors.textMuted),
                                 const SizedBox(width: 6),
                                 Expanded(
                                   child: Text(
-                                      _bio['linkedin_headline'].toString(),
+                                      _bio['linkedin_headline']
+                                          .toString(),
                                       style: TextStyle(
                                           fontSize: 12,
                                           color: sub,
-                                          fontStyle: FontStyle.italic)),
+                                          fontStyle:
+                                              FontStyle.italic)),
                                 ),
                               ]),
                             const SizedBox(height: 8),
                             GestureDetector(
                               onTap: () {
                                 Clipboard.setData(ClipboardData(
-                                    text:
-                                        _bio['full_bio']?.toString() ?? ''));
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                        content: Text('✅ Full bio copied!'),
-                                        backgroundColor: AppColors.success));
+                                    text: _bio['full_bio']
+                                            ?.toString() ??
+                                        ''));
+                                ScaffoldMessenger.of(context)
+                                    .showSnackBar(const SnackBar(
+                                        content:
+                                            Text('✅ Full bio copied!'),
+                                        backgroundColor:
+                                            AppColors.success));
                               },
                               child: const Row(children: [
                                 Icon(Iconsax.copy,
@@ -400,19 +444,22 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                   ),
                   const SizedBox(height: 20),
 
-                  // ── Portfolio items ─────────────────────────────────
+                  // ── Portfolio items ────────────────────────────────
                   if (_items.isEmpty)
                     Center(
                       child: Column(children: [
                         const SizedBox(height: 20),
-                        const Text('🎨', style: TextStyle(fontSize: 48)),
+                        const Text('🎨',
+                            style: TextStyle(fontSize: 48)),
                         const SizedBox(height: 12),
                         Text('No projects yet',
-                            style: TextStyle(color: sub, fontSize: 15)),
+                            style:
+                                TextStyle(color: sub, fontSize: 15)),
                         const SizedBox(height: 8),
                         Text(
                             'Add completed projects to build social proof',
-                            style: TextStyle(color: sub, fontSize: 13),
+                            style:
+                                TextStyle(color: sub, fontSize: 13),
                             textAlign: TextAlign.center),
                         const SizedBox(height: 16),
                         GestureDetector(
@@ -434,7 +481,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                   else
                     ..._buildProjectList(isDark, text, sub),
 
-                  // ── Inline native ad (free users only) ─────────────
+                  // ── Inline native ad (free users only) ────────────
                   if (!adManager.isPremium && _items.isNotEmpty)
                     _InlineNativeAdCard(isDark: isDark)
                         .animate()
@@ -447,7 +494,8 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     );
   }
 
-  List<Widget> _buildProjectList(bool isDark, Color text, Color sub) {
+  List<Widget> _buildProjectList(
+      bool isDark, Color text, Color sub) {
     final colors = [
       AppColors.primary,
       AppColors.accent,
@@ -456,7 +504,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     ];
 
     return _items.asMap().entries.map((e) {
-      final p = e.value as Map;
+      final p     = e.value as Map;
       final color = colors[e.key % colors.length];
 
       return Container(
@@ -473,90 +521,104 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                 spreadRadius: -2)
           ],
         ),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            Expanded(
-              child: Text(p['title']?.toString() ?? '',
-                  style: TextStyle(
-                      fontSize: 15, fontWeight: FontWeight.w700, color: text)),
-            ),
-            if (p['amount_usd'] != null && p['amount_usd'] > 0)
-              Text('\$${p['amount_usd']}',
-                  style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w800,
-                      color: AppColors.success)),
-          ]),
-          const SizedBox(height: 6),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-                color: color.withOpacity(0.1), borderRadius: AppRadius.pill),
-            child: Text(p['service_type']?.toString() ?? '',
-                style: TextStyle(
-                    fontSize: 11,
-                    color: color,
-                    fontWeight: FontWeight.w600)),
-          ),
-          const SizedBox(height: 10),
-          if (p['challenge_solved'] != null) ...[
-            Text('Challenge',
-                style: TextStyle(
-                    fontSize: 11,
-                    color: sub,
-                    fontWeight: FontWeight.w600)),
-            const SizedBox(height: 3),
-            Text(p['challenge_solved'].toString(),
-                style: TextStyle(fontSize: 13, color: text, height: 1.4)),
-            const SizedBox(height: 8),
-          ],
-          if (p['result_achieved'] != null) ...[
-            const Text('Result',
-                style: TextStyle(
-                    fontSize: 11,
-                    color: AppColors.success,
-                    fontWeight: FontWeight.w600)),
-            const SizedBox(height: 3),
-            Text(p['result_achieved'].toString(),
-                style: TextStyle(fontSize: 13, color: text, height: 1.4)),
-          ],
-          if (p['testimonial'] != null) ...[
-            const SizedBox(height: 10),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                  color: color.withOpacity(0.06),
-                  borderRadius: AppRadius.md),
-              child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(Icons.format_quote_rounded,
-                        color: color, size: 16),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(p['testimonial'].toString(),
-                          style: TextStyle(
-                              fontSize: 12,
-                              color: text,
-                              fontStyle: FontStyle.italic,
-                              height: 1.4)),
-                    ),
-                  ]),
-            ),
-          ],
-        ]),
-      ).animate().fadeIn(delay: Duration(milliseconds: e.key * 60));
+        child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                Expanded(
+                  child: Text(p['title']?.toString() ?? '',
+                      style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: text)),
+                ),
+                if (p['amount_usd'] != null &&
+                    p['amount_usd'] > 0)
+                  Text('\$${p['amount_usd']}',
+                      style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.success)),
+              ]),
+              const SizedBox(height: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                    color: color.withOpacity(0.1),
+                    borderRadius: AppRadius.pill),
+                child: Text(p['service_type']?.toString() ?? '',
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: color,
+                        fontWeight: FontWeight.w600)),
+              ),
+              const SizedBox(height: 10),
+              if (p['challenge_solved'] != null) ...[
+                Text('Challenge',
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: sub,
+                        fontWeight: FontWeight.w600)),
+                const SizedBox(height: 3),
+                Text(p['challenge_solved'].toString(),
+                    style: TextStyle(
+                        fontSize: 13, color: text, height: 1.4)),
+                const SizedBox(height: 8),
+              ],
+              if (p['result_achieved'] != null) ...[
+                const Text('Result',
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: AppColors.success,
+                        fontWeight: FontWeight.w600)),
+                const SizedBox(height: 3),
+                Text(p['result_achieved'].toString(),
+                    style: TextStyle(
+                        fontSize: 13, color: text, height: 1.4)),
+              ],
+              if (p['testimonial'] != null) ...[
+                const SizedBox(height: 10),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                      color: color.withOpacity(0.06),
+                      borderRadius: AppRadius.md),
+                  child: Row(
+                      crossAxisAlignment:
+                          CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.format_quote_rounded,
+                            color: color, size: 16),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                              p['testimonial'].toString(),
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  color: text,
+                                  fontStyle: FontStyle.italic,
+                                  height: 1.4)),
+                        ),
+                      ]),
+                ),
+              ],
+            ]),
+      ).animate().fadeIn(
+          delay: Duration(milliseconds: e.key * 60));
     }).toList();
   }
 
-  Widget _statBox(String label, String value, Color color, bool isDark) =>
+  Widget _statBox(
+          String label, String value, Color color, bool isDark) =>
       Expanded(
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 14),
           decoration: BoxDecoration(
               color: color.withOpacity(0.08),
               borderRadius: AppRadius.lg,
-              border: Border.all(color: color.withOpacity(0.2))),
+              border:
+                  Border.all(color: color.withOpacity(0.2))),
           child: Column(children: [
             Text(value,
                 style: TextStyle(
@@ -565,66 +627,111 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                     color: color)),
             Text(label,
                 style: TextStyle(
-                    fontSize: 11, color: color.withOpacity(0.7))),
+                    fontSize: 11,
+                    color: color.withOpacity(0.7))),
           ]),
         ),
       );
 }
+
+// ─────────────────────────────────────────────────────────────
+//  INLINE NATIVE AD CARD
+//
+//  FIX: "Advertiser assets outside native ad view"
+//
+//  Root cause: ClipRRect was wrapping NativeAdWidget, causing
+//  the Google Mobile Ads SDK's internal AdView boundary to be
+//  misaligned with the Flutter clip layer. AdMob validator
+//  detects the registered NativeAdView boundary and checks
+//  that all asset views (headline, body, CTA, icon, media)
+//  are fully inside it. ClipRRect shifts that boundary
+//  calculation, pushing assets "outside" in the SDK's eyes.
+//
+//  Solution:
+//   1. Remove ClipRRect entirely — never clip a NativeAdWidget.
+//   2. Give NativeAdWidget an explicit SizedBox height (320px)
+//      that matches your native_ad_layout.xml / NativeAdView
+//      template height. Without a fixed height the AdMob SDK
+//      cannot resolve the view bounds during validation.
+//   3. Apply borderRadius only to the decorative outer
+//      Container; never to the NativeAdWidget itself.
+// ─────────────────────────────────────────────────────────────
+
+// Height must match your Android res/layout/native_ad_layout.xml
+// root NativeAdView height. Adjust if your template differs.
+const double _kNativeAdHeight = 320.0;
 
 class _InlineNativeAdCard extends StatefulWidget {
   final bool isDark;
   const _InlineNativeAdCard({required this.isDark});
 
   @override
-  State<_InlineNativeAdCard> createState() => _InlineNativeAdCardState();
+  State<_InlineNativeAdCard> createState() =>
+      _InlineNativeAdCardState();
 }
 
 class _InlineNativeAdCardState extends State<_InlineNativeAdCard> {
   @override
   Widget build(BuildContext context) {
-    // Failsafe: Completely skip the widget tree logic on web builds
+    // Web: skip entirely — NativeAdWidget is mobile-only
     if (kIsWeb) return const SizedBox.shrink();
 
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Padding(
-        padding: const EdgeInsets.only(bottom: 6),
-        child: Row(children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-            decoration: BoxDecoration(
-              color: Colors.grey.withOpacity(0.15),
-              borderRadius: BorderRadius.circular(4),
-            ),
-            child: Text('SPONSORED',
-                style: TextStyle(
-                    fontSize: 9,
-                    fontWeight: FontWeight.w700,
-                    color: widget.isDark ? Colors.white38 : Colors.black38,
-                    letterSpacing: 0.8)),
+    return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // "SPONSORED" label above the card
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Row(children: [
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.grey.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text('SPONSORED',
+                    style: TextStyle(
+                        fontSize: 9,
+                        fontWeight: FontWeight.w700,
+                        color: widget.isDark
+                            ? Colors.white38
+                            : Colors.black38,
+                        letterSpacing: 0.8)),
+              ),
+            ]),
           ),
-        ]),
-      ),
-      Container(
-        width: double.infinity,
-        constraints: const BoxConstraints(minHeight: 0),
-        decoration: BoxDecoration(
-          color: widget.isDark ? AppColors.bgCard : Colors.white,
-          borderRadius: AppRadius.lg,
-          border: Border.all(
-              color: (widget.isDark ? Colors.white : Colors.black)
-                  .withOpacity(0.06)),
-          boxShadow: [
-            BoxShadow(
-                color: Colors.black.withOpacity(0.03),
-                blurRadius: 8,
-                spreadRadius: -2)
-          ],
-        ),
-        child: ClipRRect(
-          borderRadius: AppRadius.lg,
-          child: NativeAdWidget(factoryId: 'riseup_native'),
-        ),
-      ),
-    ]);
+
+          // Outer decorative container — provides the visual
+          // card frame (border + shadow). Must NOT clip its
+          // child, so overflow is Overflow.visible (default).
+          Container(
+            width: double.infinity,
+            decoration: BoxDecoration(
+              color: widget.isDark
+                  ? AppColors.bgCard
+                  : Colors.white,
+              borderRadius: AppRadius.lg,
+              border: Border.all(
+                  color: (widget.isDark
+                          ? Colors.white
+                          : Colors.black)
+                      .withOpacity(0.06)),
+              boxShadow: [
+                BoxShadow(
+                    color: Colors.black.withOpacity(0.03),
+                    blurRadius: 8,
+                    spreadRadius: -2)
+              ],
+            ),
+            // FIX: SizedBox gives AdMob a concrete height to
+            // calculate asset boundaries. No ClipRRect here.
+            child: SizedBox(
+              width: double.infinity,
+              height: _kNativeAdHeight,
+              child: NativeAdWidget(factoryId: 'riseup_native'),
+            ),
+          ),
+        ]);
   }
 }
