@@ -1,4 +1,14 @@
-"""Supabase database service — lazy-initialized singleton client"""
+"""Supabase database service — lazy-initialized singleton client
+
+v2 patch:
+  • create_conversation: tries full schema (type/title/created_by) then
+    falls back to minimal insert so it works with both AI and DM conversation
+    table shapes.
+  • save_message: adds sender_id and sender_type to every insert so rows
+    satisfy NOT NULL constraints on the messages table used by both the AI
+    router (/ai/conversations) and the DM router (/messages/conversations).
+    Falls back to a minimal insert if extra columns don't exist.
+"""
 import logging
 from typing import Optional
 
@@ -7,9 +17,9 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-# ── Lazy singleton clients ───────────────────────────────────
+# ── Lazy singleton clients ───────────────────────────────────────────────────
 _service_client: Optional[Client] = None
-_anon_client: Optional[Client] = None
+_anon_client:    Optional[Client] = None
 
 
 def get_supabase() -> Client:
@@ -44,17 +54,28 @@ class SupabaseService:
         """Alias for self.db — workflow.py and other routers may use .client directly."""
         return get_supabase()
 
-    # ── Profiles ──────────────────────────────────────────────
+    # ── Profiles ──────────────────────────────────────────────────────────────
     async def get_profile(self, user_id: str) -> dict:
         try:
-            res = self.db.table("profiles").select("*").eq("id", user_id).single().execute()
+            res = (
+                self.db.table("profiles")
+                .select("*")
+                .eq("id", user_id)
+                .single()
+                .execute()
+            )
             return res.data or {}
         except Exception as e:
             logger.warning(f"get_profile {user_id}: {e}")
             return {}
 
     async def update_profile(self, user_id: str, data: dict) -> dict:
-        res = self.db.table("profiles").update(data).eq("id", user_id).execute()
+        res = (
+            self.db.table("profiles")
+            .update(data)
+            .eq("id", user_id)
+            .execute()
+        )
         return res.data[0] if res.data else {}
 
     async def upsert_profile(self, user_id: str, data: dict) -> dict:
@@ -62,28 +83,16 @@ class SupabaseService:
         res = self.db.table("profiles").upsert(data).execute()
         return res.data[0] if res.data else {}
 
-    # ── Follower counts ───────────────────────────────────────
-    # FIX: _FOLLOW_TABLE corrected from "followers" → "follows"
-    # to match the actual Supabase table name (confirmed via PGRST205 error
-    # hint: "Perhaps you meant the table 'public.follows'").
-    #
+    # ── Follower counts ───────────────────────────────────────────────────────
     # Schema: follows(follower_id, following_id)
-    # ─────────────────────────────────────────────────────────
-    _FOLLOW_TABLE   = "follows"          # ← FIXED (was "followers")
-    _FOLLOWER_COL   = "follower_id"      # the user WHO is following someone
-    _FOLLOWING_COL  = "following_id"     # the user BEING followed
+    _FOLLOW_TABLE  = "follows"
+    _FOLLOWER_COL  = "follower_id"
+    _FOLLOWING_COL = "following_id"
 
     async def get_follower_counts(self, user_id: str) -> dict:
-        """
-        Returns {"followers": int, "following": int} for a given user.
-
-        followers = number of people following this user
-        following = number of people this user follows
-        """
         followers_count = 0
         following_count = 0
 
-        # ── Count followers (people following this user) ──────────────────────
         try:
             res = (
                 self.db.table(self._FOLLOW_TABLE)
@@ -93,11 +102,7 @@ class SupabaseService:
             )
             followers_count = res.count or 0
         except Exception as e:
-            logger.warning(
-                f"get_follower_counts[followers] user={user_id}: {e}. "
-                f"Check _FOLLOW_TABLE='{self._FOLLOW_TABLE}' and "
-                f"_FOLLOWING_COL='{self._FOLLOWING_COL}' in supabase_service.py"
-            )
+            logger.warning(f"get_follower_counts[followers] user={user_id}: {e}")
             try:
                 res = (
                     self.db.table(self._FOLLOW_TABLE)
@@ -109,7 +114,6 @@ class SupabaseService:
             except Exception:
                 followers_count = 0
 
-        # ── Count following (people this user follows) ────────────────────────
         try:
             res = (
                 self.db.table(self._FOLLOW_TABLE)
@@ -119,11 +123,7 @@ class SupabaseService:
             )
             following_count = res.count or 0
         except Exception as e:
-            logger.warning(
-                f"get_follower_counts[following] user={user_id}: {e}. "
-                f"Check _FOLLOW_TABLE='{self._FOLLOW_TABLE}' and "
-                f"_FOLLOWER_COL='{self._FOLLOWER_COL}' in supabase_service.py"
-            )
+            logger.warning(f"get_follower_counts[following] user={user_id}: {e}")
             try:
                 res = (
                     self.db.table(self._FOLLOW_TABLE)
@@ -137,12 +137,44 @@ class SupabaseService:
 
         return {"followers": followers_count, "following": following_count}
 
-    # ── Conversations ──────────────────────────────────────────
-    async def create_conversation(self, user_id: str, title: str = "New Chat") -> dict:
-        res = self.db.table("conversations").insert(
-            {"user_id": user_id, "title": title}
-        ).execute()
-        return res.data[0] if res.data else {}
+    # ── Conversations ─────────────────────────────────────────────────────────
+    async def create_conversation(
+        self,
+        user_id: str,
+        title: str = "New Chat",
+        conv_type: str = "ai",
+    ) -> dict:
+        """
+        Create a new conversation row.
+        Tries the full schema (type, title, created_by) first,
+        then falls back to a minimal insert so this works regardless of
+        which columns exist in the conversations table.
+        If both inserts fail, returns a synthetic dict so callers never crash.
+        """
+        # Full schema insert (preferred)
+        try:
+            res = self.db.table("conversations").insert({
+                "user_id":    user_id,
+                "type":       conv_type,
+                "title":      title,
+                "created_by": user_id,
+            }).execute()
+            return res.data[0] if res.data else {}
+        except Exception as e1:
+            logger.warning(f"create_conversation full schema failed: {e1}")
+
+        # Minimal insert fallback
+        try:
+            res = self.db.table("conversations").insert({
+                "user_id": user_id,
+            }).execute()
+            return res.data[0] if res.data else {}
+        except Exception as e2:
+            logger.error(f"create_conversation minimal also failed: {e2}")
+            # Return synthetic dict — callers use .get("id") which will return None
+            # and the AI router will generate a uuid fallback.
+            import uuid as _uuid
+            return {"id": str(_uuid.uuid4()), "user_id": user_id}
 
     async def get_conversations(self, user_id: str, limit: int = 20) -> list:
         res = (
@@ -155,6 +187,7 @@ class SupabaseService:
         )
         return res.data or []
 
+    # ── Messages ──────────────────────────────────────────────────────────────
     async def save_message(
         self,
         conversation_id: str,
@@ -164,21 +197,70 @@ class SupabaseService:
         ai_model: str = None,
         metadata: dict = None,
     ) -> dict:
-        res = self.db.table("messages").insert({
+        """
+        Save a message to the messages table.
+
+        Inserts with ALL known columns (role, sender_id, sender_type, user_id)
+        so the row satisfies NOT NULL constraints on both table shapes:
+          • AI conversation messages  (role-based, no sender_type required)
+          • DM messages               (sender_id + sender_type required)
+
+        Falls back to a minimal insert if extra columns don't exist yet.
+        """
+        # Derive sender_type from role so DM table constraints are satisfied
+        sender_type = (
+            "ai"     if role == "assistant" else
+            "system" if role == "system"    else
+            "user"
+        )
+
+        full_row: dict = {
             "conversation_id": conversation_id,
             "user_id":         user_id,
+            "sender_id":       user_id,       # satisfies DM NOT NULL
             "role":            role,
+            "sender_type":     sender_type,   # satisfies DM NOT NULL
             "content":         content,
-            "ai_model":        ai_model,
-            "metadata":        metadata or {},
-        }).execute()
+            "is_read":         role in ("assistant", "system"),
+        }
+        if ai_model:
+            full_row["ai_model"] = ai_model
+        if metadata:
+            full_row["metadata"] = metadata
+
         try:
-            self.db.rpc("increment_message_count", {"conv_id": conversation_id}).execute()
+            res = self.db.table("messages").insert(full_row).execute()
+        except Exception as e1:
+            logger.warning(
+                f"save_message full schema failed (non-fatal): {e1} "
+                "— retrying with minimal row"
+            )
+            # Minimal row — works if extra columns genuinely don't exist
+            minimal_row = {
+                "conversation_id": conversation_id,
+                "user_id":         user_id,
+                "role":            role,
+                "content":         content,
+            }
+            try:
+                res = self.db.table("messages").insert(minimal_row).execute()
+            except Exception as e2:
+                logger.error(f"save_message minimal also failed: {e2}")
+                return {}
+
+        # Best-effort message count increment (fire-and-forget)
+        try:
+            self.db.rpc(
+                "increment_message_count", {"conv_id": conversation_id}
+            ).execute()
         except Exception:
             pass
+
         return res.data[0] if res.data else {}
 
-    async def get_messages(self, conversation_id: str, limit: int = 50) -> list:
+    async def get_messages(
+        self, conversation_id: str, limit: int = 50
+    ) -> list:
         res = (
             self.db.table("messages")
             .select("*")
@@ -189,7 +271,7 @@ class SupabaseService:
         )
         return res.data or []
 
-    # ── Tasks ──────────────────────────────────────────────────
+    # ── Tasks ─────────────────────────────────────────────────────────────────
     async def create_tasks_bulk(self, user_id: str, tasks: list) -> list:
         for t in tasks:
             t["user_id"] = user_id
@@ -203,7 +285,9 @@ class SupabaseService:
         res = q.order("created_at", desc=True).execute()
         return res.data or []
 
-    async def update_task(self, task_id: str, user_id: str, data: dict) -> dict:
+    async def update_task(
+        self, task_id: str, user_id: str, data: dict
+    ) -> dict:
         res = (
             self.db.table("tasks")
             .update(data)
@@ -213,7 +297,7 @@ class SupabaseService:
         )
         return res.data[0] if res.data else {}
 
-    # ── Skills ────────────────────────────────────────────────
+    # ── Skills ────────────────────────────────────────────────────────────────
     async def get_skill_modules(self, is_premium: bool = None) -> list:
         q = self.db.table("skill_modules").select("*")
         if is_premium is not None:
@@ -249,7 +333,7 @@ class SupabaseService:
         )
         return res.data[0] if res.data else {}
 
-    # ── Roadmap ───────────────────────────────────────────────
+    # ── Roadmap ───────────────────────────────────────────────────────────────
     async def upsert_roadmap(self, user_id: str, roadmap_data: dict) -> dict:
         roadmap_data["user_id"] = user_id
         res = self.db.table("roadmaps").upsert(
@@ -270,7 +354,7 @@ class SupabaseService:
         except Exception:
             return {}
 
-    # ── Earnings ──────────────────────────────────────────────
+    # ── Earnings ──────────────────────────────────────────────────────────────
     async def log_earning(
         self,
         user_id: str,
@@ -290,7 +374,8 @@ class SupabaseService:
         }).execute()
         try:
             self.db.rpc(
-                "increment_total_earned", {"uid": user_id, "amount": amount}
+                "increment_total_earned",
+                {"uid": user_id, "amount": amount},
             ).execute()
         except Exception:
             pass
@@ -308,7 +393,7 @@ class SupabaseService:
         total = sum(float(e["amount"]) for e in data)
         return {"total": total, "count": len(data), "breakdown": data[:10]}
 
-    # ── Feature Unlocks ───────────────────────────────────────
+    # ── Feature Unlocks ───────────────────────────────────────────────────────
     async def unlock_feature(
         self,
         user_id: str,
@@ -325,7 +410,9 @@ class SupabaseService:
         }).execute()
         return res.data[0] if res.data else {}
 
-    async def check_feature_access(self, user_id: str, feature_key: str) -> bool:
+    async def check_feature_access(
+        self, user_id: str, feature_key: str
+    ) -> bool:
         profile = await self.get_profile(user_id)
         if profile and profile.get("subscription_tier") == "premium":
             expires = profile.get("subscription_expires_at")
@@ -359,7 +446,7 @@ class SupabaseService:
                 return True
         return False
 
-    # ── Payments ──────────────────────────────────────────────
+    # ── Payments ──────────────────────────────────────────────────────────────
     async def create_payment(
         self,
         user_id: str,
@@ -370,13 +457,13 @@ class SupabaseService:
         plan: str = "monthly",
     ) -> dict:
         res = self.db.table("payments").insert({
-            "user_id":              user_id,
-            "flutterwave_tx_ref":   tx_ref,
-            "amount":               amount,
-            "currency":             currency,
-            "payment_type":         payment_type,
-            "plan":                 plan,
-            "status":               "pending",
+            "user_id":            user_id,
+            "flutterwave_tx_ref": tx_ref,
+            "amount":             amount,
+            "currency":           currency,
+            "payment_type":       payment_type,
+            "plan":               plan,
+            "status":             "pending",
         }).execute()
         return res.data[0] if res.data else {}
 
@@ -389,9 +476,12 @@ class SupabaseService:
         )
         return res.data[0] if res.data else {}
 
-    # ── Ad Views ──────────────────────────────────────────────
+    # ── Ad Views ──────────────────────────────────────────────────────────────
     async def log_ad_view(
-        self, user_id: str, ad_unit_id: str, feature_unlocked: str = None
+        self,
+        user_id: str,
+        ad_unit_id: str,
+        feature_unlocked: str = None,
     ) -> dict:
         res = self.db.table("ad_views").insert({
             "user_id":          user_id,
@@ -402,7 +492,7 @@ class SupabaseService:
         }).execute()
         return res.data[0] if res.data else {}
 
-    # ── Progress Stats ────────────────────────────────────────
+    # ── Progress Stats ────────────────────────────────────────────────────────
     async def get_user_stats(self, user_id: str) -> dict:
         profile     = await self.get_profile(user_id)
         tasks       = await self.get_tasks(user_id)
@@ -428,18 +518,21 @@ class SupabaseService:
                 "total":     len(tasks),
                 "completed": len(completed_tasks),
                 "active":    len(active_tasks),
-                "suggested": len([t for t in tasks if t.get("status") == "suggested"]),
+                "suggested": len([t for t in tasks
+                                  if t.get("status") == "suggested"]),
             },
             "skills": {
                 "enrolled":    len(enrollments),
-                "completed":   len([e for e in enrollments if e.get("status") == "completed"]),
-                "in_progress": len([e for e in enrollments if e.get("status") == "in_progress"]),
+                "completed":   len([e for e in enrollments
+                                    if e.get("status") == "completed"]),
+                "in_progress": len([e for e in enrollments
+                                    if e.get("status") == "in_progress"]),
             },
             "stage":        profile.get("stage", "survival") if profile else "survival",
             "subscription": profile.get("subscription_tier", "free") if profile else "free",
         }
 
-    # ── Market Pulse / Economic Context ───────────────────────
+    # ── Market Pulse / Economic Context ───────────────────────────────────────
     async def get_economic_indicators(self, country_code: str) -> dict:
         try:
             res = (
@@ -469,7 +562,7 @@ class SupabaseService:
             logger.warning(f"upsert_economic_indicators({country_code}): {e}")
             return {}
 
-    # ── Market Pulse Cache ────────────────────────────────────
+    # ── Market Pulse Cache ────────────────────────────────────────────────────
     async def get_pulse_cache(self, cache_key: str) -> dict:
         try:
             from datetime import datetime, timezone
@@ -510,7 +603,7 @@ class SupabaseService:
             logger.warning(f"set_pulse_cache({cache_key}): {e}")
             return False
 
-    # ── Notifications ─────────────────────────────────────────
+    # ── Notifications ─────────────────────────────────────────────────────────
     async def create_notification(
         self,
         user_id: str,
@@ -554,15 +647,15 @@ class SupabaseService:
         self, notification_id: str, user_id: str
     ) -> bool:
         try:
-            self.db.table("notifications").update({"is_read": True}).eq(
-                "id", notification_id
-            ).eq("user_id", user_id).execute()
+            self.db.table("notifications").update(
+                {"is_read": True}
+            ).eq("id", notification_id).eq("user_id", user_id).execute()
             return True
         except Exception as e:
             logger.warning(f"mark_notification_read: {e}")
             return False
 
-    # ── Goals ─────────────────────────────────────────────────
+    # ── Goals ─────────────────────────────────────────────────────────────────
     async def create_goal(self, user_id: str, goal_data: dict) -> dict:
         goal_data["user_id"] = user_id
         try:
@@ -583,7 +676,9 @@ class SupabaseService:
             logger.warning(f"get_goals: {e}")
             return []
 
-    async def update_goal(self, goal_id: str, user_id: str, data: dict) -> dict:
+    async def update_goal(
+        self, goal_id: str, user_id: str, data: dict
+    ) -> dict:
         try:
             res = (
                 self.db.table("goals")
@@ -597,7 +692,7 @@ class SupabaseService:
             logger.warning(f"update_goal: {e}")
             return {}
 
-    # ── Agent Quota ───────────────────────────────────────────
+    # ── Agent Quota ───────────────────────────────────────────────────────────
     async def get_agent_quota(self, user_id: str) -> dict:
         try:
             res = (
@@ -612,10 +707,13 @@ class SupabaseService:
             logger.debug(f"get_agent_quota({user_id}): {e}")
             return {"user_id": user_id, "used": 0, "limit": 10}
 
-    async def increment_agent_quota(self, user_id: str, amount: int = 1) -> bool:
+    async def increment_agent_quota(
+        self, user_id: str, amount: int = 1
+    ) -> bool:
         try:
             self.db.rpc(
-                "increment_agent_quota", {"uid": user_id, "amount": amount}
+                "increment_agent_quota",
+                {"uid": user_id, "amount": amount},
             ).execute()
             return True
         except Exception as e:
