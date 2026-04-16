@@ -1,10 +1,19 @@
 // lib/main.dart
-// Only change from your current version:
-//   • Added firebase_core import
-//   • Added Firebase.initializeApp() BEFORE _initSupabase()
-//   • Everything else is identical
+// Fix v1 — Two boot bugs resolved:
+//
+//  BUG 1 (re-login every restart):
+//    storageService.init() was NOT awaited, so storage wasn't ready
+//    when authService.initialize() read tokens → always got null → unauthenticated.
+//    Fix: await storageService.init()
+//
+//  BUG 2 (black screen before splash):
+//    authService.initialize() was awaited BEFORE runApp(), and when the
+//    token was expired it made a 10-second HTTP call — app sat on a blank
+//    screen the whole time.
+//    Fix: authService.initialize() is now instant (local-only). Network
+//    refresh fires in background from auth_service.dart itself.
 
-import 'package:firebase_core/firebase_core.dart';          // ← NEW
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -42,7 +51,11 @@ Future<void> _initNotifications() async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  storageService.init();
+  // ── FIX 1: AWAIT storage init so tokens can be read immediately ──────
+  // Previously this was called without await — storage wasn't ready when
+  // authService.initialize() tried to read tokens, causing every boot to
+  // look like "no tokens" → unauthenticated → forced re-login.
+  await storageService.init();
 
   if (!kIsWeb) {
     SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
@@ -56,13 +69,16 @@ void main() async {
     ]);
   }
 
-  // ── NEW: Firebase must init before Supabase and notifications ────────────
   if (!kIsWeb) {
     await Firebase.initializeApp();
   }
 
   await _initSupabase();
 
+  // ── FIX 2: authService.initialize() is now instant (local reads only) ──
+  // It no longer makes any HTTP calls during boot, so this await returns
+  // in microseconds. The splash screen renders immediately after runApp().
+  // Any token refresh that is needed fires silently in the background.
   await Future.wait([
     authService.initialize(),
     _initNotifications(),
@@ -78,7 +94,6 @@ void main() async {
 }
 
 // ── App root ──────────────────────────────────────────────────────────────
-// Everything below this line is UNCHANGED from your current main.dart
 
 class RiseUpApp extends StatefulWidget {
   const RiseUpApp({super.key});
