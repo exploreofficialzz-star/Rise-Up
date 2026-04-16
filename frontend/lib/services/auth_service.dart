@@ -1,15 +1,26 @@
 // frontend/lib/services/auth_service.dart
-// v3.0 — Facebook/Instagram/YouTube persistent-session model
+// v4.0 — True Facebook/Instagram/YouTube boot model
 //
-// Session lifecycle:
-//  • Tokens stored on device and survive app restarts indefinitely
-//  • On 401: silent refresh attempted FIRST — only logout if refresh is
-//    explicitly rejected (401/403 from /auth/refresh)
-//  • On network error: keep user logged in, retry next open
-//  • On app resume: proactive background refresh if token expires in <5 min
-//  • Explicit logout: clears tokens only, preserves device ID and all other
-//    local data (preferences, cache, etc.)
-//  • _clearSession NEVER calls deleteAll — only wipes auth tokens
+// KEY CHANGES from v3.0:
+//
+//  initialize() is now INSTANT and makes ZERO network calls.
+//  Decision tree:
+//    No tokens        → unauthenticated  (first install or explicit logout)
+//    Tokens exist     → authenticated    (optimistic — always go to home)
+//    Expired token    → authenticated    (background refresh fires silently)
+//
+//  Why this is correct:
+//    Facebook/Instagram/YouTube never make you wait for a network round-trip
+//    before showing the app. They read local tokens, assume you're in, and
+//    silently refresh behind the scenes. If the refresh fails due to a network
+//    error you're still kept in — you only get logged out if the server
+//    explicitly rejects the refresh token (account revoked, password changed).
+//
+//  Result:
+//    • App boot → instant (no HTTP call blocking runApp)
+//    • Returning users → always go straight to home, never re-login
+//    • Expired tokens → refreshed silently in background after app renders
+//    • No tokens at all → login screen (correct: first install / post-logout)
 
 import 'dart:async';
 import 'dart:convert';
@@ -39,7 +50,6 @@ class AuthService extends ChangeNotifier {
   bool get isAuthenticated   => _status == AuthStatus.authenticated;
   bool get isUnauthenticated => _status == AuthStatus.unauthenticated;
 
-  // Prevents concurrent refresh races (Dio retries + resume can collide)
   bool _refreshInFlight = false;
 
   StreamSubscription<AuthState>? _supabaseSub;
@@ -47,81 +57,66 @@ class AuthService extends ChangeNotifier {
   // ── Boot ──────────────────────────────────────────────────────────────
   /// Called once in main() before runApp().
   ///
+  /// INSTANT — reads local storage only, makes ZERO network calls.
+  ///
   /// Decision tree (Facebook/Instagram/YouTube model):
-  ///   No tokens          → unauthenticated  (first install or after logout)
-  ///   Valid token        → authenticated    (straight to home)
-  ///   Expired token      → silent refresh
-  ///     Refresh OK       → authenticated    (transparent to user)
-  ///     Refresh revoked  → unauthenticated  (server explicitly rejected)
-  ///     Network error    → authenticated    (offline-first: never punish)
+  ///   No tokens at all  → unauthenticated  (first install or post-logout)
+  ///   Any token exists  → authenticated    (optimistic — user goes home)
+  ///
+  /// Token validation and refresh happen silently in the background AFTER
+  /// the app is already rendering. The user never waits for a network call
+  /// before they see the UI.
   Future<void> initialize() async {
     try {
       final access  = await storageService.read(key: _kAccess);
       final refresh = await storageService.read(key: _kRefresh);
 
-      // 1. No tokens — first install or post-explicit-logout
+      // No tokens — first install or after explicit logout
       if (access == null && refresh == null) {
         _setStatus(AuthStatus.unauthenticated);
         _listenToSupabase();
         return;
       }
 
-      // 2. Valid access token — go straight home
-      if (access != null && !_isTokenExpired(access)) {
-        _setStatus(AuthStatus.authenticated);
-        _listenToSupabase();
-        // Proactively refresh in background if expiry is close
-        _maybeProactiveRefresh(access, refresh);
-        return;
-      }
-
-      // 3. Expired access token — attempt silent refresh
-      if (refresh != null) {
-        final result = await _silentRefresh(refresh);
-        // null = network error → keep user logged in
-        _setStatus(
-          result == false
-              ? AuthStatus.unauthenticated
-              : AuthStatus.authenticated,
-        );
-        _listenToSupabase();
-        return;
-      }
-
-      // 4. Expired access, no refresh token
-      _setStatus(AuthStatus.unauthenticated);
-    } catch (_) {
-      // Storage failure — never lock user out; retry on next open
+      // Tokens exist — user is authenticated (optimistic, like FB/IG/YT)
+      // We NEVER block boot on a network call to validate them.
       _setStatus(AuthStatus.authenticated);
-    }
+      _listenToSupabase();
 
-    _listenToSupabase();
-  }
-
-  // ── Proactive background refresh ──────────────────────────────────────
-  /// If the access token expires within 5 minutes, silently refresh it now
-  /// so the user never hits a mid-session 401.
-  void _maybeProactiveRefresh(String access, String? refresh) {
-    if (refresh == null) return;
-    try {
-      final parts = access.split('.');
-      if (parts.length != 3) return;
-      final payload = utf8.decode(
-        base64Url.decode(base64Url.normalize(parts[1])),
-      );
-      final exp = (json.decode(payload) as Map<String, dynamic>)['exp'] as int?;
-      if (exp == null) return;
-      final secondsLeft =
-          exp - (DateTime.now().millisecondsSinceEpoch ~/ 1000);
-      if (secondsLeft < 300) {
-        // Fire-and-forget — don't await, don't change status on failure
-        _silentRefresh(refresh).catchError((_) => null);
+      // Fire background refresh if the access token is expired or close to it.
+      // This runs AFTER runApp() so it doesn't delay the splash screen.
+      if (refresh != null) {
+        final needsRefresh = access == null ||
+            _isTokenExpiredOrExpiringSoon(access, bufferSeconds: 300);
+        if (needsRefresh) {
+          // Fire-and-forget — any failure is handled silently
+          _backgroundRefresh(refresh);
+        }
       }
-    } catch (_) {}
+    } catch (_) {
+      // Storage read error — never lock user out on a storage glitch
+      _setStatus(AuthStatus.authenticated);
+      _listenToSupabase();
+    }
   }
 
-  /// Called by MainShell when the app returns to foreground.
-  /// Refreshes token if it has expired or is about to expire.
+  // ── Background refresh (called post-boot) ─────────────────────────────
+  /// Refreshes tokens silently after the app has already rendered.
+  /// Only logs out if the server explicitly rejects the refresh token
+  /// (401/403 = account revoked, password changed, etc.).
+  /// Network errors are ignored — user stays logged in.
+  Future<void> _backgroundRefresh(String refreshToken) async {
+    final result = await _silentRefresh(refreshToken);
+    // result == false means server explicitly rejected → must log out
+    if (result == false) {
+      await _clearSession();
+    }
+    // result == null (network error) or true → keep authenticated
+  }
+
+  // ── Proactive refresh on app resume ───────────────────────────────────
+  /// Called by MainShell when app returns to foreground.
+  /// Silently refreshes if the token has expired or is about to expire.
   Future<void> tryRefreshOnResume() async {
     if (_status != AuthStatus.authenticated) return;
     if (_refreshInFlight) return;
@@ -131,9 +126,8 @@ class AuthService extends ChangeNotifier {
 
     if (refresh == null) return;
 
-    // Refresh if expired OR expiring within 5 minutes
-    final shouldRefresh =
-        access == null || _isTokenExpiredOrExpiringSoon(access, bufferSeconds: 300);
+    final shouldRefresh = access == null ||
+        _isTokenExpiredOrExpiringSoon(access, bufferSeconds: 300);
 
     if (shouldRefresh) {
       final result = await _silentRefresh(refresh);
@@ -141,17 +135,14 @@ class AuthService extends ChangeNotifier {
       if (result == false) {
         _setStatus(AuthStatus.unauthenticated);
       }
-      // null (network error) or true → keep authenticated
     }
   }
 
-  // ── Called by ApiService Dio interceptor ──────────────────────────────
-  /// Invoked when a request receives a 401. Attempts a silent token refresh
-  /// before giving up. Returns true if refresh succeeded (caller should
-  /// retry the original request), false if the user must re-authenticate.
+  // ── Called by ApiService 401 interceptor ─────────────────────────────
+  /// Returns true if refresh succeeded (caller should retry the request).
+  /// Returns false if user must re-authenticate.
   Future<bool> handleUnauthorized() async {
     if (_refreshInFlight) {
-      // Another refresh is already in progress — wait briefly then recheck
       await Future.delayed(const Duration(seconds: 2));
       return _status == AuthStatus.authenticated;
     }
@@ -164,12 +155,9 @@ class AuthService extends ChangeNotifier {
 
     final result = await _silentRefresh(refresh);
 
-    if (result == true) {
-      return true; // Caller retries request with new token
-    }
+    if (result == true) return true;
 
     if (result == false) {
-      // Server explicitly rejected — must re-authenticate
       await _clearSession();
       return false;
     }
@@ -180,11 +168,6 @@ class AuthService extends ChangeNotifier {
 
   // ── JWT helpers ───────────────────────────────────────────────────────
 
-  /// Returns true if the token is expired (with 30-second race buffer).
-  bool _isTokenExpired(String token) =>
-      _isTokenExpiredOrExpiringSoon(token, bufferSeconds: 30);
-
-  /// Returns true if the token is expired OR expires within [bufferSeconds].
   bool _isTokenExpiredOrExpiringSoon(String token,
       {required int bufferSeconds}) {
     try {
@@ -206,7 +189,7 @@ class AuthService extends ChangeNotifier {
   /// POST /auth/refresh — returns:
   ///   true  — refreshed OK, new tokens persisted
   ///   false — server explicitly rejected (401/403) → force login
-  ///   null  — network/timeout error → keep user logged in
+  ///   null  — network / timeout error → keep user logged in
   Future<bool?> _silentRefresh(String refreshToken) async {
     if (_refreshInFlight) return null;
     _refreshInFlight = true;
@@ -226,7 +209,7 @@ class AuthService extends ChangeNotifier {
           .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
-        final body      = json.decode(response.body) as Map<String, dynamic>;
+        final body       = json.decode(response.body) as Map<String, dynamic>;
         final newAccess  = body['access_token']  as String?;
         final newRefresh = body['refresh_token'] as String?;
         final userId     = body['user_id']       as String?;
@@ -271,8 +254,6 @@ class AuthService extends ChangeNotifier {
           final event   = data.event;
 
           if (session != null) {
-            // Supabase auto-refreshed — sync to local storage so all
-            // HTTP clients (Dio + http package) send a valid JWT
             await Future.wait([
               storageService.write(
                   key: _kAccess, value: session.accessToken),
@@ -289,18 +270,14 @@ class AuthService extends ChangeNotifier {
             await _clearSession();
           }
         },
-        onError: (_) {
-          // Supabase stream error — keep current status, ApiService handles
-        },
+        onError: (_) {},
       );
-    } catch (_) {
-      // Supabase not yet initialised — backend JWT auth still operates
-    }
+    } catch (_) {}
   }
 
   // ── Public API ────────────────────────────────────────────────────────
 
-  /// Call after a successful login to persist tokens and bind device.
+  /// Call after a successful login to persist tokens.
   Future<void> saveSession({
     required String accessToken,
     required String refreshToken,
@@ -311,13 +288,12 @@ class AuthService extends ChangeNotifier {
       storageService.write(key: _kRefresh, value: refreshToken),
       storageService.write(key: _kUserId,  value: userId),
     ]);
-    await deviceService.getDeviceId(); // Ensure device is bound at first login
+    await deviceService.getDeviceId();
     _setStatus(AuthStatus.authenticated);
     _listenToSupabase();
   }
 
-  /// Called after successful login when tokens are already written to storage
-  /// (e.g. the login screen writes them directly, then calls this).
+  /// Called after successful login when tokens are already written.
   void onLoginSuccess() {
     _setStatus(AuthStatus.authenticated);
     _listenToSupabase();
@@ -335,9 +311,6 @@ class AuthService extends ChangeNotifier {
 
   // ── Private helpers ───────────────────────────────────────────────────
 
-  /// Clears auth tokens only.
-  /// NEVER deletes the entire storage — preferences, cache, and device ID
-  /// are preserved across logout just like Facebook and Instagram.
   Future<void> _clearTokens() async {
     await Future.wait([
       storageService.delete(key: _kAccess),
@@ -346,8 +319,6 @@ class AuthService extends ChangeNotifier {
     ]);
   }
 
-  /// Clears the session and marks user as unauthenticated.
-  /// Only wipes auth tokens — does NOT call storageService.deleteAll().
   Future<void> _clearSession() async {
     await _clearTokens();
     _setStatus(AuthStatus.unauthenticated);
@@ -356,7 +327,7 @@ class AuthService extends ChangeNotifier {
   void _setStatus(AuthStatus s) {
     if (_status == s) return;
     _status = s;
-    notifyListeners(); // GoRouter's refreshListenable reacts immediately
+    notifyListeners();
   }
 
   @override
@@ -366,5 +337,5 @@ class AuthService extends ChangeNotifier {
   }
 }
 
-// Global singleton — used by ApiService, router, and screens
+// Global singleton
 final authService = AuthService();
