@@ -600,7 +600,7 @@ class _InlineAdCard extends StatelessWidget {
           Center(
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 6),
-              child: BannerAdWidget(size: const AdSize(width: 320, height: 50)),
+              child: BannerAdWidget(),
             ),
           ),
         ],
