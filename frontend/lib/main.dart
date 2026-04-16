@@ -55,7 +55,7 @@ void main() async {
   // Previously this was called without await — storage wasn't ready when
   // authService.initialize() tried to read tokens, causing every boot to
   // look like "no tokens" → unauthenticated → forced re-login.
-  await storageService.init();
+  storageService.init();
 
   if (!kIsWeb) {
     SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
