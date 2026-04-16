@@ -1,4 +1,7 @@
 // frontend/lib/screens/workflow/workflow_detail_screen.dart
+// v3.3 — Expandable Steps · Inline AI Execution · Mentor AI · Save Outputs · Ad-wired
+
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -9,31 +12,27 @@ import 'package:intl/intl.dart';
 import 'package:fl_chart/fl_chart.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
-import '../../services/ad_manager.dart';          // ← AD
+import '../../services/ad_manager.dart';
 import '../../providers/locale_provider.dart';
-import '../../providers/currency_provider.dart';
 
-// ═════════════════════════════════════════════════════════════════════════════
-// RIVERPOD STATE MANAGEMENT
-// ═════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
+// STATE MANAGEMENT
+// ═══════════════════════════════════════════════════════════
 
 final workflowDetailProvider = StateNotifierProvider.family<
     WorkflowDetailNotifier, WorkflowDetailState, String>(
-  (ref, workflowId) => WorkflowDetailNotifier(ref, workflowId),
+  (ref, id) => WorkflowDetailNotifier(ref, id),
 );
 
 class WorkflowDetailState {
-  final String             workflowId;
+  final String               workflowId;
   final Map<String, dynamic> workflow;
-  final List<dynamic>      steps;
-  final List<dynamic>      freeTools;
-  final List<dynamic>      paidTools;
-  final List<dynamic>      revenueLogs;
-  final bool               isLoading;
-  final String?            error;
-  final int                selectedTab;
+  final List<dynamic>        steps, freeTools, paidTools, revenueLogs;
+  final bool                 isLoading;
+  final String?              error;
+  final int                  selectedTab;
 
-  WorkflowDetailState({
+  const WorkflowDetailState({
     required this.workflowId,
     this.workflow    = const {},
     this.steps       = const [],
@@ -54,36 +53,34 @@ class WorkflowDetailState {
     bool?                 isLoading,
     String?               error,
     int?                  selectedTab,
-  }) {
-    return WorkflowDetailState(
-      workflowId:  workflowId,
-      workflow:    workflow    ?? this.workflow,
-      steps:       steps       ?? this.steps,
-      freeTools:   freeTools   ?? this.freeTools,
-      paidTools:   paidTools   ?? this.paidTools,
-      revenueLogs: revenueLogs ?? this.revenueLogs,
-      isLoading:   isLoading   ?? this.isLoading,
-      error:       error       ?? this.error,
-      selectedTab: selectedTab ?? this.selectedTab,
-    );
-  }
+  }) => WorkflowDetailState(
+    workflowId:  workflowId,
+    workflow:    workflow    ?? this.workflow,
+    steps:       steps       ?? this.steps,
+    freeTools:   freeTools   ?? this.freeTools,
+    paidTools:   paidTools   ?? this.paidTools,
+    revenueLogs: revenueLogs ?? this.revenueLogs,
+    isLoading:   isLoading   ?? this.isLoading,
+    error:       error       ?? this.error,
+    selectedTab: selectedTab ?? this.selectedTab,
+  );
 
   double get totalRevenue    => (workflow['total_revenue']    as num?)?.toDouble() ?? 0.0;
   int    get progressPercent => (workflow['progress_percent'] as num?)?.toInt()    ?? 0;
-  String get currency        => workflow['currency']?.toString()  ?? 'USD';
-  String get language        => workflow['language']?.toString()  ?? 'en';
-  String get region          => workflow['region']?.toString()    ?? 'global';
-  String get timezone        => workflow['timezone']?.toString()  ?? 'UTC';
+  String get currency        => workflow['currency']?.toString()    ?? 'USD';
+  String get language        => workflow['language']?.toString()    ?? 'en';
+  String get region          => workflow['region']?.toString()      ?? 'global';
+  String get timezone        => workflow['timezone']?.toString()    ?? 'UTC';
   String get incomeType      => workflow['income_type']?.toString() ?? 'other';
-  String get title           => workflow['title']?.toString()     ?? 'Workflow';
-  String get goal            => workflow['goal']?.toString()      ?? '';
+  String get title           => workflow['title']?.toString()       ?? 'Workflow';
+  String get goal            => workflow['goal']?.toString()        ?? '';
 }
 
 class WorkflowDetailNotifier extends StateNotifier<WorkflowDetailState> {
-  final Ref    ref;
+  final Ref    _ref;
   final String workflowId;
 
-  WorkflowDetailNotifier(this.ref, this.workflowId)
+  WorkflowDetailNotifier(this._ref, this.workflowId)
       : super(WorkflowDetailState(workflowId: workflowId)) {
     loadWorkflow();
   }
@@ -92,32 +89,49 @@ class WorkflowDetailNotifier extends StateNotifier<WorkflowDetailState> {
     state = state.copyWith(isLoading: true, error: null);
     try {
       final data = await api.get('/workflow/$workflowId');
+      final steps = (data['steps'] as List? ?? []).map((s) {
+        if (s is Map && s['tools'] is String) {
+          final copy = Map<String, dynamic>.from(s as Map<String, dynamic>);
+          try { copy['tools'] = jsonDecode(copy['tools'] as String); } catch (_) { copy['tools'] = []; }
+          return copy;
+        }
+        return s;
+      }).toList();
       state = state.copyWith(
         workflow:    Map<String, dynamic>.from(data['workflow'] as Map? ?? {}),
-        steps:       data['steps']                  as List? ?? [],
-        freeTools:   data['tools']?['free']         as List? ?? [],
+        steps:       steps,
+        freeTools:   data['tools']?['free']          as List? ?? [],
         paidTools:   data['tools']?['paid_upgrades'] as List? ?? [],
-        revenueLogs: data['revenue_logs']            as List? ?? [],
+        revenueLogs: data['revenue_logs']             as List? ?? [],
         isLoading:   false,
       );
     } catch (e) {
-      state = state.copyWith(
-          isLoading: false, error: 'Failed to load workflow: $e');
+      state = state.copyWith(isLoading: false, error: 'Failed to load workflow: $e');
     }
   }
 
   Future<void> updateStep(String stepId, String status) async {
     try {
-      await api.patch(
-          '/workflow/$workflowId/step/$stepId', {'status': status});
+      await api.patch('/workflow/$workflowId/step/$stepId', {'status': status});
       await loadWorkflow();
     } catch (e) {
       state = state.copyWith(error: 'Failed to update step: $e');
     }
   }
 
-  Future<void> logRevenue(
-      double amount, String source, String? paymentMethod) async {
+  Future<void> saveStepOutput(String stepId, String output, Map<String, dynamic> extracted) async {
+    try {
+      await api.post('/workflow/$workflowId/step/$stepId/save-output', {
+        'output':    output,
+        'extracted': extracted,
+        'saved_at':  DateTime.now().toIso8601String(),
+      });
+    } catch (e) {
+      debugPrint('Step save (non-critical): $e');
+    }
+  }
+
+  Future<void> logRevenue(double amount, String source, String? paymentMethod) async {
     try {
       await api.post('/workflow/$workflowId/log-revenue', {
         'amount':         amount,
@@ -132,132 +146,134 @@ class WorkflowDetailNotifier extends StateNotifier<WorkflowDetailState> {
     }
   }
 
-  Future<Map<String, dynamic>> getAIAssist(String stepTitle,
-      {String? userQuestion}) async {
-    adManager.recordAgentUse();                    // ← AD: track usage
+  Future<Map<String, dynamic>> getAIAssist(String stepTitle, {String? userQuestion}) async {
+    adManager.recordAgentUse();
     final params = <String, dynamic>{'step_title': stepTitle};
-    if (userQuestion != null && userQuestion.isNotEmpty) {
-      params['user_question'] = userQuestion;
-    }
-    return await api.post('/workflow/$workflowId/ai-assist', {},
-        queryParams: params);
+    if (userQuestion != null && userQuestion.isNotEmpty) params['user_question'] = userQuestion;
+    return await api.post('/workflow/$workflowId/ai-assist', {}, queryParams: params);
+  }
+
+  Future<Map<String, dynamic>> getMentorTip(String stepTitle, String stepOutput) async {
+    try {
+      return await api.post('/workflow/$workflowId/ai-assist', {}, queryParams: {
+        'step_title':    stepTitle,
+        'user_question': 'Based on what was just generated, what 2-3 specific actionable next steps should I take immediately?',
+      });
+    } catch (_) { return {'ai_output': ''}; }
   }
 
   Future<void> generatePortfolio() async {
-    try {
-      await api.generatePortfolioFromWorkflow(workflowId);
-    } catch (e) {
-      state = state.copyWith(
-          error: 'Failed to generate portfolio: $e');
-      rethrow;
-    }
+    try { await api.generatePortfolioFromWorkflow(workflowId); }
+    catch (e) { state = state.copyWith(error: 'Failed: $e'); rethrow; }
   }
 
-  void setSelectedTab(int index) =>
-      state = state.copyWith(selectedTab: index);
-
-  void clearError() => state = state.copyWith(error: null);
+  void setSelectedTab(int index) => state = state.copyWith(selectedTab: index);
+  void clearError()              => state = state.copyWith(error: null);
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// MAIN SCREEN WIDGET
-// ═════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════
+
+Color _incomeColor(String type) {
+  const m = {
+    'youtube': Color(0xFFFF0000), 'tiktok': Color(0xFF69C9D0), 'instagram': Color(0xFFE1306C),
+    'freelance': Color(0xFF00B894), 'ecommerce': Color(0xFFE67E22), 'dropshipping': Color(0xFF3498DB),
+    'affiliate': Color(0xFF9B59B6), 'content': Color(0xFFE91E63), 'saas': Color(0xFF6C5CE7),
+    'app_development': Color(0xFF00CEC9), 'online_courses': Color(0xFFFD79A8),
+    'digital_products': Color(0xFF00B894), 'print_on_demand': Color(0xFFE17055),
+    'virtual_assistant': Color(0xFF74B9FF), 'translation': Color(0xFF55A3FF),
+    'physical': Color(0xFF3498DB), 'food_delivery': Color(0xFF00B894),
+    'ride_sharing': Color(0xFFFDCB6E), 'real_estate': Color(0xFF00B894),
+    'stock_trading': Color(0xFF00CEC9), 'crypto_trading': Color(0xFFF39C12),
+    'remote_job': Color(0xFF6C5CE7), 'other': Color(0xFF6C5CE7),
+  };
+  return m[type] ?? AppColors.primary;
+}
+
+String _fmtNum(double v) {
+  if (v >= 1000000) return '${(v / 1000000).toStringAsFixed(1)}M';
+  if (v >= 1000)    return '${(v / 1000).toStringAsFixed(1)}K';
+  return v.toStringAsFixed(0);
+}
+
+// ═══════════════════════════════════════════════════════════
+// MAIN SCREEN
+// ═══════════════════════════════════════════════════════════
 
 class WorkflowDetailScreen extends ConsumerStatefulWidget {
   final String workflowId;
   const WorkflowDetailScreen({super.key, required this.workflowId});
 
   @override
-  ConsumerState<WorkflowDetailScreen> createState() =>
-      _WorkflowDetailScreenState();
+  ConsumerState<WorkflowDetailScreen> createState() => _WorkflowDetailScreenState();
 }
 
-class _WorkflowDetailScreenState
-    extends ConsumerState<WorkflowDetailScreen>
+class _WorkflowDetailScreenState extends ConsumerState<WorkflowDetailScreen>
     with SingleTickerProviderStateMixin {
-  late TabController _tabController;
+  late TabController _tabCtrl;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
-    _tabController.addListener(_onTabChanged);
-  }
-
-  void _onTabChanged() {
-    if (_tabController.indexIsChanging) {
-      ref
-          .read(workflowDetailProvider(widget.workflowId).notifier)
-          .setSelectedTab(_tabController.index);
-    }
+    _tabCtrl = TabController(length: 4, vsync: this);
+    _tabCtrl.addListener(() {
+      if (_tabCtrl.indexIsChanging) {
+        ref.read(workflowDetailProvider(widget.workflowId).notifier)
+           .setSelectedTab(_tabCtrl.index);
+      }
+    });
   }
 
   @override
-  void dispose() {
-    _tabController.dispose();
-    super.dispose();
-  }
+  void dispose() { _tabCtrl.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
     final isDark   = Theme.of(context).brightness == Brightness.dark;
     final state    = ref.watch(workflowDetailProvider(widget.workflowId));
-    final notifier =
-        ref.read(workflowDetailProvider(widget.workflowId).notifier);
+    final notifier = ref.read(workflowDetailProvider(widget.workflowId).notifier);
 
     if (state.isLoading) return _LoadingScreen(isDark: isDark);
+    if (state.error != null) return _ErrorScreen(error: state.error!, onRetry: notifier.loadWorkflow, isDark: isDark);
 
-    if (state.error != null) {
-      return _ErrorScreen(
-        error:   state.error!,
-        onRetry: notifier.loadWorkflow,
-        isDark:  isDark,
-      );
-    }
-
-    final typeColor = _getIncomeTypeColor(state.incomeType);
+    final typeColor = _incomeColor(state.incomeType);
 
     return Scaffold(
-      backgroundColor: isDark ? AppColors.bgDark : Colors.white,
-      // ── AD: sticky banner anchored to bottom ──────────────────────────
+      backgroundColor:    isDark ? AppColors.bgDark : const Color(0xFFF5F5F8),
       bottomNavigationBar: adManager.getStickyBanner(context),
       body: NestedScrollView(
         headerSliverBuilder: (_, __) => [
-          _SliverAppBarHeader(
-            workflow:            state.workflow,
-            totalRevenue:        state.totalRevenue,
-            progressPercent:     state.progressPercent,
-            stepsDone:           state.steps
-                .where((s) => s['status'] == 'done')
-                .length,
-            totalSteps:          state.steps.length,
-            currency:            state.currency,
-            incomeType:          state.incomeType,
-            typeColor:           typeColor,
-            isDark:              isDark,
-            onLogRevenue:        () =>
-                _showLogRevenue(context, state, notifier),
-            onGeneratePortfolio: () =>
-                _generatePortfolio(context, notifier),
+          _AppBarHeader(
+            workflow:        state.workflow,
+            totalRevenue:    state.totalRevenue,
+            progressPercent: state.progressPercent,
+            stepsDone:       state.steps.where((s) => (s as Map)['status'] == 'done').length,
+            totalSteps:      state.steps.length,
+            currency:        state.currency,
+            incomeType:      state.incomeType,
+            typeColor:       typeColor,
+            isDark:          isDark,
+            onLogRevenue:    () => _showLogRevenue(context, state, notifier),
+            onGenPortfolio:  () => _genPortfolio(context, notifier),
           ),
           SliverPersistentHeader(
-            delegate: _TabBarDelegate(
-              tabController: _tabController,
-              typeColor:     typeColor,
-              isDark:        isDark,
-            ),
             pinned: true,
+            delegate: _TabDelegate(tabCtrl: _tabCtrl, typeColor: typeColor, isDark: isDark),
           ),
         ],
         body: TabBarView(
-          controller: _tabController,
+          controller: _tabCtrl,
           children: [
             _StepsTab(
               steps:        state.steps,
               isDark:       isDark,
+              workflowId:   widget.workflowId,
+              region:       state.region,
               onUpdateStep: notifier.updateStep,
-              onAIAssist:   (step) =>
-                  _showAIAssist(context, state, step),
+              onRunAI:      (step, q) => _runAIGated(context, notifier, step, q),
+              onSaveOutput: notifier.saveStepOutput,
+              onMentor:     (title, out) => notifier.getMentorTip(title, out),
             ),
             _ToolsTab(
               freeTools:    state.freeTools,
@@ -271,17 +287,14 @@ class _WorkflowDetailScreenState
               total:        state.totalRevenue,
               currency:     state.currency,
               isDark:       isDark,
-              onLogRevenue: () =>
-                  _showLogRevenue(context, state, notifier),
               timezone:     state.timezone,
+              onLogRevenue: () => _showLogRevenue(context, state, notifier),
             ),
             _AIAssistTab(
               workflowId: widget.workflowId,
               steps:      state.steps,
               isDark:     isDark,
-              // ── AD: gate + interstitial wired into onRunAI ───────────
-              onRunAI:    (step, question) =>
-                  _runAIWithAdGate(context, notifier, step, question),
+              onRunAI:    (step, q) => _runAIGated(context, notifier, step, q),
             ),
           ],
         ),
@@ -289,1974 +302,997 @@ class _WorkflowDetailScreenState
     );
   }
 
-  // ── AD: check agent limit → rewarded gate → interstitial → run ──────────
-  Future<Map<String, dynamic>> _runAIWithAdGate(
-    BuildContext context,
-    WorkflowDetailNotifier notifier,
-    Map step,
-    String? question,
+  Future<Map<String, dynamic>> _runAIGated(
+    BuildContext ctx, WorkflowDetailNotifier n, Map step, String? q,
   ) async {
     if (!adManager.canUseAgent) {
-      final unlocked = await adManager.watchAdForAgentUse(context);
-      if (!unlocked) {
-        throw Exception('Watch an ad to unlock more AI uses today.');
-      }
+      final ok = await adManager.watchAdForAgentUse(ctx);
+      if (!ok) throw Exception('Watch an ad to unlock more AI uses today.');
     }
     await adManager.showInterstitial();
-    return notifier.getAIAssist(
-      step['title']?.toString() ?? '',
-      userQuestion: question,
-    );
+    return n.getAIAssist(step['title']?.toString() ?? '', userQuestion: q);
   }
 
-  Color _getIncomeTypeColor(String type) {
-    const colors = {
-      'youtube':          Color(0xFFFF0000),
-      'tiktok':           Color(0xFF000000),
-      'instagram':        Color(0xFFE1306C),
-      'freelance':        Color(0xFF00B894),
-      'ecommerce':        Color(0xFFE67E22),
-      'dropshipping':     Color(0xFF3498DB),
-      'affiliate':        Color(0xFF9B59B6),
-      'content':          Color(0xFFE91E63),
-      'saas':             Color(0xFF6C5CE7),
-      'app_development':  Color(0xFF00CEC9),
-      'online_courses':   Color(0xFFFD79A8),
-      'digital_products': Color(0xFF00B894),
-      'print_on_demand':  Color(0xFFE17055),
-      'virtual_assistant':Color(0xFF74B9FF),
-      'translation':      Color(0xFF55A3FF),
-      'physical':         Color(0xFF3498DB),
-      'food_delivery':    Color(0xFF00B894),
-      'ride_sharing':     Color(0xFFFDCB6E),
-      'real_estate':      Color(0xFF00B894),
-      'stock_trading':    Color(0xFF00CEC9),
-      'crypto_trading':   Color(0xFFF39C12),
-      'remote_job':       Color(0xFF6C5CE7),
-      'other':            Color(0xFF6C5CE7),
-    };
-    return colors[type] ?? AppColors.primary;
-  }
-
-  Future<void> _showLogRevenue(
-    BuildContext context,
-    WorkflowDetailState state,
-    WorkflowDetailNotifier notifier,
-  ) async {
+  Future<void> _showLogRevenue(BuildContext ctx, WorkflowDetailState s, WorkflowDetailNotifier n) async {
     await showModalBottomSheet(
-      context:           context,
-      isScrollControlled: true,
-      backgroundColor:   Colors.transparent,
+      context: ctx, isScrollControlled: true, backgroundColor: Colors.transparent,
       builder: (_) => _LogRevenueSheet(
-        currency: state.currency,
-        region:   state.region,
-        onLog:    (amount, source, paymentMethod) async {
-          Navigator.pop(context);
+        currency: s.currency, region: s.region,
+        onLog: (amt, src, pm) async {
+          Navigator.pop(ctx);
           try {
-            await notifier.logRevenue(amount, source, paymentMethod);
-            if (context.mounted) {
-              _showSuccessSnackBar(context,
-                  '${state.currency} ${amount.toStringAsFixed(0)} logged!');
-            }
-          } catch (e) {
-            if (context.mounted) {
-              _showErrorSnackBar(context, 'Failed to log revenue: $e');
-            }
-          }
-        },
-      ),
+            await n.logRevenue(amt, src, pm);
+            if (ctx.mounted) _snack(ctx, '${s.currency} ${amt.toStringAsFixed(0)} logged!', AppColors.success);
+          } catch (e) { if (ctx.mounted) _snack(ctx, 'Failed: $e', AppColors.error); }
+        }),
     );
   }
 
-  Future<void> _generatePortfolio(
-      BuildContext context, WorkflowDetailNotifier notifier) async {
-    _showLoadingSnackBar(context, 'Generating portfolio case study...');
+  Future<void> _genPortfolio(BuildContext ctx, WorkflowDetailNotifier n) async {
+    _snack(ctx, 'Generating portfolio...', AppColors.primary);
     try {
-      await notifier.generatePortfolio();
-      if (context.mounted) {
-        _showSuccessSnackBar(context, 'Added to your portfolio!');
-      }
-    } catch (e) {
-      if (context.mounted) {
-        _showErrorSnackBar(context, 'Failed: $e');
-      }
-    }
+      await n.generatePortfolio();
+      if (ctx.mounted) _snack(ctx, 'Added to your portfolio!', AppColors.success);
+    } catch (e) { if (ctx.mounted) _snack(ctx, 'Failed: $e', AppColors.error); }
   }
 
-  // ── AD: interstitial fires (frequency-capped) before sheet opens ─────────
-  Future<void> _showAIAssist(
-    BuildContext context,
-    WorkflowDetailState state,
-    Map step,
-  ) async {
-    await adManager.showInterstitial();
-    if (!mounted) return;
-    await showModalBottomSheet(
-      context:           context,
-      isScrollControlled: true,
-      backgroundColor:   Colors.transparent,
-      builder: (_) => _AIAssistSheet(
-        stepTitle:       step['title']?.toString()       ?? '',
-        stepDescription: step['description']?.toString() ?? '',
-        workflowId:      widget.workflowId,
-        onRunAI:         (question) async {
-          final notifier = ref.read(
-              workflowDetailProvider(widget.workflowId).notifier);
-          return await notifier.getAIAssist(
-            step['title']?.toString() ?? '',
-            userQuestion: question,
-          );
-        },
-      ),
-    );
-  }
-
-  void _showSuccessSnackBar(BuildContext context, String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Row(children: [
-        const Icon(Iconsax.tick_circle, color: Colors.white),
-        const SizedBox(width: 8),
-        Text(message),
-      ]),
-      backgroundColor: AppColors.success,
-      behavior:        SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: AppRadius.lg),
-    ));
-  }
-
-  void _showErrorSnackBar(BuildContext context, String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Row(children: [
-        const Icon(Iconsax.warning_2, color: Colors.white),
-        const SizedBox(width: 8),
-        Expanded(child: Text(message)),
-      ]),
-      backgroundColor: AppColors.error,
-      behavior:        SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: AppRadius.lg),
-    ));
-  }
-
-  void _showLoadingSnackBar(BuildContext context, String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Row(children: [
-        const SizedBox(
-          width: 16, height: 16,
-          child: CircularProgressIndicator(
-              color: Colors.white, strokeWidth: 2),
-        ),
-        const SizedBox(width: 12),
-        Text(message),
-      ]),
-      backgroundColor: AppColors.primary,
-      duration:        const Duration(seconds: 2),
-    ));
-  }
+  void _snack(BuildContext ctx, String msg, Color color) =>
+      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+        content: Text(msg), backgroundColor: color,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: AppRadius.lg)));
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// LOADING & ERROR SCREENS
-// ═════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
+// LOADING / ERROR
+// ═══════════════════════════════════════════════════════════
 
 class _LoadingScreen extends StatelessWidget {
   final bool isDark;
   const _LoadingScreen({required this.isDark});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: isDark ? AppColors.bgDark : Colors.white,
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const CircularProgressIndicator(color: AppColors.primary),
-            const SizedBox(height: 16),
-            Text(
-              'Loading your workflow...',
-              style: AppTextStyles.body.copyWith(
-                color: isDark ? Colors.white70 : Colors.black54,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  @override Widget build(BuildContext context) => Scaffold(
+    backgroundColor: isDark ? AppColors.bgDark : Colors.white,
+    body: const Center(child: CircularProgressIndicator(color: AppColors.primary)));
 }
 
 class _ErrorScreen extends StatelessWidget {
-  final String       error;
-  final VoidCallback onRetry;
-  final bool         isDark;
-
-  const _ErrorScreen({
-    required this.error,
-    required this.onRetry,
-    required this.isDark,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: isDark ? AppColors.bgDark : Colors.white,
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Iconsax.warning_2,
-                  size: 64, color: AppColors.error),
-              const SizedBox(height: 16),
-              Text(
-                'Oops!',
-                style: AppTextStyles.h3.copyWith(
-                  color: isDark ? Colors.white : Colors.black87,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                error,
-                style: AppTextStyles.body.copyWith(
-                  color: isDark ? Colors.white70 : Colors.black54,
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 24),
-              ElevatedButton.icon(
-                onPressed: onRetry,
-                icon:  const Icon(Iconsax.refresh),
-                label: const Text('Try Again'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 24, vertical: 12),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: AppRadius.pill),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+  final String error; final VoidCallback onRetry; final bool isDark;
+  const _ErrorScreen({required this.error, required this.onRetry, required this.isDark});
+  @override Widget build(BuildContext context) => Scaffold(
+    backgroundColor: isDark ? AppColors.bgDark : Colors.white,
+    body: Center(child: Padding(padding: const EdgeInsets.all(24), child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+      const Icon(Iconsax.warning_2, size: 64, color: AppColors.error), const SizedBox(height: 16),
+      Text('Oops!', style: AppTextStyles.h3.copyWith(color: isDark ? Colors.white : Colors.black87)),
+      const SizedBox(height: 8),
+      Text(error, style: AppTextStyles.body.copyWith(color: isDark ? Colors.white70 : Colors.black54), textAlign: TextAlign.center),
+      const SizedBox(height: 24),
+      ElevatedButton.icon(onPressed: onRetry, icon: const Icon(Iconsax.refresh), label: const Text('Try Again'),
+        style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          shape: RoundedRectangleBorder(borderRadius: AppRadius.pill))),
+    ]))));
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
 // SLIVER APP BAR HEADER
-// ═════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
 
-class _SliverAppBarHeader extends StatelessWidget {
+class _AppBarHeader extends StatelessWidget {
   final Map<String, dynamic> workflow;
-  final double               totalRevenue;
-  final int                  progressPercent;
-  final int                  stepsDone;
-  final int                  totalSteps;
-  final String               currency;
-  final String               incomeType;
-  final Color                typeColor;
-  final bool                 isDark;
-  final VoidCallback         onLogRevenue;
-  final VoidCallback         onGeneratePortfolio;
+  final double totalRevenue; final int progressPercent, stepsDone, totalSteps;
+  final String currency, incomeType;
+  final Color typeColor; final bool isDark;
+  final VoidCallback onLogRevenue, onGenPortfolio;
 
-  const _SliverAppBarHeader({
-    required this.workflow,
-    required this.totalRevenue,
-    required this.progressPercent,
-    required this.stepsDone,
-    required this.totalSteps,
-    required this.currency,
-    required this.incomeType,
-    required this.typeColor,
-    required this.isDark,
-    required this.onLogRevenue,
-    required this.onGeneratePortfolio,
+  const _AppBarHeader({
+    required this.workflow, required this.totalRevenue, required this.progressPercent,
+    required this.stepsDone, required this.totalSteps, required this.currency,
+    required this.incomeType, required this.typeColor, required this.isDark,
+    required this.onLogRevenue, required this.onGenPortfolio,
   });
 
   @override
-  Widget build(BuildContext context) {
-    return SliverAppBar(
-      expandedHeight: 240,
-      pinned:          true,
-      backgroundColor: isDark ? AppColors.bgDark : Colors.white,
-      leading: IconButton(
-        icon:      const Icon(Iconsax.arrow_left),
-        onPressed: () => context.pop(),
-      ),
-      actions: [
-        if (totalRevenue > 0)
-          IconButton(
-            icon:      const Icon(Iconsax.gallery, color: Colors.white),
-            tooltip:   'Generate Portfolio Case Study',
-            onPressed: onGeneratePortfolio,
-          ),
-        IconButton(
-          icon:      const Icon(Iconsax.add_circle, color: Colors.white),
-          tooltip:   'Log Revenue',
-          onPressed: onLogRevenue,
-        ),
-        PopupMenuButton<String>(
-          icon: const Icon(Iconsax.more, color: Colors.white),
-          itemBuilder: (context) => const [
-            PopupMenuItem(
-              value: 'analytics',
-              child: Row(children: [
-                Icon(Iconsax.chart, size: 16),
-                SizedBox(width: 8),
-                Text('View Analytics'),
-              ]),
-            ),
-            PopupMenuItem(
-              value: 'share',
-              child: Row(children: [
-                Icon(Iconsax.share, size: 16),
-                SizedBox(width: 8),
-                Text('Share Progress'),
-              ]),
-            ),
-          ],
-          onSelected: (value) {
-            if (value == 'analytics') {
-              context.push(
-                  '/workflow/${workflow['id']}/analytics');
-            }
-          },
-        ),
-      ],
-      flexibleSpace: FlexibleSpaceBar(
-        background: Container(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end:   Alignment.bottomRight,
-              colors: [
-                typeColor.withOpacity(0.9),
-                AppColors.primary,
-              ],
-            ),
-          ),
-          child: SafeArea(
-            child: Padding(
-              padding:
-                  const EdgeInsets.fromLTRB(20, 60, 20, 16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.2),
-                      borderRadius: AppRadius.pill,
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _getIncomeTypeIcon(incomeType),
-                        const SizedBox(width: 4),
-                        Text(
-                          incomeType.toUpperCase(),
-                          style: const TextStyle(
-                            color:      Colors.white,
-                            fontSize:   10,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    workflow['title']?.toString() ?? 'Workflow',
-                    style: AppTextStyles.h2.copyWith(
-                      color:      Colors.white,
-                      fontSize:   22,
-                      fontWeight: FontWeight.w800,
-                    ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    workflow['goal']?.toString() ?? '',
-                    style: AppTextStyles.body.copyWith(
-                      color:    Colors.white.withOpacity(0.85),
-                      fontSize: 12,
-                    ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      _HeaderStat(
-                        value: '$currency ${_formatNumber(totalRevenue)}',
-                        label: 'Earned',
-                        color: AppColors.gold,
-                      ),
-                      const SizedBox(width: 24),
-                      _HeaderStat(
-                        value: '$progressPercent%',
-                        label: 'Progress',
-                        color: Colors.white,
-                      ),
-                      const SizedBox(width: 24),
-                      _HeaderStat(
-                        value: '$stepsDone/$totalSteps',
-                        label: 'Steps Done',
-                        color: Colors.white,
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  ClipRRect(
-                    borderRadius: AppRadius.pill,
-                    child: LinearProgressIndicator(
-                      value: progressPercent / 100,
-                      backgroundColor:
-                          Colors.white.withOpacity(0.3),
-                      valueColor: const AlwaysStoppedAnimation(
-                          Colors.white),
-                      minHeight: 6,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _getIncomeTypeIcon(String type) {
-    final icons = {
-      'youtube':           Iconsax.video,
-      'tiktok':            Iconsax.music,
-      'instagram':         Iconsax.camera,
-      'freelance':         Iconsax.briefcase,
-      'ecommerce':         Iconsax.shopping_cart,
-      'dropshipping':      Iconsax.box,
-      'affiliate':         Iconsax.link,
-      'content':           Iconsax.document_text,
-      'saas':              Iconsax.cloud,
-      'app_development':   Iconsax.mobile,
-      'online_courses':    Iconsax.teacher,
-      'digital_products':  Iconsax.code,
-      'print_on_demand':   Iconsax.printer,
-      'virtual_assistant': Iconsax.headphone,
-      'translation':       Iconsax.translate,
-      'physical':          Iconsax.shop,
-      'food_delivery':     Iconsax.truck_fast,
-      'ride_sharing':      Iconsax.car,
-      'real_estate':       Iconsax.building,
-      'stock_trading':     Iconsax.trend_up,
-      'crypto_trading':    Iconsax.dollar_circle,
-      'remote_job':        Iconsax.monitor,
-    };
-    return Icon(
-      icons[type] ?? Iconsax.activity,
-      color: Colors.white,
-      size:  12,
-    );
-  }
-
-  String _formatNumber(double v) {
-    if (v >= 1000000) return '${(v / 1000000).toStringAsFixed(1)}M';
-    if (v >= 1000)    return '${(v / 1000).toStringAsFixed(1)}K';
-    return v.toStringAsFixed(0);
-  }
-}
-
-class _HeaderStat extends StatelessWidget {
-  final String value;
-  final String label;
-  final Color  color;
-
-  const _HeaderStat({
-    required this.value,
-    required this.label,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          value,
-          style: TextStyle(
-            color:      color,
-            fontWeight: FontWeight.w800,
-            fontSize:   16,
-          ),
-        ),
-        Text(
-          label,
-          style: TextStyle(
-            color:    Colors.white.withOpacity(0.7),
-            fontSize: 10,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// TAB BAR DELEGATE
-// ═════════════════════════════════════════════════════════════════════════════
-
-class _TabBarDelegate extends SliverPersistentHeaderDelegate {
-  final TabController tabController;
-  final Color         typeColor;
-  final bool          isDark;
-
-  _TabBarDelegate({
-    required this.tabController,
-    required this.typeColor,
-    required this.isDark,
-  });
-
-  @override
-  Widget build(
-      BuildContext context, double shrinkOffset, bool overlapsContent) {
-    return Container(
-      color: isDark ? AppColors.bgDark : Colors.white,
-      child: TabBar(
-        controller:            tabController,
-        indicatorColor:        typeColor,
-        indicatorSize:         TabBarIndicatorSize.label,
-        labelColor:            typeColor,
-        unselectedLabelColor:  isDark ? Colors.white54 : Colors.black45,
-        labelStyle: const TextStyle(
-            fontWeight: FontWeight.w700, fontSize: 12),
-        tabs: const [
-          Tab(text: 'Steps',     icon: Icon(Iconsax.task,        size: 18)),
-          Tab(text: 'Tools',     icon: Icon(Iconsax.setting_2,   size: 18)),
-          Tab(text: 'Revenue',   icon: Icon(Iconsax.money,       size: 18)),
-          Tab(text: 'AI Assist', icon: Icon(Iconsax.cpu,         size: 18)),
+  Widget build(BuildContext context) => SliverAppBar(
+    expandedHeight: 238, pinned: true,
+    backgroundColor: typeColor.withOpacity(0.9),
+    leading: IconButton(
+        icon:      const Icon(Iconsax.arrow_left, color: Colors.white),
+        onPressed: () => context.pop()),
+    actions: [
+      if (totalRevenue > 0)
+        IconButton(icon: const Icon(Iconsax.gallery, color: Colors.white), onPressed: onGenPortfolio),
+      IconButton(icon: const Icon(Iconsax.add_circle, color: Colors.white), onPressed: onLogRevenue),
+      PopupMenuButton<String>(
+        icon: const Icon(Iconsax.more, color: Colors.white),
+        itemBuilder: (_) => const [
+          PopupMenuItem(value: 'analytics', child: Row(children: [Icon(Iconsax.chart, size: 16), SizedBox(width: 8), Text('Analytics')])),
+          PopupMenuItem(value: 'share',     child: Row(children: [Icon(Iconsax.share,  size: 16), SizedBox(width: 8), Text('Share')])),
         ],
+        onSelected: (v) { if (v == 'analytics') context.push('/workflow/${workflow['id']}/analytics'); }),
+    ],
+    flexibleSpace: FlexibleSpaceBar(
+      background: Container(
+        decoration: BoxDecoration(gradient: LinearGradient(
+            begin: Alignment.topLeft, end: Alignment.bottomRight,
+            colors: [typeColor.withOpacity(0.9), AppColors.primary])),
+        child: SafeArea(child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 50, 20, 16),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: AppRadius.pill),
+              child: Text(incomeType.toUpperCase(), style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w700))),
+            const SizedBox(height: 10),
+            Text(workflow['title']?.toString() ?? 'Workflow',
+              style: const TextStyle(color: Colors.white, fontSize: 21, fontWeight: FontWeight.w800),
+              maxLines: 2, overflow: TextOverflow.ellipsis),
+            const SizedBox(height: 5),
+            Text(workflow['goal']?.toString() ?? '',
+              style: TextStyle(color: Colors.white.withOpacity(0.82), fontSize: 12),
+              maxLines: 2, overflow: TextOverflow.ellipsis),
+            const SizedBox(height: 14),
+            Row(children: [
+              _HStat(value: '$currency ${_fmtNum(totalRevenue)}', label: 'Earned',     color: const Color(0xFFFFD700)),
+              const SizedBox(width: 24),
+              _HStat(value: '$progressPercent%',                  label: 'Progress',   color: Colors.white),
+              const SizedBox(width: 24),
+              _HStat(value: '$stepsDone/$totalSteps',             label: 'Steps Done', color: Colors.white),
+            ]),
+            const SizedBox(height: 10),
+            ClipRRect(borderRadius: AppRadius.pill,
+              child: LinearProgressIndicator(
+                value: progressPercent / 100,
+                backgroundColor: Colors.white.withOpacity(0.3),
+                valueColor: const AlwaysStoppedAnimation(Colors.white), minHeight: 5)),
+          ]),
+        )),
       ),
-    );
-  }
-
-  @override double get maxExtent => 56;
-  @override double get minExtent => 56;
-
-  @override
-  bool shouldRebuild(covariant SliverPersistentHeaderDelegate old) =>
-      false;
+    ),
+  );
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+class _HStat extends StatelessWidget {
+  final String value, label; final Color color;
+  const _HStat({required this.value, required this.label, required this.color});
+  @override Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    Text(value, style: TextStyle(color: color, fontWeight: FontWeight.w800, fontSize: 14)),
+    Text(label,  style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 10)),
+  ]);
+}
+
+// ═══════════════════════════════════════════════════════════
+// TAB BAR DELEGATE
+// ═══════════════════════════════════════════════════════════
+
+class _TabDelegate extends SliverPersistentHeaderDelegate {
+  final TabController tabCtrl; final Color typeColor; final bool isDark;
+  _TabDelegate({required this.tabCtrl, required this.typeColor, required this.isDark});
+  @override Widget build(BuildContext context, double shrinkOffset, bool overlaps) => Container(
+    color: isDark ? AppColors.bgDark : Colors.white,
+    child: TabBar(
+      controller: tabCtrl, indicatorColor: typeColor, indicatorSize: TabBarIndicatorSize.label,
+      labelColor: typeColor, unselectedLabelColor: isDark ? Colors.white54 : Colors.black45,
+      labelStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 11),
+      tabs: const [
+        Tab(text: 'Steps',     icon: Icon(Iconsax.task,       size: 16)),
+        Tab(text: 'Tools',     icon: Icon(Iconsax.setting_2,  size: 16)),
+        Tab(text: 'Revenue',   icon: Icon(Iconsax.money,      size: 16)),
+        Tab(text: 'AI Assist', icon: Icon(Iconsax.cpu,        size: 16)),
+      ]));
+  @override double get maxExtent => 58;
+  @override double get minExtent => 58;
+  @override bool shouldRebuild(covariant SliverPersistentHeaderDelegate old) => false;
+}
+
+// ═══════════════════════════════════════════════════════════
 // STEPS TAB
-// ═════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
 
 class _StepsTab extends StatelessWidget {
-  final List<dynamic>          steps;
-  final bool                   isDark;
-  final Function(String, String) onUpdateStep;
-  final Function(Map)          onAIAssist;
+  final List<dynamic>                                           steps;
+  final bool                                                    isDark;
+  final String                                                  workflowId, region;
+  final Future<void> Function(String, String)                   onUpdateStep;
+  final Future<Map<String, dynamic>> Function(Map, String?)     onRunAI;
+  final Future<void> Function(String, String, Map<String, dynamic>) onSaveOutput;
+  final Future<Map<String, dynamic>> Function(String, String)   onMentor;
 
   const _StepsTab({
-    required this.steps,
-    required this.isDark,
-    required this.onUpdateStep,
-    required this.onAIAssist,
+    required this.steps, required this.isDark, required this.workflowId,
+    required this.region, required this.onUpdateStep, required this.onRunAI,
+    required this.onSaveOutput, required this.onMentor,
   });
 
   @override
   Widget build(BuildContext context) {
-    if (steps.isEmpty) {
-      return _EmptyState(
-        icon:     Iconsax.task_square,
-        title:    'No steps yet',
-        subtitle: 'Your workflow steps will appear here',
-        isDark:   isDark,
-      );
-    }
+    if (steps.isEmpty) return Center(child: _Empty(icon: Iconsax.task_square,
+        title: 'No steps yet', sub: 'Your workflow steps will appear here', isDark: isDark));
 
-    final todoSteps = steps.where((s) => s['status'] != 'done').toList();
-    final doneSteps = steps.where((s) => s['status'] == 'done').toList();
+    final todo = steps.where((s) => (s as Map)['status'] != 'done').toList();
+    final done = steps.where((s) => (s as Map)['status'] == 'done').toList();
 
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
       children: [
-        if (todoSteps.isNotEmpty) ...[
-          _SectionTitle('To Do (${todoSteps.length})', isDark),
-          const SizedBox(height: 12),
-          ...todoSteps.asMap().entries.map((e) => _StepCard(
-                step:     e.value,
-                index:    e.key,
-                isDark:   isDark,
-                onUpdate: onUpdateStep,
-                onAI:     onAIAssist,
-              )),
+        if (todo.isNotEmpty) ...[
+          _SecTitle('To Do (${todo.length})', isDark), const SizedBox(height: 10),
+          ...todo.asMap().entries.map((e) => _StepCard(
+            key: ValueKey('todo_${(e.value as Map)['id']}'),
+            step: e.value as Map, index: e.key, isDark: isDark,
+            onUpdate: onUpdateStep, onRunAI: onRunAI,
+            onSaveOutput: onSaveOutput, onMentor: onMentor)),
         ],
-        // ── AD: banner between To Do and Completed sections ──────────────
-        if (todoSteps.isNotEmpty && doneSteps.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: adManager.getBannerWidget(),
-          ),
-        if (doneSteps.isNotEmpty) ...[
-          const SizedBox(height: 24),
-          _SectionTitle('Completed (${doneSteps.length})', isDark),
-          const SizedBox(height: 12),
-          ...doneSteps.asMap().entries.map((e) => _StepCard(
-                step:   e.value,
-                index:  e.key,
-                isDark: isDark,
-                onUpdate: onUpdateStep,
-                onAI:   onAIAssist,
-                isDone: true,
-              )),
+        if (todo.isNotEmpty && done.isNotEmpty)
+          Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: adManager.getBannerWidget()),
+        if (done.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          _SecTitle('Completed (${done.length})', isDark), const SizedBox(height: 10),
+          ...done.asMap().entries.map((e) => _StepCard(
+            key: ValueKey('done_${(e.value as Map)['id']}'),
+            step: e.value as Map, index: e.key, isDark: isDark,
+            onUpdate: onUpdateStep, onRunAI: onRunAI,
+            onSaveOutput: onSaveOutput, onMentor: onMentor,
+            isDone: true)),
         ],
       ],
     );
   }
 }
 
-class _StepCard extends StatelessWidget {
-  final Map                      step;
-  final int                      index;
-  final bool                     isDark;
-  final Function(String, String) onUpdate;
-  final Function(Map)            onAI;
-  final bool                     isDone;
+// ═══════════════════════════════════════════════════════════
+// STEP CARD — expandable + inline AI + mentor + save
+// ═══════════════════════════════════════════════════════════
+
+class _StepCard extends StatefulWidget {
+  final Map                  step;
+  final int                  index;
+  final bool                 isDark, isDone;
+  final Future<void> Function(String, String)                   onUpdate;
+  final Future<Map<String, dynamic>> Function(Map, String?)     onRunAI;
+  final Future<void> Function(String, String, Map<String, dynamic>) onSaveOutput;
+  final Future<Map<String, dynamic>> Function(String, String)   onMentor;
 
   const _StepCard({
-    required this.step,
-    required this.index,
-    required this.isDark,
-    required this.onUpdate,
-    required this.onAI,
-    this.isDone = false,
+    super.key, required this.step, required this.index, required this.isDark,
+    required this.onUpdate, required this.onRunAI,
+    required this.onSaveOutput, required this.onMentor, this.isDone = false,
   });
 
+  @override State<_StepCard> createState() => _StepCardState();
+}
+
+class _StepCardState extends State<_StepCard> with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  late Animation<double>   _anim;
+  bool   _open        = false;
+  bool   _aiRunning   = false;
+  bool   _aiDone      = false;
+  bool   _saved       = false;
+  bool   _showMentor  = false;
+  String _aiOutput    = '';
+  String _mentorTip   = '';
+  final  _questionCtrl = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 280));
+    _anim = CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut);
+  }
+
+  @override
+  void dispose() { _ctrl.dispose(); _questionCtrl.dispose(); super.dispose(); }
+
+  void _toggle() {
+    setState(() => _open = !_open);
+    _open ? _ctrl.forward() : _ctrl.reverse();
+  }
+
+  Future<void> _runAI() async {
+    if (_aiRunning) return;
+    setState(() { _aiRunning = true; _aiOutput = ''; _aiDone = false; _saved = false; });
+    try {
+      final result = await widget.onRunAI(
+        widget.step,
+        _questionCtrl.text.trim().isEmpty ? null : _questionCtrl.text.trim());
+      final out = result['ai_output']?.toString() ?? '';
+      setState(() { _aiOutput = out; _aiRunning = false; _aiDone = true; });
+      if (out.isNotEmpty) {
+        final stepId    = widget.step['id']?.toString() ?? '';
+        final extracted = _extract(out);
+        await widget.onSaveOutput(stepId, out, extracted);
+        if (mounted) setState(() => _saved = true);
+      }
+    } catch (e) {
+      setState(() { _aiRunning = false; _aiOutput = 'Error: $e'; });
+    }
+  }
+
+  Future<void> _loadMentor() async {
+    if (_mentorTip.isNotEmpty) { setState(() => _showMentor = !_showMentor); return; }
+    setState(() { _showMentor = true; _mentorTip = ''; });
+    try {
+      final r = await widget.onMentor(widget.step['title']?.toString() ?? '', _aiOutput);
+      if (mounted) setState(() => _mentorTip = r['ai_output']?.toString() ?? '');
+    } catch (_) {
+      if (mounted) setState(() => _mentorTip = 'Could not load tip right now.');
+    }
+  }
+
+  Map<String, dynamic> _extract(String out) {
+    final lines     = out.split('\n').where((l) => l.trim().isNotEmpty).toList();
+    final contacts  = <String>[];
+    final links     = <String>[];
+    final businesses= <String>[];
+    final phoneRx   = RegExp(r'\+?[\d\s\-\(\)]{8,15}');
+    final urlRx     = RegExp(r'https?://\S+');
+    final bizRx     = RegExp(r'(?:company|business|shop|store|agency|ltd|inc|co\.)[:\s]+([^\n]+)', caseSensitive: false);
+    for (final l in lines) {
+      if (phoneRx.hasMatch(l)) contacts.add(l.trim());
+      for (final m in urlRx.allMatches(l)) links.add(m.group(0)!);
+      final bm = bizRx.firstMatch(l);
+      if (bm != null) businesses.add(bm.group(1)?.trim() ?? '');
+    }
+    return {'contacts': contacts.take(20).toList(), 'links': links.take(30).toList(),
+      'businesses': businesses.take(20).toList(), 'raw_lines': lines.take(50).toList()};
+  }
+
   @override
   Widget build(BuildContext context) {
-    final status     = step['status']?.toString()     ?? 'pending';
-    final isAuto     = step['step_type']?.toString()  == 'automated';
-    final stepId     = step['id']?.toString()         ?? '';
-    final orderIndex = step['order_index'] as int?    ?? index + 1;
+    final status     = widget.step['status']?.toString() ?? 'pending';
+    final isAuto     = widget.step['step_type']?.toString() == 'automated';
+    final stepId     = widget.step['id']?.toString() ?? '';
+    final orderIndex = widget.step['order_index'] as int? ?? widget.index + 1;
+    final tools      = widget.step['tools'] as List? ?? [];
+    final isDark     = widget.isDark;
 
-    Color    statusColor;
-    IconData statusIcon;
+    Color    sColor;
     switch (status) {
-      case 'done':
-        statusColor = AppColors.success;
-        statusIcon  = Iconsax.tick_circle;
-        break;
-      case 'in_progress':
-        statusColor = AppColors.warning;
-        statusIcon  = Iconsax.timer;
-        break;
-      case 'blocked':
-        statusColor = AppColors.error;
-        statusIcon  = Iconsax.warning_2;
-        break;
-      default:
-        statusColor = isDark ? Colors.white30 : Colors.grey;
-        statusIcon  = Iconsax.record_circle;
+      case 'done':        sColor = AppColors.success; break;
+      case 'in_progress': sColor = AppColors.warning; break;
+      case 'blocked':     sColor = AppColors.error;   break;
+      default:            sColor = isDark ? Colors.white30 : Colors.grey;
     }
 
+    final cardBg = widget.isDone
+        ? (isDark ? AppColors.bgCard.withOpacity(0.5) : const Color(0xFFF8F8F8))
+        : (isDark ? AppColors.bgSurface : Colors.white);
+
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
+      margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
-        color: isDone
-            ? (isDark
-                ? AppColors.bgCard.withOpacity(0.5)
-                : const Color(0xFFF5F5F5))
-            : (isDark ? AppColors.bgSurface : Colors.white),
-        borderRadius: AppRadius.lg,
-        border: Border.all(
-          color: isDone
-              ? AppColors.success.withOpacity(0.3)
-              : (isDark
-                  ? Colors.white12
-                  : Colors.grey.shade200),
-        ),
-        boxShadow: isDone
-            ? null
-            : [
-                BoxShadow(
-                  color:      Colors.black.withOpacity(0.05),
-                  blurRadius: 10,
-                  offset:     const Offset(0, 4),
-                ),
-              ],
-      ),
-      child: Column(
-        children: [
-          ListTile(
-            contentPadding: const EdgeInsets.symmetric(
-                horizontal: 16, vertical: 8),
-            leading: GestureDetector(
-              onTap: () {
-                HapticFeedback.lightImpact();
-                onUpdate(stepId,
-                    status == 'done' ? 'pending' : 'done');
-              },
-              child: Container(
-                width:  36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: status == 'done'
-                      ? AppColors.success
-                      : Colors.transparent,
-                  shape:  BoxShape.circle,
-                  border: Border.all(color: statusColor, width: 2),
-                ),
-                child: status == 'done'
-                    ? const Icon(Icons.check,
-                        color: Colors.white, size: 18)
-                    : Center(
-                        child: Text(
-                          '$orderIndex',
-                          style: TextStyle(
-                            color:      statusColor,
-                            fontSize:   12,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ),
-              ),
-            ),
-            title: Text(
-              step['title']?.toString() ?? '',
-              style: AppTextStyles.label.copyWith(
-                color: isDone
-                    ? (isDark ? Colors.white54 : Colors.black54)
-                    : (isDark ? Colors.white : Colors.black87),
-                decoration:
-                    isDone ? TextDecoration.lineThrough : null,
-                fontSize: 14,
-              ),
-            ),
-            subtitle: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const SizedBox(height: 4),
-                Text(
-                  step['description']?.toString() ?? '',
-                  style: AppTextStyles.caption
-                      .copyWith(fontSize: 11),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    _StepBadge(
-                      text:  isAuto ? '🤖 AI' : '👤 Manual',
-                      color: isAuto
-                          ? AppColors.primary
-                          : AppColors.warning,
-                    ),
-                    const SizedBox(width: 6),
-                    _StepBadge(
-                      text:  '${step['time_minutes'] ?? 30} min',
-                      color: AppColors.textSecondary,
-                    ),
-                    if (step['tools'] != null &&
-                        (step['tools'] as List).isNotEmpty) ...[
-                      const SizedBox(width: 6),
-                      _StepBadge(
-                        text:  '${(step['tools'] as List).length} tools',
-                        color: AppColors.info,
-                      ),
-                    ],
-                  ],
-                ),
-              ],
-            ),
-            trailing: isAuto && !isDone
-                ? GestureDetector(
-                    onTap: () => onAI(step),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
-                      decoration: BoxDecoration(
-                        gradient: const LinearGradient(
-                          colors: [
-                            Color(0xFF6C5CE7),
-                            Color(0xFF00CEC9)
-                          ],
-                        ),
-                        borderRadius: AppRadius.pill,
-                      ),
-                      child: const Text(
-                        'Run AI',
-                        style: TextStyle(
-                          color:      Colors.white,
-                          fontSize:   11,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                  )
-                : PopupMenuButton<String>(
-                    onSelected: (value) {
-                      if (value == 'mark_done') {
-                        onUpdate(stepId, 'done');
-                      } else if (value == 'mark_in_progress') {
-                        onUpdate(stepId, 'in_progress');
-                      } else if (value == 'mark_blocked') {
-                        onUpdate(stepId, 'blocked');
-                      }
-                    },
-                    itemBuilder: (context) => const [
-                      PopupMenuItem(
-                          value: 'mark_done',
-                          child: Text('✅ Mark Done')),
-                      PopupMenuItem(
-                          value: 'mark_in_progress',
-                          child: Text('⏳ In Progress')),
-                      PopupMenuItem(
-                          value: 'mark_blocked',
-                          child: Text('🚫 Blocked')),
-                    ],
-                  ),
+        color: cardBg, borderRadius: AppRadius.lg,
+        border: Border.all(color: _open
+            ? (isAuto ? AppColors.primary : AppColors.warning).withOpacity(0.4)
+            : (widget.isDone ? AppColors.success.withOpacity(0.2) : (isDark ? Colors.white10 : Colors.grey.shade200))),
+        boxShadow: widget.isDone ? null : [BoxShadow(
+          color: Colors.black.withOpacity(isDark ? 0.12 : 0.05), blurRadius: 10, offset: const Offset(0, 3))]),
+      child: Column(children: [
+        // ── Collapsed header (always visible) ─────────────────────────────
+        InkWell(
+          onTap: _toggle, borderRadius: AppRadius.lg,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            child: Row(children: [
+              GestureDetector(
+                onTap: () { HapticFeedback.lightImpact(); widget.onUpdate(stepId, status == 'done' ? 'pending' : 'done'); },
+                child: Container(
+                  width: 34, height: 34,
+                  decoration: BoxDecoration(color: status == 'done' ? AppColors.success : Colors.transparent,
+                    shape: BoxShape.circle, border: Border.all(color: sColor, width: 2)),
+                  child: status == 'done'
+                      ? const Icon(Icons.check, color: Colors.white, size: 17)
+                      : Center(child: Text('$orderIndex',
+                          style: TextStyle(color: sColor, fontSize: 12, fontWeight: FontWeight.w700))))),
+              const SizedBox(width: 12),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(widget.step['title']?.toString() ?? '',
+                  style: TextStyle(
+                    color:      widget.isDone ? (isDark ? Colors.white54 : Colors.black54) : (isDark ? Colors.white : Colors.black87),
+                    decoration: widget.isDone ? TextDecoration.lineThrough : null,
+                    fontSize:   14, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 5),
+                Row(children: [
+                  _Badge(isAuto ? '🤖 AI' : '👤 Manual', isAuto ? AppColors.primary : AppColors.warning),
+                  const SizedBox(width: 6),
+                  _Badge('${widget.step['time_minutes'] ?? 30} min', AppColors.textSecondary),
+                  if (tools.isNotEmpty) ...[const SizedBox(width: 6), _Badge('${tools.length} tool${tools.length > 1 ? "s" : ""}', AppColors.info)],
+                ]),
+              ])),
+              AnimatedRotation(turns: _open ? 0.5 : 0, duration: const Duration(milliseconds: 260),
+                child: Icon(Iconsax.arrow_down, color: isDark ? Colors.white38 : Colors.black26, size: 16)),
+            ]),
           ),
-          if (!isDone &&
-              step['tools'] != null &&
-              (step['tools'] as List).isNotEmpty)
-            Container(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-              child: Wrap(
-                spacing:    6,
-                runSpacing: 6,
-                children: (step['tools'] as List).map((tool) {
-                  return Chip(
-                    label: Text(tool.toString(),
-                        style: const TextStyle(fontSize: 10)),
-                    padding: EdgeInsets.zero,
-                    materialTapTargetSize:
-                        MaterialTapTargetSize.shrinkWrap,
-                    backgroundColor:
-                        AppColors.primary.withOpacity(0.1),
-                  );
-                }).toList(),
-              ),
-            ),
-        ],
-      ),
-    ).animate().fadeIn(delay: (index * 60).ms).slideY(begin: 0.1);
-  }
-}
-
-class _StepBadge extends StatelessWidget {
-  final String text;
-  final Color  color;
-  const _StepBadge({required this.text, required this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color:        color.withOpacity(0.15),
-        borderRadius: AppRadius.pill,
-      ),
-      child: Text(
-        text,
-        style: TextStyle(
-          color:      color,
-          fontSize:   10,
-          fontWeight: FontWeight.w700,
         ),
-      ),
-    );
+
+        // ── Expanded content ───────────────────────────────────────────────
+        SizeTransition(
+          sizeFactor: _anim,
+          child: Column(children: [
+            Divider(height: 1, color: isDark ? Colors.white10 : Colors.grey.shade200),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+
+                // Full description
+                if ((widget.step['description']?.toString() ?? '').isNotEmpty) ...[
+                  Text(widget.step['description'].toString(),
+                    style: TextStyle(fontSize: 13, color: isDark ? Colors.white70 : Colors.black54, height: 1.5)),
+                  const SizedBox(height: 12),
+                ],
+
+                // Tool chips
+                if (tools.isNotEmpty) ...[
+                  Text('Tools needed:', style: TextStyle(fontSize: 11, color: isDark ? Colors.white38 : Colors.black38, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 6),
+                  Wrap(spacing: 6, runSpacing: 6,
+                    children: tools.map((t) => Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.08), borderRadius: AppRadius.pill,
+                        border: Border.all(color: AppColors.primary.withOpacity(0.2))),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        const Icon(Iconsax.external_drive, size: 10, color: AppColors.primary), const SizedBox(width: 5),
+                        Text(t.toString(), style: const TextStyle(fontSize: 11, color: AppColors.primary, fontWeight: FontWeight.w600)),
+                      ]))).toList()),
+                  const SizedBox(height: 12),
+                ],
+
+                // Manual: status action buttons
+                if (!isAuto && !widget.isDone) ...[
+                  Wrap(spacing: 8, runSpacing: 8, children: [
+                    _ActBtn('✅ Mark Done',   AppColors.success, () => widget.onUpdate(stepId, 'done')),
+                    _ActBtn('⏳ In Progress', AppColors.warning,  () => widget.onUpdate(stepId, 'in_progress')),
+                    _ActBtn('🚫 Blocked',     AppColors.error,   () => widget.onUpdate(stepId, 'blocked')),
+                  ]),
+                  const SizedBox(height: 10),
+                ],
+
+                // AI step: inline runner
+                if (isAuto && !widget.isDone) ...[
+                  TextField(
+                    controller: _questionCtrl,
+                    style: TextStyle(fontSize: 12, color: isDark ? Colors.white : Colors.black87),
+                    decoration: InputDecoration(
+                      hintText:   'Optional: Add context for better results',
+                      hintStyle:  TextStyle(color: isDark ? Colors.white38 : Colors.black38, fontSize: 12),
+                      prefixIcon: const Icon(Iconsax.message_text, size: 16),
+                      filled:     true,
+                      fillColor:  isDark ? AppColors.bgDark : const Color(0xFFF3F3F6),
+                      border:     OutlineInputBorder(borderRadius: AppRadius.lg, borderSide: BorderSide.none),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10)),
+                    maxLines: 2),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: GestureDetector(
+                      onTap: _aiRunning ? null : _runAI,
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        decoration: BoxDecoration(
+                          gradient: _aiRunning ? null : const LinearGradient(colors: [Color(0xFF6C5CE7), Color(0xFF00CEC9)]),
+                          color:        _aiRunning ? Colors.grey.shade400 : null,
+                          borderRadius: AppRadius.pill,
+                          boxShadow:    _aiRunning ? [] : [BoxShadow(color: AppColors.primary.withOpacity(0.28), blurRadius: 10, offset: const Offset(0, 4))]),
+                        child: Row(mainAxisAlignment: MainAxisAlignment.center,
+                          children: _aiRunning
+                              ? [const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
+                                 const SizedBox(width: 8), const Text('AI is working...', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600))]
+                              : [const Icon(Iconsax.flash, color: Colors.white, size: 15), const SizedBox(width: 7),
+                                 const Text('Run AI on This Step', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13))]),
+                      ))),
+                ],
+
+                // AI Output
+                if (_aiOutput.isNotEmpty) ...[
+                  const SizedBox(height: 14),
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color:  isDark ? AppColors.bgDark : const Color(0xFFF8F8FC),
+                      borderRadius: AppRadius.lg,
+                      border: Border.all(color: AppColors.primary.withOpacity(0.22))),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Row(children: [
+                        const Icon(Icons.auto_awesome, color: AppColors.primary, size: 14),
+                        const SizedBox(width: 6),
+                        const Text('AI Output', style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.w700, fontSize: 12)),
+                        const Spacer(),
+                        GestureDetector(
+                          onTap: () {
+                            Clipboard.setData(ClipboardData(text: _aiOutput));
+                            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                              content: Text('✅ Copied!'), backgroundColor: AppColors.success, duration: Duration(seconds: 2)));
+                          },
+                          child: const Icon(Iconsax.copy, size: 15, color: AppColors.primary)),
+                        const SizedBox(width: 10),
+                        GestureDetector(onTap: _runAI, child: const Icon(Iconsax.refresh, size: 15, color: AppColors.textMuted)),
+                      ]),
+                      const SizedBox(height: 10),
+                      SelectableText(_aiOutput,
+                        style: TextStyle(fontSize: 13, color: isDark ? Colors.white : Colors.black87, height: 1.55)),
+                    ])),
+
+                  const SizedBox(height: 8),
+                  Row(children: [
+                    // Save status
+                    if (_saved)
+                      const Row(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(Iconsax.tick_circle, size: 12, color: AppColors.success),
+                        SizedBox(width: 5),
+                        Text('Saved', style: TextStyle(fontSize: 11, color: AppColors.success)),
+                      ]),
+                    const Spacer(),
+                    // Mentor tip button
+                    if (_aiDone)
+                      GestureDetector(
+                        onTap: _loadMentor,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                          decoration: BoxDecoration(color: const Color(0xFF9B59B6).withOpacity(0.1), borderRadius: AppRadius.pill,
+                            border: Border.all(color: const Color(0xFF9B59B6).withOpacity(0.3))),
+                          child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                            Text('🧑‍🏫', style: TextStyle(fontSize: 11)), SizedBox(width: 5),
+                            Text('Mentor Tip', style: TextStyle(color: Color(0xFF9B59B6), fontSize: 11, fontWeight: FontWeight.w600)),
+                          ]))),
+                  ]),
+
+                  if (_aiDone && !widget.isDone) ...[
+                    const SizedBox(height: 10),
+                    SizedBox(width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: () => widget.onUpdate(stepId, 'done'),
+                        icon:  const Icon(Iconsax.tick_circle, size: 15, color: AppColors.success),
+                        label: const Text('Mark Step Complete', style: TextStyle(color: AppColors.success, fontWeight: FontWeight.w600)),
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: AppColors.success),
+                          padding: const EdgeInsets.symmetric(vertical: 11),
+                          shape: RoundedRectangleBorder(borderRadius: AppRadius.pill)))),
+                  ],
+                ],
+
+                // Mentor tip panel
+                if (_showMentor) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF9B59B6).withOpacity(0.07), borderRadius: AppRadius.lg,
+                      border: Border.all(color: const Color(0xFF9B59B6).withOpacity(0.2))),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Row(children: [
+                        Text('🧑‍🏫', style: TextStyle(fontSize: 14)), SizedBox(width: 8),
+                        Text('Mentor AI', style: TextStyle(color: Color(0xFF9B59B6), fontWeight: FontWeight.w700, fontSize: 12)),
+                      ]),
+                      const SizedBox(height: 8),
+                      _mentorTip.isEmpty
+                          ? const Row(children: [
+                              SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 1.5, color: Color(0xFF9B59B6))),
+                              SizedBox(width: 8), Text('Loading mentor tip...', style: TextStyle(fontSize: 12, color: Color(0xFF9B59B6)))])
+                          : Text(_mentorTip, style: TextStyle(fontSize: 12, color: isDark ? Colors.white70 : Colors.black54, height: 1.5)),
+                    ])),
+                ],
+
+              ]),
+            ),
+          ]),
+        ),
+      ]),
+    ).animate().fadeIn(delay: (widget.index * 50).ms).slideY(begin: 0.06);
   }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+class _Badge extends StatelessWidget {
+  final String text; final Color color;
+  const _Badge(this.text, this.color);
+  @override Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+    decoration: BoxDecoration(color: color.withOpacity(0.12), borderRadius: AppRadius.pill),
+    child: Text(text, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w700)));
+}
+
+class _ActBtn extends StatelessWidget {
+  final String label; final Color color; final VoidCallback onTap;
+  const _ActBtn(this.label, this.color, this.onTap);
+  @override Widget build(BuildContext context) => GestureDetector(
+    onTap: onTap,
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: AppRadius.pill,
+        border: Border.all(color: color.withOpacity(0.3))),
+      child: Text(label, style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600))));
+}
+
+// ═══════════════════════════════════════════════════════════
 // TOOLS TAB
-// ═════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
 
 class _ToolsTab extends StatelessWidget {
-  final List<dynamic> freeTools;
-  final List<dynamic> paidTools;
+  final List<dynamic> freeTools, paidTools;
   final double        totalRevenue;
   final String        currency;
   final bool          isDark;
-
-  const _ToolsTab({
-    required this.freeTools,
-    required this.paidTools,
-    required this.totalRevenue,
-    required this.currency,
-    required this.isDark,
-  });
+  const _ToolsTab({required this.freeTools, required this.paidTools,
+    required this.totalRevenue, required this.currency, required this.isDark});
 
   @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        if (freeTools.isNotEmpty) ...[
-          _SectionHeader(
-            icon:     Iconsax.gift,
-            title:    'Free Tools',
-            subtitle: 'Start with these — no cost',
-            color:    AppColors.success,
-            isDark:   isDark,
-          ),
-          const SizedBox(height: 12),
-          ...freeTools.asMap().entries.map((e) => _ToolCard(
-                tool:         e.value,
-                isFree:       true,
-                isDark:       isDark,
-                totalRevenue: totalRevenue,
-                index:        e.key,
-              )),
-          const SizedBox(height: 8),
-        ],
-        // ── AD: banner between free and paid tool sections ────────────────
-        if (freeTools.isNotEmpty && paidTools.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: adManager.getBannerWidget(),
-          ),
-        if (paidTools.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          _SectionHeader(
-            icon:     Iconsax.crown,
-            title:    'Upgrade When Ready',
-            subtitle: 'Unlock as you earn more',
-            color:    AppColors.warning,
-            isDark:   isDark,
-          ),
-          const SizedBox(height: 12),
-          ...paidTools.asMap().entries.map((e) {
-            final tool     = e.value as Map;
-            final unlockAt =
-                (tool['unlock_at_revenue'] as num?)?.toDouble() ?? 0;
-            final unlocked = totalRevenue >= unlockAt;
-            return _ToolCard(
-              tool:         tool,
-              isFree:       false,
-              isDark:       isDark,
-              unlocked:     unlocked,
-              unlockAt:     unlockAt,
-              currency:     currency,
-              totalRevenue: totalRevenue,
-              index:        e.key,
-            );
-          }),
-        ],
-        if (freeTools.isEmpty && paidTools.isEmpty)
-          _EmptyState(
-            icon:     Iconsax.setting_2,
-            title:    'No tools yet',
-            subtitle: 'Tools will be added as you progress',
-            isDark:   isDark,
-          ),
+  Widget build(BuildContext context) => ListView(
+    padding: const EdgeInsets.all(16),
+    children: [
+      if (freeTools.isNotEmpty) ...[
+        _SecHdr(icon: Iconsax.gift,  title: 'Free Tools',           sub: 'Start with these — no cost', color: AppColors.success, isDark: isDark),
+        const SizedBox(height: 12),
+        ...freeTools.asMap().entries.map((e) => _ToolCard(tool: e.value as Map, isFree: true, isDark: isDark, totalRevenue: totalRevenue, index: e.key)),
       ],
-    );
-  }
+      if (freeTools.isNotEmpty && paidTools.isNotEmpty)
+        Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: adManager.getBannerWidget()),
+      if (paidTools.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        _SecHdr(icon: Iconsax.crown, title: 'Upgrade When Ready',  sub: 'Unlock as you earn more',    color: AppColors.warning, isDark: isDark),
+        const SizedBox(height: 12),
+        ...paidTools.asMap().entries.map((e) {
+          final t   = e.value as Map;
+          final ulk = (t['unlock_at_revenue'] as num?)?.toDouble() ?? 0;
+          return _ToolCard(tool: t, isFree: false, isDark: isDark, unlocked: totalRevenue >= ulk,
+            unlockAt: ulk, currency: currency, totalRevenue: totalRevenue, index: e.key);
+        }),
+      ],
+      if (freeTools.isEmpty && paidTools.isEmpty)
+        _Empty(icon: Iconsax.setting_2, title: 'No tools yet', sub: 'Tools will appear as you progress', isDark: isDark),
+    ]);
 }
 
-class _SectionHeader extends StatelessWidget {
-  final IconData icon;
-  final String   title;
-  final String   subtitle;
-  final Color    color;
-  final bool     isDark;
-
-  const _SectionHeader({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.color,
-    required this.isDark,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color:        color.withOpacity(0.15),
-            borderRadius: AppRadius.md,
-          ),
-          child: Icon(icon, color: color, size: 20),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: AppTextStyles.h4.copyWith(
-                  color:    isDark ? Colors.white : Colors.black87,
-                  fontSize: 16,
-                ),
-              ),
-              Text(
-                subtitle,
-                style: AppTextStyles.caption.copyWith(fontSize: 11),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
+class _SecHdr extends StatelessWidget {
+  final IconData icon; final String title, sub; final Color color; final bool isDark;
+  const _SecHdr({required this.icon, required this.title, required this.sub, required this.color, required this.isDark});
+  @override Widget build(BuildContext context) => Row(children: [
+    Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: color.withOpacity(0.12), borderRadius: AppRadius.md),
+      child: Icon(icon, color: color, size: 18)),
+    const SizedBox(width: 12),
+    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(title, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: isDark ? Colors.white : Colors.black87)),
+      Text(sub, style: TextStyle(fontSize: 11, color: isDark ? Colors.white54 : Colors.black45)),
+    ])),
+  ]);
 }
 
 class _ToolCard extends StatelessWidget {
-  final Map     tool;
-  final bool    isFree;
-  final bool    isDark;
-  final bool    unlocked;
-  final double? unlockAt;
-  final String? currency;
-  final double  totalRevenue;
-  final int     index;
-
-  const _ToolCard({
-    required this.tool,
-    required this.isFree,
-    required this.isDark,
-    required this.totalRevenue,
-    this.unlocked = true,
-    this.unlockAt,
-    this.currency,
-    required this.index,
-  });
+  final Map tool; final bool isFree, isDark; final bool unlocked; final double? unlockAt;
+  final String? currency; final double totalRevenue; final int index;
+  const _ToolCard({required this.tool, required this.isFree, required this.isDark,
+    required this.totalRevenue, this.unlocked = true, this.unlockAt, this.currency, required this.index});
 
   @override
   Widget build(BuildContext context) {
-    final color = isFree
-        ? AppColors.success
-        : (unlocked ? AppColors.primary : AppColors.textMuted);
-
-    final regionAvailable =
-        tool['region_available'] ?? true;
-    final url = tool['url']?.toString() ?? '';
-
+    final clr = isFree ? AppColors.success : (unlocked ? AppColors.primary : AppColors.textMuted);
     return Opacity(
       opacity: unlocked ? 1.0 : 0.6,
       child: Container(
-        margin:   const EdgeInsets.only(bottom: 12),
-        padding:  const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: isDark ? AppColors.bgSurface : Colors.white,
-          borderRadius: AppRadius.lg,
-          border: Border.all(
-            color: color.withOpacity(unlocked ? 0.3 : 0.1),
-          ),
-        ),
-        child: Row(
-          children: [
-            Container(
-              width:  48,
-              height: 48,
-              decoration: BoxDecoration(
-                color:        color.withOpacity(0.15),
-                borderRadius: AppRadius.md,
-              ),
-              child: Center(
-                child: Icon(
-                  isFree
-                      ? Iconsax.tick_circle
-                      : (unlocked
-                          ? Iconsax.lock_slash
-                          : Iconsax.lock_1),
-                  color: color,
-                  size:  24,
-                ),
-              ),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        tool['name']?.toString() ?? '',
-                        style: AppTextStyles.label.copyWith(
-                          color: isDark
-                              ? Colors.white
-                              : Colors.black87,
-                          fontSize: 15,
-                        ),
-                      ),
-                      if (!regionAvailable) ...[
-                        const SizedBox(width: 8),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: Colors.orange.withOpacity(0.2),
-                            borderRadius: AppRadius.pill,
-                          ),
-                          child: const Text(
-                            'Regional',
-                            style: TextStyle(
-                              color:      Colors.orange,
-                              fontSize:   9,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    tool['purpose']?.toString() ?? '',
-                    style: AppTextStyles.caption
-                        .copyWith(fontSize: 11),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  if (!isFree &&
-                      !unlocked &&
-                      unlockAt != null) ...[
-                    const SizedBox(height: 8),
-                    LinearProgressIndicator(
-                      value: (totalRevenue / (unlockAt ?? 1.0))
-                          .clamp(0.0, 1.0),
-                      backgroundColor: Colors.grey.shade200,
-                      valueColor:
-                          AlwaysStoppedAnimation(color),
-                      minHeight:    4,
-                      borderRadius: AppRadius.pill,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Unlock at $currency ${_formatNumber(unlockAt!)} '
-                      '(current: $currency ${_formatNumber(totalRevenue)})',
-                      style: TextStyle(
-                        color:      color,
-                        fontSize:   10,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            if (url.isNotEmpty && (isFree || unlocked))
-              IconButton(
-                icon: const Icon(
-                    Iconsax.external_drive, size: 20),
-                onPressed: () {},
-              ),
-          ],
-        ),
-      ),
-    ).animate().fadeIn(delay: (index * 80).ms);
-  }
-
-  String _formatNumber(double v) {
-    if (v >= 1000) return '${(v / 1000).toStringAsFixed(1)}K';
-    return v.toStringAsFixed(0);
+        margin: const EdgeInsets.only(bottom: 10), padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(color: isDark ? AppColors.bgSurface : Colors.white, borderRadius: AppRadius.lg,
+          border: Border.all(color: clr.withOpacity(unlocked ? 0.25 : 0.1))),
+        child: Row(children: [
+          Container(width: 44, height: 44,
+            decoration: BoxDecoration(color: clr.withOpacity(0.12), borderRadius: AppRadius.md),
+            child: Center(child: Icon(isFree ? Iconsax.tick_circle : (unlocked ? Iconsax.lock_slash : Iconsax.lock_1), color: clr, size: 22))),
+          const SizedBox(width: 14),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(tool['name']?.toString() ?? '', style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 14, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 3),
+            Text(tool['purpose']?.toString() ?? '', style: TextStyle(fontSize: 11, color: isDark ? Colors.white54 : Colors.black45), maxLines: 2, overflow: TextOverflow.ellipsis),
+            if (!isFree && !unlocked && unlockAt != null) ...[
+              const SizedBox(height: 7),
+              LinearProgressIndicator(value: (totalRevenue / (unlockAt ?? 1.0)).clamp(0.0, 1.0),
+                backgroundColor: Colors.grey.shade200, valueColor: AlwaysStoppedAnimation(clr), minHeight: 3, borderRadius: AppRadius.pill),
+              const SizedBox(height: 3),
+              Text('Unlock at $currency ${_fmtNum(unlockAt!)}', style: TextStyle(color: clr, fontSize: 10, fontWeight: FontWeight.w600)),
+            ],
+          ])),
+          if ((tool['url']?.toString() ?? '').isNotEmpty && (isFree || unlocked))
+            IconButton(icon: const Icon(Iconsax.external_drive, size: 18), onPressed: () {}),
+        ])),
+    ).animate().fadeIn(delay: (index * 70).ms);
   }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
 // REVENUE TAB
-// ═════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
 
 class _RevenueTab extends StatelessWidget {
-  final List<dynamic> logs;
-  final double        total;
-  final String        currency;
-  final bool          isDark;
-  final VoidCallback  onLogRevenue;
-  final String        timezone;
-
-  const _RevenueTab({
-    required this.logs,
-    required this.total,
-    required this.currency,
-    required this.isDark,
-    required this.onLogRevenue,
-    required this.timezone,
-  });
+  final List<dynamic> logs; final double total; final String currency, timezone;
+  final bool isDark; final VoidCallback onLogRevenue;
+  const _RevenueTab({required this.logs, required this.total, required this.currency,
+    required this.isDark, required this.timezone, required this.onLogRevenue});
 
   @override
   Widget build(BuildContext context) {
     final locale = Localizations.localeOf(context);
-    final currencyFormat = NumberFormat.currency(
-      locale:        locale.toString(),
-      symbol:        currency,
-      decimalDigits: 0,
-    );
+    final fmt    = NumberFormat.currency(locale: locale.toString(), symbol: currency, decimalDigits: 0);
 
-    if (logs.isEmpty) {
-      return _EmptyRevenueState(
-        currency:     currency,
-        isDark:       isDark,
-        onLogRevenue: onLogRevenue,
-      );
+    if (logs.isEmpty) return _EmptyRevenue(currency: currency, isDark: isDark, onLog: onLogRevenue);
+
+    final daily = <String, double>{};
+    for (final log in logs) {
+      final day = (log as Map)['created_at']?.toString().substring(0, 10) ?? 'x';
+      daily[day] = (daily[day] ?? 0) + ((log['amount'] as num?)?.toDouble() ?? 0);
     }
-
-    final dailyRevenue = _aggregateDailyRevenue(logs);
-    final spots = dailyRevenue.entries.toList().asMap().entries
-        .map((e) => FlSpot(
-              e.key.toDouble(),
-              e.value.value,
-            ))
-        .toList();
+    final spots = daily.entries.toList().asMap().entries
+        .map((e) => FlSpot(e.key.toDouble(), e.value.value)).toList();
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        // Total card
         Container(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(22),
           decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              colors: [Color(0xFF00B894), Color(0xFF00CEC9)],
-              begin:  Alignment.topLeft,
-              end:    Alignment.bottomRight,
-            ),
+            gradient: const LinearGradient(colors: [Color(0xFF00B894), Color(0xFF00CEC9)], begin: Alignment.topLeft, end: Alignment.bottomRight),
             borderRadius: AppRadius.lg,
-            boxShadow: [
-              BoxShadow(
-                color:      AppColors.success.withOpacity(0.3),
-                blurRadius: 20,
-                offset:     const Offset(0, 8),
-              ),
+            boxShadow: [BoxShadow(color: AppColors.success.withOpacity(0.3), blurRadius: 18, offset: const Offset(0, 7))]),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('Total Earnings', style: TextStyle(color: Colors.white.withOpacity(0.9), fontWeight: FontWeight.w600)),
+                const SizedBox(height: 7),
+                Text(fmt.format(total), style: const TextStyle(color: Colors.white, fontSize: 30, fontWeight: FontWeight.w800)),
+              ]),
+              Container(padding: const EdgeInsets.all(11), decoration: const BoxDecoration(color: Colors.white24, shape: BoxShape.circle),
+                child: const Icon(Iconsax.wallet_3, color: Colors.white, size: 26)),
+            ]),
+            if (logs.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              Row(children: [
+                const Icon(Iconsax.receipt_item, color: Colors.white70, size: 14), const SizedBox(width: 6),
+                Text('${logs.length} transactions', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                const SizedBox(width: 20),
+                const Icon(Iconsax.calculator, color: Colors.white70, size: 14), const SizedBox(width: 6),
+                Text('${fmt.format(total / logs.length)} avg', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+              ]),
             ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment:
-                    MainAxisAlignment.spaceBetween,
-                children: [
-                  Column(
-                    crossAxisAlignment:
-                        CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Total Earnings',
-                        style: AppTextStyles.label.copyWith(
-                          color: Colors.white.withOpacity(0.9),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        currencyFormat.format(total),
-                        style: const TextStyle(
-                          color:      Colors.white,
-                          fontSize:   32,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ],
-                  ),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: const BoxDecoration(
-                      color: Colors.white24,
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(
-                      Iconsax.wallet_3,
-                      color: Colors.white,
-                      size:  28,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  _RevenueStat(
-                    icon:  Iconsax.receipt_item,
-                    value: '${logs.length}',
-                    label: 'Transactions',
-                  ),
-                  const SizedBox(width: 24),
-                  _RevenueStat(
-                    icon:  Iconsax.calculator,
-                    value: currencyFormat
-                        .format(total / logs.length),
-                    label: 'Avg/Transaction',
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ).animate().fadeIn().slideY(begin: -0.1),
-
-        const SizedBox(height: 24),
+          ])).animate().fadeIn().slideY(begin: -0.08),
 
         if (spots.length > 1) ...[
-          Text(
-            'Revenue Trend',
-            style: AppTextStyles.h4.copyWith(
-              color: isDark ? Colors.white : Colors.black87,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Container(
-            height:  200,
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: isDark ? AppColors.bgSurface : Colors.white,
-              borderRadius: AppRadius.lg,
-              border: Border.all(
-                color: isDark
-                    ? Colors.white12
-                    : Colors.grey.shade200,
-              ),
-            ),
-            child: LineChart(
-              LineChartData(
-                gridData:   FlGridData(show: false),
-                titlesData: FlTitlesData(
-                  leftTitles: AxisTitles(
-                      sideTitles:
-                          SideTitles(showTitles: false)),
-                  rightTitles: AxisTitles(
-                      sideTitles:
-                          SideTitles(showTitles: false)),
-                  topTitles: AxisTitles(
-                      sideTitles:
-                          SideTitles(showTitles: false)),
-                  bottomTitles: AxisTitles(
-                      sideTitles:
-                          SideTitles(showTitles: false)),
-                ),
-                borderData: FlBorderData(show: false),
-                lineBarsData: [
-                  LineChartBarData(
-                    spots:            spots,
-                    isCurved:         true,
-                    gradient: const LinearGradient(
-                      colors: [
-                        Color(0xFF00B894),
-                        Color(0xFF00CEC9)
-                      ],
-                    ),
-                    barWidth:         3,
-                    isStrokeCapRound: true,
-                    dotData:
-                        FlDotData(show: spots.length < 10),
-                    belowBarData: BarAreaData(
-                      show: true,
-                      gradient: LinearGradient(
-                        colors: [
-                          const Color(0xFF00B894)
-                              .withOpacity(0.3),
-                          const Color(0xFF00CEC9)
-                              .withOpacity(0.0),
-                        ],
-                        begin: Alignment.topCenter,
-                        end:   Alignment.bottomCenter,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 22),
+          Text('Revenue Trend', style: AppTextStyles.h4.copyWith(color: isDark ? Colors.white : Colors.black87)),
+          const SizedBox(height: 14),
+          Container(height: 180, padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(color: isDark ? AppColors.bgSurface : Colors.white, borderRadius: AppRadius.lg,
+              border: Border.all(color: isDark ? Colors.white12 : Colors.grey.shade200)),
+            child: LineChart(LineChartData(
+              gridData: FlGridData(show: false), borderData: FlBorderData(show: false),
+              titlesData: FlTitlesData(
+                leftTitles:   AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                rightTitles:  AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                topTitles:    AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false))),
+              lineBarsData: [LineChartBarData(
+                spots: spots, isCurved: true, barWidth: 3, isStrokeCapRound: true,
+                gradient: const LinearGradient(colors: [Color(0xFF00B894), Color(0xFF00CEC9)]),
+                dotData: FlDotData(show: spots.length < 10),
+                belowBarData: BarAreaData(show: true, gradient: LinearGradient(colors: [
+                  const Color(0xFF00B894).withOpacity(0.28), const Color(0xFF00CEC9).withOpacity(0.0)],
+                  begin: Alignment.topCenter, end: Alignment.bottomCenter)))]))),
+          const SizedBox(height: 22),
         ],
 
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(
-              'Recent Transactions',
-              style: AppTextStyles.h4.copyWith(
-                color: isDark ? Colors.white : Colors.black87,
-              ),
-            ),
-            TextButton.icon(
-              onPressed: onLogRevenue,
-              icon:  const Icon(Iconsax.add, size: 16),
-              label: const Text('Add'),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text('Recent Transactions', style: AppTextStyles.h4.copyWith(color: isDark ? Colors.white : Colors.black87)),
+          TextButton.icon(onPressed: onLogRevenue, icon: const Icon(Iconsax.add, size: 15), label: const Text('Add')),
+        ]),
+        const SizedBox(height: 10),
 
         ...logs.take(10).toList().asMap().entries.map((e) {
           final log  = e.value as Map;
-          final date = DateTime.tryParse(
-                  log['created_at']?.toString() ?? '') ??
-              DateTime.now();
-          final localDate = date.toLocal();
-
+          final date = DateTime.tryParse(log['created_at']?.toString() ?? '') ?? DateTime.now();
+          final diff = DateTime.now().difference(date.toLocal());
+          final dl   = diff.inDays == 0 ? 'Today' : diff.inDays == 1 ? 'Yesterday' : '${diff.inDays}d ago';
           return Container(
-            margin:  const EdgeInsets.only(bottom: 8),
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: isDark
-                  ? AppColors.bgSurface
-                  : Colors.white,
-              borderRadius: AppRadius.md,
-              border: Border.all(
-                color: isDark
-                    ? Colors.white12
-                    : Colors.grey.shade200,
-              ),
-            ),
-            child: Row(
-              children: [
-                Container(
-                  width:  44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: AppColors.success.withOpacity(0.15),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Center(
-                    child: Text('💸',
-                        style: TextStyle(fontSize: 20)),
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment:
-                        CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        log['source']?.toString().isNotEmpty ==
-                                true
-                            ? log['source'].toString()
-                            : 'Revenue',
-                        style: AppTextStyles.label.copyWith(
-                          color: isDark
-                              ? Colors.white
-                              : Colors.black87,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        _formatDate(localDate, timezone),
-                        style: AppTextStyles.caption
-                            .copyWith(fontSize: 11),
-                      ),
-                      if (log['payment_method'] != null) ...[
-                        const SizedBox(height: 4),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: AppColors.primary
-                                .withOpacity(0.1),
-                            borderRadius: AppRadius.pill,
-                          ),
-                          child: Text(
-                            log['payment_method'].toString(),
-                            style: const TextStyle(
-                              color:      AppColors.primary,
-                              fontSize:   9,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-                Text(
-                  '+${currencyFormat.format((log['amount'] as num?)?.toDouble() ?? 0)}',
-                  style: const TextStyle(
-                    color:      AppColors.success,
-                    fontWeight: FontWeight.w700,
-                    fontSize:   15,
-                  ),
-                ),
-              ],
-            ),
-          ).animate().fadeIn(delay: (e.key * 50).ms);
+            margin: const EdgeInsets.only(bottom: 8), padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(color: isDark ? AppColors.bgSurface : Colors.white, borderRadius: AppRadius.md,
+              border: Border.all(color: isDark ? Colors.white12 : Colors.grey.shade200)),
+            child: Row(children: [
+              Container(width: 42, height: 42, decoration: BoxDecoration(color: AppColors.success.withOpacity(0.12), shape: BoxShape.circle),
+                child: const Center(child: Text('💸', style: TextStyle(fontSize: 20)))),
+              const SizedBox(width: 14),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(log['source']?.toString().isNotEmpty == true ? log['source'].toString() : 'Revenue',
+                  style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 3),
+                Text(dl, style: TextStyle(fontSize: 11, color: isDark ? Colors.white54 : Colors.black45)),
+                if (log['payment_method'] != null) ...[
+                  const SizedBox(height: 3),
+                  Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.1), borderRadius: AppRadius.pill),
+                    child: Text(log['payment_method'].toString(),
+                      style: const TextStyle(color: AppColors.primary, fontSize: 9, fontWeight: FontWeight.w600))),
+                ],
+              ])),
+              Text('+${fmt.format((log['amount'] as num?)?.toDouble() ?? 0)}',
+                style: const TextStyle(color: AppColors.success, fontWeight: FontWeight.w700, fontSize: 14)),
+            ])).animate().fadeIn(delay: (e.key * 50).ms);
         }),
       ],
     );
   }
-
-  Map<String, double> _aggregateDailyRevenue(
-      List<dynamic> logs) {
-    final daily = <String, double>{};
-    for (final log in logs) {
-      final date =
-          log['created_at']?.toString().substring(0, 10) ??
-              'unknown';
-      final amount =
-          (log['amount'] as num?)?.toDouble() ?? 0;
-      daily[date] = (daily[date] ?? 0) + amount;
-    }
-    return Map.fromEntries(
-      daily.entries.toList()
-        ..sort((a, b) => a.key.compareTo(b.key)),
-    );
-  }
-
-  String _formatDate(DateTime date, String timezone) {
-    final diff = DateTime.now().difference(date);
-    if (diff.inDays == 0) return 'Today';
-    if (diff.inDays == 1) return 'Yesterday';
-    if (diff.inDays < 7)  return '${diff.inDays} days ago';
-    return DateFormat('MMM d, y').format(date);
-  }
 }
 
-class _RevenueStat extends StatelessWidget {
-  final IconData icon;
-  final String   value;
-  final String   label;
-
-  const _RevenueStat({
-    required this.icon,
-    required this.value,
-    required this.label,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(icon, color: Colors.white70, size: 16),
-        const SizedBox(width: 6),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              value,
-              style: const TextStyle(
-                color:      Colors.white,
-                fontWeight: FontWeight.w700,
-                fontSize:   14,
-              ),
-            ),
-            Text(
-              label,
-              style: TextStyle(
-                color:    Colors.white.withOpacity(0.7),
-                fontSize: 10,
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
+class _EmptyRevenue extends StatelessWidget {
+  final String currency; final bool isDark; final VoidCallback onLog;
+  const _EmptyRevenue({required this.currency, required this.isDark, required this.onLog});
+  @override Widget build(BuildContext context) => Center(child: Padding(padding: const EdgeInsets.all(32),
+    child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+      Container(width: 100, height: 100, decoration: BoxDecoration(color: AppColors.success.withOpacity(0.1), shape: BoxShape.circle),
+        child: const Center(child: Text('💰', style: TextStyle(fontSize: 48)))),
+      const SizedBox(height: 24),
+      Text('Start Earning!', style: AppTextStyles.h3.copyWith(color: isDark ? Colors.white : Colors.black87)),
+      const SizedBox(height: 8),
+      Text('Execute your workflow steps and log your income here. Track progress to unlock paid tools.',
+        style: AppTextStyles.body.copyWith(color: isDark ? Colors.white70 : Colors.black54), textAlign: TextAlign.center),
+      const SizedBox(height: 24),
+      ElevatedButton.icon(onPressed: onLog, icon: const Icon(Iconsax.add_circle), label: const Text('Log First Income'),
+        style: ElevatedButton.styleFrom(backgroundColor: AppColors.success, foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          shape: RoundedRectangleBorder(borderRadius: AppRadius.pill))),
+    ])));
 }
 
-class _EmptyRevenueState extends StatelessWidget {
-  final String       currency;
-  final bool         isDark;
-  final VoidCallback onLogRevenue;
-
-  const _EmptyRevenueState({
-    required this.currency,
-    required this.isDark,
-    required this.onLogRevenue,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              width:  100,
-              height: 100,
-              decoration: BoxDecoration(
-                color: AppColors.success.withOpacity(0.1),
-                shape: BoxShape.circle,
-              ),
-              child: const Center(
-                child: Text('💰',
-                    style: TextStyle(fontSize: 48)),
-              ),
-            ),
-            const SizedBox(height: 24),
-            Text(
-              'Start Earning!',
-              style: AppTextStyles.h3.copyWith(
-                color: isDark ? Colors.white : Colors.black87,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Execute your workflow steps and log your income here. '
-              'Track your progress to unlock paid tools.',
-              style: AppTextStyles.body.copyWith(
-                color: isDark ? Colors.white70 : Colors.black54,
-              ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: onLogRevenue,
-              icon:  const Icon(Iconsax.add_circle),
-              label: const Text('Log First Income'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.success,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 24, vertical: 12),
-                shape: RoundedRectangleBorder(
-                    borderRadius: AppRadius.pill),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
 // AI ASSIST TAB
-// ═════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
 
 class _AIAssistTab extends StatefulWidget {
-  final String                                       workflowId;
-  final List<dynamic>                                steps;
-  final bool                                         isDark;
+  final String workflowId;
+  final List<dynamic> steps;
+  final bool isDark;
   final Future<Map<String, dynamic>> Function(Map, String?) onRunAI;
-
-  const _AIAssistTab({
-    required this.workflowId,
-    required this.steps,
-    required this.isDark,
-    required this.onRunAI,
-  });
-
-  @override
-  State<_AIAssistTab> createState() => _AIAssistTabState();
+  const _AIAssistTab({required this.workflowId, required this.steps, required this.isDark, required this.onRunAI});
+  @override State<_AIAssistTab> createState() => _AIAssistTabState();
 }
 
 class _AIAssistTabState extends State<_AIAssistTab> {
   Map?    _selectedStep;
-  final   _questionCtrl = TextEditingController();
-  String  _aiOutput     = '';
-  bool    _running      = false;
+  String  _aiOutput = '';
+  bool    _running  = false;
   List<Map<String, dynamic>> _history = [];
+  final   _questionCtrl = TextEditingController();
 
-  @override
-  void dispose() { _questionCtrl.dispose(); super.dispose(); }
+  @override void dispose() { _questionCtrl.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
+    final isDark = widget.isDark;
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        // Header
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [
-                AppColors.primary.withOpacity(0.2),
-                AppColors.accent.withOpacity(0.2),
-              ],
-            ),
-            borderRadius: AppRadius.lg,
-            border: Border.all(
-                color: AppColors.primary.withOpacity(0.3)),
-          ),
-          child: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color:  AppColors.primary.withOpacity(0.2),
-                  shape:  BoxShape.circle,
-                ),
-                child: const Text('🤖',
-                    style: TextStyle(fontSize: 24)),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'AI Execution Engine',
-                      style: AppTextStyles.label.copyWith(
-                        color: widget.isDark
-                            ? Colors.white
-                            : Colors.black87,
-                        fontSize: 16,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Select any step and AI will generate ready-to-use content, '
-                      'scripts, or strategies specific to your workflow.',
-                      style: AppTextStyles.caption
-                          .copyWith(fontSize: 11),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
+            gradient: LinearGradient(colors: [AppColors.primary.withOpacity(0.2), AppColors.accent.withOpacity(0.15)]),
+            borderRadius: AppRadius.lg, border: Border.all(color: AppColors.primary.withOpacity(0.3))),
+          child: Row(children: [
+            Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.2), shape: BoxShape.circle),
+              child: const Text('🤖', style: TextStyle(fontSize: 24))),
+            const SizedBox(width: 16),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('AI Execution Engine', style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 16, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 4),
+              Text('Select any step and AI will generate ready-to-use content, scripts, or strategies.',
+                style: TextStyle(fontSize: 11, color: isDark ? Colors.white54 : Colors.black45)),
+            ])),
+          ])),
 
-        // ── AD: usage counter + rewarded gate ─────────────────────────────
-        if (!adManager.isPremium) ...[
-          const SizedBox(height: 12),
-          _AIUsageBanner(isDark: widget.isDark),
-        ],
+        if (!adManager.isPremium) ...[const SizedBox(height: 12), _AIUsageBanner(isDark: isDark)],
+        const SizedBox(height: 20),
 
-        const SizedBox(height: 24),
-
-        Text(
-          'Select a step to execute:',
-          style: AppTextStyles.h4.copyWith(
-            color:    widget.isDark ? Colors.white : Colors.black87,
-            fontSize: 14,
-          ),
-        ),
+        Text('Select a step to execute:', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: isDark ? Colors.white : Colors.black87)),
         const SizedBox(height: 12),
-
-        Wrap(
-          spacing:    8,
-          runSpacing: 8,
+        Wrap(spacing: 8, runSpacing: 8,
           children: widget.steps.map((step) {
-            final s        = step as Map;
-            final selected = _selectedStep?['id'] == s['id'];
-            final isAuto   = s['step_type'] == 'automated';
-
+            final s      = step as Map;
+            final sel    = _selectedStep?['id'] == s['id'];
+            final isAuto = s['step_type'] == 'automated';
             return GestureDetector(
-              onTap: () =>
-                  setState(() => _selectedStep = s),
+              onTap: () => setState(() => _selectedStep = s),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 200),
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 14, vertical: 10),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                 decoration: BoxDecoration(
-                  color: selected
-                      ? AppColors.primary
-                      : (widget.isDark
-                          ? AppColors.bgSurface
-                          : Colors.white),
+                  color: sel ? AppColors.primary : (isDark ? AppColors.bgSurface : Colors.white),
                   borderRadius: AppRadius.pill,
-                  border: Border.all(
-                    color: selected
-                        ? AppColors.primary
-                        : AppColors.textMuted,
-                  ),
-                  boxShadow: selected
-                      ? [
-                          BoxShadow(
-                            color: AppColors.primary
-                                .withOpacity(0.3),
-                            blurRadius: 12,
-                            offset: const Offset(0, 4),
-                          ),
-                        ]
-                      : null,
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(isAuto ? '🤖' : '👤',
-                        style: const TextStyle(fontSize: 12)),
-                    const SizedBox(width: 6),
-                    Text(
-                      s['title']?.toString() ?? '',
-                      style: TextStyle(
-                        color: selected
-                            ? Colors.white
-                            : AppColors.textSecondary,
-                        fontSize:   12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }).toList(),
-        ),
+                  border: Border.all(color: sel ? AppColors.primary : AppColors.textMuted),
+                  boxShadow: sel ? [BoxShadow(color: AppColors.primary.withOpacity(0.3), blurRadius: 12, offset: const Offset(0, 4))] : null),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Text(isAuto ? '🤖' : '👤', style: const TextStyle(fontSize: 12)), const SizedBox(width: 6),
+                  Text(s['title']?.toString() ?? '',
+                    style: TextStyle(color: sel ? Colors.white : AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600),
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
+                ])));
+          }).toList()),
 
         if (_selectedStep != null) ...[
-          const SizedBox(height: 24),
+          const SizedBox(height: 20),
           TextField(
             controller: _questionCtrl,
-            style: AppTextStyles.body.copyWith(
-              color: widget.isDark
-                  ? Colors.white
-                  : Colors.black87,
-            ),
+            style: TextStyle(color: isDark ? Colors.white : Colors.black87),
             decoration: InputDecoration(
-              hintText:
-                  'Optional: Add context for better results',
-              hintStyle:  AppTextStyles.caption,
-              filled:     true,
-              fillColor:  widget.isDark
-                  ? AppColors.bgSurface
-                  : const Color(0xFFF5F5F5),
-              border: OutlineInputBorder(
-                borderRadius: AppRadius.lg,
-                borderSide:   BorderSide.none,
-              ),
-              prefixIcon: const Icon(Iconsax.message_text),
-            ),
-            maxLines: 3,
-          ),
-
+              hintText:  'Optional: Add context for better results',
+              hintStyle: TextStyle(color: isDark ? Colors.white38 : Colors.black38, fontSize: 12),
+              filled: true, fillColor: isDark ? AppColors.bgSurface : const Color(0xFFF5F5F5),
+              border: OutlineInputBorder(borderRadius: AppRadius.lg, borderSide: BorderSide.none),
+              prefixIcon: const Icon(Iconsax.message_text)),
+            maxLines: 3),
           const SizedBox(height: 16),
-
-          SizedBox(
-            width: double.infinity,
+          SizedBox(width: double.infinity,
             child: ElevatedButton.icon(
               onPressed: _running ? null : _runAI,
               icon: _running
-                  ? const SizedBox(
-                      width:  18,
-                      height: 18,
-                      child:  CircularProgressIndicator(
-                        color:       Colors.white,
-                        strokeWidth: 2,
-                      ),
-                    )
+                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                   : const Icon(Iconsax.flash),
-              label: Text(
-                  _running ? 'AI is working...' : 'Execute with AI'),
+              label: Text(_running ? 'AI is working...' : 'Execute with AI'),
               style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.primary,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                shape: RoundedRectangleBorder(
-                    borderRadius: AppRadius.pill),
-                elevation:   8,
-                shadowColor: AppColors.primary.withOpacity(0.4),
-              ),
-            ),
-          ),
+                backgroundColor: AppColors.primary, foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: AppRadius.pill),
+                elevation: 6, shadowColor: AppColors.primary.withOpacity(0.4)))),
+        ],
 
-          if (_history.isNotEmpty) ...[
-            const SizedBox(height: 24),
-            Row(
-              mainAxisAlignment:
-                  MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Recent Generations',
-                  style: AppTextStyles.h4.copyWith(
-                    color: widget.isDark
-                        ? Colors.white
-                        : Colors.black87,
-                  ),
-                ),
-                TextButton(
-                  onPressed: () =>
-                      setState(() => _history.clear()),
-                  child: const Text('Clear'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            ..._history.take(3).map((h) => _HistoryItem(
-                  stepTitle: h['step_title'],
-                  preview:   h['output'].toString().substring(
-                      0,
-                      h['output'].toString().length > 50
-                          ? 50
-                          : h['output'].toString().length),
-                  onTap: () =>
-                      setState(() => _aiOutput = h['output']),
-                  isDark: widget.isDark,
-                )),
-          ],
+        if (_history.isNotEmpty) ...[
+          const SizedBox(height: 22),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            Text('Recent Generations', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: isDark ? Colors.white : Colors.black87)),
+            TextButton(onPressed: () => setState(() => _history.clear()), child: const Text('Clear')),
+          ]),
+          const SizedBox(height: 8),
+          ..._history.take(3).map((h) => GestureDetector(
+            onTap: () => setState(() => _aiOutput = h['output'] as String),
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 8), padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(color: isDark ? AppColors.bgSurface : Colors.white, borderRadius: AppRadius.md,
+                border: Border.all(color: isDark ? Colors.white12 : Colors.grey.shade200)),
+              child: Row(children: [
+                Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.1), shape: BoxShape.circle),
+                  child: const Icon(Iconsax.clock, size: 14, color: AppColors.primary)),
+                const SizedBox(width: 12),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(h['step_title'] as String, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: isDark ? Colors.white : Colors.black87)),
+                  Text((h['output'] as String).substring(0, ((h['output'] as String).length > 55 ? 55 : (h['output'] as String).length)),
+                    style: TextStyle(fontSize: 10, color: isDark ? Colors.white54 : Colors.black45), maxLines: 1, overflow: TextOverflow.ellipsis),
+                ])),
+                const Icon(Iconsax.arrow_right_3, size: 14, color: AppColors.primary),
+              ]))));
         ],
 
         if (_aiOutput.isNotEmpty) ...[
-          const SizedBox(height: 24),
-          Row(
-            mainAxisAlignment:
-                MainAxisAlignment.spaceBetween,
-            children: [
-              Row(children: [
-                Text(
-                  'AI Output',
-                  style: AppTextStyles.h4.copyWith(
-                    color: widget.isDark
-                        ? Colors.white
-                        : Colors.black87,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                        colors: [Color(0xFF6C5CE7), Color(0xFF00B894)]),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(Icons.auto_awesome, color: Colors.white, size: 9),
-                    SizedBox(width: 3),
-                    Text('Brain Enhanced',
-                        style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.w700)),
-                  ]),
-                ),
-              ]),
-              Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Iconsax.copy, size: 20),
-                    onPressed: () {
-                      Clipboard.setData(
-                          ClipboardData(text: _aiOutput));
-                      ScaffoldMessenger.of(context)
-                          .showSnackBar(const SnackBar(
-                        content: Text('Copied to clipboard!'),
-                        backgroundColor: AppColors.success,
-                      ));
-                    },
-                  ),
-                  IconButton(
-                    icon: const Icon(Iconsax.refresh, size: 20),
-                    onPressed: _runAI,
-                  ),
-                ],
-              ),
-            ],
-          ),
+          const SizedBox(height: 22),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            Row(children: [
+              Text('AI Output', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: isDark ? Colors.white : Colors.black87)),
+              const SizedBox(width: 8),
+              Container(padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                decoration: BoxDecoration(gradient: const LinearGradient(colors: [Color(0xFF6C5CE7), Color(0xFF00B894)]), borderRadius: BorderRadius.circular(8)),
+                child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(Icons.auto_awesome, color: Colors.white, size: 9), SizedBox(width: 3),
+                  Text('Brain Enhanced', style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.w700)),
+                ])),
+            ]),
+            Row(children: [
+              IconButton(icon: const Icon(Iconsax.copy, size: 20), onPressed: () {
+                Clipboard.setData(ClipboardData(text: _aiOutput));
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied!'), backgroundColor: AppColors.success));
+              }),
+              IconButton(icon: const Icon(Iconsax.refresh, size: 20), onPressed: _runAI),
+            ]),
+          ]),
           const SizedBox(height: 8),
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: widget.isDark
-                  ? AppColors.bgSurface
-                  : Colors.white,
-              borderRadius: AppRadius.lg,
-              border: Border.all(
-                  color: AppColors.primary.withOpacity(0.3)),
-            ),
-            child: SelectableText(
-              _aiOutput,
-              style: AppTextStyles.body.copyWith(
-                color: widget.isDark
-                    ? Colors.white
-                    : Colors.black87,
-                height: 1.6,
-              ),
-            ),
-          ),
+              color: isDark ? AppColors.bgSurface : Colors.white, borderRadius: AppRadius.lg,
+              border: Border.all(color: AppColors.primary.withOpacity(0.3))),
+            child: SelectableText(_aiOutput,
+              style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 13, height: 1.6))),
         ],
 
         const SizedBox(height: 40),
@@ -2267,644 +1303,171 @@ class _AIAssistTabState extends State<_AIAssistTab> {
   Future<void> _runAI() async {
     if (_selectedStep == null) return;
     setState(() => _running = true);
-
     try {
       final result = await widget.onRunAI(
         _selectedStep!,
-        _questionCtrl.text.trim().isEmpty
-            ? null
-            : _questionCtrl.text.trim(),
-      );
-      final output = result['ai_output']?.toString() ?? '';
+        _questionCtrl.text.trim().isEmpty ? null : _questionCtrl.text.trim());
+      final out = result['ai_output']?.toString() ?? '';
       setState(() {
-        _aiOutput = output;
+        _aiOutput = out;
         _running  = false;
-        _history.insert(0, {
-          'step_title': _selectedStep!['title'],
-          'output':     output,
-          'timestamp':  DateTime.now(),
-        });
+        _history.insert(0, {'step_title': _selectedStep!['title'], 'output': out, 'timestamp': DateTime.now()});
       });
     } catch (e) {
-      setState(() {
-        _running  = false;
-        _aiOutput = 'Error: $e';
-      });
+      setState(() { _running = false; _aiOutput = 'Error: $e'; });
     }
   }
 }
 
-// ── AD: daily usage banner shown inside AI tab ───────────────────────────────
-
 class _AIUsageBanner extends StatelessWidget {
   final bool isDark;
   const _AIUsageBanner({required this.isDark});
-
   @override
   Widget build(BuildContext context) {
     final remaining = adManager.agentUsesRemaining;
     final color     = remaining > 0 ? AppColors.primary : AppColors.error;
-
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color:        color.withOpacity(0.06),
-        borderRadius: AppRadius.lg,
-        border:       Border.all(color: color.withOpacity(0.25))),
+      decoration: BoxDecoration(color: color.withOpacity(0.06), borderRadius: AppRadius.lg,
+        border: Border.all(color: color.withOpacity(0.25))),
       child: Row(children: [
         Icon(remaining > 0 ? Iconsax.cpu : Iconsax.warning_2, color: color, size: 16),
         const SizedBox(width: 10),
-        Expanded(child: Text(
-          remaining > 0
-              ? '$remaining free AI run${remaining == 1 ? "" : "s"} left today'
-              : 'Daily free AI runs used up',
-          style: TextStyle(
-            color:      isDark ? Colors.white : Colors.black87,
-            fontSize:   12,
-            fontWeight: FontWeight.w600))),
+        Expanded(child: Text(remaining > 0 ? '$remaining free AI run${remaining == 1 ? "" : "s"} left today' : 'Daily free AI runs used up',
+          style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 12, fontWeight: FontWeight.w600))),
         if (remaining == 0)
           GestureDetector(
             onTap: () async {
-              final unlocked = await adManager.watchAdForAgentUse(context);
-              if (unlocked && context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                  content:         Text('✅ AI use unlocked!'),
-                  backgroundColor: AppColors.success));
-              }
+              final ok = await adManager.watchAdForAgentUse(context);
+              if (ok && context.mounted) ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('✅ AI use unlocked!'), backgroundColor: AppColors.success));
             },
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              decoration: BoxDecoration(
-                color:        AppColors.warning.withOpacity(0.15),
-                borderRadius: AppRadius.pill,
-                border:       Border.all(color: AppColors.warning.withOpacity(0.4))),
+              decoration: BoxDecoration(color: AppColors.warning.withOpacity(0.15), borderRadius: AppRadius.pill,
+                border: Border.all(color: AppColors.warning.withOpacity(0.4))),
               child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                Icon(Iconsax.play_circle, color: AppColors.warning, size: 12),
-                SizedBox(width: 4),
-                Text('Watch Ad', style: TextStyle(
-                  color: AppColors.warning, fontSize: 10, fontWeight: FontWeight.w700)),
-              ])),
-          ),
-      ]),
-    );
+                Icon(Iconsax.play_circle, color: AppColors.warning, size: 12), SizedBox(width: 4),
+                Text('Watch Ad', style: TextStyle(color: AppColors.warning, fontSize: 10, fontWeight: FontWeight.w700)),
+              ]))),
+      ]));
   }
 }
 
-class _HistoryItem extends StatelessWidget {
-  final String       stepTitle;
-  final String       preview;
-  final VoidCallback onTap;
-  final bool         isDark;
-
-  const _HistoryItem({
-    required this.stepTitle,
-    required this.preview,
-    required this.onTap,
-    required this.isDark,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        margin:   const EdgeInsets.only(bottom: 8),
-        padding:  const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: isDark ? AppColors.bgSurface : Colors.white,
-          borderRadius: AppRadius.md,
-          border: Border.all(
-            color: isDark
-                ? Colors.white12
-                : Colors.grey.shade200,
-          ),
-        ),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color:  AppColors.primary.withOpacity(0.1),
-                shape:  BoxShape.circle,
-              ),
-              child: const Icon(Iconsax.clock,
-                  size: 16, color: AppColors.primary),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    stepTitle,
-                    style: AppTextStyles.label.copyWith(
-                      color: isDark
-                          ? Colors.white
-                          : Colors.black87,
-                      fontSize: 12,
-                    ),
-                  ),
-                  Text(
-                    preview,
-                    style: AppTextStyles.caption
-                        .copyWith(fontSize: 10),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ],
-              ),
-            ),
-            const Icon(Iconsax.arrow_right_3,
-                size: 16, color: AppColors.primary),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
 // LOG REVENUE SHEET
-// ═════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
 
 class _LogRevenueSheet extends StatefulWidget {
-  final String                          currency;
-  final String                          region;
+  final String currency, region;
   final Function(double, String, String?) onLog;
-
-  const _LogRevenueSheet({
-    required this.currency,
-    required this.region,
-    required this.onLog,
-  });
-
-  @override
-  State<_LogRevenueSheet> createState() =>
-      _LogRevenueSheetState();
+  const _LogRevenueSheet({required this.currency, required this.region, required this.onLog});
+  @override State<_LogRevenueSheet> createState() => _LogRevenueSheetState();
 }
 
 class _LogRevenueSheetState extends State<_LogRevenueSheet> {
   final _amtCtrl = TextEditingController();
   final _srcCtrl = TextEditingController();
-  String? _selectedPaymentMethod;
+  String? _pm;
 
-  final Map<String, List<String>> _paymentMethods = {
-    'global':        ['PayPal', 'Wise', 'Payoneer', 'Bank Transfer', 'Crypto'],
-    'africa_west':   ['PayPal', 'Chipper Cash', 'Flutterwave', 'Paga', 'Bank Transfer'],
-    'africa_east':   ['M-Pesa', 'PayPal', 'Flutterwave', 'Chipper Cash'],
-    'south_asia':    ['PayPal', 'Razorpay', 'Paytm', 'UPI', 'bKash'],
-    'southeast_asia':['PayPal', 'PayMongo', 'Xendit', 'GrabPay'],
-    'latin_america': ['PayPal', 'Mercado Pago', 'Pix', 'Ualá'],
-    'middle_east':   ['PayPal', 'Telr', 'Paymob', 'Fawry'],
+  static const _paymentMethods = <String, List<String>>{
+    'global':         ['PayPal','Wise','Payoneer','Bank Transfer','Crypto'],
+    'africa_west':    ['PayPal','Chipper Cash','Flutterwave','Paga','Bank Transfer'],
+    'africa_east':    ['M-Pesa','PayPal','Flutterwave','Chipper Cash'],
+    'south_asia':     ['PayPal','Razorpay','Paytm','UPI','bKash'],
+    'southeast_asia': ['PayPal','PayMongo','Xendit','GrabPay'],
+    'latin_america':  ['PayPal','Mercado Pago','Pix','Ualá'],
+    'middle_east':    ['PayPal','Telr','Paymob','Fawry'],
   };
 
-  List<String> get _methods =>
-      _paymentMethods[widget.region] ?? _paymentMethods['global']!;
+  List<String> get _methods => _paymentMethods[widget.region] ?? _paymentMethods['global']!;
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-
     return Container(
-      padding: EdgeInsets.only(
-        left:   24,
-        right:  24,
-        top:    24,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
-      ),
-      decoration: BoxDecoration(
-        color: isDark ? AppColors.bgCard : Colors.white,
-        borderRadius: const BorderRadius.vertical(
-            top: Radius.circular(24)),
-      ),
-      child: Column(
-        mainAxisSize:       MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Center(
-            child: Container(
-              width:  36,
-              height: 4,
-              decoration: BoxDecoration(
-                color:        Colors.grey.shade400,
-                borderRadius: AppRadius.pill,
-              ),
-            ),
-          ),
-          const SizedBox(height: 20),
-          Text(
-            'Log Revenue',
-            style: AppTextStyles.h3.copyWith(
-              color: isDark ? Colors.white : Colors.black87,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Track your earnings to unlock tools and see progress',
-            style: AppTextStyles.caption,
-          ),
-          const SizedBox(height: 20),
-
-          TextField(
-            controller:  _amtCtrl,
-            keyboardType: const TextInputType.numberWithOptions(
-                decimal: true),
-            style: AppTextStyles.body.copyWith(
-              color:      isDark ? Colors.white : Colors.black87,
-              fontSize:   24,
-              fontWeight: FontWeight.w700,
-            ),
-            decoration: InputDecoration(
-              prefixText: '${widget.currency}  ',
-              prefixStyle: TextStyle(
-                color:      AppColors.primary,
-                fontSize:   24,
-                fontWeight: FontWeight.w800,
-              ),
-              hintText:  '0.00',
-              filled:    true,
-              fillColor: isDark
-                  ? AppColors.bgSurface
-                  : const Color(0xFFF5F5F5),
-              border: OutlineInputBorder(
-                borderRadius: AppRadius.lg,
-                borderSide:   BorderSide.none,
-              ),
-            ),
-          ),
-
-          const SizedBox(height: 16),
-
-          TextField(
-            controller: _srcCtrl,
-            style: AppTextStyles.body.copyWith(
-              color: isDark ? Colors.white : Colors.black87,
-            ),
-            decoration: InputDecoration(
-              hintText:   'Source (e.g., YouTube AdSense, Client payment)',
-              prefixIcon: const Icon(Iconsax.tag),
-              filled:     true,
-              fillColor:  isDark
-                  ? AppColors.bgSurface
-                  : const Color(0xFFF5F5F5),
-              border: OutlineInputBorder(
-                borderRadius: AppRadius.lg,
-                borderSide:   BorderSide.none,
-              ),
-            ),
-          ),
-
-          const SizedBox(height: 16),
-
-          Text(
-            'Payment Method',
-            style: AppTextStyles.label.copyWith(
-              color: isDark ? Colors.white70 : Colors.black54,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing:    8,
-            runSpacing: 8,
-            children: _methods.map((method) {
-              final selected =
-                  _selectedPaymentMethod == method;
-              return ChoiceChip(
-                label: Text(method),
-                selected: selected,
-                onSelected: (sel) => setState(() {
-                  _selectedPaymentMethod =
-                      sel ? method : null;
-                }),
-                selectedColor: AppColors.primary,
-                labelStyle: TextStyle(
-                  color: selected
-                      ? Colors.white
-                      : (isDark
-                          ? Colors.white
-                          : Colors.black87),
-                  fontSize: 12,
-                ),
-              );
-            }).toList(),
-          ),
-
-          const SizedBox(height: 24),
-
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: () {
-                final amt =
-                    double.tryParse(_amtCtrl.text) ?? 0;
-                if (amt <= 0) {
-                  ScaffoldMessenger.of(context)
-                      .showSnackBar(const SnackBar(
-                    content: Text(
-                        'Please enter a valid amount'),
-                    backgroundColor: AppColors.error,
-                  ));
-                  return;
-                }
-                widget.onLog(amt, _srcCtrl.text.trim(),
-                    _selectedPaymentMethod);
-              },
-              icon:  const Icon(Iconsax.tick_circle),
-              label: const Text('Log Income'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.success,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(
-                    vertical: 16),
-                shape: RoundedRectangleBorder(
-                    borderRadius: AppRadius.pill),
-              ),
-            ),
-          ),
-        ],
-      ),
+      padding: EdgeInsets.only(left: 24, right: 24, top: 24, bottom: MediaQuery.of(context).viewInsets.bottom + 24),
+      decoration: BoxDecoration(color: isDark ? AppColors.bgCard : Colors.white,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(24))),
+      child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Center(child: Container(width: 36, height: 4,
+          decoration: BoxDecoration(color: Colors.grey.shade400, borderRadius: AppRadius.pill))),
+        const SizedBox(height: 20),
+        Text('Log Revenue', style: AppTextStyles.h3.copyWith(color: isDark ? Colors.white : Colors.black87)),
+        const SizedBox(height: 4),
+        Text('Track your earnings to unlock tools and see progress',
+          style: TextStyle(fontSize: 12, color: isDark ? Colors.white54 : Colors.black45)),
+        const SizedBox(height: 20),
+        TextField(
+          controller: _amtCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 24, fontWeight: FontWeight.w700),
+          decoration: InputDecoration(
+            prefixText: '${widget.currency}  ',
+            prefixStyle: const TextStyle(color: AppColors.primary, fontSize: 24, fontWeight: FontWeight.w800),
+            hintText: '0.00', filled: true, fillColor: isDark ? AppColors.bgSurface : const Color(0xFFF5F5F5),
+            border: OutlineInputBorder(borderRadius: AppRadius.lg, borderSide: BorderSide.none))),
+        const SizedBox(height: 16),
+        TextField(
+          controller: _srcCtrl,
+          style: TextStyle(color: isDark ? Colors.white : Colors.black87),
+          decoration: InputDecoration(
+            hintText: 'Source (e.g. YouTube AdSense, Client payment)',
+            prefixIcon: const Icon(Iconsax.tag), filled: true,
+            fillColor: isDark ? AppColors.bgSurface : const Color(0xFFF5F5F5),
+            border: OutlineInputBorder(borderRadius: AppRadius.lg, borderSide: BorderSide.none))),
+        const SizedBox(height: 16),
+        Text('Payment Method', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: isDark ? Colors.white70 : Colors.black54)),
+        const SizedBox(height: 8),
+        Wrap(spacing: 8, runSpacing: 8,
+          children: _methods.map((m) {
+            final sel = _pm == m;
+            return ChoiceChip(
+              label: Text(m), selected: sel,
+              onSelected: (v) => setState(() => _pm = v ? m : null),
+              selectedColor: AppColors.primary,
+              labelStyle: TextStyle(color: sel ? Colors.white : (isDark ? Colors.white : Colors.black87), fontSize: 12));
+          }).toList()),
+        const SizedBox(height: 24),
+        SizedBox(width: double.infinity,
+          child: ElevatedButton.icon(
+            onPressed: () {
+              final amt = double.tryParse(_amtCtrl.text) ?? 0;
+              if (amt <= 0) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                  content: Text('Please enter a valid amount'), backgroundColor: AppColors.error));
+                return;
+              }
+              widget.onLog(amt, _srcCtrl.text.trim(), _pm);
+            },
+            icon:  const Icon(Iconsax.tick_circle),
+            label: const Text('Log Income'),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.success, foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              shape: RoundedRectangleBorder(borderRadius: AppRadius.pill)))),
+      ]),
     );
   }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// AI ASSIST SHEET
-// ═════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
+// SHARED SMALL WIDGETS
+// ═══════════════════════════════════════════════════════════
 
-class _AIAssistSheet extends StatefulWidget {
-  final String                                      stepTitle;
-  final String                                      stepDescription;
-  final String                                      workflowId;
-  final Future<Map<String, dynamic>> Function(String?) onRunAI;
-
-  const _AIAssistSheet({
-    required this.stepTitle,
-    required this.stepDescription,
-    required this.workflowId,
-    required this.onRunAI,
-  });
-
-  @override
-  State<_AIAssistSheet> createState() => _AIAssistSheetState();
+class _SecTitle extends StatelessWidget {
+  final String text; final bool isDark;
+  const _SecTitle(this.text, this.isDark);
+  @override Widget build(BuildContext context) => Text(text,
+    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: isDark ? Colors.white : Colors.black87));
 }
 
-class _AIAssistSheetState extends State<_AIAssistSheet> {
-  bool    _running = true;
-  String  _output  = '';
-  String? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    _runAI();
-  }
-
-  Future<void> _runAI() async {
-    setState(() { _running = true; _error = null; });
-    try {
-      final result = await widget.onRunAI(null);
-      setState(() {
-        _output  = result['ai_output']?.toString() ?? '';
-        _running = false;
-      });
-    } catch (e) {
-      setState(() { _error = e.toString(); _running = false; });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    return Container(
-      height:  MediaQuery.of(context).size.height * 0.8,
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: isDark ? AppColors.bgCard : Colors.white,
-        borderRadius: const BorderRadius.vertical(
-            top: Radius.circular(24)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Center(
-            child: Container(
-              width:  36,
-              height: 4,
-              decoration: BoxDecoration(
-                color:        Colors.grey.shade400,
-                borderRadius: AppRadius.pill,
-              ),
-            ),
-          ),
-          const SizedBox(height: 20),
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color:        AppColors.primary.withOpacity(0.15),
-                  borderRadius: AppRadius.md,
-                ),
-                child: const Text('🤖',
-                    style: TextStyle(fontSize: 20)),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'AI Execution',
-                      style: AppTextStyles.h4.copyWith(
-                        color: isDark
-                            ? Colors.white
-                            : Colors.black87,
-                      ),
-                    ),
-                    Text(
-                      widget.stepTitle,
-                      style: AppTextStyles.caption
-                          .copyWith(fontSize: 11),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
-              ),
-              if (!_running)
-                IconButton(
-                  icon:      const Icon(Iconsax.refresh),
-                  onPressed: _runAI,
-                ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Expanded(
-            child: _running
-                ? Center(
-                    child: Column(
-                      mainAxisAlignment:
-                          MainAxisAlignment.center,
-                      children: [
-                        const CircularProgressIndicator(
-                            color: AppColors.primary),
-                        const SizedBox(height: 16),
-                        Text(
-                          'AI is generating your content...',
-                          style: AppTextStyles.caption,
-                        ),
-                      ],
-                    ),
-                  )
-                : _error != null
-                    ? Center(
-                        child: Column(
-                          mainAxisAlignment:
-                              MainAxisAlignment.center,
-                          children: [
-                            const Icon(Iconsax.warning_2,
-                                size: 48,
-                                color: AppColors.error),
-                            const SizedBox(height: 16),
-                            Text('Something went wrong',
-                                style: AppTextStyles.h4),
-                            const SizedBox(height: 8),
-                            Text(
-                              _error!,
-                              style: AppTextStyles.caption,
-                              textAlign: TextAlign.center,
-                            ),
-                            const SizedBox(height: 16),
-                            ElevatedButton(
-                              onPressed: _runAI,
-                              child: const Text('Try Again'),
-                            ),
-                          ],
-                        ),
-                      )
-                    : SingleChildScrollView(
-                        child: Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: isDark
-                                ? AppColors.bgSurface
-                                : const Color(0xFFF8F8F8),
-                            borderRadius: AppRadius.lg,
-                          ),
-                          child: SelectableText(
-                            _output,
-                            style: AppTextStyles.body.copyWith(
-                              color: isDark
-                                  ? Colors.white
-                                  : Colors.black87,
-                              height: 1.6,
-                            ),
-                          ),
-                        ),
-                      ),
-          ),
-          if (!_running && _error == null) ...[
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: () {
-                      Clipboard.setData(
-                          ClipboardData(text: _output));
-                      ScaffoldMessenger.of(context)
-                          .showSnackBar(const SnackBar(
-                        content: Text('✅ Copied to clipboard!'),
-                        backgroundColor: AppColors.success,
-                      ));
-                    },
-                    icon:  const Icon(Iconsax.copy),
-                    label: const Text('Copy & Use'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.primary,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(
-                          vertical: 16),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: AppRadius.pill),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// HELPER WIDGETS
-// ═════════════════════════════════════════════════════════════════════════════
-
-class _SectionTitle extends StatelessWidget {
-  final String text;
-  final bool   isDark;
-  const _SectionTitle(this.text, this.isDark);
-
-  @override
-  Widget build(BuildContext context) {
-    return Text(
-      text,
-      style: AppTextStyles.h4.copyWith(
-        color:      isDark ? Colors.white : Colors.black87,
-        fontSize:   16,
-        fontWeight: FontWeight.w700,
-      ),
-    );
-  }
-}
-
-class _EmptyState extends StatelessWidget {
-  final IconData icon;
-  final String   title;
-  final String   subtitle;
-  final bool     isDark;
-
-  const _EmptyState({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.isDark,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            icon,
-            size:  64,
-            color: isDark
-                ? Colors.white.withOpacity(0.24)
-                : Colors.grey.shade300,
-          ),
-          const SizedBox(height: 16),
-          Text(
-            title,
-            style: AppTextStyles.h4.copyWith(
-              color: isDark ? Colors.white70 : Colors.black54,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            subtitle,
-            style: AppTextStyles.caption.copyWith(
-              color: isDark ? Colors.white54 : Colors.black38,
-            ),
-            textAlign: TextAlign.center,
-          ),
-        ],
-      ),
-    );
-  }
+class _Empty extends StatelessWidget {
+  final IconData icon; final String title, sub; final bool isDark;
+  const _Empty({required this.icon, required this.title, required this.sub, required this.isDark});
+  @override Widget build(BuildContext context) => Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+    Icon(icon, size: 64, color: isDark ? Colors.white.withOpacity(0.2) : Colors.grey.shade300),
+    const SizedBox(height: 16),
+    Text(title, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: isDark ? Colors.white70 : Colors.black54)),
+    const SizedBox(height: 8),
+    Text(sub, style: TextStyle(fontSize: 13, color: isDark ? Colors.white38 : Colors.black38), textAlign: TextAlign.center),
+  ]);
 }
