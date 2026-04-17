@@ -97,55 +97,33 @@ class ApiService {
   }
 
   void _addAuthInterceptor(Dio dio) {
-    dio.interceptors.add(InterceptorsWrapper(
-      onRequest: (options, handler) async {
-        final token = await storageService.read(key: 'access_token');
-        if (token != null) {
-          options.headers['Authorization'] = 'Bearer $token';
-        }
-        return handler.next(options);
-      },
-      onResponse: (response, handler) => handler.next(response),
-      onError: (error, handler) async {
-        if (error.response?.statusCode == 401 && !_isRefreshing) {
-          _isRefreshing = true;
-          final refreshed = await _refreshToken();
-          _isRefreshing = false;
-
-          if (refreshed) {
-            final token = await storageService.read(key: 'access_token');
+  dio.interceptors.add(InterceptorsWrapper(
+    onRequest: (options, handler) async {
+      final token = await storageService.read(key: 'access_token');
+      if (token != null) {
+        options.headers['Authorization'] = 'Bearer $token';
+      }
+      return handler.next(options);
+    },
+    onResponse: (response, handler) => handler.next(response),
+    onError: (error, handler) async {
+      if (error.response?.statusCode == 401) {
+        final shouldRetry = await authService.handleUnauthorized();
+        if (shouldRetry) {
+          final token = await storageService.read(key: 'access_token');
+          if (token != null) {
             error.requestOptions.headers['Authorization'] = 'Bearer $token';
             try {
               final retry = await dio.fetch(error.requestOptions);
               return handler.resolve(retry);
-            } catch (_) {
-              return handler.next(error);
-            }
-          } else {
-           await authService.onLogout();
-            return handler.next(error);
+            } catch (_) {}
           }
         }
-        return handler.next(error);
-      },
-    ));
-  }
-
-  Future<bool> _refreshToken() async {
-    try {
-      final refresh = await storageService.read(key: 'refresh_token');
-      if (refresh == null) return false;
-      final res = await _dio.post('/auth/refresh',
-          data: {'refresh_token': refresh});
-      await storageService.write(
-          key: 'access_token', value: res.data['access_token'] as String);
-      await storageService.write(
-          key: 'refresh_token', value: res.data['refresh_token'] as String);
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
+      }
+      return handler.next(error);
+    },
+  ));
+}
 
   ApiException _handleError(dynamic e) {
     if (e is DioException) {
