@@ -1,5 +1,5 @@
 // frontend/lib/services/auth_service.dart
-// v5.0 — Production-grade resilient auth + missing public API
+// v5.0 — Production-grade resilient auth (no random logout)
 
 import 'dart:async';
 import 'dart:convert';
@@ -23,7 +23,7 @@ class AuthService extends ChangeNotifier {
 
   AuthStatus _status = AuthStatus.unknown;
   AuthStatus get status => _status;
-  bool get isAuthenticated => _status == AuthStatus.authenticated; // ✅ restored
+  bool get isAuthenticated => _status == AuthStatus.authenticated;
 
   bool _refreshInFlight = false;
   int _refreshFailures = 0;
@@ -58,28 +58,18 @@ class AuthService extends ChangeNotifier {
     }
   }
 
-  // ── PROACTIVE REFRESH ON RESUME (restored) ─────────────────
-  /// Called when the app returns to foreground (from MainShell).
+  // ── RESUME REFRESH ─────────────────────────────────
   Future<void> tryRefreshOnResume() async {
-    if (_status != AuthStatus.authenticated) return;
+    if (!isAuthenticated) return;
     if (_refreshInFlight) return;
 
     final access  = await storageService.read(key: _kAccess);
     final refresh = await storageService.read(key: _kRefresh);
-
     if (refresh == null) return;
 
     final needsRefresh = access == null || _isExpired(access);
     if (needsRefresh) {
-      final result = await _silentRefresh(refresh);
-      if (result == true) {
-        _refreshFailures = 0;
-      } else if (result == false) {
-        _refreshFailures++;
-        if (_refreshFailures >= _maxRefreshFailures) {
-          await _clearSession();
-        }
-      }
+      await _backgroundRefresh(refresh);
     }
   }
 
@@ -95,19 +85,16 @@ class AuthService extends ChangeNotifier {
     if (result == false) {
       _refreshFailures++;
       if (_refreshFailures >= _maxRefreshFailures) {
-        debugPrint('Max refresh failures → logout');
         await _clearSession();
-      } else {
-        debugPrint('Refresh rejected → retry later');
       }
     }
   }
 
-  // ── API INTERCEPTOR ─────────────────────────────
+  // ── API INTERCEPTOR HANDLER ────────────────────────
   Future<bool> handleUnauthorized() async {
     if (_refreshInFlight) {
       await Future.delayed(const Duration(seconds: 2));
-      return _status == AuthStatus.authenticated;
+      return isAuthenticated;
     }
 
     final refresh = await storageService.read(key: _kRefresh);
@@ -135,7 +122,7 @@ class AuthService extends ChangeNotifier {
     return true;
   }
 
-  // ── REFRESH CALL ─────────────────────────────
+  // ── SILENT REFRESH CALL ────────────────────────────
   Future<bool?> _silentRefresh(String refreshToken) async {
     if (_refreshInFlight) return null;
     _refreshInFlight = true;
@@ -154,7 +141,6 @@ class AuthService extends ChangeNotifier {
 
       if (res.statusCode == 200) {
         final body = json.decode(res.body);
-
         await Future.wait([
           storageService.write(key: _kAccess, value: body['access_token']),
           if (body['refresh_token'] != null)
@@ -162,12 +148,10 @@ class AuthService extends ChangeNotifier {
           if (body['user_id'] != null)
             storageService.write(key: _kUserId, value: body['user_id']),
         ]);
-
         return true;
       }
 
       if (res.statusCode == 401 || res.statusCode == 403) {
-        debugPrint('Refresh rejected by server');
         return false;
       }
 
@@ -179,7 +163,7 @@ class AuthService extends ChangeNotifier {
     }
   }
 
-  // ── JWT CHECK ─────────────────────────────
+  // ── JWT EXPIRY CHECK ───────────────────────────────
   bool _isExpired(String token) {
     try {
       final payload = json.decode(
@@ -193,54 +177,53 @@ class AuthService extends ChangeNotifier {
     }
   }
 
-  // ── SUPABASE SYNC ─────────────────────────────
+  // ── SUPABASE SESSION SYNC ──────────────────────────
   void _listenToSupabase() {
-    try {
-      _supabaseSub?.cancel();
-      _supabaseSub =
-          Supabase.instance.client.auth.onAuthStateChange.listen((data) async {
-        final session = data.session;
-
-        if (session != null) {
-          await Future.wait([
-            storageService.write(key: _kAccess, value: session.accessToken),
-            if (session.refreshToken != null)
-              storageService.write(
-                  key: _kRefresh, value: session.refreshToken!),
-            storageService.write(key: _kUserId, value: session.user.id),
-          ]);
-          _setStatus(AuthStatus.authenticated);
-        } else {
-          await _clearSession();
-        }
-      });
-    } catch (_) {}
+    _supabaseSub?.cancel();
+    _supabaseSub = Supabase.instance.client.auth.onAuthStateChange.listen((data) async {
+      final session = data.session;
+      if (session != null) {
+        await Future.wait([
+          storageService.write(key: _kAccess, value: session.accessToken),
+          if (session.refreshToken != null)
+            storageService.write(key: _kRefresh, value: session.refreshToken!),
+          storageService.write(key: _kUserId, value: session.user.id),
+        ]);
+        _setStatus(AuthStatus.authenticated);
+      } else if (data.event == AuthChangeEvent.signedOut) {
+        await _clearSession();
+      }
+    }, onError: (_) {});
   }
 
-  // ── LOGIN ─────────────────────────────
+  // ── LOGIN ──────────────────────────────────────────
   Future<void> saveSession({
     required String accessToken,
     required String refreshToken,
     required String userId,
   }) async {
+    _refreshFailures = 0;
     await Future.wait([
       storageService.write(key: _kAccess, value: accessToken),
       storageService.write(key: _kRefresh, value: refreshToken),
       storageService.write(key: _kUserId, value: userId),
     ]);
 
-    _setStatus(AuthStatus.authenticated);
+    // Force UI update even if already authenticated
+    _status = AuthStatus.authenticated;
+    notifyListeners();
+
     _listenToSupabase();
   }
 
-  /// ✅ restored – called after login when tokens are already stored
   void onLoginSuccess() {
-    _refreshFailures = 0;               // reset counter on fresh login
-    _setStatus(AuthStatus.authenticated);
+    _refreshFailures = 0;
+    _status = AuthStatus.authenticated;
+    notifyListeners();
     _listenToSupabase();
   }
 
-  // ── LOGOUT ─────────────────────────────
+  // ── LOGOUT ─────────────────────────────────────────
   Future<void> onLogout() async {
     _supabaseSub?.cancel();
     try {
@@ -255,6 +238,7 @@ class AuthService extends ChangeNotifier {
       storageService.delete(key: _kRefresh),
       storageService.delete(key: _kUserId),
     ]);
+    _refreshFailures = 0;
     _setStatus(AuthStatus.unauthenticated);
   }
 
