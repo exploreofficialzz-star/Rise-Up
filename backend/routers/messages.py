@@ -1,13 +1,10 @@
 """
-routers/messages.py — RiseUp Messaging System (Production v12)
+routers/messages.py — RiseUp Messaging System (Production v13)
 
-v12 additions over v11:
-  • MessageEdit pydantic model
-  • PATCH /conversations/{conv_id}/messages/{msg_id} — edit own message
-  • DELETE /conversations/{conv_id}/messages/{msg_id} — soft-delete own message
-  • GET /conversations/{conv_id}/other-presence — lightweight presence for DM screen
-  • Presence endpoint now also accepts online followers check
-  • Everything else identical to v11.
+v13 fixes over v12:
+  • get_conversations: last_message query now excludes sender_type 'ai' and 'system'
+    so AI error phrases never appear as the preview in a human-to-human DM.
+  • Everything else identical to v12.
 """
 
 import logging
@@ -104,7 +101,7 @@ def _ensure_ai_user_exists(db) -> str:
                 all_users = _admin().auth.admin.list_users()
                 for u in (all_users or []):
                     if getattr(u, "email", None) == AI_USER_EMAIL:
-                        actual_id      = str(u.id)
+                        actual_id       = str(u.id)
                         auth_user_found = True
                         break
             except Exception as list_err:
@@ -149,10 +146,10 @@ def _format_last_seen(last_seen_str: Optional[str], now: datetime) -> Optional[s
             dt = dt.replace(tzinfo=timezone.utc)
         diff = now - dt
         secs = int(diff.total_seconds())
-        if secs < 60:          return "just now"
-        if secs < 3600:        return f"{secs // 60}m ago"
-        if secs < 86400:       return f"{secs // 3600}h ago"
-        if secs < 604800:      return f"{secs // 86400}d ago"
+        if secs < 60:     return "just now"
+        if secs < 3600:   return f"{secs // 60}m ago"
+        if secs < 86400:  return f"{secs // 3600}h ago"
+        if secs < 604800: return f"{secs // 86400}d ago"
         return dt.strftime("%b %d")
     except Exception:
         return None
@@ -222,9 +219,9 @@ async def get_other_presence(
             .execute()
             .data or {}
         )
-        last_seen  = profile.get("last_seen")
-        is_online  = _is_online_from_last_seen(last_seen, now)
-        last_text  = "Online" if is_online else _format_last_seen(last_seen, now)
+        last_seen = profile.get("last_seen")
+        is_online = _is_online_from_last_seen(last_seen, now)
+        last_text = "Online" if is_online else _format_last_seen(last_seen, now)
 
         return {
             "is_online":      is_online,
@@ -355,6 +352,7 @@ async def get_conversations(user: dict = Depends(get_current_user)):
             members = c.get("conversation_members") or []
             other   = next((m for m in members if m.get("user_id") != user["id"]), None)
 
+            # Skip the dedicated AI-mentor conversation — it has its own pinned tile.
             if other and other.get("user_id") == ai_user_id:
                 continue
 
@@ -366,9 +364,17 @@ async def get_conversations(user: dict = Depends(get_current_user)):
                 )
 
             try:
+                # Exclude AI and system messages from the preview so that error
+                # phrases returned by the AI service never appear in the DM list.
                 msgs_res = (
-                    db.table("messages").select("content, created_at, is_read, sender_id, sender_type")
-                    .eq("conversation_id", c["id"]).order("created_at", desc=True).limit(1).execute()
+                    db.table("messages")
+                    .select("content, created_at, is_read, sender_id, sender_type")
+                    .eq("conversation_id", c["id"])
+                    .neq("sender_type", "ai")
+                    .neq("sender_type", "system")
+                    .order("created_at", desc=True)
+                    .limit(1)
+                    .execute()
                 )
                 last_msg = (msgs_res.data or [None])[0]
             except Exception:
@@ -768,9 +774,12 @@ async def send_ai_message(
                 logger.error(f"chat fallback also failed: {chat_err}")
 
         if not ai_content:
-            ai_content = (
-                "I'm experiencing a brief connectivity issue. Please try again in a moment. 🔄"
-            )
+            # Do NOT save an error message to the DB — raise 503 so the client
+            # can display it locally without polluting message history.
+            raise HTTPException(503, detail={
+                "code": "ai_unavailable",
+                "message": "AI is temporarily unavailable. Please try again.",
+            })
 
         now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -799,7 +808,9 @@ async def send_ai_message(
             _save_quota(db, user["id"], quota)
 
         return {
-            "message": ai_msg, "content": ai_content, "model": model_used,
+            "message":         ai_msg,
+            "content":         ai_content,
+            "model":           model_used,
             "user_message_id": user_msg_id,
             "quota": {
                 "free_used":      quota.get("free_used", 0),
