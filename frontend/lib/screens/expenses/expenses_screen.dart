@@ -332,7 +332,7 @@ class _OverviewTab extends StatelessWidget {
     final cur = currency.isNotEmpty ? '$currency ' : '';
 
     return RefreshIndicator(
-      onRefresh: onRefresh,
+      onRefresh: () async => onRefresh(),
       color: AppColors.primary,
       child: ListView(
         padding: const EdgeInsets.all(16),
