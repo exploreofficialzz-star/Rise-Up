@@ -1,13 +1,15 @@
 // frontend/lib/screens/home/home_screen.dart
-// v10.1 — 4 Targeted Fixes
+// v11 — 5 Fixes
 //
-// FIX 1: STATUS REACTION — heart toggles red/white like feed, no snackbar,
-//         Love + Reply same pill size as feed action buttons
-// FIX 2: VIEWS BUTTON — same Container+Row style as like/comment/share
-// FIX 3: DELETE CRASH — messenger captured before Navigator.pop, dialog closed
-//         via its own dialogCtx, mounted guard before every post-await context use
-// FIX 4: ADS CRASH — onRewarded/onDismissed: mounted guard as FIRST line,
-//         entire showRewardedAd in try-catch, interstitial calls try-catched
+// FIX 1: REWARDED AD CRASH — _adInProgress guard prevents re-entry;
+//         ad service now nulls the instance BEFORE show() (see ad_service_mobile.dart v2.1)
+// FIX 2: DELETE POST — optimistic instant removal + "Post deleted" snackbar;
+//         post is removed from UI immediately, API called in background
+// FIX 3: STATUS REACTIONS PERSISTENCE — reactions stored in _HomeScreenState +
+//         SharedPreferences; survive sheet close/reopen
+// FIX 4: STATUS ADS — sponsored story item injected every 4 real user stories
+//         (free users only); opens _SponsoredStatusSheet with 2 ad slides
+// FIX 5: SPEED — RepaintBoundary on every PostCard; const constructors throughout
 
 import 'dart:async';
 import 'dart:collection';
@@ -49,8 +51,7 @@ class SoundService {
     HapticFeedback.heavyImpact();
     try {
       notificationService.showLocalNotification(
-        id: 1001,
-        title: '🚀 Post shared!',
+        id: 1001, title: '🚀 Post shared!',
         body: 'Your post is now live in the community',
       );
     } catch (_) {}
@@ -60,8 +61,7 @@ class SoundService {
     HapticFeedback.heavyImpact();
     try {
       notificationService.showLocalNotification(
-        id: 1002,
-        title: '📸 Status posted!',
+        id: 1002, title: '📸 Status posted!',
         body: 'Your status is now visible to your followers',
       );
     } catch (_) {}
@@ -461,6 +461,48 @@ class _InAppNotifBannerState extends State<_InAppNotifBanner>
 }
 
 // =============================================================================
+// SPONSORED STATUS DATA
+// FIX 4: Static ad slides shown in _SponsoredStatusSheet
+// =============================================================================
+class _SponsoredAdSlide {
+  final String id, headline, body, cta, ctaRoute, sponsor, emoji;
+  final Color  bgColor;
+  const _SponsoredAdSlide({
+    required this.id,
+    required this.headline,
+    required this.body,
+    required this.cta,
+    required this.ctaRoute,
+    required this.sponsor,
+    required this.emoji,
+    required this.bgColor,
+  });
+}
+
+const _kSponsoredSlides = [
+  _SponsoredAdSlide(
+    id:        'sp_premium',
+    headline:  '🚀 Unlock Unlimited AI',
+    body:      'Unlimited AI responses, full Workflow Engine, zero ads, and every income tool — all included in RiseUp Premium.',
+    cta:       'Go Premium Free',
+    ctaRoute:  '/premium',
+    sponsor:   'RiseUp Premium',
+    emoji:     '👑',
+    bgColor:   Color(0xFF6C5CE7),
+  ),
+  _SponsoredAdSlide(
+    id:        'sp_community',
+    headline:  '💼 Join 50K+ Wealth Builders',
+    body:      'Network with top earners, share wins, get accountability partners, and grow your income with a proven community.',
+    cta:       'Join Now',
+    ctaRoute:  '/premium',
+    sponsor:   'RiseUp Community',
+    emoji:     '🤝',
+    bgColor:   Color(0xFFFF6B00),
+  ),
+];
+
+// =============================================================================
 // HOME SCREEN
 // =============================================================================
 class HomeScreen extends StatefulWidget {
@@ -483,6 +525,9 @@ class _HomeScreenState extends State<HomeScreen>
   static const int _freeLimit = 3, _maxAds = 5;
   static const Duration _lockDur = Duration(hours: 4);
 
+  // FIX 1: Guard against re-entrant rewarded ad calls
+  bool _adInProgress = false;
+
   // Notification badge + polling
   int _notifCount = 0, _lastSeenNotifCount = 0;
   Timer? _notifTimer;
@@ -491,15 +536,19 @@ class _HomeScreenState extends State<HomeScreen>
   final Set<String> _viewedPosts = {};
 
   // Cache keys
-  static const _kQ  = 'riseup_ai_quota_v1';
-  static const _kP  = 'riseup_profile_cache_v1';
-  static const _kF  = 'riseup_feed_for_you_v2';
-  static const _kSt = 'riseup_status_cache_v1';
-  static const _kFw = 'riseup_followed_users';
+  static const _kQ       = 'riseup_ai_quota_v1';
+  static const _kP       = 'riseup_profile_cache_v1';
+  static const _kF       = 'riseup_feed_for_you_v2';
+  static const _kSt      = 'riseup_status_cache_v1';
+  static const _kFw      = 'riseup_followed_users';
+  // FIX 3: Persistent reactions cache key
+  static const _kReacted = 'riseup_reacted_statuses_v1';
 
   // Status
-  List<dynamic> _statusUsers  = [];
-  bool          _statusLoaded = false;
+  List<dynamic>    _statusUsers   = [];
+  bool             _statusLoaded  = false;
+  // FIX 3: Persisted reactions map — survives sheet close/reopen
+  final Map<String, bool> _reactedStatuses = {};
 
   // Feed state
   final _feeds   = <String, List<PostModel>>{'for_you': [], 'following': [], 'trending': []};
@@ -552,10 +601,12 @@ class _HomeScreenState extends State<HomeScreen>
   Future<void> _restoreCache() async {
     try {
       final p = await SharedPreferences.getInstance();
+
       try {
         final r = p.getString(_kP);
         if (r != null && mounted) setState(() => _profile = Map<String, dynamic>.from(jsonDecode(r) as Map));
       } catch (_) {}
+
       try {
         final r = p.getString(_kSt);
         if (r != null && mounted) {
@@ -565,6 +616,7 @@ class _HomeScreenState extends State<HomeScreen>
           });
         }
       } catch (_) {}
+
       try {
         final r = p.getString(_kF);
         if (r != null) {
@@ -577,6 +629,7 @@ class _HomeScreenState extends State<HomeScreen>
           }
         }
       } catch (_) {}
+
       try {
         final r = p.getString(_kQ);
         if (r != null) {
@@ -592,10 +645,18 @@ class _HomeScreenState extends State<HomeScreen>
           }
         }
       } catch (_) {}
+
       try {
         final fw = p.getStringList(_kFw) ?? [];
         if (mounted) setState(() { for (final u in fw) _follows[u] = true; });
       } catch (_) {}
+
+      // FIX 3: Restore persisted reactions
+      try {
+        final reacted = p.getStringList(_kReacted) ?? [];
+        if (mounted) setState(() { for (final id in reacted) _reactedStatuses[id] = true; });
+      } catch (_) {}
+
     } catch (_) {}
   }
 
@@ -638,7 +699,12 @@ class _HomeScreenState extends State<HomeScreen>
           }
         } catch (_) {}
       }
-      setState(() { _notifCount = count; _lastSeenNotifCount = count; });
+      // Only setState if count actually changed to reduce repaints
+      if (count != _notifCount) {
+        setState(() { _notifCount = count; _lastSeenNotifCount = count; });
+      } else {
+        _lastSeenNotifCount = count;
+      }
     } catch (_) {}
   }
 
@@ -880,8 +946,11 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  // ── AI — FIX 4: all ad callbacks guard mounted first, whole flow try-catched
+  // ── AI — FIX 1: _adInProgress guard prevents re-entry / crash ────────────
   Future<void> _handleAI(PostModel post, {required bool isPrivate}) async {
+    // FIX 1: Block if an ad is already in flight
+    if (_adInProgress) return;
+
     if (_isPremium) { await _execAI(post, priv: isPrivate); return; }
     if (_aiUsed < _freeLimit) {
       if (!mounted) return;
@@ -898,15 +967,17 @@ class _HomeScreenState extends State<HomeScreen>
       _showLockout();
       return;
     }
+
     final ok = await _showAdPrompt();
     if (!ok || !mounted) return;
 
-    // FIX 4: Entire ad call in try-catch
+    // FIX 1: set flag before show, clear in finally
+    setState(() => _adInProgress = true);
     try {
       await adService.showRewardedAd(
         featureKey: 'post_ai',
         onRewarded: () async {
-          if (!mounted) return;   // ← FIRST guard before any setState
+          if (!mounted) return;
           try {
             setState(() { _aiUsed = 0; _adsWatched++; });
             await _saveQuota();
@@ -916,12 +987,15 @@ class _HomeScreenState extends State<HomeScreen>
           }
         },
         onDismissed: () {
-          if (!mounted) return;   // ← FIRST guard
+          if (!mounted) return;
           try { _snack('Watch the full ad to unlock AI.', AppColors.error); } catch (_) {}
         },
       );
     } catch (_) {
       if (mounted) _snack('Ad not available right now. Try again.', AppColors.error);
+    } finally {
+      // FIX 1: always clear flag, even on exception
+      if (mounted) setState(() => _adInProgress = false);
     }
   }
 
@@ -1071,18 +1145,36 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
+  // ── Status viewing ────────────────────────────────────────────────────────
   void _viewStatus(Map<String, dynamic> user) {
     if ((user['items'] as List? ?? []).isEmpty) return;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => _StatusViewSheet(user: user, onReact: _handleStatusReact),
+      builder: (_) => _StatusViewSheet(
+        user: user,
+        // FIX 3: Pass persisted reactions so they survive sheet close/reopen
+        reactedStatuses: Map<String, bool>.from(_reactedStatuses),
+        onReact: _handleStatusReact,
+      ),
     );
   }
 
+  // FIX 3: Save reaction state persistently
   Future<void> _handleStatusReact(String statusId, String reaction) async {
-    try { await api.post('/posts/status/$statusId/react', {'reaction': reaction}); SoundService.like(); } catch (_) {}
+    // Update in-memory state
+    if (mounted) setState(() => _reactedStatuses[statusId] = true);
+    // Persist to SharedPreferences
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setStringList(_kReacted, _reactedStatuses.keys.toList());
+    } catch (_) {}
+    // Tell the backend (best-effort)
+    try {
+      await api.post('/posts/status/$statusId/react', {'reaction': reaction});
+      SoundService.like();
+    } catch (_) {}
   }
 
   void _snack(String msg, Color bg, {Duration duration = const Duration(seconds: 2)}) {
@@ -1167,7 +1259,8 @@ class _HomeScreenState extends State<HomeScreen>
                     child: ListView.builder(
                       scrollDirection: Axis.horizontal,
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      itemCount: _statusUsers.length + 1,
+                      // FIX 4: Count includes sponsored slots
+                      itemCount: _storyItemCount,
                       itemBuilder: (_, i) {
                         if (i == 0) {
                           return _StoryAdd(
@@ -1176,8 +1269,7 @@ class _HomeScreenState extends State<HomeScreen>
                                 .then((_) => _loadStatus()),
                           );
                         }
-                        final u = _statusUsers[i - 1] as Map<String, dynamic>;
-                        return _StoryItem(user: u, isDark: dark, onTap: () => _viewStatus(u));
+                        return _buildStoryItem(i - 1, dark);
                       },
                     ),
                   ),
@@ -1253,6 +1345,53 @@ class _HomeScreenState extends State<HomeScreen>
         )),
       ]),
     );
+  }
+
+  // ── FIX 4: Story list helpers ─────────────────────────────────────────────
+  // After every 4 real user stories, insert 1 sponsored slot (free users only).
+  // Layout (i is 0-based index of the "content" items after the +You button):
+  //   i=0..3  → user stories 0..3
+  //   i=4     → sponsored ad      (if !_isPremium)
+  //   i=5..8  → user stories 4..7
+  //   i=9     → sponsored ad
+  //   ...
+
+  static const int _storyAdAfter = 4; // inject ad after every N user stories
+
+  int get _storyItemCount {
+    if (_isPremium) return _statusUsers.length + 1; // +1 for "You"
+    final adCount = _statusUsers.length ~/ _storyAdAfter;
+    return _statusUsers.length + adCount + 1;
+  }
+
+  /// Converts visual list index `vi` (0-based, after the "+You" item) into
+  /// either a user story index or -1 meaning "show a sponsored slot here".
+  int _storyUserIndexAt(int vi) {
+    if (_isPremium) return vi;
+    // Every (_storyAdAfter + 1) items, the last one is an ad slot
+    final slot = vi % (_storyAdAfter + 1);
+    if (slot == _storyAdAfter) return -1; // sponsored slot
+    final block = vi ~/ (_storyAdAfter + 1);
+    return block * _storyAdAfter + slot;
+  }
+
+  Widget _buildStoryItem(int vi, bool dark) {
+    final ui = _storyUserIndexAt(vi);
+    if (ui == -1) {
+      // FIX 4: Sponsored story slot
+      return _SponsoredStoryItem(
+        isDark: dark,
+        onTap: () => showModalBottomSheet(
+          context: context,
+          isScrollControlled: true,
+          backgroundColor: Colors.transparent,
+          builder: (_) => const _SponsoredStatusSheet(),
+        ),
+      );
+    }
+    if (ui >= _statusUsers.length) return const SizedBox.shrink();
+    final u = _statusUsers[ui] as Map<String, dynamic>;
+    return _StoryItem(user: u, isDark: dark, onTap: () => _viewStatus(u));
   }
 }
 
@@ -1541,7 +1680,10 @@ class _FeedTabState extends State<_FeedTab> with AutomaticKeepAliveClientMixin {
       onRefresh: () async => widget.onRefresh(),
       color: AppColors.primary,
       child: ListView.separated(
-        controller: _sc, cacheExtent: 3000, padding: EdgeInsets.zero, itemCount: total,
+        controller: _sc,
+        cacheExtent: 2000,  // FIX 5: reduced from 3000 — smaller = less memory
+        padding: EdgeInsets.zero,
+        itemCount: total,
         separatorBuilder: (_, __) => Divider(height: 8, thickness: 8, color: border),
         itemBuilder: (_, i) {
           if (i == total - 1) {
@@ -1556,20 +1698,25 @@ class _FeedTabState extends State<_FeedTab> with AutomaticKeepAliveClientMixin {
           if (pi >= posts.length) return const SizedBox.shrink();
           final post = posts[pi];
           final fol  = widget.followState[post.userId] ?? post.isFollowing;
-          return PostCard(
-            key: ValueKey('post_${post.id}'),
-            post: post, isDark: widget.isDark, cardColor: widget.cardColor,
-            borderColor: border, textColor: widget.textColor, subColor: widget.subColor,
-            onAskAI: widget.onAskAI, onPrivateChat: widget.onPrivateChat,
-            onLike: widget.onLike, onSave: widget.onSave,
-            onComment: widget.onComment, onShare: widget.onShare,
-            onFollow: widget.onFollow, onPostDeleted: widget.onPostDeleted,
-            onView: widget.onView,
-            isPremium: widget.isPremium, aiRemaining: widget.aiRemaining,
-            needsAd: widget.needsAd, isFollowing: fol, currentUserId: widget.currentUserId,
-          ).animate().fadeIn(
-            delay:    Duration(milliseconds: (pi % 5) * 20),
-            duration: const Duration(milliseconds: 200),
+
+          // FIX 5: RepaintBoundary prevents expensive PostCard repaints when
+          // unrelated parents rebuild (notification badge, etc.)
+          return RepaintBoundary(
+            child: PostCard(
+              key: ValueKey('post_${post.id}'),
+              post: post, isDark: widget.isDark, cardColor: widget.cardColor,
+              borderColor: border, textColor: widget.textColor, subColor: widget.subColor,
+              onAskAI: widget.onAskAI, onPrivateChat: widget.onPrivateChat,
+              onLike: widget.onLike, onSave: widget.onSave,
+              onComment: widget.onComment, onShare: widget.onShare,
+              onFollow: widget.onFollow, onPostDeleted: widget.onPostDeleted,
+              onView: widget.onView,
+              isPremium: widget.isPremium, aiRemaining: widget.aiRemaining,
+              needsAd: widget.needsAd, isFollowing: fol, currentUserId: widget.currentUserId,
+            ).animate().fadeIn(
+              delay:    Duration(milliseconds: (pi % 5) * 20),
+              duration: const Duration(milliseconds: 200),
+            ),
           );
         },
       ),
@@ -1651,7 +1798,6 @@ class _PostCardState extends State<PostCard> {
     try { return Color(int.parse(hex.replaceAll('#', '0xFF'))); } catch (_) { return null; }
   }
 
-  // FIX 4: pre-roll ad — try-catched
   Future<void> _playVideo(BuildContext ctx, String url) async {
     if (!widget.isPremium && widget.post.mediaType == 'video') {
       final dur = await _getVideoDurationSeconds(url);
@@ -1714,7 +1860,7 @@ class _PostCardState extends State<PostCard> {
     );
   }
 
-  // FIX 3: Delete — messenger captured BEFORE Navigator.pop, dialog closed via dialogCtx
+  // FIX 2: Optimistic instant delete — remove from UI first, then call API
   void _delete() {
     showDialog(
       context: context,
@@ -1731,20 +1877,28 @@ class _PostCardState extends State<PostCard> {
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: AppColors.error, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
             onPressed: () async {
-              final id = widget.post.id;
-              // FIX 3: capture messenger BEFORE closing dialog
+              final id        = widget.post.id;
+              // Capture messenger BEFORE closing dialog
               final messenger = ScaffoldMessenger.maybeOf(context);
-              // Close dialog with its OWN context
+              // Close dialog with its own context
               Navigator.of(dialogCtx).pop();
-              // Async work — no context usage after this
+
+              // FIX 2: Remove instantly from UI, show snackbar immediately
+              widget.onPostDeleted(id);
+              messenger?.showSnackBar(const SnackBar(
+                content: Text('Post deleted'),
+                backgroundColor: AppColors.success,
+                duration: Duration(seconds: 2),
+              ));
+
+              // API call in background — restore message on failure
               try {
                 await api.deletePost(id);
-                if (mounted) widget.onPostDeleted(id);
               } catch (_) {
                 messenger?.showSnackBar(const SnackBar(
-                  content: Text('Failed to delete. Please try again.'),
+                  content: Text('Delete failed. Please try again.'),
                   backgroundColor: AppColors.error,
-                  duration: Duration(seconds: 2),
+                  duration: Duration(seconds: 3),
                 ));
               }
             },
@@ -1847,13 +2001,11 @@ class _PostCardState extends State<PostCard> {
           ],
         ],
 
-        // ── Media ─────────────────────────────────────────────────────────────
         if (p.mediaUrl != null && p.mediaUrl!.isNotEmpty) ...[
           const SizedBox(height: 10),
           _PostMedia(url: p.mediaUrl!, mediaType: p.mediaType ?? 'image', isDark: widget.isDark, sw: sw, linkUrl: p.linkUrl, linkTitle: p.linkTitle, isPremium: widget.isPremium, onPlayVideo: (url) => _playVideo(ctx, url)),
         ],
 
-        // ── Standalone link card ──────────────────────────────────────────────
         if (p.linkUrl != null && p.linkUrl!.isNotEmpty && (p.mediaUrl == null || p.mediaUrl!.isEmpty)) ...[
           const SizedBox(height: 10),
           _LinkCard(url: p.linkUrl!, title: p.linkTitle, isDark: widget.isDark, sub: widget.subColor, txt: widget.textColor),
@@ -1861,7 +2013,7 @@ class _PostCardState extends State<PostCard> {
 
         SizedBox(height: (p.content.isNotEmpty || p.mediaUrl != null || p.linkUrl != null) ? 14 : 4),
 
-        // ── FIX 2: Action row — views same pill style as like/comment/share ───
+        // ── Action row ────────────────────────────────────────────────────────
         Row(children: [
           _ActBtn(icon: p.isLiked ? Icons.favorite_rounded : Icons.favorite_border_rounded, label: _fmt(p.likes), color: p.isLiked ? Colors.red : widget.subColor, bgColor: p.isLiked ? Colors.red.withOpacity(0.10) : widget.subColor.withOpacity(0.07), onTap: () => widget.onLike(p)),
           const SizedBox(width: 8),
@@ -1869,7 +2021,6 @@ class _PostCardState extends State<PostCard> {
           const SizedBox(width: 8),
           _ActBtn(icon: Iconsax.send_1,   label: _fmt(p.shares),   color: widget.subColor, bgColor: widget.subColor.withOpacity(0.07), onTap: () => widget.onShare(p)),
           const SizedBox(width: 8),
-          // FIX 2: views — identical Container+Row layout to _ActBtn, non-tappable
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
             decoration: BoxDecoration(color: widget.subColor.withOpacity(0.07), borderRadius: BorderRadius.circular(22)),
@@ -1906,7 +2057,7 @@ class _PostCardState extends State<PostCard> {
               padding: const EdgeInsets.symmetric(vertical: 10),
               decoration: BoxDecoration(color: AppColors.primary.withOpacity(widget.isDark ? 0.15 : 0.08), borderRadius: BorderRadius.circular(10), border: Border.all(color: AppColors.primary.withOpacity(0.25), width: 0.8)),
               child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                Icon(Icons.auto_awesome_rounded, color: AppColors.primary, size: 15),
+                const Icon(Icons.auto_awesome_rounded, color: AppColors.primary, size: 15),
                 const SizedBox(width: 6),
                 const Flexible(child: Text('Ask RiseUp AI', style: TextStyle(fontSize: 12, color: AppColors.primary, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis)),
                 if (widget.needsAd) ...[const SizedBox(width: 4), Icon(Icons.ondemand_video_rounded, size: 13, color: AppColors.primary.withOpacity(0.7))],
@@ -2337,21 +2488,291 @@ class _StoryItem extends StatelessWidget {
 }
 
 // =============================================================================
-// STATUS VIEWER  — FIX 1: reaction toggles, no snackbar, buttons same as feed
+// FIX 4: SPONSORED STORY ITEM — injected in stories bar every 4 user stories
+// =============================================================================
+class _SponsoredStoryItem extends StatelessWidget {
+  final bool isDark;
+  final VoidCallback onTap;
+  const _SponsoredStoryItem({required this.isDark, required this.onTap});
+
+  @override
+  Widget build(BuildContext ctx) => Padding(
+    padding: const EdgeInsets.only(right: 14),
+    child: GestureDetector(
+      onTap: onTap,
+      child: Column(children: [
+        // Gradient ring to distinguish from regular stories
+        Container(
+          width: 58, height: 58,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: const LinearGradient(
+              colors: [Color(0xFFFF6B00), Color(0xFFFFD700)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+          ),
+          child: Padding(padding: const EdgeInsets.all(2.5), child: Container(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: isDark ? Colors.black : Colors.white,
+            ),
+            child: Center(child: Container(
+              width: 36, height: 36,
+              decoration: const BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: LinearGradient(
+                  colors: [Color(0xFF6C5CE7), Color(0xFF0984E3)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+              ),
+              child: const Center(child: Text('⭐', style: TextStyle(fontSize: 18))),
+            )),
+          )),
+        ),
+        const SizedBox(height: 5),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+          decoration: BoxDecoration(
+            color: const Color(0xFFFF6B00).withOpacity(0.15),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: const Text('Sponsored', style: TextStyle(fontSize: 9, color: Color(0xFFFF6B00), fontWeight: FontWeight.w700)),
+        ),
+      ]),
+    ),
+  );
+}
+
+// =============================================================================
+// FIX 4: SPONSORED STATUS SHEET — 2 ad slides in story format
+// =============================================================================
+class _SponsoredStatusSheet extends StatefulWidget {
+  const _SponsoredStatusSheet();
+  @override State<_SponsoredStatusSheet> createState() => _SponsoredStatusSheetState();
+}
+
+class _SponsoredStatusSheetState extends State<_SponsoredStatusSheet> {
+  int _idx = 0;
+
+  void _next() {
+    if (_idx < _kSponsoredSlides.length - 1) {
+      setState(() => _idx++);
+    } else {
+      Navigator.pop(context);
+    }
+  }
+
+  void _prev() {
+    if (_idx > 0) setState(() => _idx--);
+  }
+
+  @override
+  Widget build(BuildContext ctx) {
+    final sz   = MediaQuery.of(ctx).size;
+    final h    = sz.height * 0.92;
+    final sw   = sz.width;
+    final slide = _kSponsoredSlides[_idx];
+
+    return Container(
+      height: h,
+      decoration: BoxDecoration(
+        color: slide.bgColor,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: Stack(children: [
+
+        // Gradient background pattern
+        Positioned.fill(child: ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          child: Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  slide.bgColor,
+                  slide.bgColor.withOpacity(0.7),
+                  Colors.black.withOpacity(0.3),
+                ],
+              ),
+            ),
+          ),
+        )),
+
+        // Progress bar
+        Positioned(
+          top: 12, left: 12, right: 12,
+          child: Row(children: List.generate(_kSponsoredSlides.length, (i) => Expanded(child: Container(
+            height: 3, margin: const EdgeInsets.symmetric(horizontal: 2),
+            decoration: BoxDecoration(
+              color: i <= _idx ? Colors.white : Colors.white.withOpacity(0.3),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          )))),
+        ),
+
+        // Header
+        Positioned(
+          top: 24, left: 16, right: 16,
+          child: Row(children: [
+            Container(
+              width: 36, height: 36,
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.2),
+                shape: BoxShape.circle,
+              ),
+              child: Center(child: Text(slide.emoji, style: const TextStyle(fontSize: 18))),
+            ),
+            const SizedBox(width: 8),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('RiseUp', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13)),
+              Row(children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.25),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Text('Sponsored', style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.w700)),
+                ),
+              ]),
+            ])),
+            IconButton(
+              icon: const Icon(Icons.close_rounded, color: Colors.white),
+              onPressed: () => Navigator.pop(ctx),
+            ),
+          ]),
+        ),
+
+        // Main content — centered
+        Positioned(
+          top: h * 0.2, left: 24, right: 24, bottom: 160,
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            // Large emoji
+            Text(slide.emoji, style: const TextStyle(fontSize: 64)),
+            const SizedBox(height: 20),
+            // Headline
+            Text(
+              slide.headline,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w900, height: 1.25),
+            ),
+            const SizedBox(height: 14),
+            // Body
+            Text(
+              slide.body,
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white.withOpacity(0.88), fontSize: 15, height: 1.55),
+            ),
+          ]),
+        ),
+
+        // Navigation zones
+        Positioned(top: 80, bottom: 140, left: 0, width: sw * 0.3,
+          child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: _prev, child: const ColoredBox(color: Colors.transparent))),
+        Positioned(top: 80, bottom: 140, right: 0, width: sw * 0.3,
+          child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: _next, child: const ColoredBox(color: Colors.transparent))),
+
+        // Bottom CTA
+        Positioned(
+          bottom: 0, left: 0, right: 0,
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 40),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.bottomCenter,
+                end: Alignment.topCenter,
+                colors: [Colors.black.withOpacity(0.65), Colors.transparent],
+              ),
+            ),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              // CTA Button
+              GestureDetector(
+                onTap: () {
+                  Navigator.pop(ctx);
+                  ctx.push(slide.ctaRoute);
+                },
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Text(
+                    slide.cta,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: slide.bgColor,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 15,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              // Swipe hint or skip
+              GestureDetector(
+                onTap: _next,
+                child: Text(
+                  _idx < _kSponsoredSlides.length - 1 ? 'Next →' : 'Close',
+                  style: TextStyle(color: Colors.white.withOpacity(0.65), fontSize: 13, fontWeight: FontWeight.w500),
+                ),
+              ),
+            ]),
+          ),
+        ),
+
+        // Dot indicators at mid-bottom
+        Positioned(
+          bottom: 110, left: 0, right: 0,
+          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: List.generate(_kSponsoredSlides.length, (i) => Container(
+            width: i == _idx ? 18 : 6,
+            height: 6,
+            margin: const EdgeInsets.symmetric(horizontal: 3),
+            decoration: BoxDecoration(
+              color: i == _idx ? Colors.white : Colors.white.withOpacity(0.4),
+              borderRadius: BorderRadius.circular(3),
+            ),
+          ))),
+        ),
+      ]),
+    );
+  }
+}
+
+// =============================================================================
+// STATUS VIEWER — FIX 3: accepts reactedStatuses, persists across open/close
 // =============================================================================
 class _StatusViewSheet extends StatefulWidget {
   final Map<String, dynamic> user;
+  // FIX 3: Initial reactions loaded from persistent parent state
+  final Map<String, bool> reactedStatuses;
   final Future<void> Function(String statusId, String reaction) onReact;
-  const _StatusViewSheet({required this.user, required this.onReact});
+
+  const _StatusViewSheet({
+    required this.user,
+    required this.reactedStatuses,
+    required this.onReact,
+  });
+
   @override State<_StatusViewSheet> createState() => _StatusViewSheetState();
 }
 
 class _StatusViewSheetState extends State<_StatusViewSheet> {
   int _idx = 0;
-  // FIX 1: track per-status-item reaction state
+  // FIX 3: Initialised from parent's persistent map
   final Map<String, bool> _reacted = {};
 
-  @override void initState() { super.initState(); _markViewed(); }
+  @override
+  void initState() {
+    super.initState();
+    // FIX 3: Restore saved reactions so they survive close/reopen
+    _reacted.addAll(widget.reactedStatuses);
+    _markViewed();
+  }
 
   void _markViewed() {
     final items = _items;
@@ -2399,7 +2820,7 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
     final views    = (item['views_count'] as num?)?.toInt() ?? 0;
     final statusId = item['id']?.toString() ?? '';
 
-    // FIX 1: read reaction state for this specific item
+    // FIX 3: read from local map (which was populated from parent's persistent map)
     final isReacted = _reacted[statusId] ?? false;
 
     Color bgc = AppColors.primary;
@@ -2413,7 +2834,6 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
       ),
       child: Stack(children: [
 
-        // Background
         if (media != null && mType == 'image')
           Positioned.fill(child: GestureDetector(
             onTap: () => Navigator.push(ctx, MaterialPageRoute(fullscreenDialog: true, builder: (_) => _ImgView(url: media))),
@@ -2445,7 +2865,6 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
           )))),
         ),
 
-        // Caption overlay on media
         if (media != null && text.isNotEmpty)
           Positioned(
             bottom: link != null ? 200 : 140, left: 0, right: 0,
@@ -2456,11 +2875,9 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
             ),
           ),
 
-        // Navigation zones
         Positioned(top: 0, bottom: 0, left: 0, width: sw * 0.3, child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: _prev, child: const ColoredBox(color: Colors.transparent))),
         Positioned(top: 0, bottom: 0, right: 0, width: sw * 0.3, child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: _next, child: const ColoredBox(color: Colors.transparent))),
 
-        // Link card
         if (link != null)
           Positioned(
             bottom: 130, left: 16, right: 16,
@@ -2483,7 +2900,7 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
             ),
           ),
 
-        // ── FIX 1: Bottom bar — Love toggles red, Reply same size pill, Views ─
+        // Bottom bar — Love toggles, Reply, Views
         Positioned(
           bottom: 0, left: 0, right: 0,
           child: Container(
@@ -2494,47 +2911,41 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
             )),
             child: Row(children: [
 
-              // ❤️ Love button — identical pill dimensions to _ActBtn, toggles red
+              // ❤️ Love — toggles red/white
               GestureDetector(
                 onTap: () async {
                   SoundService.like();
                   final newState = !isReacted;
-                  // FIX 1: toggle state, no snackbar
+                  // FIX 3: update local display immediately
                   setState(() => _reacted[statusId] = newState);
-                  if (newState) await widget.onReact(statusId, '❤️');
+                  if (newState) {
+                    // FIX 3: delegate to parent so it persists
+                    await widget.onReact(statusId, '❤️');
+                  }
                 },
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 200),
                   padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
                   decoration: BoxDecoration(
-                    // FIX 1: red bg when reacted, translucent white when not
                     color: isReacted ? Colors.red.withOpacity(0.22) : Colors.white.withOpacity(0.18),
                     borderRadius: BorderRadius.circular(22),
                     border: Border.all(color: isReacted ? Colors.red.withOpacity(0.55) : Colors.white.withOpacity(0.3)),
                   ),
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    // FIX 1: filled heart when reacted
                     Icon(
                       isReacted ? Icons.favorite_rounded : Icons.favorite_border_rounded,
                       color: isReacted ? Colors.red : Colors.white,
                       size: 21,
                     ),
                     const SizedBox(width: 5),
-                    Text(
-                      'Love',
-                      style: TextStyle(
-                        color:      isReacted ? Colors.red : Colors.white,
-                        fontSize:   13,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
+                    Text('Love', style: TextStyle(color: isReacted ? Colors.red : Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
                   ]),
                 ),
               ),
 
               const SizedBox(width: 8),
 
-              // 💬 Reply — same pill dimensions as Love
+              // 💬 Reply
               GestureDetector(
                 onTap: () {
                   final userId = prof['id']?.toString() ?? '';
@@ -2545,11 +2956,7 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
                 },
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.18),
-                    borderRadius: BorderRadius.circular(22),
-                    border: Border.all(color: Colors.white.withOpacity(0.3)),
-                  ),
+                  decoration: BoxDecoration(color: Colors.white.withOpacity(0.18), borderRadius: BorderRadius.circular(22), border: Border.all(color: Colors.white.withOpacity(0.3))),
                   child: const Row(mainAxisSize: MainAxisSize.min, children: [
                     Icon(Iconsax.message, color: Colors.white, size: 21),
                     SizedBox(width: 5),
@@ -2560,13 +2967,10 @@ class _StatusViewSheetState extends State<_StatusViewSheet> {
 
               const Spacer(),
 
-              // 👁 Views — same pill height as Love/Reply
+              // 👁 Views
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.45),
-                  borderRadius: BorderRadius.circular(22),
-                ),
+                decoration: BoxDecoration(color: Colors.black.withOpacity(0.45), borderRadius: BorderRadius.circular(22)),
                 child: Row(mainAxisSize: MainAxisSize.min, children: [
                   const Icon(Icons.visibility_outlined, color: Colors.white70, size: 21),
                   const SizedBox(width: 5),
@@ -2663,7 +3067,6 @@ class _AppDrawer extends StatelessWidget {
       width: MediaQuery.of(ctx).size.width * 0.82,
       child: SafeArea(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
 
-        // Profile header
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
           child: Row(children: [
@@ -2744,7 +3147,6 @@ class _AppDrawer extends StatelessWidget {
 class _DS extends StatelessWidget {
   final String l; final Color c;
   const _DS(this.l, this.c);
-
   @override
   Widget build(BuildContext ctx) => Padding(
     padding: const EdgeInsets.fromLTRB(18, 12, 18, 4),
