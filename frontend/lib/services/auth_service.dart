@@ -1,5 +1,5 @@
 // frontend/lib/services/auth_service.dart
-// v5.0 — Production-grade resilient auth (no random logout)
+// v5.0 — Production-grade resilient auth + missing public API
 
 import 'dart:async';
 import 'dart:convert';
@@ -23,6 +23,7 @@ class AuthService extends ChangeNotifier {
 
   AuthStatus _status = AuthStatus.unknown;
   AuthStatus get status => _status;
+  bool get isAuthenticated => _status == AuthStatus.authenticated; // ✅ restored
 
   bool _refreshInFlight = false;
   int _refreshFailures = 0;
@@ -57,6 +58,31 @@ class AuthService extends ChangeNotifier {
     }
   }
 
+  // ── PROACTIVE REFRESH ON RESUME (restored) ─────────────────
+  /// Called when the app returns to foreground (from MainShell).
+  Future<void> tryRefreshOnResume() async {
+    if (_status != AuthStatus.authenticated) return;
+    if (_refreshInFlight) return;
+
+    final access  = await storageService.read(key: _kAccess);
+    final refresh = await storageService.read(key: _kRefresh);
+
+    if (refresh == null) return;
+
+    final needsRefresh = access == null || _isExpired(access);
+    if (needsRefresh) {
+      final result = await _silentRefresh(refresh);
+      if (result == true) {
+        _refreshFailures = 0;
+      } else if (result == false) {
+        _refreshFailures++;
+        if (_refreshFailures >= _maxRefreshFailures) {
+          await _clearSession();
+        }
+      }
+    }
+  }
+
   // ── BACKGROUND REFRESH ─────────────────────────────
   Future<void> _backgroundRefresh(String refreshToken) async {
     final result = await _silentRefresh(refreshToken);
@@ -68,7 +94,6 @@ class AuthService extends ChangeNotifier {
 
     if (result == false) {
       _refreshFailures++;
-
       if (_refreshFailures >= _maxRefreshFailures) {
         debugPrint('Max refresh failures → logout');
         await _clearSession();
@@ -86,7 +111,6 @@ class AuthService extends ChangeNotifier {
     }
 
     final refresh = await storageService.read(key: _kRefresh);
-
     if (refresh == null) {
       await _clearSession();
       return false;
@@ -101,12 +125,10 @@ class AuthService extends ChangeNotifier {
 
     if (result == false) {
       _refreshFailures++;
-
       if (_refreshFailures >= _maxRefreshFailures) {
         await _clearSession();
         return false;
       }
-
       return true;
     }
 
@@ -207,6 +229,13 @@ class AuthService extends ChangeNotifier {
       storageService.write(key: _kUserId, value: userId),
     ]);
 
+    _setStatus(AuthStatus.authenticated);
+    _listenToSupabase();
+  }
+
+  /// ✅ restored – called after login when tokens are already stored
+  void onLoginSuccess() {
+    _refreshFailures = 0;               // reset counter on fresh login
     _setStatus(AuthStatus.authenticated);
     _listenToSupabase();
   }
