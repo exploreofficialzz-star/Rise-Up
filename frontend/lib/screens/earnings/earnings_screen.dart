@@ -1,5 +1,5 @@
 // frontend/lib/screens/earnings/earnings_screen.dart
-// v2.0 — Cache-first, dynamic currency, global audience
+// v4.0 — Every widget resolves Theme.of(context) independently. No color drilling.
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -10,6 +10,32 @@ import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 import '../../widgets/gradient_button.dart';
 
+// ── Theme helper – used by every widget in this file ─────────────────────
+class _T {
+  final bool   dark;
+  final Color  bg, card, surface, border, text, sub;
+  const _T({
+    required this.dark,    required this.bg,
+    required this.card,    required this.surface,
+    required this.border,  required this.text,
+    required this.sub,
+  });
+
+  factory _T.of(BuildContext ctx) {
+    final dark = Theme.of(ctx).brightness == Brightness.dark;
+    return _T(
+      dark:    dark,
+      bg:      dark ? Colors.black           : Colors.white,
+      card:    dark ? AppColors.bgCard       : Colors.white,
+      surface: dark ? AppColors.bgSurface    : Colors.grey.shade100,
+      border:  dark ? AppColors.bgSurface    : Colors.grey.shade200,
+      text:    dark ? Colors.white           : Colors.black87,
+      sub:     dark ? Colors.white54         : Colors.black54,
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 class EarningsScreen extends StatefulWidget {
   const EarningsScreen({super.key});
   @override
@@ -21,8 +47,8 @@ class _EarningsScreenState extends State<EarningsScreen>
   static const _kEarnings = 'riseup_earnings_v2';
   static const _kProfile  = 'riseup_finance_profile_v1';
 
-  Map _earnings = {};
-  Map _profile  = {};
+  Map  _earnings = {};
+  Map  _profile  = {};
   bool _loading    = true;
   bool _refreshing = false;
 
@@ -45,7 +71,6 @@ class _EarningsScreenState extends State<EarningsScreen>
     if (state == AppLifecycleState.resumed && mounted) _silentRefresh();
   }
 
-  // ── Cache restore (instant) ──────────────────────────────────────────
   Future<void> _restoreCache() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -62,7 +87,6 @@ class _EarningsScreenState extends State<EarningsScreen>
     } catch (_) {}
   }
 
-  // ── Silent background refresh ─────────────────────────────────────────
   Future<void> _silentRefresh() async {
     if (_refreshing || !mounted) return;
     setState(() => _refreshing = true);
@@ -79,16 +103,12 @@ class _EarningsScreenState extends State<EarningsScreen>
       final profileRes = results[1] as Map;
       final profile    = (profileRes['profile'] as Map?)
                              ?.cast<String, dynamic>() ?? {};
-
-      if (mounted) {
-        setState(() {
-          _earnings    = earnings;
-          _profile     = profile;
-          _loading     = false;
-          _refreshing  = false;
-        });
-      }
-
+      if (mounted) setState(() {
+        _earnings   = earnings;
+        _profile    = profile;
+        _loading    = false;
+        _refreshing = false;
+      });
       final prefs = await SharedPreferences.getInstance();
       await Future.wait([
         prefs.setString(_kEarnings, jsonEncode(earnings)),
@@ -99,201 +119,7 @@ class _EarningsScreenState extends State<EarningsScreen>
     }
   }
 
-  // ── Log manual earning sheet ─────────────────────────────────────────
-  Future<void> _logManualEarning() async {
-    final currency    = _currency;
-    final amountCtrl  = TextEditingController();
-    String sourceType = 'freelance';
-    String desc       = '';
-
-    await showModalBottomSheet(
-      context: context,
-      backgroundColor: AppColors.bgCard,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (_) => StatefulBuilder(
-        builder: (ctx, set) => Padding(
-          padding: EdgeInsets.fromLTRB(
-            24, 28, 24, MediaQuery.of(ctx).viewInsets.bottom + 24,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Handle bar
-              Center(
-                child: Container(
-                  width: 36, height: 4,
-                  decoration: BoxDecoration(
-                    color: AppColors.bgSurface,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 20),
-              Row(children: [
-                Container(
-                  width: 40, height: 40,
-                  decoration: BoxDecoration(
-                    color: AppColors.success.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Center(child: Text('💰',
-                      style: TextStyle(fontSize: 20))),
-                ),
-                const SizedBox(width: 12),
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text('Log Earning', style: AppTextStyles.h4),
-                  Text('Track any income you\'ve earned',
-                      style: AppTextStyles.caption),
-                ]),
-              ]),
-              const SizedBox(height: 24),
-              // Amount field
-              Container(
-                decoration: BoxDecoration(
-                  color: AppColors.bgSurface,
-                  borderRadius: AppRadius.lg,
-                  border: Border.all(
-                    color: AppColors.success.withOpacity(0.3),
-                  ),
-                ),
-                child: TextField(
-                  controller: amountCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  style: AppTextStyles.h3.copyWith(color: AppColors.success),
-                  textAlign: TextAlign.center,
-                  decoration: InputDecoration(
-                    hintText: '0.00',
-                    hintStyle: AppTextStyles.h3.copyWith(
-                      color: AppColors.textMuted,
-                    ),
-                    prefixIcon: currency.isNotEmpty
-                        ? Padding(
-                            padding: const EdgeInsets.only(left: 16, right: 4),
-                            child: Text(currency,
-                                style: AppTextStyles.label.copyWith(
-                                  color: AppColors.textSecondary,
-                                )),
-                          )
-                        : null,
-                    prefixIconConstraints:
-                        const BoxConstraints(minWidth: 0, minHeight: 0),
-                    border: InputBorder.none,
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 18,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 20),
-              Text('Source', style: AppTextStyles.label),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final s in [
-                    ('freelance',  '💼', 'Freelance'),
-                    ('skill',      '📚', 'Skills'),
-                    ('business',   '🏢', 'Business'),
-                    ('investment', '📈', 'Investment'),
-                    ('other',      '💡', 'Other'),
-                  ])
-                    GestureDetector(
-                      onTap: () => set(() => sourceType = s.$1),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 8,
-                        ),
-                        decoration: BoxDecoration(
-                          color: sourceType == s.$1
-                              ? AppColors.success.withOpacity(0.15)
-                              : AppColors.bgSurface,
-                          borderRadius: AppRadius.pill,
-                          border: Border.all(
-                            color: sourceType == s.$1
-                                ? AppColors.success
-                                : Colors.transparent,
-                          ),
-                        ),
-                        child: Row(mainAxisSize: MainAxisSize.min, children: [
-                          Text(s.$2,
-                              style: const TextStyle(fontSize: 14)),
-                          const SizedBox(width: 6),
-                          Text(s.$3,
-                              style: AppTextStyles.bodySmall.copyWith(
-                                color: sourceType == s.$1
-                                    ? AppColors.success
-                                    : AppColors.textSecondary,
-                                fontWeight: sourceType == s.$1
-                                    ? FontWeight.w600
-                                    : FontWeight.normal,
-                              )),
-                        ]),
-                      ),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                style: AppTextStyles.body,
-                onChanged: (v) => desc = v,
-                decoration: InputDecoration(
-                  hintText: 'Note (optional)',
-                  hintStyle: AppTextStyles.label,
-                  filled: true,
-                  fillColor: AppColors.bgSurface,
-                  border: OutlineInputBorder(
-                    borderRadius: AppRadius.md,
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 24),
-              GradientButton(
-                text: 'Log Earning',
-                onTap: () async {
-                  final amount = double.tryParse(amountCtrl.text);
-                  if (amount == null || amount <= 0) return;
-                  Navigator.pop(context);
-                  await api.logEarning(
-                    amount:      amount,
-                    sourceType:  sourceType,
-                    description: desc.isEmpty ? null : desc,
-                    currency:    currency,
-                  );
-                  await _fetchAndApply();
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                      content: Row(children: [
-                        const Text('💰', style: TextStyle(fontSize: 16)),
-                        const SizedBox(width: 8),
-                        Text('$currency ${_fmt(amount)} logged!'),
-                      ]),
-                      backgroundColor: AppColors.success,
-                      behavior: SnackBarBehavior.floating,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ));
-                  }
-                },
-                colors: [AppColors.success, AppColors.accent],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ── Helpers ───────────────────────────────────────────────────────────
-  String get _currency =>
-      _profile['currency']?.toString() ?? '';
+  String get _currency => _profile['currency']?.toString() ?? '';
 
   String _fmt(double v) {
     if (v >= 1000000) return '${(v / 1000000).toStringAsFixed(2)}M';
@@ -307,46 +133,219 @@ class _EarningsScreenState extends State<EarningsScreen>
     return v.toStringAsFixed(0);
   }
 
-  double _sumBySource(List<Map> list, String source) => list
-      .where((e) => e['source_type'] == source)
+  double _sumBySource(List<Map> list, String src) => list
+      .where((e) => e['source_type'] == src)
       .fold(0.0, (s, e) => s + (e['amount'] as num).toDouble());
 
-  // ── Build ─────────────────────────────────────────────────────────────
+  void _showLogEarning() {
+    final t          = _T.of(context);
+    final currency   = _currency;
+    final amountCtrl = TextEditingController();
+    String sourceType = 'freelance';
+    String desc       = '';
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: t.card,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, set) {
+          final st = _T.of(ctx);
+          return Padding(
+            padding: EdgeInsets.fromLTRB(
+                24, 28, 24, MediaQuery.of(ctx).viewInsets.bottom + 28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(child: Container(width: 36, height: 4,
+                    decoration: BoxDecoration(color: st.border,
+                        borderRadius: BorderRadius.circular(2)))),
+                const SizedBox(height: 20),
+                Row(children: [
+                  Container(width: 42, height: 42,
+                    decoration: BoxDecoration(
+                        color: AppColors.success.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(12)),
+                    child: const Center(
+                        child: Text('💰', style: TextStyle(fontSize: 20)))),
+                  const SizedBox(width: 12),
+                  Column(crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                    Text('Log Earning', style: TextStyle(fontSize: 16,
+                        fontWeight: FontWeight.w700, color: st.text)),
+                    Text('Track any income earned',
+                        style: TextStyle(fontSize: 12, color: st.sub)),
+                  ]),
+                ]),
+                const SizedBox(height: 24),
+                // Amount
+                Container(
+                  decoration: BoxDecoration(
+                    color: st.surface, borderRadius: AppRadius.lg,
+                    border: Border.all(
+                        color: AppColors.success.withOpacity(0.3)),
+                  ),
+                  child: TextField(
+                    controller: amountCtrl, autofocus: true,
+                    keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true),
+                    style: const TextStyle(fontSize: 30,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.success),
+                    textAlign: TextAlign.center,
+                    decoration: InputDecoration(
+                      hintText: '0.00',
+                      hintStyle: TextStyle(fontSize: 30,
+                          fontWeight: FontWeight.w800,
+                          color: st.sub.withOpacity(0.35)),
+                      prefixIcon: currency.isNotEmpty
+                          ? Padding(
+                              padding: const EdgeInsets.only(
+                                  left: 16, right: 4, top: 16),
+                              child: Text(currency, style: TextStyle(
+                                  fontSize: 13, color: st.sub,
+                                  fontWeight: FontWeight.w600)))
+                          : null,
+                      prefixIconConstraints: const BoxConstraints(
+                          minWidth: 0, minHeight: 0),
+                      border: InputBorder.none,
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 20),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Text('Source', style: TextStyle(fontSize: 12,
+                    fontWeight: FontWeight.w600, color: st.sub)),
+                const SizedBox(height: 10),
+                Wrap(spacing: 8, runSpacing: 8,
+                  children: [
+                    for (final s in [
+                      ('freelance',  '💼', 'Freelance'),
+                      ('skill',      '📚', 'Skills'),
+                      ('business',   '🏢', 'Business'),
+                      ('investment', '📈', 'Investment'),
+                      ('other',      '💡', 'Other'),
+                    ])
+                      GestureDetector(
+                        onTap: () => set(() => sourceType = s.$1),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 180),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: sourceType == s.$1
+                                ? AppColors.success.withOpacity(0.12)
+                                : st.surface,
+                            borderRadius: AppRadius.pill,
+                            border: Border.all(color: sourceType == s.$1
+                                ? AppColors.success : st.border),
+                          ),
+                          child: Row(mainAxisSize: MainAxisSize.min,
+                              children: [
+                            Text(s.$2,
+                                style: const TextStyle(fontSize: 14)),
+                            const SizedBox(width: 6),
+                            Text(s.$3, style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: sourceType == s.$1
+                                  ? FontWeight.w600 : FontWeight.normal,
+                              color: sourceType == s.$1
+                                  ? AppColors.success : st.sub,
+                            )),
+                          ]),
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  style: TextStyle(fontSize: 14, color: st.text),
+                  onChanged: (v) => desc = v,
+                  decoration: InputDecoration(
+                    hintText: 'Note (optional)',
+                    hintStyle: TextStyle(fontSize: 13, color: st.sub),
+                    filled: true, fillColor: st.surface,
+                    border: OutlineInputBorder(
+                        borderRadius: AppRadius.md,
+                        borderSide: BorderSide.none),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                GradientButton(
+                  text: 'Log Earning',
+                  colors: [AppColors.success, AppColors.accent],
+                  onTap: () async {
+                    final amount = double.tryParse(amountCtrl.text);
+                    if (amount == null || amount <= 0) return;
+                    Navigator.pop(context);
+                    await api.logEarning(
+                      amount:      amount,
+                      sourceType:  sourceType,
+                      description: desc.isEmpty ? null : desc,
+                      currency:    currency.isNotEmpty ? currency : 'USD',
+                    );
+                    await _fetchAndApply();
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                        content: Text('💰 ${currency.isNotEmpty ? '$currency ' : ''}'
+                            '${_fmt(amount)} logged!'),
+                        backgroundColor: AppColors.success,
+                        behavior: SnackBarBehavior.floating,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                      ));
+                    }
+                  },
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final t         = _T.of(context);
     final currency  = _currency;
     final total     = (_earnings['total']     ?? 0.0) as num;
     final count     = (_earnings['count']     ?? 0)   as num;
     final breakdown = (_earnings['breakdown'] as List?)?.cast<Map>() ?? [];
 
     return Scaffold(
-      backgroundColor: AppColors.bgDark,
+      backgroundColor: t.bg,
       appBar: AppBar(
-        backgroundColor: AppColors.bgDark,
-        title: Text('Earnings', style: AppTextStyles.h3),
+        backgroundColor: t.card,
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
+        title: Text('Earnings', style: TextStyle(fontSize: 18,
+            fontWeight: FontWeight.w700, color: t.text)),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Divider(height: 1, color: t.border),
+        ),
         actions: [
           if (_refreshing)
             Padding(
               padding: const EdgeInsets.only(right: 8),
-              child: Center(
-                child: SizedBox(
-                  width: 14, height: 14,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 1.5,
-                    color: AppColors.success.withOpacity(0.6),
-                  ),
-                ),
-              ),
+              child: Center(child: SizedBox(width: 14, height: 14,
+                child: CircularProgressIndicator(strokeWidth: 1.5,
+                    color: AppColors.success.withOpacity(0.5)))),
             ),
           IconButton(
-            icon: const Icon(Iconsax.refresh),
+            icon: Icon(Iconsax.refresh, color: t.sub, size: 22),
             onPressed: _fetchAndApply,
           ),
         ],
       ),
       body: _loading && _earnings.isEmpty
-          ? const Center(
-              child: CircularProgressIndicator(color: AppColors.success))
+          ? const Center(child: CircularProgressIndicator(
+              color: AppColors.success))
           : RefreshIndicator(
               onRefresh: _fetchAndApply,
               color: AppColors.success,
@@ -356,61 +355,59 @@ class _EarningsScreenState extends State<EarningsScreen>
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // ── Hero total card ──────────────────────────────
-                    _TotalHeroCard(
+                    _HeroCard(
                       currency: currency,
                       total: total.toDouble(),
                       count: count.toInt(),
                       fmtFn: _fmt,
-                    ).animate().fadeIn().slideY(begin: -0.05),
+                    ).animate().fadeIn().slideY(begin: -0.04),
 
                     const SizedBox(height: 20),
 
-                    // ── Log button ────────────────────────────────────
                     GradientButton(
                       text: '+ Log Earning',
-                      onTap: _logManualEarning,
                       colors: [AppColors.success, AppColors.accent],
+                      onTap: _showLogEarning,
                     ).animate().fadeIn(delay: 80.ms),
 
                     const SizedBox(height: 28),
 
-                    // ── Source breakdown ──────────────────────────────
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('By Source', style: AppTextStyles.h4),
+                        Text('By Source', style: TextStyle(fontSize: 15,
+                            fontWeight: FontWeight.w700, color: t.text)),
                         if (total > 0)
-                          Text(
-                            '${count.toInt()} entries',
-                            style: AppTextStyles.caption,
-                          ),
+                          Text('${count.toInt()} entries',
+                              style: TextStyle(fontSize: 12, color: t.sub)),
                       ],
                     ),
                     const SizedBox(height: 12),
                     _SourceRow(
-                      breakdown:  breakdown,
-                      currency:   currency,
-                      total:      total.toDouble(),
+                      breakdown:   breakdown,
+                      currency:    currency,
+                      total:       total.toDouble(),
                       sumBySource: _sumBySource,
-                      fmtShort:   _fmtShort,
+                      fmtShort:    _fmtShort,
                     ).animate().fadeIn(delay: 120.ms),
 
                     const SizedBox(height: 28),
 
-                    // ── Recent activity ───────────────────────────────
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('Recent Activity', style: AppTextStyles.h4),
-                        Text('Last ${breakdown.length > 10 ? 10 : breakdown.length} entries',
-                            style: AppTextStyles.caption),
+                        Text('Recent Activity', style: TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w700,
+                            color: t.text)),
+                        Text('Last ${breakdown.length > 10
+                            ? 10 : breakdown.length} entries',
+                            style: TextStyle(fontSize: 12, color: t.sub)),
                       ],
                     ),
                     const SizedBox(height: 12),
 
                     if (breakdown.isEmpty)
-                      _EmptyEarnings()
+                      const _EmptyEarnings()
                           .animate().fadeIn(delay: 160.ms)
                     else
                       ...breakdown.reversed.take(10).toList()
@@ -418,10 +415,10 @@ class _EarningsScreenState extends State<EarningsScreen>
                             earning:  e.value,
                             currency: currency,
                           )
-                              .animate()
-                              .fadeIn(delay: Duration(
-                                  milliseconds: 160 + e.key * 40))
-                              .slideX(begin: 0.05)),
+                          .animate()
+                          .fadeIn(delay: Duration(
+                              milliseconds: 160 + e.key * 40))
+                          .slideX(begin: 0.05)),
 
                     const SizedBox(height: 80),
                   ],
@@ -432,162 +429,134 @@ class _EarningsScreenState extends State<EarningsScreen>
   }
 }
 
-// ── Hero total card ───────────────────────────────────────────────────────
-class _TotalHeroCard extends StatelessWidget {
-  final String   currency;
-  final double   total;
-  final int      count;
-  final String Function(double) fmtFn;
+// ─────────────────────────────────────────────────────────────────────────
+// Sub-widgets — each resolves _T.of(context) in its own build()
+// ─────────────────────────────────────────────────────────────────────────
 
-  const _TotalHeroCard({
+class _HeroCard extends StatelessWidget {
+  final String currency;
+  final double total;
+  final int    count;
+  final String Function(double) fmtFn;
+  const _HeroCard({
     required this.currency, required this.total,
     required this.count,    required this.fmtFn,
   });
 
   @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(24),
-    decoration: BoxDecoration(
-      gradient: LinearGradient(
-        colors: [
-          AppColors.success.withOpacity(0.25),
-          AppColors.accent.withOpacity(0.15),
-          AppColors.bgCard,
-        ],
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
+  Widget build(BuildContext context) {
+    final t = _T.of(context);
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: t.card,
+        gradient: LinearGradient(
+          colors: [AppColors.success.withOpacity(0.1), t.card],
+          begin: Alignment.topLeft, end: Alignment.bottomRight,
+        ),
+        borderRadius: AppRadius.xl,
+        border: Border.all(color: AppColors.success.withOpacity(0.22)),
       ),
-      borderRadius: AppRadius.xl,
-      border: Border.all(color: AppColors.success.withOpacity(0.3)),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: AppColors.success.withOpacity(0.15),
-              borderRadius: AppRadius.pill,
-            ),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Container(
-                width: 6, height: 6,
-                decoration: const BoxDecoration(
-                  color: AppColors.success, shape: BoxShape.circle,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Text('Total Earned via RiseUp',
-                  style: AppTextStyles.caption
-                      .copyWith(color: AppColors.success)),
-            ]),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: AppColors.success.withOpacity(0.1),
+            borderRadius: AppRadius.pill,
           ),
-        ]),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Container(width: 6, height: 6,
+                decoration: const BoxDecoration(
+                    color: AppColors.success, shape: BoxShape.circle)),
+            const SizedBox(width: 6),
+            Text('Total Earned via RiseUp',
+                style: TextStyle(fontSize: 11,
+                    color: AppColors.success, fontWeight: FontWeight.w600)),
+          ]),
+        ),
         const SizedBox(height: 14),
         Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-          if (currency.isNotEmpty) ...[
-            Text(currency,
-                style: AppTextStyles.label.copyWith(
-                  color: AppColors.textSecondary,
-                  fontSize: 16,
-                )),
-            const SizedBox(width: 4),
-          ],
-          Text(
-            fmtFn(total),
-            style: const TextStyle(
-              fontSize: 40, fontWeight: FontWeight.w800,
-              color: AppColors.success, letterSpacing: -1,
+          if (currency.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 7, right: 4),
+              child: Text(currency, style: TextStyle(
+                  fontSize: 16, color: t.sub, fontWeight: FontWeight.w600)),
             ),
-          ),
+          Text(fmtFn(total), style: const TextStyle(
+            fontSize: 42, fontWeight: FontWeight.w800,
+            color: AppColors.success, letterSpacing: -1.5,
+          )),
         ]),
         const SizedBox(height: 8),
         Row(children: [
-          const Icon(Iconsax.receipt_item, size: 14,
-              color: AppColors.textMuted),
+          Icon(Iconsax.receipt_item, size: 13, color: t.sub),
           const SizedBox(width: 6),
-          Text(
-            '$count income ${count == 1 ? 'entry' : 'entries'} logged',
-            style: AppTextStyles.caption.copyWith(
-              color: AppColors.textMuted,
-            ),
-          ),
+          Text('$count income ${count == 1 ? 'entry' : 'entries'} logged',
+              style: TextStyle(fontSize: 12, color: t.sub)),
         ]),
-      ],
-    ),
-  );
+      ]),
+    );
+  }
 }
 
-// ── Source row ────────────────────────────────────────────────────────────
 class _SourceRow extends StatelessWidget {
   final List<Map>  breakdown;
   final String     currency;
   final double     total;
   final double Function(List<Map>, String) sumBySource;
-  final String Function(double) fmtShort;
-
+  final String Function(double)            fmtShort;
   const _SourceRow({
-    required this.breakdown, required this.currency,
-    required this.total,     required this.sumBySource,
+    required this.breakdown,   required this.currency,
+    required this.total,       required this.sumBySource,
     required this.fmtShort,
   });
 
   @override
   Widget build(BuildContext context) {
+    final t = _T.of(context);
     final sources = [
-      ('Tasks',      'task',   AppColors.primary,  Iconsax.task_square),
-      ('Skills',     'skill',  AppColors.accent,   Iconsax.book),
-      ('Other',      'other',  AppColors.gold,     Iconsax.category),
+      ('Tasks',  'task',  AppColors.primary, Iconsax.task_square),
+      ('Skills', 'skill', AppColors.accent,  Iconsax.book),
+      ('Other',  'other', AppColors.gold,    Iconsax.category),
     ];
-
     return Row(
       children: List.generate(sources.length, (i) {
         final s      = sources[i];
         final amount = sumBySource(breakdown, s.$2);
         final pct    = total > 0 ? (amount / total * 100).round() : 0;
-
         return Expanded(
           child: Container(
             margin: EdgeInsets.only(right: i < sources.length - 1 ? 10 : 0),
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              color: AppColors.bgCard,
-              borderRadius: AppRadius.lg,
-              border: Border.all(color: s.$3.withOpacity(0.15)),
+              color: t.card, borderRadius: AppRadius.lg,
+              border: Border.all(color: t.border),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Icon(s.$4, color: s.$3, size: 18),
-                    if (total > 0)
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: s.$3.withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text('$pct%',
-                            style: AppTextStyles.caption
-                                .copyWith(color: s.$3, fontSize: 9)),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  '${currency.isNotEmpty ? '$currency ' : ''}${fmtShort(amount)}',
-                  style: AppTextStyles.h4.copyWith(
-                    color: s.$3, fontSize: 13,
+                Icon(s.$4, color: s.$3, size: 18),
+                if (total > 0)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 5, vertical: 2),
+                    decoration: BoxDecoration(
+                        color: s.$3.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(5)),
+                    child: Text('$pct%', style: TextStyle(
+                        fontSize: 9, color: s.$3,
+                        fontWeight: FontWeight.w700)),
                   ),
-                ),
-                const SizedBox(height: 2),
-                Text(s.$1, style: AppTextStyles.caption),
-              ],
-            ),
+              ]),
+              const SizedBox(height: 10),
+              Text('${currency.isNotEmpty ? '$currency ' : ''}'
+                  '${fmtShort(amount)}',
+                  style: TextStyle(fontSize: 13,
+                      fontWeight: FontWeight.w700, color: s.$3)),
+              const SizedBox(height: 2),
+              Text(s.$1, style: TextStyle(fontSize: 11, color: t.sub)),
+            ]),
           ),
         );
       }),
@@ -595,38 +564,30 @@ class _SourceRow extends StatelessWidget {
   }
 }
 
-// ── Empty state ───────────────────────────────────────────────────────────
 class _EmptyEarnings extends StatelessWidget {
+  const _EmptyEarnings();
   @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(40),
-    decoration: BoxDecoration(
-      color: AppColors.bgCard,
-      borderRadius: AppRadius.lg,
-    ),
-    child: Column(children: [
-      Container(
-        width: 64, height: 64,
-        decoration: BoxDecoration(
-          color: AppColors.bgSurface,
-          shape: BoxShape.circle,
-        ),
-        child: const Icon(Iconsax.wallet, size: 28,
-            color: AppColors.textMuted),
-      ),
-      const SizedBox(height: 16),
-      Text('No earnings yet', style: AppTextStyles.h4),
-      const SizedBox(height: 6),
-      Text(
-        'Complete tasks or log income\nto start tracking here',
-        style: AppTextStyles.bodySmall,
-        textAlign: TextAlign.center,
-      ),
-    ]),
-  );
+  Widget build(BuildContext context) {
+    final t = _T.of(context);
+    return Container(
+      padding: const EdgeInsets.all(40),
+      decoration: BoxDecoration(
+          color: t.card, borderRadius: AppRadius.lg,
+          border: Border.all(color: t.border)),
+      child: Column(children: [
+        Icon(Iconsax.wallet, size: 44, color: t.sub),
+        const SizedBox(height: 16),
+        Text('No earnings yet', style: TextStyle(
+            fontSize: 15, fontWeight: FontWeight.w700, color: t.text)),
+        const SizedBox(height: 6),
+        Text('Complete tasks or log income\nto start tracking here',
+            style: TextStyle(fontSize: 13, color: t.sub),
+            textAlign: TextAlign.center),
+      ]),
+    );
+  }
 }
 
-// ── Earning tile ──────────────────────────────────────────────────────────
 class _EarningTile extends StatelessWidget {
   final Map    earning;
   final String currency;
@@ -634,29 +595,30 @@ class _EarningTile extends StatelessWidget {
 
   IconData get _icon {
     switch (earning['source_type']) {
-      case 'task':       return Iconsax.task_square;
+      case 'task':
+      case 'freelance':  return Iconsax.briefcase;
       case 'skill':      return Iconsax.book;
       case 'investment': return Iconsax.chart;
       case 'business':   return Iconsax.shop;
       case 'referral':   return Iconsax.people;
-      case 'freelance':  return Iconsax.briefcase;
       default:           return Iconsax.dollar_circle;
     }
   }
 
   Color get _color {
     switch (earning['source_type']) {
-      case 'task':       return AppColors.primary;
+      case 'task':
+      case 'freelance':  return AppColors.primary;
       case 'skill':      return AppColors.accent;
       case 'investment': return AppColors.gold;
       case 'business':   return AppColors.success;
-      case 'freelance':  return AppColors.primary;
       default:           return AppColors.info;
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final t        = _T.of(context);
     final amount   = (earning['amount'] as num).toDouble();
     final earnedAt = earning['earned_at'] as String?;
     DateTime? date;
@@ -671,48 +633,38 @@ class _EarningTile extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
-        color: AppColors.bgCard,
-        borderRadius: AppRadius.md,
-        border: Border.all(color: AppColors.bgSurface),
+        color: t.card, borderRadius: AppRadius.md,
+        border: Border.all(color: t.border),
       ),
       child: Row(children: [
         Container(
           width: 40, height: 40,
           decoration: BoxDecoration(
-            color: _color.withOpacity(0.12),
-            borderRadius: BorderRadius.circular(12),
-          ),
+              color: _color.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(12)),
           child: Icon(_icon, color: _color, size: 18),
         ),
         const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                label,
-                style: AppTextStyles.h4.copyWith(fontSize: 13),
-                maxLines: 1, overflow: TextOverflow.ellipsis,
-              ),
-              if (date != null)
-                Text(
-                  DateFormat('MMM d, yyyy · h:mm a').format(date.toLocal()),
-                  style: AppTextStyles.caption,
-                ),
-            ],
-          ),
-        ),
+          Text(label, style: TextStyle(fontSize: 13,
+              fontWeight: FontWeight.w600, color: t.text),
+              maxLines: 1, overflow: TextOverflow.ellipsis),
+          if (date != null)
+            Text(DateFormat('MMM d, yyyy · h:mm a').format(date.toLocal()),
+                style: TextStyle(fontSize: 11, color: t.sub)),
+        ])),
         const SizedBox(width: 8),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
           decoration: BoxDecoration(
-            color: AppColors.success.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(8),
-          ),
+              color: AppColors.success.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8)),
           child: Text(
-            '+${currency.isNotEmpty ? '$currency ' : ''}${amount.toStringAsFixed(0)}',
-            style: AppTextStyles.label
-                .copyWith(color: AppColors.success, fontSize: 12),
+            '+${currency.isNotEmpty ? '$currency ' : ''}'
+            '${amount.toStringAsFixed(0)}',
+            style: const TextStyle(fontSize: 12,
+                fontWeight: FontWeight.w700, color: AppColors.success),
           ),
         ),
       ]),
