@@ -1,10 +1,39 @@
+// frontend/lib/screens/expenses/expenses_screen.dart
+// v4.0 — Every widget resolves Theme.of(context) independently. No color drilling.
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:iconsax/iconsax.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 
+// ── Theme helper ──────────────────────────────────────────────────────────
+class _T {
+  final bool   dark;
+  final Color  bg, card, surface, border, text, sub;
+  const _T({
+    required this.dark,   required this.bg,
+    required this.card,   required this.surface,
+    required this.border, required this.text,
+    required this.sub,
+  });
+  factory _T.of(BuildContext ctx) {
+    final dark = Theme.of(ctx).brightness == Brightness.dark;
+    return _T(
+      dark:    dark,
+      bg:      dark ? Colors.black        : Colors.white,
+      card:    dark ? AppColors.bgCard    : Colors.white,
+      surface: dark ? AppColors.bgSurface : Colors.grey.shade100,
+      border:  dark ? AppColors.bgSurface : Colors.grey.shade200,
+      text:    dark ? Colors.white        : Colors.black87,
+      sub:     dark ? Colors.white54      : Colors.black54,
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 class ExpensesScreen extends StatefulWidget {
   const ExpensesScreen({super.key});
   @override
@@ -12,12 +41,19 @@ class ExpensesScreen extends StatefulWidget {
 }
 
 class _ExpensesScreenState extends State<ExpensesScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+  static const _kSummary  = 'riseup_expenses_summary_v2';
+  static const _kExpenses = 'riseup_expenses_list_v2';
+  static const _kBudgets  = 'riseup_budgets_v2';
+  static const _kProfile  = 'riseup_finance_profile_v1';
+
   late TabController _tab;
-  Map _summary = {};
-  List _expenses = [];
-  List _budgets = [];
-  bool _loading = true;
+  Map    _summary  = {};
+  List   _expenses = [];
+  List   _budgets  = [];
+  Map    _profile  = {};
+  bool   _loading    = true;
+  bool   _refreshing = false;
   String _currentMonth = DateFormat('yyyy-MM').format(DateTime.now());
 
   static const _categories = [
@@ -33,237 +69,211 @@ class _ExpensesScreenState extends State<ExpensesScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _tab = TabController(length: 3, vsync: this);
-    _load();
+    _restoreCache();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _silentRefresh());
   }
 
   @override
-  void dispose() { _tab.dispose(); super.dispose(); }
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _tab.dispose();
+    super.dispose();
+  }
 
-  Future<void> _load() async {
-    setState(() => _loading = true);
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) _silentRefresh();
+  }
+
+  Future<void> _restoreCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final sStr = prefs.getString(_kSummary);
+      final eStr = prefs.getString(_kExpenses);
+      final bStr = prefs.getString(_kBudgets);
+      final pStr = prefs.getString(_kProfile);
+      if (sStr != null) {
+        final s = Map<String, dynamic>.from(jsonDecode(sStr) as Map);
+        if (mounted) setState(() { _summary = s; _loading = false; });
+      }
+      if (eStr != null) {
+        if (mounted) setState(() => _expenses = jsonDecode(eStr) as List);
+      }
+      if (bStr != null) {
+        if (mounted) setState(() => _budgets = jsonDecode(bStr) as List);
+      }
+      if (pStr != null) {
+        final p = Map<String, dynamic>.from(jsonDecode(pStr) as Map);
+        if (mounted) setState(() => _profile = p);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _silentRefresh() async {
+    if (_refreshing || !mounted) return;
+    setState(() => _refreshing = true);
+    await _fetchAndApply();
+  }
+
+  Future<void> _fetchAndApply() async {
     try {
       final results = await Future.wait([
         api.getMonthlySummary(month: _currentMonth),
         api.getExpenses(month: _currentMonth),
         api.getBudgets(month: _currentMonth),
+        api.getProfile(),
       ]);
-      setState(() {
-        _summary  = results[0];
-        _expenses = (results[1] as Map)['expenses'] as List? ?? [];
-        _budgets  = (results[2] as Map)['budgets']  as List? ?? [];
-        _loading  = false;
+      final summary    = results[0] as Map;
+      final expenses   = (results[1] as Map)['expenses'] as List? ?? [];
+      final budgets    = (results[2] as Map)['budgets']  as List? ?? [];
+      final profile    = ((results[3] as Map)['profile'] as Map?)
+                             ?.cast<String, dynamic>() ?? {};
+      if (mounted) setState(() {
+        _summary    = summary;
+        _expenses   = expenses;
+        _budgets    = budgets;
+        _profile    = profile;
+        _loading    = false;
+        _refreshing = false;
       });
-    } catch (_) { setState(() => _loading = false); }
+      final prefs = await SharedPreferences.getInstance();
+      await Future.wait([
+        prefs.setString(_kSummary,  jsonEncode(summary)),
+        prefs.setString(_kExpenses, jsonEncode(expenses)),
+        prefs.setString(_kBudgets,  jsonEncode(budgets)),
+        prefs.setString(_kProfile,  jsonEncode(profile)),
+      ]);
+    } catch (_) {
+      if (mounted) setState(() { _loading = false; _refreshing = false; });
+    }
   }
+
+  String get _currency =>
+      _summary['currency']?.toString() ??
+      _profile['currency']?.toString() ?? '';
 
   @override
   Widget build(BuildContext context) {
+    final t = _T.of(context);
+
     return Scaffold(
-      backgroundColor: AppColors.bgDark,
+      backgroundColor: t.bg,
       appBar: AppBar(
-        title: Text('Expenses & Budget', style: AppTextStyles.h3),
-        backgroundColor: AppColors.bgDark,
+        backgroundColor: t.card,
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
+        title: Text('Expenses & Budget', style: TextStyle(
+            fontSize: 18, fontWeight: FontWeight.w700, color: t.text)),
         actions: [
-          // Month picker
+          if (_refreshing)
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Center(child: SizedBox(width: 14, height: 14,
+                child: CircularProgressIndicator(strokeWidth: 1.5,
+                    color: AppColors.error.withOpacity(0.5)))),
+            ),
           TextButton.icon(
-            icon: const Icon(Iconsax.calendar, size: 16, color: AppColors.primary),
-            label: Text(_currentMonth,
-                style: AppTextStyles.label.copyWith(color: AppColors.primary)),
+            icon: const Icon(Iconsax.calendar, size: 15,
+                color: AppColors.primary),
+            label: Text(_currentMonth, style: const TextStyle(
+                fontSize: 12, color: AppColors.primary,
+                fontWeight: FontWeight.w600)),
             onPressed: _pickMonth,
           ),
         ],
-        bottom: TabBar(
-          controller: _tab,
-          labelColor: AppColors.primary,
-          unselectedLabelColor: AppColors.textMuted,
-          indicatorColor: AppColors.primary,
-          tabs: const [
-            Tab(text: 'Overview'),
-            Tab(text: 'Expenses'),
-            Tab(text: 'Budgets'),
-          ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(49),
+          child: Column(children: [
+            TabBar(
+              controller: _tab,
+              labelColor: AppColors.primary,
+              unselectedLabelColor: t.sub,
+              indicatorColor: AppColors.primary,
+              indicatorWeight: 2.5,
+              labelStyle: const TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.w600),
+              tabs: const [
+                Tab(text: 'Overview'),
+                Tab(text: 'Expenses'),
+                Tab(text: 'Budgets'),
+              ],
+            ),
+            Divider(height: 1, color: t.border),
+          ]),
         ),
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+      body: _loading && _summary.isEmpty
+          ? const Center(child: CircularProgressIndicator(
+              color: AppColors.primary))
           : TabBarView(
               controller: _tab,
               children: [
-                _buildOverview(),
-                _buildExpensesList(),
-                _buildBudgetsTab(),
+                _OverviewTab(
+                  summary:      _summary,
+                  currency:     _currency,
+                  currentMonth: _currentMonth,
+                  onRefresh:    _fetchAndApply,
+                ),
+                _ExpensesListTab(
+                  expenses:     _expenses,
+                  currency:     _currency,
+                  currentMonth: _currentMonth,
+                  catIcons:     _catIcons,
+                  onDelete: (id) async {
+                    await api.deleteExpense(id);
+                    _fetchAndApply();
+                  },
+                  onConfirmDelete: _confirmDelete,
+                ),
+                _BudgetsTab(
+                  budgets:      _budgets,
+                  categories:   _categories,
+                  catIcons:     _catIcons,
+                  currency:     _currency,
+                  currentMonth: _currentMonth,
+                  onSaved:      _fetchAndApply,
+                ),
               ],
             ),
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: AppColors.error,
         onPressed: () => _showLogExpense(context),
         icon: const Icon(Icons.remove, color: Colors.white),
-        label: Text('Log Expense', style: AppTextStyles.label.copyWith(color: Colors.white)),
+        label: const Text('Log Expense', style: TextStyle(
+            color: Colors.white, fontWeight: FontWeight.w600,
+            fontSize: 13)),
       ),
     );
   }
 
-  Widget _buildOverview() {
-    final currency     = _summary['currency']?.toString() ?? 'NGN';
-    final income       = (_summary['monthly_income'] ?? 0.0) as num;
-    final spent        = (_summary['total_spent'] ?? 0.0) as num;
-    final net          = (_summary['net_income'] ?? 0.0) as num;
-    final savingsRate  = (_summary['savings_rate'] ?? 0.0) as num;
-    final breakdown    = (_summary['breakdown'] as List? ?? []);
-    final fmt          = NumberFormat('#,##0', 'en_US');
-
-    return RefreshIndicator(
-      onRefresh: _load,
-      color: AppColors.primary,
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          // Net income card
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: net >= 0
-                    ? [const Color(0xFF00B894), const Color(0xFF00787A)]
-                    : [const Color(0xFFE17055), const Color(0xFFD63031)],
-              ),
-              borderRadius: AppRadius.xl,
-              boxShadow: AppShadows.card,
+  Future<bool?> _confirmDelete(BuildContext context) {
+    final t = _T.of(context);
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        final dt = _T.of(ctx);
+        return AlertDialog(
+          backgroundColor: dt.card,
+          title: Text('Delete expense?', style: TextStyle(
+              fontSize: 16, fontWeight: FontWeight.w700, color: dt.text)),
+          content: Text('This cannot be undone.',
+              style: TextStyle(fontSize: 13, color: dt.sub)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel',
+                  style: TextStyle(color: AppColors.primary)),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Net Income — $_currentMonth',
-                    style: AppTextStyles.label.copyWith(color: Colors.white70)),
-                const SizedBox(height: 8),
-                Text('$currency ${fmt.format(net.abs())}',
-                    style: AppTextStyles.h1.copyWith(color: Colors.white)),
-                const SizedBox(height: 4),
-                Text(net >= 0 ? 'Savings rate: ${savingsRate.toStringAsFixed(1)}%' : 'Over budget this month',
-                    style: AppTextStyles.bodySmall.copyWith(color: Colors.white70)),
-              ],
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Delete',
+                  style: TextStyle(color: AppColors.error)),
             ),
-          ).animate().fadeIn(duration: 400.ms).scale(begin: const Offset(0.95,0.95)),
-          const SizedBox(height: 12),
-          // Income vs Spent row
-          Row(children: [
-            Expanded(child: _MetricCard(
-              label: 'Income', value: '$currency ${fmt.format(income)}',
-              icon: Iconsax.trend_up, color: AppColors.success,
-            )),
-            const SizedBox(width: 12),
-            Expanded(child: _MetricCard(
-              label: 'Spent', value: '$currency ${fmt.format(spent)}',
-              icon: Iconsax.trend_down, color: AppColors.error,
-            )),
-          ]),
-          const SizedBox(height: 20),
-          Text('Category Breakdown', style: AppTextStyles.h4),
-          const SizedBox(height: 12),
-          if (breakdown.isEmpty)
-            Center(child: Padding(
-              padding: const EdgeInsets.all(32),
-              child: Text('No expenses logged yet for $_currentMonth',
-                  style: AppTextStyles.body.copyWith(color: AppColors.textMuted),
-                  textAlign: TextAlign.center),
-            ))
-          else
-            ...breakdown.asMap().entries.map((e) => _CategoryBar(
-              data: e.value, currency: currency, index: e.key,
-            )),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildExpensesList() {
-    final fmt = NumberFormat('#,##0', 'en_US');
-    if (_expenses.isEmpty) {
-      return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        const Text('📭', style: TextStyle(fontSize: 56)),
-        const SizedBox(height: 16),
-        Text('No expenses logged for $_currentMonth',
-            style: AppTextStyles.body.copyWith(color: AppColors.textMuted)),
-      ]));
-    }
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: _expenses.length,
-      itemBuilder: (_, i) {
-        final e = _expenses[i];
-        return Dismissible(
-          key: Key(e['id']),
-          direction: DismissDirection.endToStart,
-          background: Container(
-            alignment: Alignment.centerRight,
-            padding: const EdgeInsets.only(right: 20),
-            decoration: BoxDecoration(color: AppColors.error, borderRadius: AppRadius.lg),
-            child: const Icon(Iconsax.trash, color: Colors.white),
-          ),
-          onDismissed: (_) async {
-            await api.deleteExpense(e['id']);
-            _load();
-          },
-          child: Container(
-            margin: const EdgeInsets.only(bottom: 10),
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-                color: AppColors.bgCard, borderRadius: AppRadius.lg),
-            child: Row(children: [
-              Container(
-                width: 44, height: 44,
-                decoration: BoxDecoration(
-                    color: AppColors.bgSurface, borderRadius: AppRadius.md),
-                child: Center(child: Text(e['icon'] ?? '📦',
-                    style: const TextStyle(fontSize: 22))),
-              ),
-              const SizedBox(width: 12),
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(e['description'] ?? e['category'] ?? 'Expense',
-                    style: AppTextStyles.h4, maxLines: 1, overflow: TextOverflow.ellipsis),
-                Text('${e['category']} · ${e['spent_at']}',
-                    style: AppTextStyles.caption),
-              ])),
-              Text('${e['currency']} ${fmt.format((e['amount'] as num).toDouble())}',
-                  style: AppTextStyles.h4.copyWith(color: AppColors.error)),
-            ]),
-          ).animate(delay: Duration(milliseconds: i * 40)).fadeIn().slideX(begin: 0.1),
+          ],
         );
       },
-    );
-  }
-
-  Widget _buildBudgetsTab() {
-    final budgetMap = {for (var b in _budgets) b['category']: b};
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(0.1),
-              borderRadius: AppRadius.lg,
-              border: Border.all(color: AppColors.primary.withOpacity(0.3))),
-          child: Text(
-            '💡 Set monthly spending limits per category. The AI will factor these into your advice.',
-            style: AppTextStyles.bodySmall.copyWith(color: AppColors.primary),
-          ),
-        ),
-        const SizedBox(height: 16),
-        ..._categories.map((cat) {
-          final existing = budgetMap[cat];
-          final amount = existing != null
-              ? (existing['budget_amount'] as num).toDouble() : 0.0;
-          return _BudgetCategoryRow(
-            category: cat,
-            icon: _catIcons[cat] ?? '📦',
-            currentBudget: amount,
-            month: _currentMonth,
-            onSaved: _load,
-          );
-        }),
-      ],
     );
   }
 
@@ -276,81 +286,407 @@ class _ExpensesScreenState extends State<ExpensesScreen>
       helpText: 'Select Month',
     );
     if (picked != null) {
-      setState(() => _currentMonth = DateFormat('yyyy-MM').format(picked));
-      _load();
+      setState(() =>
+          _currentMonth = DateFormat('yyyy-MM').format(picked));
+      _fetchAndApply();
     }
   }
 
   void _showLogExpense(BuildContext context) {
+    final t = _T.of(context);
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: AppColors.bgCard,
+      backgroundColor: t.card,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (_) => _LogExpenseSheet(onLogged: _load),
+      builder: (_) => _LogExpenseSheet(
+        onLogged: _fetchAndApply,
+        currency: _currency,
+      ),
     );
   }
 }
 
-class _MetricCard extends StatelessWidget {
-  final String label, value;
-  final IconData icon;
-  final Color color;
-  const _MetricCard({required this.label, required this.value, required this.icon, required this.color});
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(16),
-    decoration: BoxDecoration(
-        color: AppColors.bgCard,
-        borderRadius: AppRadius.lg,
-        border: Border.all(color: color.withOpacity(0.2))),
-    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(children: [
-        Icon(icon, color: color, size: 16),
-        const SizedBox(width: 6),
-        Text(label, style: AppTextStyles.caption),
-      ]),
-      const SizedBox(height: 6),
-      Text(value, style: AppTextStyles.h4.copyWith(color: color)),
-    ]),
-  );
-}
-
-class _CategoryBar extends StatelessWidget {
-  final Map data;
-  final String currency;
-  final int index;
-  const _CategoryBar({required this.data, required this.currency, required this.index});
+// ─────────────────────────────────────────────────────────────────────────
+// Overview Tab
+// ─────────────────────────────────────────────────────────────────────────
+class _OverviewTab extends StatelessWidget {
+  final Map    summary;
+  final String currency, currentMonth;
+  final VoidCallback onRefresh;
+  const _OverviewTab({
+    required this.summary,      required this.currency,
+    required this.currentMonth, required this.onRefresh,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final spent    = (data['spent'] ?? 0.0) as num;
+    final t         = _T.of(context);
+    final income    = (summary['monthly_income'] ?? 0.0) as num;
+    final spent     = (summary['total_spent']    ?? 0.0) as num;
+    final net       = (summary['net_income']     ?? 0.0) as num;
+    final savings   = (summary['savings_rate']   ?? 0.0) as num;
+    final breakdown = summary['breakdown'] as List? ?? [];
+    final fmt = NumberFormat('#,##0', 'en_US');
+    final cur = currency.isNotEmpty ? '$currency ' : '';
+
+    return RefreshIndicator(
+      onRefresh: onRefresh,
+      color: AppColors.primary,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          // Net income hero
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: net >= 0
+                    ? [const Color(0xFF00B894), const Color(0xFF00787A)]
+                    : [const Color(0xFFE17055), const Color(0xFFD63031)],
+              ),
+              borderRadius: AppRadius.xl,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                Text('Net Income — $currentMonth',
+                    style: const TextStyle(fontSize: 12,
+                        color: Colors.white70)),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      borderRadius: AppRadius.pill),
+                  child: Text(
+                    net >= 0
+                        ? '${savings.toStringAsFixed(1)}% saved'
+                        : 'Over budget',
+                    style: const TextStyle(fontSize: 10,
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ]),
+              const SizedBox(height: 10),
+              Text('$cur${fmt.format(net.abs())}',
+                  style: const TextStyle(fontSize: 36,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.white, letterSpacing: -1)),
+            ]),
+          ).animate().fadeIn(duration: 400.ms)
+              .scale(begin: const Offset(0.97, 0.97)),
+
+          const SizedBox(height: 12),
+          Row(children: [
+            Expanded(child: _MetricCard(
+              label: 'Income',
+              value: '$cur${fmt.format(income)}',
+              icon: Iconsax.trend_up, color: AppColors.success,
+            )),
+            const SizedBox(width: 12),
+            Expanded(child: _MetricCard(
+              label: 'Spent',
+              value: '$cur${fmt.format(spent)}',
+              icon: Iconsax.trend_down, color: AppColors.error,
+            )),
+          ]),
+          const SizedBox(height: 20),
+          Text('Category Breakdown', style: TextStyle(
+              fontSize: 15, fontWeight: FontWeight.w700, color: t.text)),
+          const SizedBox(height: 12),
+          if (breakdown.isEmpty)
+            Container(
+              padding: const EdgeInsets.all(40),
+              decoration: BoxDecoration(
+                  color: t.card, borderRadius: AppRadius.lg,
+                  border: Border.all(color: t.border)),
+              child: Column(children: [
+                const Text('📭', style: TextStyle(fontSize: 40)),
+                const SizedBox(height: 12),
+                Text('No expenses for $currentMonth',
+                    style: TextStyle(fontSize: 13, color: t.sub),
+                    textAlign: TextAlign.center),
+              ]),
+            )
+          else
+            ...breakdown.asMap().entries.map((e) =>
+                _CategoryBar(data: e.value, currency: currency,
+                    index: e.key)),
+          const SizedBox(height: 80),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Expenses List Tab
+// ─────────────────────────────────────────────────────────────────────────
+class _ExpensesListTab extends StatelessWidget {
+  final List   expenses;
+  final String currency, currentMonth;
+  final Map<String, String> catIcons;
+  final Future<void> Function(String) onDelete;
+  final Future<bool?> Function(BuildContext) onConfirmDelete;
+  const _ExpensesListTab({
+    required this.expenses,        required this.currency,
+    required this.currentMonth,    required this.catIcons,
+    required this.onDelete,        required this.onConfirmDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t   = _T.of(context);
+    final fmt = NumberFormat('#,##0', 'en_US');
+    final cur = currency.isNotEmpty ? '$currency ' : '';
+
+    if (expenses.isEmpty) {
+      return Center(child: Column(
+          mainAxisAlignment: MainAxisAlignment.center, children: [
+        const Text('📭', style: TextStyle(fontSize: 56)),
+        const SizedBox(height: 16),
+        Text('No expenses for $currentMonth',
+            style: TextStyle(fontSize: 14, color: t.sub)),
+      ]));
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: expenses.length,
+      itemBuilder: (ctx, i) {
+        final e   = expenses[i];
+        final tid = _T.of(ctx);
+        return Dismissible(
+          key: Key(e['id'].toString()),
+          direction: DismissDirection.endToStart,
+          background: Container(
+            alignment: Alignment.centerRight,
+            padding: const EdgeInsets.only(right: 20),
+            decoration: BoxDecoration(
+                color: AppColors.error,
+                borderRadius: AppRadius.lg),
+            child: const Icon(Iconsax.trash, color: Colors.white),
+          ),
+          confirmDismiss: (_) => onConfirmDelete(ctx),
+          onDismissed:    (_) => onDelete(e['id'].toString()),
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 10),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: tid.card, borderRadius: AppRadius.lg,
+              border: Border.all(color: tid.border),
+            ),
+            child: Row(children: [
+              Container(
+                width: 44, height: 44,
+                decoration: BoxDecoration(
+                    color: tid.surface,
+                    borderRadius: AppRadius.md),
+                child: Center(child: Text(
+                  e['icon'] ?? catIcons[e['category']] ?? '📦',
+                  style: const TextStyle(fontSize: 22),
+                )),
+              ),
+              const SizedBox(width: 12),
+              Expanded(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                Text(e['description'] ?? e['category'] ?? 'Expense',
+                    style: TextStyle(fontSize: 13,
+                        fontWeight: FontWeight.w600, color: tid.text),
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
+                Text(
+                  '${(e['category'] as String? ?? '').replaceAll('_', ' ')} · ${e['spent_at'] ?? ''}',
+                  style: TextStyle(fontSize: 11, color: tid.sub),
+                ),
+              ])),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                    color: AppColors.error.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8)),
+                child: Text(
+                  '$cur${fmt.format((e['amount'] as num).toDouble())}',
+                  style: const TextStyle(fontSize: 12,
+                      fontWeight: FontWeight.w700, color: AppColors.error),
+                ),
+              ),
+            ]),
+          ).animate(delay: Duration(milliseconds: i * 35))
+              .fadeIn().slideX(begin: 0.05),
+        );
+      },
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Budgets Tab
+// ─────────────────────────────────────────────────────────────────────────
+class _BudgetsTab extends StatelessWidget {
+  final List   budgets;
+  final List<String> categories;
+  final Map<String, String> catIcons;
+  final String currency, currentMonth;
+  final VoidCallback onSaved;
+  const _BudgetsTab({
+    required this.budgets,       required this.categories,
+    required this.catIcons,      required this.currency,
+    required this.currentMonth,  required this.onSaved,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t         = _T.of(context);
+    final budgetMap = {for (var b in budgets) b['category']: b};
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: AppColors.primary.withOpacity(0.08),
+            borderRadius: AppRadius.lg,
+            border: Border.all(
+                color: AppColors.primary.withOpacity(0.2)),
+          ),
+          child: Row(children: [
+            const Text('💡', style: TextStyle(fontSize: 18)),
+            const SizedBox(width: 10),
+            Expanded(child: Text(
+              'Set monthly limits per category. The AI will factor these into your advice.',
+              style: TextStyle(fontSize: 12,
+                  color: t.dark ? AppColors.primary
+                      : AppColors.primary),
+            )),
+          ]),
+        ),
+        const SizedBox(height: 16),
+        ...categories.map((cat) {
+          final existing = budgetMap[cat];
+          final amount   = existing != null
+              ? (existing['budget_amount'] as num).toDouble() : 0.0;
+          return _BudgetCategoryRow(
+            category: cat,
+            icon:     catIcons[cat] ?? '📦',
+            currentBudget: amount,
+            month:    currentMonth,
+            currency: currency,
+            onSaved:  onSaved,
+          );
+        }),
+        const SizedBox(height: 80),
+      ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Metric Card
+// ─────────────────────────────────────────────────────────────────────────
+class _MetricCard extends StatelessWidget {
+  final String   label, value;
+  final IconData icon;
+  final Color    color;
+  const _MetricCard({
+    required this.label, required this.value,
+    required this.icon,  required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = _T.of(context);
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: t.card, borderRadius: AppRadius.lg,
+        border: Border.all(color: t.border),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+        Row(children: [
+          Icon(icon, color: color, size: 15),
+          const SizedBox(width: 6),
+          Text(label,
+              style: TextStyle(fontSize: 11, color: t.sub)),
+        ]),
+        const SizedBox(height: 6),
+        Text(value, style: TextStyle(fontSize: 14,
+            fontWeight: FontWeight.w700, color: color),
+            maxLines: 1, overflow: TextOverflow.ellipsis),
+      ]),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Category Bar
+// ─────────────────────────────────────────────────────────────────────────
+class _CategoryBar extends StatelessWidget {
+  final Map    data;
+  final String currency;
+  final int    index;
+  const _CategoryBar({
+    required this.data, required this.currency, required this.index,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t        = _T.of(context);
+    final spent    = (data['spent']    ?? 0.0) as num;
     final budgeted = (data['budgeted'] ?? 0.0) as num;
     final over     = data['over_budget'] == true;
-    final progress = budgeted > 0 ? (spent / budgeted).clamp(0.0, 1.0) : 0.0;
-    final fmt      = NumberFormat('#,##0', 'en_US');
-    final icon     = data['icon'] ?? '📦';
+    final progress = budgeted > 0
+        ? (spent / budgeted).clamp(0.0, 1.0) : 0.0;
+    final fmt  = NumberFormat('#,##0', 'en_US');
+    final icon = data['icon'] ?? '📦';
+    final cur  = currency.isNotEmpty ? '$currency ' : '';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-          color: AppColors.bgCard, borderRadius: AppRadius.lg,
-          border: Border.all(color: over ? AppColors.error.withOpacity(0.3) : Colors.transparent)),
+        color: t.card, borderRadius: AppRadius.lg,
+        border: Border.all(
+          color: over ? AppColors.error.withOpacity(0.35) : t.border,
+        ),
+      ),
       child: Column(children: [
         Row(children: [
           Text(icon, style: const TextStyle(fontSize: 18)),
           const SizedBox(width: 10),
           Expanded(child: Text(
-            (data['category'] ?? '').toString().replaceAll('_', ' ').toUpperCase(),
-            style: AppTextStyles.label,
+            (data['category'] ?? '').toString()
+                .replaceAll('_', ' ').toUpperCase(),
+            style: TextStyle(fontSize: 12,
+                fontWeight: FontWeight.w600, color: t.text),
           )),
-          Text('$currency ${fmt.format(spent.toDouble())}',
-              style: AppTextStyles.label.copyWith(color: over ? AppColors.error : AppColors.textPrimary)),
+          Text('$cur${fmt.format(spent.toDouble())}',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                  color: over ? AppColors.error : t.text)),
           if (budgeted > 0)
             Text(' / ${fmt.format(budgeted.toDouble())}',
-                style: AppTextStyles.caption),
+                style: TextStyle(fontSize: 11, color: t.sub)),
+          if (over) ...[
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 5, vertical: 2),
+              decoration: BoxDecoration(
+                color: AppColors.error.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: const Text('OVER', style: TextStyle(
+                  fontSize: 8, color: AppColors.error,
+                  fontWeight: FontWeight.w800)),
+            ),
+          ],
         ]),
         if (budgeted > 0) ...[
           const SizedBox(height: 8),
@@ -358,27 +694,34 @@ class _CategoryBar extends StatelessWidget {
             borderRadius: BorderRadius.circular(4),
             child: LinearProgressIndicator(
               value: progress.toDouble(),
-              backgroundColor: AppColors.bgSurface,
-              valueColor: AlwaysStoppedAnimation(over ? AppColors.error : AppColors.success),
+              backgroundColor: t.sub.withOpacity(0.1),
+              valueColor: AlwaysStoppedAnimation(
+                  over ? AppColors.error : AppColors.success),
               minHeight: 6,
             ),
           ),
         ],
       ]),
-    ).animate(delay: Duration(milliseconds: index * 50)).fadeIn().slideX(begin: -0.1);
+    ).animate(delay: Duration(milliseconds: index * 50))
+        .fadeIn().slideX(begin: -0.04);
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Budget Category Row
+// ─────────────────────────────────────────────────────────────────────────
 class _BudgetCategoryRow extends StatefulWidget {
-  final String category, icon, month;
-  final double currentBudget;
+  final String   category, icon, month, currency;
+  final double   currentBudget;
   final VoidCallback onSaved;
   const _BudgetCategoryRow({
     required this.category, required this.icon,
-    required this.currentBudget, required this.month, required this.onSaved,
+    required this.currentBudget, required this.month,
+    required this.currency, required this.onSaved,
   });
   @override
-  State<_BudgetCategoryRow> createState() => _BudgetCategoryRowState();
+  State<_BudgetCategoryRow> createState() =>
+      _BudgetCategoryRowState();
 }
 
 class _BudgetCategoryRowState extends State<_BudgetCategoryRow> {
@@ -389,58 +732,82 @@ class _BudgetCategoryRowState extends State<_BudgetCategoryRow> {
   void initState() {
     super.initState();
     _ctrl = TextEditingController(
-      text: widget.currentBudget > 0 ? widget.currentBudget.toStringAsFixed(0) : '',
+      text: widget.currentBudget > 0
+          ? widget.currentBudget.toStringAsFixed(0) : '',
     );
   }
+
   @override
   void dispose() { _ctrl.dispose(); super.dispose(); }
 
   @override
-  Widget build(BuildContext context) => Container(
-    margin: const EdgeInsets.only(bottom: 10),
-    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-    decoration: BoxDecoration(color: AppColors.bgCard, borderRadius: AppRadius.lg),
-    child: Row(children: [
-      Text(widget.icon, style: const TextStyle(fontSize: 22)),
-      const SizedBox(width: 12),
-      Expanded(child: Text(
-        widget.category.replaceAll('_', ' ').toUpperCase(),
-        style: AppTextStyles.label,
-      )),
-      SizedBox(
-        width: 100,
-        child: TextField(
-          controller: _ctrl,
-          keyboardType: TextInputType.number,
-          style: AppTextStyles.body.copyWith(fontSize: 13),
-          textAlign: TextAlign.right,
-          decoration: InputDecoration(
-            hintText: 'Budget',
-            contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            filled: true, fillColor: AppColors.bgSurface,
-            border: OutlineInputBorder(borderRadius: AppRadius.md, borderSide: BorderSide.none),
+  Widget build(BuildContext context) {
+    // Each row resolves its own theme
+    final t = _T.of(context);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: t.card, borderRadius: AppRadius.lg,
+        border: Border.all(color: t.border),
+      ),
+      child: Row(children: [
+        Text(widget.icon, style: const TextStyle(fontSize: 22)),
+        const SizedBox(width: 12),
+        Expanded(child: Text(
+          widget.category.replaceAll('_', ' ').toUpperCase(),
+          style: TextStyle(fontSize: 12,
+              fontWeight: FontWeight.w600, color: t.text),
+        )),
+        SizedBox(
+          width: 120,
+          child: TextField(
+            controller: _ctrl,
+            keyboardType: TextInputType.number,
+            style: TextStyle(fontSize: 13, color: t.text),
+            textAlign: TextAlign.right,
+            decoration: InputDecoration(
+              hintText: 'Budget',
+              hintStyle: TextStyle(fontSize: 12, color: t.sub),
+              prefixText: widget.currency.isNotEmpty
+                  ? '${widget.currency} ' : null,
+              prefixStyle: TextStyle(fontSize: 11, color: t.sub),
+              contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 10, vertical: 8),
+              filled: true, fillColor: t.surface,
+              border: OutlineInputBorder(
+                  borderRadius: AppRadius.md,
+                  borderSide: BorderSide.none),
+            ),
+            onSubmitted: (_) => _save(),
           ),
-          onSubmitted: (_) => _save(),
         ),
-      ),
-      const SizedBox(width: 8),
-      GestureDetector(
-        onTap: _save,
-        child: _saving
-            ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary))
-            : const Icon(Iconsax.tick_circle, color: AppColors.primary, size: 22),
-      ),
-    ]),
-  );
+        const SizedBox(width: 8),
+        GestureDetector(
+          onTap: _save,
+          child: _saving
+              ? const SizedBox(width: 20, height: 20,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: AppColors.primary))
+              : const Icon(Iconsax.tick_circle,
+                  color: AppColors.primary, size: 22),
+        ),
+      ]),
+    );
+  }
 
   Future<void> _save() async {
-    final amount = double.tryParse(_ctrl.text.replaceAll(',', ''));
+    final amount = double.tryParse(
+        _ctrl.text.replaceAll(',', ''));
     if (amount == null) return;
     setState(() => _saving = true);
     try {
       await api.setBudget({
-        'month': widget.month, 'category': widget.category,
-        'budget_amount': amount, 'currency': 'NGN',
+        'month':         widget.month,
+        'category':      widget.category,
+        'budget_amount': amount,
+        'currency':      widget.currency.isNotEmpty
+                             ? widget.currency : 'USD',
       });
       widget.onSaved();
     } catch (_) {}
@@ -448,9 +815,14 @@ class _BudgetCategoryRowState extends State<_BudgetCategoryRow> {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Log Expense Sheet  (StatefulWidget — resolves own theme in build)
+// ─────────────────────────────────────────────────────────────────────────
 class _LogExpenseSheet extends StatefulWidget {
   final VoidCallback onLogged;
-  const _LogExpenseSheet({required this.onLogged});
+  final String       currency;
+  const _LogExpenseSheet({required this.onLogged, required this.currency});
+
   @override
   State<_LogExpenseSheet> createState() => _LogExpenseSheetState();
 }
@@ -459,7 +831,7 @@ class _LogExpenseSheetState extends State<_LogExpenseSheet> {
   final _amountCtrl = TextEditingController();
   final _descCtrl   = TextEditingController();
   String _category  = 'food';
-  bool _loading = false;
+  bool   _loading   = false;
 
   static const _categories = [
     'food','transport','rent','utilities','entertainment',
@@ -472,80 +844,165 @@ class _LogExpenseSheetState extends State<_LogExpenseSheet> {
   };
 
   @override
-  void dispose() { _amountCtrl.dispose(); _descCtrl.dispose(); super.dispose(); }
+  void dispose() {
+    _amountCtrl.dispose();
+    _descCtrl.dispose();
+    super.dispose();
+  }
 
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: EdgeInsets.only(
-      bottom: MediaQuery.of(context).viewInsets.bottom + 24,
-      left: 24, right: 24, top: 28,
-    ),
-    child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text('Log Expense', style: AppTextStyles.h3),
-      const SizedBox(height: 20),
-      TextField(
-        controller: _amountCtrl,
-        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-        autofocus: true,
-        style: AppTextStyles.body,
-        decoration: const InputDecoration(hintText: 'Amount (NGN)'),
+  Widget build(BuildContext context) {
+    // Resolves own theme — works correctly even inside bottom sheet
+    final t        = _T.of(context);
+    final currency = widget.currency;
+
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+        left: 24, right: 24, top: 28,
       ),
-      const SizedBox(height: 12),
-      TextField(
-        controller: _descCtrl,
-        style: AppTextStyles.body,
-        decoration: const InputDecoration(hintText: 'Description (optional)'),
-      ),
-      const SizedBox(height: 12),
-      // Category chips
-      SizedBox(
-        height: 42,
-        child: ListView(
-          scrollDirection: Axis.horizontal,
-          children: _categories.map((cat) => GestureDetector(
-            onTap: () => setState(() => _category = cat),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              margin: const EdgeInsets.only(right: 8),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              decoration: BoxDecoration(
-                color: _category == cat ? AppColors.primary : AppColors.bgSurface,
-                borderRadius: AppRadius.pill,
-              ),
-              child: Text(
-                '${_catIcons[cat]} ${cat.replaceAll('_', ' ')}',
-                style: AppTextStyles.label.copyWith(
-                  color: _category == cat ? Colors.white : AppColors.textSecondary,
+      child: Column(mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Center(child: Container(width: 36, height: 4,
+            decoration: BoxDecoration(color: t.border,
+                borderRadius: BorderRadius.circular(2)))),
+        const SizedBox(height: 20),
+        Row(children: [
+          Container(
+            width: 42, height: 42,
+            decoration: BoxDecoration(
+                color: AppColors.error.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(12)),
+            child: const Center(
+                child: Icon(Icons.remove, color: AppColors.error, size: 20)),
+          ),
+          const SizedBox(width: 12),
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Log Expense', style: TextStyle(fontSize: 16,
+                fontWeight: FontWeight.w700, color: t.text)),
+            Text('Track your spending',
+                style: TextStyle(fontSize: 12, color: t.sub)),
+          ]),
+        ]),
+        const SizedBox(height: 24),
+        // Amount
+        Container(
+          decoration: BoxDecoration(
+            color: t.surface, borderRadius: AppRadius.lg,
+            border: Border.all(color: AppColors.error.withOpacity(0.3)),
+          ),
+          child: TextField(
+            controller: _amountCtrl,
+            autofocus: true,
+            keyboardType: const TextInputType.numberWithOptions(
+                decimal: true),
+            style: const TextStyle(fontSize: 30,
+                fontWeight: FontWeight.w800, color: AppColors.error),
+            textAlign: TextAlign.center,
+            decoration: InputDecoration(
+              hintText: '0.00',
+              hintStyle: TextStyle(fontSize: 30,
+                  fontWeight: FontWeight.w800,
+                  color: t.sub.withOpacity(0.35)),
+              prefixIcon: currency.isNotEmpty
+                  ? Padding(
+                      padding: const EdgeInsets.only(
+                          left: 16, right: 4, top: 16),
+                      child: Text(currency, style: TextStyle(
+                          fontSize: 13, color: t.sub,
+                          fontWeight: FontWeight.w600)))
+                  : null,
+              prefixIconConstraints: const BoxConstraints(
+                  minWidth: 0, minHeight: 0),
+              border: InputBorder.none,
+              contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 16, vertical: 20),
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        TextField(
+          controller: _descCtrl,
+          style: TextStyle(fontSize: 14, color: t.text),
+          decoration: InputDecoration(
+            hintText: 'Description (optional)',
+            hintStyle: TextStyle(fontSize: 13, color: t.sub),
+            filled: true, fillColor: t.surface,
+            border: OutlineInputBorder(borderRadius: AppRadius.md,
+                borderSide: BorderSide.none),
+          ),
+        ),
+        const SizedBox(height: 14),
+        Text('Category', style: TextStyle(fontSize: 12,
+            fontWeight: FontWeight.w600, color: t.sub)),
+        const SizedBox(height: 10),
+        SizedBox(
+          height: 42,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            children: _categories.map((cat) => GestureDetector(
+              onTap: () => setState(() => _category = cat),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                margin: const EdgeInsets.only(right: 8),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: _category == cat
+                      ? AppColors.error.withOpacity(0.12) : t.surface,
+                  borderRadius: AppRadius.pill,
+                  border: Border.all(color: _category == cat
+                      ? AppColors.error : t.border),
+                ),
+                child: Text(
+                  '${_catIcons[cat]} ${cat.replaceAll('_', ' ')}',
+                  style: TextStyle(fontSize: 12,
+                      fontWeight: _category == cat
+                          ? FontWeight.w600 : FontWeight.normal,
+                      color: _category == cat
+                          ? AppColors.error : t.sub),
                 ),
               ),
-            ),
-          )).toList(),
+            )).toList(),
+          ),
         ),
-      ),
-      const SizedBox(height: 20),
-      SizedBox(
-        width: double.infinity,
-        child: ElevatedButton(
-          onPressed: _loading ? null : () async {
-            final amount = double.tryParse(_amountCtrl.text.replaceAll(',', ''));
-            if (amount == null || amount <= 0) return;
-            setState(() => _loading = true);
-            try {
-              await api.logExpense({
-                'amount': amount, 'category': _category,
-                'description': _descCtrl.text.trim().isEmpty ? null : _descCtrl.text.trim(),
-                'currency': 'NGN',
-              });
-              widget.onLogged();
-              if (mounted) Navigator.pop(context);
-            } catch (_) { setState(() => _loading = false); }
-          },
-          style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
-          child: _loading
-              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-              : const Text('Log Expense'),
+        const SizedBox(height: 24),
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton(
+            onPressed: _loading ? null : () async {
+              final amount = double.tryParse(
+                  _amountCtrl.text.replaceAll(',', ''));
+              if (amount == null || amount <= 0) return;
+              setState(() => _loading = true);
+              try {
+                await api.logExpense({
+                  'amount':      amount,
+                  'category':    _category,
+                  'description': _descCtrl.text.trim().isEmpty
+                      ? null : _descCtrl.text.trim(),
+                  'currency':    currency.isNotEmpty
+                      ? currency : 'USD',
+                });
+                widget.onLogged();
+                if (mounted) Navigator.pop(context);
+              } catch (_) {
+                if (mounted) setState(() => _loading = false);
+              }
+            },
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.error,
+                padding: const EdgeInsets.symmetric(vertical: 16)),
+            child: _loading
+                ? const SizedBox(width: 20, height: 20,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.white))
+                : const Text('Log Expense', style: TextStyle(
+                    fontWeight: FontWeight.w700, fontSize: 15,
+                    color: Colors.white)),
+          ),
         ),
-      ),
-    ]),
-  );
+      ]),
+    );
+  }
 }
