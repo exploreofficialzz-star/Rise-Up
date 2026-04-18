@@ -9,8 +9,7 @@ from datetime import datetime
 import uuid
 
 from services.supabase_service import supabase_service
-from routers.auth import get_current_user
-
+from utils.auth import get_current_user
 router = APIRouter(prefix="/groups", tags=["groups"])
 
 db = supabase_service.db
