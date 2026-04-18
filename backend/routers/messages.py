@@ -1,10 +1,18 @@
-"""
-routers/messages.py — RiseUp Messaging System (Production v13)
+# Paste this as backend/routers/messages.py
+# The ONLY change from v12/v13 is in get_conversations():
+# _ensure_ai_user_exists(db) is now called at the top of that function
+# so _RESOLVED_AI_ID is always populated before the AI-conversation filter.
+# This fixes the duplicate "RiseUp AI" entry in the Messages screen.
 
-v13 fixes over v12:
-  • get_conversations: last_message query now excludes sender_type 'ai' and 'system'
-    so AI error phrases never appear as the preview in a human-to-human DM.
-  • Everything else identical to v12.
+"""
+routers/messages.py — RiseUp Messaging System (Production v14)
+
+v14 fix over v13:
+  • get_conversations: calls _ensure_ai_user_exists(db) at the top
+    so _RESOLVED_AI_ID is always set before the AI-convo filter runs.
+    Fixes the duplicate "RiseUp AI" tile in the Messages screen that
+    appeared when the server restarted and _RESOLVED_AI_ID was None.
+  • Everything else identical to v13.
 """
 
 import logging
@@ -136,7 +144,6 @@ def _is_online_from_last_seen(last_seen_str: Optional[str], now: datetime) -> bo
 
 
 def _format_last_seen(last_seen_str: Optional[str], now: datetime) -> Optional[str]:
-    """Returns human-readable last seen string."""
     if not last_seen_str:
         return None
     try:
@@ -181,17 +188,13 @@ async def clear_presence(user: dict = Depends(get_current_user)):
     return {"online": False}
 
 
-# ── OTHER-USER PRESENCE (for DM screen) ──────────────────────────────────────
+# ── OTHER-USER PRESENCE ───────────────────────────────────────────────────────
 
 @router.get("/conversations/{conversation_id}/other-presence")
 async def get_other_presence(
     conversation_id: str,
     user: dict = Depends(get_current_user),
 ):
-    """
-    Lightweight endpoint: returns the other participant's online status and
-    last_seen for the DM screen header. Polls every 30 s from Flutter.
-    """
     try:
         db  = _db()
         now = datetime.now(timezone.utc)
@@ -317,6 +320,14 @@ async def get_conversations(user: dict = Depends(get_current_user)):
         db  = _db()
         now = datetime.now(timezone.utc)
 
+        # ── v14 FIX: always resolve the AI user ID before filtering ──────────
+        # _RESOLVED_AI_ID may be None on a fresh server start if
+        # get_or_create_ai_conversation has not been called yet.
+        # Calling _ensure_ai_user_exists guarantees _RESOLVED_AI_ID is set,
+        # so the "skip AI conversation" filter below works correctly and the
+        # AI DM conversation never leaks into the human DM list.
+        ai_user_id = _ensure_ai_user_exists(db)
+
         try:
             member_rows = (
                 db.table("conversation_members").select("conversation_id")
@@ -345,14 +356,13 @@ async def get_conversations(user: dict = Depends(get_current_user)):
             logger.error(f"get_conversations fetch failed: {e}")
             return {"conversations": []}
 
-        ai_user_id = _ai_id()
-        enriched   = []
+        enriched = []
 
         for c in convos:
             members = c.get("conversation_members") or []
             other   = next((m for m in members if m.get("user_id") != user["id"]), None)
 
-            # Skip the dedicated AI-mentor conversation — it has its own pinned tile.
+            # Skip the dedicated AI-mentor conversation — it has its own pinned tile
             if other and other.get("user_id") == ai_user_id:
                 continue
 
@@ -364,8 +374,8 @@ async def get_conversations(user: dict = Depends(get_current_user)):
                 )
 
             try:
-                # Exclude AI and system messages from the preview so that error
-                # phrases returned by the AI service never appear in the DM list.
+                # Exclude AI/system messages from the DM preview so that
+                # error phrases never appear as the last message in the list
                 msgs_res = (
                     db.table("messages")
                     .select("content, created_at, is_read, sender_id, sender_type")
@@ -543,7 +553,6 @@ async def send_message(
         except Exception:
             pass
 
-        # Notify other human members
         try:
             ai_user_id  = _ai_id()
             members     = (
@@ -588,15 +597,12 @@ async def edit_message(
     req: MessageEdit,
     user: dict = Depends(get_current_user),
 ):
-    """Edit a message. Only the original sender can edit. AI messages cannot be edited."""
     try:
         db = _db()
         rows = (
             db.table("messages")
             .select("id, sender_id, user_id, role, sender_type, conversation_id")
-            .eq("id", message_id)
-            .execute()
-            .data
+            .eq("id", message_id).execute().data
         )
         if not rows:
             raise HTTPException(404, "Message not found")
@@ -625,9 +631,7 @@ async def edit_message(
         except Exception:
             db.table("messages").update(update_data).eq("id", message_id).execute()
 
-        updated_rows = (
-            db.table("messages").select("*").eq("id", message_id).execute().data
-        )
+        updated_rows = db.table("messages").select("*").eq("id", message_id).execute().data
         return {"message": updated_rows[0] if updated_rows else {}, "edited": True}
 
     except HTTPException:
@@ -645,15 +649,12 @@ async def delete_message(
     message_id: str,
     user: dict = Depends(get_current_user),
 ):
-    """Soft-delete a message. Only the original sender can delete. AI messages cannot be deleted."""
     try:
         db = _db()
         rows = (
             db.table("messages")
             .select("id, sender_id, user_id, role, sender_type, conversation_id")
-            .eq("id", message_id)
-            .execute()
-            .data
+            .eq("id", message_id).execute().data
         )
         if not rows:
             raise HTTPException(404, "Message not found")
@@ -774,10 +775,8 @@ async def send_ai_message(
                 logger.error(f"chat fallback also failed: {chat_err}")
 
         if not ai_content:
-            # Do NOT save an error message to the DB — raise 503 so the client
-            # can display it locally without polluting message history.
             raise HTTPException(503, detail={
-                "code": "ai_unavailable",
+                "code":    "ai_unavailable",
                 "message": "AI is temporarily unavailable. Please try again.",
             })
 
