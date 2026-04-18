@@ -1,20 +1,19 @@
 # backend/routers/groups.py
 # Full groups feature: list, create, join/leave, posts, likes, members
+# Uses Supabase client (matches project architecture — no SQLAlchemy)
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete, and_
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 import uuid
 
-from database import get_db
-from models.user import User
-from models.group import Group, GroupMember, GroupPost, GroupPostLike
+from services.supabase_service import supabase_service
 from routers.auth import get_current_user
 
 router = APIRouter(prefix="/groups", tags=["groups"])
+
+db = supabase_service.db
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -32,54 +31,56 @@ class CreateGroupBody(BaseModel):
 
 class CreatePostBody(BaseModel):
     content: str
-    group_id: Optional[str] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _group_dict(group: Group, member_count: int, is_joined: bool) -> dict:
+def _group_dict(group: dict, member_count: int, is_joined: bool) -> dict:
     return {
-        "id": str(group.id),
-        "name": group.name,
-        "description": group.description or "",
-        "category": group.category or "",
-        "topic": group.topic or "",
-        "emoji": group.emoji or "💬",
-        "is_private": group.is_private,
-        "is_premium": False,
+        "id":            group.get("id"),
+        "name":          group.get("name", ""),
+        "description":   group.get("description", ""),
+        "category":      group.get("category", ""),
+        "topic":         group.get("topic", ""),
+        "emoji":         group.get("emoji", "💬"),
+        "is_private":    group.get("is_private", False),
+        "is_premium":    False,
         "members_count": member_count,
-        "member_count": member_count,
-        "is_joined": is_joined,
-        "created_at": group.created_at.isoformat() if group.created_at else None,
+        "member_count":  member_count,
+        "is_joined":     is_joined,
+        "created_at":    group.get("created_at"),
     }
 
 
-def _post_dict(post: GroupPost, author: User, like_count: int, is_liked: bool) -> dict:
+def _post_dict(post: dict, author: dict, like_count: int, is_liked: bool) -> dict:
+    author_name = "Member"
+    if author:
+        author_name = author.get("full_name") or author.get("username") or "Member"
     return {
-        "id": str(post.id),
-        "content": post.content,
-        "author_name": author.full_name or author.username if author else "Member",
-        "avatar": "🌱",
-        "likes_count": like_count,
-        "likes": like_count,
+        "id":             post.get("id"),
+        "content":        post.get("content", ""),
+        "author_name":    author_name,
+        "avatar":         "🌱",
+        "likes_count":    like_count,
+        "likes":          like_count,
         "comments_count": 0,
-        "comments": 0,
-        "is_liked": is_liked,
-        "created_at": post.created_at.isoformat() if post.created_at else None,
+        "comments":       0,
+        "is_liked":       is_liked,
+        "created_at":     post.get("created_at"),
     }
 
 
-def _member_dict(user: User, membership: GroupMember) -> dict:
+def _member_dict(user: dict, membership: dict) -> dict:
     return {
-        "id": str(user.id),
-        "name": user.full_name or user.username or "Member",
-        "username": user.username or "",
-        "avatar": "🌱",
-        "is_admin": membership.is_admin,
-        "role": "admin" if membership.is_admin else "member",
-        "joined_at": membership.joined_at.isoformat() if membership.joined_at else None,
+        "id":        user.get("id"),
+        "name":      user.get("full_name") or user.get("username") or "Member",
+        "username":  user.get("username", ""),
+        "avatar":    "🌱",
+        "is_admin":  membership.get("is_admin", False),
+        "role":      "admin" if membership.get("is_admin") else "member",
+        "joined_at": membership.get("joined_at"),
     }
 
 
@@ -88,29 +89,32 @@ def _member_dict(user: User, membership: GroupMember) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("")
-async def list_groups(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    result = await db.execute(select(Group).order_by(Group.created_at.desc()))
-    groups = result.scalars().all()
+async def list_groups(current_user: dict = Depends(get_current_user)):
+    user_id = str(current_user.id if hasattr(current_user, "id") else current_user["id"])
+
+    res = db.table("groups").select("*").order("created_at", desc=True).execute()
+    groups = res.data or []
 
     out = []
     for g in groups:
-        count_res = await db.execute(
-            select(func.count()).where(GroupMember.group_id == g.id)
-        )
-        member_count = count_res.scalar() or 0
+        gid = str(g["id"])
 
-        joined_res = await db.execute(
-            select(GroupMember).where(
-                and_(
-                    GroupMember.group_id == g.id,
-                    GroupMember.user_id == current_user.id,
-                )
-            )
+        count_res = (
+            db.table("group_members")
+            .select("id", count="exact")
+            .eq("group_id", gid)
+            .execute()
         )
-        is_joined = joined_res.scalar_one_or_none() is not None
+        member_count = count_res.count or 0
+
+        joined_res = (
+            db.table("group_members")
+            .select("id")
+            .eq("group_id", gid)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        is_joined = bool(joined_res.data)
         out.append(_group_dict(g, member_count, is_joined))
 
     return {"groups": out}
@@ -123,37 +127,40 @@ async def list_groups(
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_group(
     body: CreateGroupBody,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ):
+    user_id = str(current_user.id if hasattr(current_user, "id") else current_user["id"])
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Group name is required")
 
-    group = Group(
-        id=uuid.uuid4(),
-        name=name,
-        description=body.description or "",
-        category=body.category or "",
-        topic=body.topic or "",
-        emoji=body.emoji or "💬",
-        is_private=body.is_private or False,
-        created_by=current_user.id,
-        created_at=datetime.utcnow(),
-    )
-    db.add(group)
-    await db.flush()
+    group_id = str(uuid.uuid4())
+    now = datetime.utcnow().isoformat()
 
-    membership = GroupMember(
-        id=uuid.uuid4(),
-        group_id=group.id,
-        user_id=current_user.id,
-        is_admin=True,
-        joined_at=datetime.utcnow(),
-    )
-    db.add(membership)
-    await db.commit()
-    await db.refresh(group)
+    res = db.table("groups").insert({
+        "id":          group_id,
+        "name":        name,
+        "description": body.description or "",
+        "category":    body.category or "",
+        "topic":       body.topic or "",
+        "emoji":       body.emoji or "💬",
+        "is_private":  body.is_private or False,
+        "created_by":  user_id,
+        "created_at":  now,
+    }).execute()
+
+    if not res.data:
+        raise HTTPException(status_code=500, detail="Failed to create group")
+
+    group = res.data[0]
+
+    db.table("group_members").insert({
+        "id":        str(uuid.uuid4()),
+        "group_id":  group_id,
+        "user_id":   user_id,
+        "is_admin":  True,
+        "joined_at": now,
+    }).execute()
 
     return {"group": _group_dict(group, 1, True), "message": "Group created"}
 
@@ -165,30 +172,31 @@ async def create_group(
 @router.get("/{group_id}")
 async def get_group(
     group_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ):
-    try:
-        gid = uuid.UUID(group_id)
-    except ValueError:
+    user_id = str(current_user.id if hasattr(current_user, "id") else current_user["id"])
+
+    res = db.table("groups").select("*").eq("id", group_id).execute()
+    if not res.data:
         raise HTTPException(status_code=404, detail="Group not found")
+    group = res.data[0]
 
-    res = await db.execute(select(Group).where(Group.id == gid))
-    group = res.scalar_one_or_none()
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found")
-
-    count_res = await db.execute(
-        select(func.count()).where(GroupMember.group_id == gid)
+    count_res = (
+        db.table("group_members")
+        .select("id", count="exact")
+        .eq("group_id", group_id)
+        .execute()
     )
-    member_count = count_res.scalar() or 0
+    member_count = count_res.count or 0
 
-    joined_res = await db.execute(
-        select(GroupMember).where(
-            and_(GroupMember.group_id == gid, GroupMember.user_id == current_user.id)
-        )
+    joined_res = (
+        db.table("group_members")
+        .select("id")
+        .eq("group_id", group_id)
+        .eq("user_id", user_id)
+        .execute()
     )
-    is_joined = joined_res.scalar_one_or_none() is not None
+    is_joined = bool(joined_res.data)
 
     return {"group": _group_dict(group, member_count, is_joined)}
 
@@ -200,43 +208,33 @@ async def get_group(
 @router.post("/{group_id}/join")
 async def toggle_join(
     group_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ):
-    try:
-        gid = uuid.UUID(group_id)
-    except ValueError:
+    user_id = str(current_user.id if hasattr(current_user, "id") else current_user["id"])
+
+    res = db.table("groups").select("id").eq("id", group_id).execute()
+    if not res.data:
         raise HTTPException(status_code=404, detail="Group not found")
 
-    res = await db.execute(select(Group).where(Group.id == gid))
-    if not res.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Group not found")
-
-    existing = await db.execute(
-        select(GroupMember).where(
-            and_(GroupMember.group_id == gid, GroupMember.user_id == current_user.id)
-        )
+    existing = (
+        db.table("group_members")
+        .select("id")
+        .eq("group_id", group_id)
+        .eq("user_id", user_id)
+        .execute()
     )
-    membership = existing.scalar_one_or_none()
 
-    if membership:
-        await db.execute(
-            delete(GroupMember).where(
-                and_(GroupMember.group_id == gid, GroupMember.user_id == current_user.id)
-            )
-        )
-        await db.commit()
+    if existing.data:
+        db.table("group_members").delete().eq("group_id", group_id).eq("user_id", user_id).execute()
         return {"joined": False, "message": "Left group"}
     else:
-        new_member = GroupMember(
-            id=uuid.uuid4(),
-            group_id=gid,
-            user_id=current_user.id,
-            is_admin=False,
-            joined_at=datetime.utcnow(),
-        )
-        db.add(new_member)
-        await db.commit()
+        db.table("group_members").insert({
+            "id":        str(uuid.uuid4()),
+            "group_id":  group_id,
+            "user_id":   user_id,
+            "is_admin":  False,
+            "joined_at": datetime.utcnow().isoformat(),
+        }).execute()
         return {"joined": True, "message": "Joined group"}
 
 
@@ -247,41 +245,43 @@ async def toggle_join(
 @router.get("/{group_id}/posts")
 async def list_posts(
     group_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ):
-    try:
-        gid = uuid.UUID(group_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Group not found")
+    user_id = str(current_user.id if hasattr(current_user, "id") else current_user["id"])
 
-    result = await db.execute(
-        select(GroupPost)
-        .where(GroupPost.group_id == gid)
-        .order_by(GroupPost.created_at.desc())
+    res = (
+        db.table("group_posts")
+        .select("*")
+        .eq("group_id", group_id)
+        .order("created_at", desc=True)
         .limit(50)
+        .execute()
     )
-    posts = result.scalars().all()
+    posts = res.data or []
 
     out = []
     for p in posts:
-        user_res = await db.execute(select(User).where(User.id == p.user_id))
-        author = user_res.scalar_one_or_none()
-
-        like_res = await db.execute(
-            select(func.count()).where(GroupPostLike.post_id == p.id)
+        author_res = (
+            db.table("profiles").select("id, full_name, username").eq("id", p["user_id"]).execute()
         )
-        like_count = like_res.scalar() or 0
+        author = author_res.data[0] if author_res.data else {}
 
-        liked_res = await db.execute(
-            select(GroupPostLike).where(
-                and_(
-                    GroupPostLike.post_id == p.id,
-                    GroupPostLike.user_id == current_user.id,
-                )
-            )
+        like_res = (
+            db.table("group_post_likes")
+            .select("id", count="exact")
+            .eq("post_id", p["id"])
+            .execute()
         )
-        is_liked = liked_res.scalar_one_or_none() is not None
+        like_count = like_res.count or 0
+
+        liked_res = (
+            db.table("group_post_likes")
+            .select("id")
+            .eq("post_id", p["id"])
+            .eq("user_id", user_id)
+            .execute()
+        )
+        is_liked = bool(liked_res.data)
         out.append(_post_dict(p, author, like_count, is_liked))
 
     return {"posts": out}
@@ -295,31 +295,30 @@ async def list_posts(
 async def create_post(
     group_id: str,
     body: CreatePostBody,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ):
-    try:
-        gid = uuid.UUID(group_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Group not found")
-
+    user_id = str(current_user.id if hasattr(current_user, "id") else current_user["id"])
     content = body.content.strip()
     if not content:
         raise HTTPException(status_code=400, detail="Content is required")
 
-    post = GroupPost(
-        id=uuid.uuid4(),
-        group_id=gid,
-        user_id=current_user.id,
-        content=content,
-        created_at=datetime.utcnow(),
-    )
-    db.add(post)
-    await db.commit()
-    await db.refresh(post)
+    res = db.table("group_posts").insert({
+        "id":         str(uuid.uuid4()),
+        "group_id":   group_id,
+        "user_id":    user_id,
+        "content":    content,
+        "created_at": datetime.utcnow().isoformat(),
+    }).execute()
 
-    user_res = await db.execute(select(User).where(User.id == current_user.id))
-    author = user_res.scalar_one_or_none()
+    if not res.data:
+        raise HTTPException(status_code=500, detail="Failed to create post")
+
+    post = res.data[0]
+
+    author_res = (
+        db.table("profiles").select("id, full_name, username").eq("id", user_id).execute()
+    )
+    author = author_res.data[0] if author_res.data else {}
 
     return {"post": _post_dict(post, author, 0, False), "message": "Post created"}
 
@@ -332,44 +331,28 @@ async def create_post(
 async def toggle_like(
     group_id: str,
     post_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ):
-    try:
-        pid = uuid.UUID(post_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Post not found")
+    user_id = str(current_user.id if hasattr(current_user, "id") else current_user["id"])
 
-    existing = await db.execute(
-        select(GroupPostLike).where(
-            and_(
-                GroupPostLike.post_id == pid,
-                GroupPostLike.user_id == current_user.id,
-            )
-        )
+    existing = (
+        db.table("group_post_likes")
+        .select("id")
+        .eq("post_id", post_id)
+        .eq("user_id", user_id)
+        .execute()
     )
-    like = existing.scalar_one_or_none()
 
-    if like:
-        await db.execute(
-            delete(GroupPostLike).where(
-                and_(
-                    GroupPostLike.post_id == pid,
-                    GroupPostLike.user_id == current_user.id,
-                )
-            )
-        )
-        await db.commit()
+    if existing.data:
+        db.table("group_post_likes").delete().eq("post_id", post_id).eq("user_id", user_id).execute()
         return {"liked": False}
     else:
-        new_like = GroupPostLike(
-            id=uuid.uuid4(),
-            post_id=pid,
-            user_id=current_user.id,
-            created_at=datetime.utcnow(),
-        )
-        db.add(new_like)
-        await db.commit()
+        db.table("group_post_likes").insert({
+            "id":         str(uuid.uuid4()),
+            "post_id":    post_id,
+            "user_id":    user_id,
+            "created_at": datetime.utcnow().isoformat(),
+        }).execute()
         return {"liked": True}
 
 
@@ -380,26 +363,27 @@ async def toggle_like(
 @router.get("/{group_id}/members")
 async def list_members(
     group_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ):
-    try:
-        gid = uuid.UUID(group_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Group not found")
-
-    result = await db.execute(
-        select(GroupMember)
-        .where(GroupMember.group_id == gid)
-        .order_by(GroupMember.is_admin.desc(), GroupMember.joined_at.asc())
+    res = (
+        db.table("group_members")
+        .select("*")
+        .eq("group_id", group_id)
+        .order("is_admin", desc=True)
         .limit(100)
+        .execute()
     )
-    memberships = result.scalars().all()
+    memberships = res.data or []
 
     out = []
     for m in memberships:
-        user_res = await db.execute(select(User).where(User.id == m.user_id))
-        user = user_res.scalar_one_or_none()
+        user_res = (
+            db.table("profiles")
+            .select("id, full_name, username")
+            .eq("id", m["user_id"])
+            .execute()
+        )
+        user = user_res.data[0] if user_res.data else None
         if user:
             out.append(_member_dict(user, m))
 
