@@ -6,9 +6,13 @@ v3.1 Patch Notes:
  - Groq: Removed 5 decommissioned models (deepseek-r1-distill-llama-70b,
    llama-3.1-70b-versatile, llama3-70b-8192, mixtral-8x7b-32768,
    gemma2-9b-it). Active fallback chain: llama-3.3-70b-versatile →
-   llama3-8b-8192 → llama-3.1-8b-instant (token-guarded).
- - Groq: Added TOKEN_LIMIT_MAP — skips llama-3.1-8b-instant automatically
-   when estimated token count exceeds its 6K TPM ceiling.
+   llama3-8b-8192 → llama-3.1-8b-instant.
+ - Groq: Removed TPM_LIMITS / _estimate_tokens. TPM limits compare tokens-per-
+   minute (a rate window) against single-request size — fundamentally different
+   things. The large RISEUP_MENTOR_PROMPT + conversation history pushed the
+   estimate above all three thresholds, silently skipping every model before
+   making a single API call. Real 429s from Groq are now caught and the next
+   model is tried automatically.
  - Gemini: Updated model list from deprecated gemini-1.5-flash to
    gemini-2.0-flash → gemini-2.0-flash-lite → gemini-1.5-pro.
  - Anthropic: Updated from deprecated claude-3-sonnet-20240229 to
@@ -1330,25 +1334,15 @@ class GroqClient:
     NAME = "groq"
     FREE = True
 
-    # ── v3.1: Removed all decommissioned models.
-    # Active Groq models as of April 2026:
-    #   llama-3.3-70b-versatile — primary, best quality, 100K TPD limit
-    #   llama3-8b-8192          — smaller, higher throughput
-    #   llama-3.1-8b-instant    — last resort; 6K TPM hard cap — skip for large prompts
+    # Active Groq models as of April 2026.
+    # All have 128K context windows — no per-request token skipping needed.
+    # Real TPM rate-limit errors from the API are caught and the next model
+    # in the list is tried automatically.
     MODELS = [
         "llama-3.3-70b-versatile",
         "llama3-8b-8192",
         "llama-3.1-8b-instant",
     ]
-
-    # TPM caps per model (tokens per minute). Used to skip a model when the
-    # estimated prompt is too large. Conservative estimates — actual limits
-    # may be higher for your tier.
-    TPM_LIMITS: Dict[str, int] = {
-        "llama-3.3-70b-versatile": 6_000,   # on_demand tier
-        "llama3-8b-8192":          8_000,
-        "llama-3.1-8b-instant":    6_000,
-    }
 
     def __init__(self):
         self._client = None
@@ -1358,15 +1352,6 @@ class GroqClient:
             from groq import AsyncGroq
             self._client = AsyncGroq(api_key=settings.GROQ_API_KEY)
         return self._client
-
-    @staticmethod
-    def _estimate_tokens(messages: list, system: str) -> int:
-        """
-        Rough token estimate: ~0.75 tokens per character (GPT-style heuristic).
-        Used to skip models whose TPM cap is below the estimated prompt size.
-        """
-        total_chars = len(system) + sum(len(m.get("content", "")) for m in messages)
-        return int(total_chars * 0.75)
 
     async def chat(
         self,
@@ -1379,25 +1364,12 @@ class GroqClient:
         if not client:
             raise ValueError("Groq API key not configured")
 
-        estimated_tokens = self._estimate_tokens(messages, system)
-        preferred        = getattr(settings, "GROQ_MODEL", self.MODELS[0])
-        models_to_try    = [preferred] + [m for m in self.MODELS if m != preferred]
-        formatted        = [{"role": "system", "content": system}] + messages
-        last_err         = None
+        preferred     = getattr(settings, "GROQ_MODEL", self.MODELS[0])
+        models_to_try = [preferred] + [m for m in self.MODELS if m != preferred]
+        formatted     = [{"role": "system", "content": system}] + messages
+        last_err      = None
 
         for model in models_to_try:
-            # Skip models whose TPM limit is smaller than the estimated prompt
-            tpm_limit = self.TPM_LIMITS.get(model, 999_999)
-            if estimated_tokens > tpm_limit:
-                logger.info(
-                    f"Groq: skipping {model} — estimated {estimated_tokens} tokens "
-                    f"exceeds {tpm_limit} TPM cap"
-                )
-                last_err = ValueError(
-                    f"Groq {model} skipped: prompt too large ({estimated_tokens} > {tpm_limit} TPM)"
-                )
-                continue
-
             try:
                 response = await client.chat.completions.create(
                     model=model, messages=formatted,
