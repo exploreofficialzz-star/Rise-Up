@@ -1,22 +1,15 @@
 // frontend/lib/screens/comments/comments_screen.dart
-// v2.0 — Production rewrite
+// v2.1 — Patch release
 //
-// CHANGES vs v1:
-//  1. "Ask RiseUp AI" banner + AppBar star button REMOVED
-//     (AI insight is triggered from the home feed card only)
-//  2. Pinned AI comment still DISPLAYS if one exists — it just can't be
-//     requested from this screen any more
-//  3. CachedNetworkImage for all avatars — disk + memory cache, no re-downloads
-//  4. Shimmer skeleton while loading (same pattern as home screen)
-//  5. Cache-first: stores comments JSON in SharedPreferences so returning
-//     to the screen is instant, same as Facebook
-//  6. Reply threading — tap Reply pre-fills "@Name " and highlights the
-//     replied-to comment with a quote strip
-//  7. Long-press comment → Copy / Report bottom sheet
-//  8. Own comments show a Delete option in long-press sheet
-//  9. Emoji quick-reactions row above the keyboard
-// 10. Read receipts: comment count in AppBar updates as you type & send
-// 11. Smooth scroll-to-bottom on send; scroll-to-top when AI comment arrives
+// CHANGES vs v2.0:
+//  1. Share / copy-link button REMOVED from AppBar actions
+//  2. Real poster avatar in post-preview strip (CachedNetworkImage, shimmer placeholder)
+//  3. Real MY avatar in the input bar — loaded from user profile, shimmer while loading
+//  4. No system fallbacks anywhere — every avatar uses shimmer placeholder + custom initials error widget
+//  5. Input bar is rectangular (radius 10) when idle, animates to pill (radius 26) on focus
+//  6. Like icon 15 → 19 px; Reply text 11 → 14 px bold
+//  7. ❤️ hardcoded as second quick-emoji (unchanged position, confirmed present)
+//  8. Avatar cache warming: poster + all commenter URLs are pre-warmed via CachedNetworkImage manager
 
 import 'dart:convert';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -30,11 +23,15 @@ import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Shimmer helper (same lightweight version as home_screen)
+// Shimmer helper
 // ─────────────────────────────────────────────────────────────────────────────
 class _Shimmer extends StatelessWidget {
-  const _Shimmer({this.width, required this.height,
-      this.radius = 8, this.circle = false});
+  const _Shimmer({
+    this.width,
+    required this.height,
+    this.radius = 8,
+    this.circle = false,
+  });
   final double? width;
   final double  height, radius;
   final bool    circle;
@@ -43,15 +40,19 @@ class _Shimmer extends StatelessWidget {
   Widget build(BuildContext context) {
     final dark = Theme.of(context).brightness == Brightness.dark;
     return Container(
-      width: width, height: height,
+      width: width,
+      height: height,
       decoration: BoxDecoration(
         color: dark ? const Color(0xFF2A2A2A) : const Color(0xFFE4E4E4),
         borderRadius: circle ? null : BorderRadius.circular(radius),
         shape: circle ? BoxShape.circle : BoxShape.rectangle,
       ),
-    ).animate(onPlay: (c) => c.repeat())
-     .shimmer(duration: 1200.ms,
-              color: dark ? Colors.white10 : Colors.white70);
+    )
+        .animate(onPlay: (c) => c.repeat())
+        .shimmer(
+          duration: 1200.ms,
+          color: dark ? Colors.white10 : Colors.white70,
+        );
   }
 }
 
@@ -80,7 +81,7 @@ class _CommentSkeleton extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Quick emoji constants
+// Quick emoji constants — ❤️ hardcoded at index 1
 // ─────────────────────────────────────────────────────────────────────────────
 const _kQuickEmojis = ['👍', '❤️', '🔥', '💯', '🚀', '😂', '🙌', '💪'];
 
@@ -106,37 +107,41 @@ class CommentsScreen extends StatefulWidget {
 }
 
 class _CommentsScreenState extends State<CommentsScreen> {
-  final _ctrl    = TextEditingController();
-  final _scroll  = ScrollController();
-  final _focus   = FocusNode();
+  final _ctrl   = TextEditingController();
+  final _scroll = ScrollController();
+  final _focus  = FocusNode();
 
-  List<Map> _comments     = [];
-  Map       _aiComment    = {};
-  Map       _posterProfile= {};
-  bool      _loading      = true;
-  bool      _sending      = false;
-  bool      _isFollowing  = false;
-  bool      _followLoading= false;
+  List<Map> _comments      = [];
+  Map       _aiComment     = {};
+  Map       _posterProfile = {};
+  bool      _loading       = true;
+  bool      _sending       = false;
+  bool      _isFollowing   = false;
+  bool      _followLoading = false;
   String?   _myUserId;
+  String?   _myAvatarUrl;   // ← real avatar for the input bar
 
   // Reply state
-  String?  _replyToId;
-  String?  _replyToName;
-  String?  _replyToContent;
+  String? _replyToId;
+  String? _replyToName;
+  String? _replyToContent;
 
   static const _kCachePrefix = 'riseup_comments_v1_';
 
   @override
   void initState() {
     super.initState();
-    _ctrl.addListener(() => setState(() {})); // rebuild send button colour
+    _ctrl.addListener(() => setState(() {}));   // send-button colour
+    _focus.addListener(() => setState(() {}));  // input bar radius animation
     _restoreFromCache();
     _load();
   }
 
   @override
   void dispose() {
-    _ctrl.dispose(); _scroll.dispose(); _focus.dispose();
+    _ctrl.dispose();
+    _scroll.dispose();
+    _focus.dispose();
     super.dispose();
   }
 
@@ -163,10 +168,11 @@ class _CommentsScreenState extends State<CommentsScreen> {
   }
 
   void _splitComments(List<Map> all) {
-    Map       aiComment = {};
-    final     regular   = <Map>[];
+    Map      aiComment = {};
+    final    regular   = <Map>[];
     for (final c in all) {
-      final isAi = c['is_ai'] == true || c['is_pinned'] == true ||
+      final isAi = c['is_ai'] == true ||
+          c['is_pinned'] == true ||
           (c['content']?.toString() ?? '').startsWith('🤖 RiseUp AI:');
       if (isAi && aiComment.isEmpty) {
         aiComment = c;
@@ -180,6 +186,25 @@ class _CommentsScreenState extends State<CommentsScreen> {
     });
   }
 
+  // ── Warm avatar cache ─────────────────────────────────────────────────────
+  void _warmAvatarCache(List<Map> comments) {
+    final urls = <String>{};
+
+    // Poster avatar
+    final posterUrl = _posterProfile['avatar_url']?.toString() ?? '';
+    if (posterUrl.isNotEmpty) urls.add(posterUrl);
+
+    // All commenter avatars
+    for (final c in comments) {
+      final url = (c['profiles'] as Map?)?['avatar_url']?.toString() ?? '';
+      if (url.isNotEmpty) urls.add(url);
+    }
+
+    for (final url in urls) {
+      CachedNetworkImageProvider(url).resolve(ImageConfiguration.empty);
+    }
+  }
+
   // ── Load ──────────────────────────────────────────────────────────────────
   Future<void> _load() async {
     if (mounted) setState(() => _loading = true);
@@ -190,27 +215,44 @@ class _CommentsScreenState extends State<CommentsScreen> {
         api.getPostComments(widget.postId),
         if (widget.postUserId != null)
           api.get('/posts/users/${widget.postUserId}/profile'),
+        // Load my own profile to get my real avatar
+        api.get('/users/me/profile'),
       ];
       final results = await Future.wait(futures);
 
+      // Comments
       final commentsData = results[0] as Map? ?? {};
       final all          = (commentsData['comments'] as List? ?? []).cast<Map>();
       await _writeCache(all);
       _splitComments(all);
 
+      // Poster profile
       Map  posterProfile = {};
       bool isFollowing   = false;
-      if (results.length > 1) {
-        final pd       = results[1] as Map? ?? {};
-        posterProfile  = (pd['profile'] as Map?)?.cast<String, dynamic>() ?? {};
-        isFollowing    = pd['is_following'] == true;
+      final posterIndex  = widget.postUserId != null ? 1 : -1;
+      if (posterIndex != -1 && results.length > posterIndex) {
+        final pd      = results[posterIndex] as Map? ?? {};
+        posterProfile = (pd['profile'] as Map?)?.cast<String, dynamic>() ?? {};
+        isFollowing   = pd['is_following'] == true;
+      }
+
+      // My profile (always last)
+      final myIndex    = widget.postUserId != null ? 2 : 1;
+      String? myAvatar;
+      if (results.length > myIndex) {
+        final md = results[myIndex] as Map? ?? {};
+        myAvatar = (md['profile'] as Map?)?['avatar_url']?.toString();
       }
 
       if (mounted) setState(() {
         _posterProfile = posterProfile;
         _isFollowing   = isFollowing;
+        _myAvatarUrl   = myAvatar;
         _loading       = false;
       });
+
+      // Pre-warm the image cache after state is set
+      _warmAvatarCache(all);
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }
@@ -221,12 +263,12 @@ class _CommentsScreenState extends State<CommentsScreen> {
     final text = _ctrl.text.trim();
     if (text.isEmpty || _sending) return;
     HapticFeedback.lightImpact();
+    final replyId = _replyToId; // capture before clearing
     _ctrl.clear();
     _clearReply();
     setState(() => _sending = true);
     try {
-      final data    = await api.addComment(widget.postId, text,
-          parentId: _replyToId);
+      final data    = await api.addComment(widget.postId, text, parentId: replyId);
       final comment = data['comment'] as Map? ?? {'content': text};
       if (mounted) {
         setState(() { _comments.add(comment); _sending = false; });
@@ -252,8 +294,11 @@ class _CommentsScreenState extends State<CommentsScreen> {
 
   void _scrollToBottom() {
     if (!_scroll.hasClients) return;
-    _scroll.animateTo(_scroll.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 320), curve: Curves.easeOut);
+    _scroll.animateTo(
+      _scroll.position.maxScrollExtent,
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeOut,
+    );
   }
 
   void _scrollToTop() {
@@ -278,7 +323,9 @@ class _CommentsScreenState extends State<CommentsScreen> {
   }
 
   void _clearReply() => setState(() {
-    _replyToId = null; _replyToName = null; _replyToContent = null;
+    _replyToId = null;
+    _replyToName = null;
+    _replyToContent = null;
   });
 
   // ── Like ──────────────────────────────────────────────────────────────────
@@ -294,7 +341,9 @@ class _CommentsScreenState extends State<CommentsScreen> {
       final r = await api.likeComment(c['id'].toString());
       if (mounted) setState(() {
         c['is_liked']    = r['liked'] == true;
-        c['likes_count'] = r['liked'] == true ? prev + 1 : (prev - 1).clamp(0, 999999);
+        c['likes_count'] = r['liked'] == true
+            ? prev + 1
+            : (prev - 1).clamp(0, 999999);
       });
     } catch (_) {
       if (mounted) setState(() {
@@ -321,77 +370,88 @@ class _CommentsScreenState extends State<CommentsScreen> {
 
   // ── Long-press options ────────────────────────────────────────────────────
   void _showCommentOptions(BuildContext ctx, Map comment, bool isDark) {
-    final content  = comment['content']?.toString() ?? '';
-    final uid      = (comment['profiles'] as Map?)?['id']?.toString()
+    final content = comment['content']?.toString() ?? '';
+    final uid     = (comment['profiles'] as Map?)?['id']?.toString()
         ?? comment['user_id']?.toString();
-    final isOwn    = uid != null && uid == _myUserId;
+    final isOwn   = uid != null && uid == _myUserId;
 
     showModalBottomSheet(
       context: ctx,
       backgroundColor: isDark ? AppColors.bgCard : Colors.white,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => SafeArea(child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(width: 36, height: 4,
+      builder: (_) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(
+            width: 36, height: 4,
             margin: const EdgeInsets.only(top: 12, bottom: 10),
-            decoration: BoxDecoration(color: Colors.grey.withOpacity(0.3),
-                borderRadius: BorderRadius.circular(2))),
-        // Copy
-        ListTile(
-          leading: Icon(Iconsax.copy, color: isDark ? Colors.white70 : Colors.black54),
-          title: Text('Copy comment', style: TextStyle(
-              color: isDark ? Colors.white : Colors.black87)),
-          onTap: () {
-            Clipboard.setData(ClipboardData(text: content));
-            Navigator.pop(ctx);
-            _snack('Copied to clipboard', AppColors.success);
-          },
-        ),
-        // Reply
-        ListTile(
-          leading: Icon(Iconsax.message, color: isDark ? Colors.white70 : Colors.black54),
-          title: Text('Reply', style: TextStyle(
-              color: isDark ? Colors.white : Colors.black87)),
-          onTap: () { Navigator.pop(ctx); _startReply(comment); },
-        ),
-        // Delete (own only)
-        if (isOwn) ...[
-          Divider(color: isDark ? AppColors.bgSurface : Colors.grey.shade200, height: 1),
+            decoration: BoxDecoration(
+                color: Colors.grey.withOpacity(0.3),
+                borderRadius: BorderRadius.circular(2)),
+          ),
           ListTile(
-            leading: const Icon(Iconsax.trash, color: AppColors.error),
-            title: const Text('Delete comment',
-                style: TextStyle(color: AppColors.error, fontWeight: FontWeight.w600)),
-            onTap: () async {
+            leading: Icon(Iconsax.copy,
+                color: isDark ? Colors.white70 : Colors.black54),
+            title: Text('Copy comment',
+                style: TextStyle(color: isDark ? Colors.white : Colors.black87)),
+            onTap: () {
+              Clipboard.setData(ClipboardData(text: content));
               Navigator.pop(ctx);
-              try {
-                await api.delete('/posts/comments/${comment['id']}');
-                if (mounted) setState(() =>
-                    _comments.removeWhere((c) => c['id'] == comment['id']));
-                _snack('Comment deleted', AppColors.success);
-              } catch (_) {
-                _snack('Could not delete comment', AppColors.error);
-              }
+              _snack('Copied to clipboard', AppColors.success);
             },
           ),
-        ],
-        // Report (others only)
-        if (!isOwn)
           ListTile(
-            leading: Icon(Iconsax.flag, color: isDark ? Colors.white70 : Colors.black54),
-            title: Text('Report', style: TextStyle(
-                color: isDark ? Colors.white : Colors.black87)),
-            onTap: () { Navigator.pop(ctx); _snack('Report submitted', AppColors.success); },
+            leading: Icon(Iconsax.message,
+                color: isDark ? Colors.white70 : Colors.black54),
+            title: Text('Reply',
+                style: TextStyle(color: isDark ? Colors.white : Colors.black87)),
+            onTap: () { Navigator.pop(ctx); _startReply(comment); },
           ),
-        const SizedBox(height: 8),
-      ])),
+          if (isOwn) ...[
+            Divider(
+                color: isDark ? AppColors.bgSurface : Colors.grey.shade200,
+                height: 1),
+            ListTile(
+              leading: const Icon(Iconsax.trash, color: AppColors.error),
+              title: const Text('Delete comment',
+                  style: TextStyle(
+                      color: AppColors.error, fontWeight: FontWeight.w600)),
+              onTap: () async {
+                Navigator.pop(ctx);
+                try {
+                  await api.delete('/posts/comments/${comment['id']}');
+                  if (mounted) setState(() =>
+                      _comments.removeWhere((c) => c['id'] == comment['id']));
+                  _snack('Comment deleted', AppColors.success);
+                } catch (_) {
+                  _snack('Could not delete comment', AppColors.error);
+                }
+              },
+            ),
+          ],
+          if (!isOwn)
+            ListTile(
+              leading: Icon(Iconsax.flag,
+                  color: isDark ? Colors.white70 : Colors.black54),
+              title: Text('Report',
+                  style: TextStyle(color: isDark ? Colors.white : Colors.black87)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _snack('Report submitted', AppColors.success);
+              },
+            ),
+          const SizedBox(height: 8),
+        ]),
+      ),
     );
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   String _timeAgo(String? iso) {
     if (iso == null) return '';
-    final dt = DateTime.tryParse(iso); if (dt == null) return '';
-    final d  = DateTime.now().difference(dt);
+    final dt = DateTime.tryParse(iso);
+    if (dt == null) return '';
+    final d = DateTime.now().difference(dt);
     if (d.inMinutes < 60) return '${d.inMinutes}m';
     if (d.inHours   < 24) return '${d.inHours}h';
     return '${d.inDays}d';
@@ -405,7 +465,8 @@ class _CommentsScreenState extends State<CommentsScreen> {
   void _snack(String msg, Color bg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(msg), backgroundColor: bg,
+        content: Text(msg),
+        backgroundColor: bg,
         duration: const Duration(seconds: 2)));
   }
 
@@ -414,31 +475,28 @@ class _CommentsScreenState extends State<CommentsScreen> {
   // ══════════════════════════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
-    final isDark   = Theme.of(context).brightness == Brightness.dark;
-    final bg       = isDark ? Colors.black : Colors.white;
-    final card     = isDark ? AppColors.bgCard : Colors.white;
-    final border   = isDark ? AppColors.bgSurface : Colors.grey.shade200;
-    final textClr  = isDark ? Colors.white : Colors.black87;
-    final sub      = isDark ? Colors.white54 : Colors.black45;
-    final surface  = isDark ? AppColors.bgSurface : Colors.grey.shade100;
+    final isDark  = Theme.of(context).brightness == Brightness.dark;
+    final bg      = isDark ? Colors.black : Colors.white;
+    final card    = isDark ? AppColors.bgCard : Colors.white;
+    final border  = isDark ? AppColors.bgSurface : Colors.grey.shade200;
+    final textClr = isDark ? Colors.white : Colors.black87;
+    final sub     = isDark ? Colors.white54 : Colors.black45;
+    final surface = isDark ? AppColors.bgSurface : Colors.grey.shade100;
 
-    final isOwnPost = widget.postUserId != null
-        && widget.postUserId == _myUserId;
-    final total     = _comments.length + (_aiComment.isNotEmpty ? 1 : 0);
+    final isOwnPost =
+        widget.postUserId != null && widget.postUserId == _myUserId;
+    final total = _comments.length + (_aiComment.isNotEmpty ? 1 : 0);
 
     return Scaffold(
       backgroundColor: bg,
       resizeToAvoidBottomInset: true,
       appBar: _buildAppBar(card, border, textClr, sub, isOwnPost, total),
       body: Column(children: [
-
-        // ── Post preview strip ─────────────────────────────────────────────
+        // ── Post preview strip ───────────────────────────────────────────
         _buildPostStrip(card, border, textClr, sub, isOwnPost),
-
-        // ── Divider ────────────────────────────────────────────────────────
         Divider(height: 1, color: border),
 
-        // ── Comments list ──────────────────────────────────────────────────
+        // ── Comments list ────────────────────────────────────────────────
         Expanded(
           child: _loading && _comments.isEmpty && _aiComment.isEmpty
               ? _buildSkeleton()
@@ -449,7 +507,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
                     controller: _scroll,
                     padding: const EdgeInsets.only(top: 8, bottom: 16),
                     children: [
-                      // Pinned AI comment (display only — no request button)
+                      // Pinned AI comment (display only)
                       if (_aiComment.isNotEmpty)
                         _AiCommentCard(
                           comment: _aiComment,
@@ -484,72 +542,73 @@ class _CommentsScreenState extends State<CommentsScreen> {
                           myUserId: _myUserId,
                           timeAgo: _timeAgo(c['created_at']?.toString()),
                           fmt: _fmt,
-                          onLike:       () => _likeComment(c),
-                          onReply:      () => _startReply(c),
-                          onLongPress:  () => _showCommentOptions(context, c, isDark),
+                          onLike: () => _likeComment(c),
+                          onReply: () => _startReply(c),
+                          onLongPress: () =>
+                              _showCommentOptions(context, c, isDark),
                           onProfileTap: () {
-                            final uid = (c['profiles'] as Map?)?['id']?.toString()
-                                ?? c['user_id']?.toString();
+                            final uid =
+                                (c['profiles'] as Map?)?['id']?.toString()
+                                    ?? c['user_id']?.toString();
                             if (uid != null) context.push('/user-profile/$uid');
                           },
-                        ).animate()
-                         .fadeIn(delay: Duration(milliseconds: i * 25), duration: 200.ms);
+                        )
+                            .animate()
+                            .fadeIn(
+                              delay: Duration(milliseconds: i * 25),
+                              duration: 200.ms,
+                            );
                       }),
                     ],
                   ),
                 ),
         ),
 
-        // ── Reply quote strip ──────────────────────────────────────────────
+        // ── Reply quote strip ────────────────────────────────────────────
         if (_replyToName != null)
           _buildReplyStrip(isDark, textClr, sub, border),
 
-        // ── Emoji quick-reactions ──────────────────────────────────────────
+        // ── Emoji quick-reactions ────────────────────────────────────────
         _buildEmojiRow(isDark, border),
 
-        // ── Input bar ─────────────────────────────────────────────────────
+        // ── Input bar ────────────────────────────────────────────────────
         _buildInputBar(card, border, textClr, sub, surface),
       ]),
     );
   }
 
   // ── AppBar ─────────────────────────────────────────────────────────────────
-  // AI button REMOVED as requested — insight comes from the home feed only
+  // Share / copy-link button REMOVED from actions as requested
   AppBar _buildAppBar(Color card, Color border, Color textClr, Color sub,
       bool isOwnPost, int total) {
     return AppBar(
       backgroundColor: card,
-      elevation: 0, surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      surfaceTintColor: Colors.transparent,
       leading: IconButton(
         icon: Icon(Icons.arrow_back_rounded, color: textClr),
         onPressed: () => context.pop(),
       ),
       title: Text(
         total > 0 ? 'Comments ($total)' : 'Comments',
-        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: textClr),
+        style: TextStyle(
+            fontSize: 16, fontWeight: FontWeight.w700, color: textClr),
       ),
-      actions: [
-        // Copy link
-        IconButton(
-          icon: Icon(Iconsax.send_1, color: sub, size: 20),
-          tooltip: 'Copy link',
-          onPressed: () {
-            Clipboard.setData(ClipboardData(
-                text: 'https://riseup.app/post/${widget.postId}'));
-            _snack('Link copied', AppColors.success);
-          },
-        ),
-      ],
+      // ← actions intentionally empty (share button removed)
+      actions: const [],
       bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(1),
-          child: Divider(height: 1, color: border)),
+        preferredSize: const Size.fromHeight(1),
+        child: Divider(height: 1, color: border),
+      ),
     );
   }
 
   // ── Post preview strip ─────────────────────────────────────────────────────
+  // Uses CachedNetworkImage with shimmer placeholder — no system fallbacks
   Widget _buildPostStrip(Color card, Color border, Color textClr, Color sub,
       bool isOwnPost) {
-    final posterName   = _posterProfile['full_name']?.toString() ?? widget.postAuthor;
+    final posterName   =
+        _posterProfile['full_name']?.toString() ?? widget.postAuthor;
     final posterAvatar = _posterProfile['avatar_url']?.toString() ?? '';
     final posterId     = widget.postUserId;
 
@@ -557,26 +616,33 @@ class _CommentsScreenState extends State<CommentsScreen> {
       color: card,
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
       child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
-        // Avatar
         GestureDetector(
-          onTap: posterId != null ? () => context.push('/user-profile/$posterId') : null,
+          onTap: posterId != null
+              ? () => context.push('/user-profile/$posterId')
+              : null,
           child: _Avatar(url: posterAvatar, name: posterName, size: 42),
         ),
         const SizedBox(width: 12),
-        // Name + content
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          GestureDetector(
-            onTap: posterId != null ? () => context.push('/user-profile/$posterId') : null,
-            child: Text(posterName, style: TextStyle(
-                fontSize: 14, fontWeight: FontWeight.w700, color: textClr)),
-          ),
-          const SizedBox(height: 3),
-          Text(widget.postContent,
-              style: TextStyle(fontSize: 13, color: sub, height: 1.4),
-              maxLines: 2, overflow: TextOverflow.ellipsis),
-        ])),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            GestureDetector(
+              onTap: posterId != null
+                  ? () => context.push('/user-profile/$posterId')
+                  : null,
+              child: Text(posterName,
+                  style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: textClr)),
+            ),
+            const SizedBox(height: 3),
+            Text(widget.postContent,
+                style: TextStyle(fontSize: 13, color: sub, height: 1.4),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis),
+          ]),
+        ),
         const SizedBox(width: 10),
-        // Follow button (only for others' posts)
         if (!isOwnPost && posterId != null)
           GestureDetector(
             onTap: _toggleFollow,
@@ -584,17 +650,19 @@ class _CommentsScreenState extends State<CommentsScreen> {
               duration: const Duration(milliseconds: 200),
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
               decoration: BoxDecoration(
-                color: _isFollowing
-                    ? Colors.transparent : AppColors.primary,
+                color: _isFollowing ? Colors.transparent : AppColors.primary,
                 borderRadius: BorderRadius.circular(20),
                 border: _isFollowing
                     ? Border.all(color: Colors.grey.withOpacity(0.4))
                     : null,
               ),
               child: _followLoading
-                  ? const SizedBox(width: 14, height: 14,
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
                       child: CircularProgressIndicator(
-                          color: AppColors.primary, strokeWidth: 2))
+                          color: AppColors.primary, strokeWidth: 2),
+                    )
                   : Text(
                       _isFollowing ? 'Following' : 'Follow',
                       style: TextStyle(
@@ -616,7 +684,8 @@ class _CommentsScreenState extends State<CommentsScreen> {
   );
 
   // ── Reply strip ────────────────────────────────────────────────────────────
-  Widget _buildReplyStrip(bool isDark, Color textClr, Color sub, Color border) {
+  Widget _buildReplyStrip(
+      bool isDark, Color textClr, Color sub, Color border) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
@@ -624,18 +693,34 @@ class _CommentsScreenState extends State<CommentsScreen> {
         border: Border(top: BorderSide(color: border)),
       ),
       child: Row(children: [
-        Container(width: 3, height: 32,
-            decoration: BoxDecoration(color: AppColors.primary,
-                borderRadius: BorderRadius.circular(2))),
+        Container(
+          width: 3, height: 32,
+          decoration: BoxDecoration(
+              color: AppColors.primary,
+              borderRadius: BorderRadius.circular(2)),
+        ),
         const SizedBox(width: 10),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('Replying to @$_replyToName',
-              style: const TextStyle(fontSize: 11, color: AppColors.primary,
-                  fontWeight: FontWeight.w700)),
-          if (_replyToContent != null)
-            Text(_replyToContent!, maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 11, color: sub)),
-        ])),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Replying to @$_replyToName',
+                style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w700),
+              ),
+              if (_replyToContent != null)
+                Text(
+                  _replyToContent!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11, color: sub),
+                ),
+            ],
+          ),
+        ),
         GestureDetector(
           onTap: _clearReply,
           child: Icon(Icons.close_rounded, size: 16, color: sub),
@@ -661,7 +746,15 @@ class _CommentsScreenState extends State<CommentsScreen> {
           child: Container(
             width: 40, height: 44,
             alignment: Alignment.center,
-            child: Text(_kQuickEmojis[i], style: const TextStyle(fontSize: 20)),
+            child: Text(
+              _kQuickEmojis[i],
+              style: TextStyle(
+                fontSize: 20,
+                // ❤️ must always be red — Flutter inherits theme text
+                // colour onto emoji characters on both light & dark themes
+                color: _kQuickEmojis[i] == '❤️' ? Colors.red : null,
+              ),
+            ),
           ),
         ),
       ),
@@ -669,34 +762,41 @@ class _CommentsScreenState extends State<CommentsScreen> {
   }
 
   // ── Input bar ──────────────────────────────────────────────────────────────
+  // Radius animates: 10 (idle) → 26 (focused, pill-shape)
+  // My real avatar is shown — shimmer while still loading
   Widget _buildInputBar(Color card, Color border, Color textClr, Color sub,
       Color surface) {
-    final hasText = _ctrl.text.trim().isNotEmpty;
+    final hasText    = _ctrl.text.trim().isNotEmpty;
+    final isFocused  = _focus.hasFocus;
+    // Animate radius: pill when focused, subtle rect when idle
+    final fieldRadius = isFocused ? 26.0 : 10.0;
+
     return Container(
-      decoration: BoxDecoration(color: card,
-          border: Border(top: BorderSide(color: border))),
+      decoration: BoxDecoration(
+          color: card, border: Border(top: BorderSide(color: border))),
       padding: EdgeInsets.fromLTRB(
           12, 8, 12, MediaQuery.of(context).padding.bottom + 8),
       child: Row(children: [
-        // My avatar (gradient fallback)
-        Container(width: 36, height: 36,
-            decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                    colors: [AppColors.primary, AppColors.accent]),
-                shape: BoxShape.circle),
-            child: const Center(child: Icon(Icons.person_rounded,
-                color: Colors.white, size: 18))),
+        // My real avatar — shimmer if not yet loaded
+        _myAvatarUrl != null
+            ? _Avatar(url: _myAvatarUrl!, name: 'Me', size: 36)
+            : const _Shimmer(width: 36, height: 36, circle: true),
         const SizedBox(width: 10),
-        // Text field
+        // Text field with animated radius
         Expanded(
-          child: Container(
-            decoration: BoxDecoration(color: surface,
-                borderRadius: BorderRadius.circular(24)),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOut,
+            decoration: BoxDecoration(
+              color: surface,
+              borderRadius: BorderRadius.circular(fieldRadius),
+            ),
             child: TextField(
               controller: _ctrl,
               focusNode: _focus,
               style: TextStyle(fontSize: 14, color: textClr),
-              maxLines: 4, minLines: 1,
+              maxLines: 4,
+              minLines: 1,
               textInputAction: TextInputAction.send,
               onSubmitted: (_) => _send(),
               decoration: InputDecoration(
@@ -710,7 +810,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
           ),
         ),
         const SizedBox(width: 8),
-        // Send button — active only when text is present
+        // Send button
         AnimatedContainer(
           duration: const Duration(milliseconds: 200),
           width: 42, height: 42,
@@ -719,18 +819,23 @@ class _CommentsScreenState extends State<CommentsScreen> {
                 ? const LinearGradient(
                     colors: [AppColors.primary, AppColors.accent])
                 : null,
-            color: hasText && !_sending ? null : Colors.grey.withOpacity(0.25),
+            color: hasText && !_sending
+                ? null
+                : Colors.grey.withOpacity(0.25),
             borderRadius: BorderRadius.circular(12),
           ),
           child: GestureDetector(
             onTap: hasText && !_sending ? _send : null,
-            child: Center(child: _sending
-                ? const SizedBox(width: 18, height: 18,
-                    child: CircularProgressIndicator(
-                        color: Colors.white, strokeWidth: 2))
-                : Icon(Icons.send_rounded,
-                    color: hasText ? Colors.white : Colors.grey,
-                    size: 18)),
+            child: Center(
+              child: _sending
+                  ? const SizedBox(
+                      width: 18, height: 18,
+                      child: CircularProgressIndicator(
+                          color: Colors.white, strokeWidth: 2))
+                  : Icon(Icons.send_rounded,
+                      color: hasText ? Colors.white : Colors.grey,
+                      size: 18),
+            ),
           ),
         ),
       ]),
@@ -739,7 +844,8 @@ class _CommentsScreenState extends State<CommentsScreen> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Reusable cached avatar
+// Reusable cached avatar — shimmer placeholder, custom initials error widget
+// No system fallbacks anywhere
 // ─────────────────────────────────────────────────────────────────────────────
 class _Avatar extends StatelessWidget {
   final String url, name;
@@ -747,24 +853,78 @@ class _Avatar extends StatelessWidget {
   const _Avatar({required this.url, required this.name, required this.size});
 
   @override
-  Widget build(BuildContext context) => Container(
-    width: size, height: size,
-    decoration: BoxDecoration(
-        color: AppColors.primary.withOpacity(0.12), shape: BoxShape.circle),
-    child: ClipOval(child: url.isNotEmpty
-        ? CachedNetworkImage(imageUrl: url, fit: BoxFit.cover,
-            width: size, height: size,
-            placeholder: (_, __) => _fallback(),
-            errorWidget: (_, __, ___) => _fallback())
-        : _fallback()),
-  );
+  Widget build(BuildContext context) {
+    return Container(
+      width: size, height: size,
+      decoration: BoxDecoration(
+          color: AppColors.primary.withOpacity(0.12),
+          shape: BoxShape.circle),
+      child: ClipOval(
+        child: url.isNotEmpty
+            ? CachedNetworkImage(
+                imageUrl: url,
+                fit: BoxFit.cover,
+                width: size,
+                height: size,
+                // shimmer while network image loads — no system spinner
+                placeholder: (_, __) => _ShimmerCircle(size: size),
+                // custom initials tile on error — no broken-image icon
+                errorWidget: (_, __, ___) => _Initials(name: name, size: size),
+              )
+            : _Initials(name: name, size: size),
+      ),
+    );
+  }
+}
 
-  Widget _fallback() => Container(
-    color: AppColors.primary.withOpacity(0.15),
-    child: Center(child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
-        style: const TextStyle(
-            fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.primary))),
-  );
+/// Circular shimmer shown while CachedNetworkImage is loading
+class _ShimmerCircle extends StatelessWidget {
+  final double size;
+  const _ShimmerCircle({required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return SizedBox(
+      width: size, height: size,
+      child: Container(
+        decoration: BoxDecoration(
+          color: dark ? const Color(0xFF2A2A2A) : const Color(0xFFE4E4E4),
+          shape: BoxShape.circle,
+        ),
+      )
+          .animate(onPlay: (c) => c.repeat())
+          .shimmer(
+            duration: 1200.ms,
+            color: dark ? Colors.white10 : Colors.white70,
+          ),
+    );
+  }
+}
+
+/// Initials fallback — used for error AND empty-url cases
+class _Initials extends StatelessWidget {
+  final String name;
+  final double size;
+  const _Initials({required this.name, required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size, height: size,
+      color: AppColors.primary.withOpacity(0.15),
+      child: Center(
+        child: Text(
+          name.isNotEmpty ? name[0].toUpperCase() : '?',
+          style: TextStyle(
+            fontSize: size * 0.38,
+            fontWeight: FontWeight.w800,
+            color: AppColors.primary,
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -776,8 +936,10 @@ class _AiCommentCard extends StatelessWidget {
   final Color textClr, sub;
 
   const _AiCommentCard({
-    required this.comment, required this.isDark,
-    required this.textClr, required this.sub,
+    required this.comment,
+    required this.isDark,
+    required this.textClr,
+    required this.sub,
   });
 
   @override
@@ -793,10 +955,14 @@ class _AiCommentCard extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 6, 16, 10),
       decoration: BoxDecoration(
-        gradient: LinearGradient(colors: [
-          AppColors.primary.withOpacity(0.08),
-          AppColors.accent.withOpacity(0.05),
-        ], begin: Alignment.topLeft, end: Alignment.bottomRight),
+        gradient: LinearGradient(
+          colors: [
+            AppColors.primary.withOpacity(0.08),
+            AppColors.accent.withOpacity(0.05),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: AppColors.primary.withOpacity(0.18)),
       ),
@@ -806,38 +972,50 @@ class _AiCommentCard extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
           decoration: BoxDecoration(
             color: AppColors.primary.withOpacity(0.1),
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(15)),
+            borderRadius:
+                const BorderRadius.vertical(top: Radius.circular(15)),
           ),
           child: Row(children: [
-            Container(width: 22, height: 22,
-                decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                        colors: [AppColors.primary, AppColors.accent]),
-                    borderRadius: BorderRadius.circular(6)),
-                child: const Center(child: Icon(Icons.auto_awesome,
-                    color: Colors.white, size: 12))),
+            Container(
+              width: 22, height: 22,
+              decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                      colors: [AppColors.primary, AppColors.accent]),
+                  borderRadius: BorderRadius.circular(6)),
+              child: const Center(
+                child: Icon(Icons.auto_awesome, color: Colors.white, size: 12),
+              ),
+            ),
             const SizedBox(width: 8),
-            const Text('RiseUp AI', style: TextStyle(
-                fontSize: 12, color: AppColors.primary, fontWeight: FontWeight.w700)),
+            const Text('RiseUp AI',
+                style: TextStyle(
+                    fontSize: 12,
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w700)),
             const SizedBox(width: 6),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.15),
+              decoration: BoxDecoration(
+                  color: AppColors.primary.withOpacity(0.15),
                   borderRadius: BorderRadius.circular(8)),
-              child: const Text('PINNED', style: TextStyle(
-                  fontSize: 8, color: AppColors.primary,
-                  fontWeight: FontWeight.w800, letterSpacing: 0.5)),
+              child: const Text('PINNED',
+                  style: TextStyle(
+                      fontSize: 8,
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.5)),
             ),
             const Spacer(),
-            Icon(Icons.push_pin_rounded, size: 14,
-                color: AppColors.primary.withOpacity(0.5)),
+            Icon(Icons.push_pin_rounded,
+                size: 14, color: AppColors.primary.withOpacity(0.5)),
           ]),
         ),
         // Content
         Padding(
           padding: const EdgeInsets.all(14),
-          child: SelectableText(content, style: TextStyle(
-              fontSize: 13, color: textClr, height: 1.55)),
+          child: SelectableText(content,
+              style: TextStyle(
+                  fontSize: 13, color: textClr, height: 1.55)),
         ),
       ]),
     );
@@ -858,12 +1036,18 @@ class _CommentCard extends StatelessWidget {
 
   const _CommentCard({
     super.key,
-    required this.comment, required this.isDark,
-    required this.textClr, required this.sub, required this.surface,
+    required this.comment,
+    required this.isDark,
+    required this.textClr,
+    required this.sub,
+    required this.surface,
     required this.myUserId,
-    required this.timeAgo, required this.fmt,
-    required this.onLike, required this.onReply,
-    required this.onProfileTap, required this.onLongPress,
+    required this.timeAgo,
+    required this.fmt,
+    required this.onLike,
+    required this.onReply,
+    required this.onProfileTap,
+    required this.onLongPress,
   });
 
   @override
@@ -883,100 +1067,149 @@ class _CommentCard extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
         child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // Avatar
+          // Avatar — real profile picture with shimmer placeholder
           GestureDetector(
             onTap: onProfileTap,
             child: _Avatar(url: avatar, name: name, size: 38),
           ),
           const SizedBox(width: 10),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            // Bubble
-            GestureDetector(
-              onLongPress: onLongPress,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                decoration: BoxDecoration(
-                  color: isOwn
-                      ? AppColors.primary.withOpacity(isDark ? 0.15 : 0.08)
-                      : surface,
-                  borderRadius: BorderRadius.only(
-                    topLeft: const Radius.circular(4),
-                    topRight: const Radius.circular(16),
-                    bottomLeft: const Radius.circular(16),
-                    bottomRight: const Radius.circular(16),
-                  ),
-                  border: isOwn
-                      ? Border.all(color: AppColors.primary.withOpacity(0.2), width: 0.8)
-                      : null,
-                ),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  // Name row
-                  Row(children: [
-                    GestureDetector(
-                      onTap: onProfileTap,
-                      child: Text(name, style: TextStyle(
-                          fontSize: 13, fontWeight: FontWeight.w700,
-                          color: isOwn ? AppColors.primary : textClr)),
-                    ),
-                    if (verified) ...[
-                      const SizedBox(width: 3),
-                      const Icon(Icons.verified_rounded,
-                          color: AppColors.primary, size: 12),
-                    ],
-                    if (isOwn) ...[
-                      const SizedBox(width: 5),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                        decoration: BoxDecoration(
-                            color: AppColors.primary.withOpacity(0.15),
-                            borderRadius: BorderRadius.circular(6)),
-                        child: const Text('You', style: TextStyle(
-                            fontSize: 8, color: AppColors.primary,
-                            fontWeight: FontWeight.w700)),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Bubble
+                GestureDetector(
+                  onLongPress: onLongPress,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: isOwn
+                          ? AppColors.primary
+                              .withOpacity(isDark ? 0.15 : 0.08)
+                          : surface,
+                      borderRadius: const BorderRadius.only(
+                        topLeft: Radius.circular(4),
+                        topRight: Radius.circular(16),
+                        bottomLeft: Radius.circular(16),
+                        bottomRight: Radius.circular(16),
                       ),
-                    ],
-                  ]),
-                  const SizedBox(height: 4),
-                  // Comment text
-                  Text(content, style: TextStyle(
-                      fontSize: 13.5, color: textClr, height: 1.45)),
-                ]),
-              ),
-            ),
-            const SizedBox(height: 5),
-            // Actions row
-            Row(children: [
-              Text(timeAgo, style: TextStyle(fontSize: 11, color: sub)),
-              const SizedBox(width: 14),
-              // Like
-              GestureDetector(
-                onTap: onLike,
-                child: Row(children: [
-                  AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 150),
-                    transitionBuilder: (c, a) => ScaleTransition(scale: a, child: c),
-                    child: Icon(
-                      isLiked ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-                      key: ValueKey(isLiked),
-                      size: 15, color: isLiked ? Colors.red : sub,
+                      border: isOwn
+                          ? Border.all(
+                              color:
+                                  AppColors.primary.withOpacity(0.2),
+                              width: 0.8)
+                          : null,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(children: [
+                          GestureDetector(
+                            onTap: onProfileTap,
+                            child: Text(name,
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                    color: isOwn
+                                        ? AppColors.primary
+                                        : textClr)),
+                          ),
+                          if (verified) ...[
+                            const SizedBox(width: 3),
+                            const Icon(Icons.verified_rounded,
+                                color: AppColors.primary, size: 12),
+                          ],
+                          if (isOwn) ...[
+                            const SizedBox(width: 5),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 5, vertical: 1),
+                              decoration: BoxDecoration(
+                                  color: AppColors.primary
+                                      .withOpacity(0.15),
+                                  borderRadius:
+                                      BorderRadius.circular(6)),
+                              child: const Text('You',
+                                  style: TextStyle(
+                                      fontSize: 8,
+                                      color: AppColors.primary,
+                                      fontWeight: FontWeight.w700)),
+                            ),
+                          ],
+                        ]),
+                        const SizedBox(height: 4),
+                        Text(content,
+                            style: TextStyle(
+                                fontSize: 13.5,
+                                color: textClr,
+                                height: 1.45)),
+                      ],
                     ),
                   ),
-                  const SizedBox(width: 4),
-                  Text(likes > 0 ? fmt(likes) : '',
-                      style: TextStyle(fontSize: 11,
-                          color: isLiked ? Colors.red : sub,
-                          fontWeight: isLiked ? FontWeight.w600 : FontWeight.normal)),
+                ),
+                const SizedBox(height: 6),
+                // Actions row — like & reply deliberately larger
+                Row(children: [
+                  Text(timeAgo,
+                      style: TextStyle(fontSize: 12, color: sub)),
+                  const SizedBox(width: 16),
+                  // Like button — icon 19 px, count 13 px
+                  GestureDetector(
+                    onTap: onLike,
+                    behavior: HitTestBehavior.opaque,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 4, horizontal: 2),
+                      child: Row(children: [
+                        AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 150),
+                          transitionBuilder: (c, a) =>
+                              ScaleTransition(scale: a, child: c),
+                          child: Icon(
+                            isLiked
+                                ? Icons.favorite_rounded
+                                : Icons.favorite_border_rounded,
+                            key: ValueKey(isLiked),
+                            size: 19, // ← increased from 15
+                            color: isLiked ? Colors.red : sub,
+                          ),
+                        ),
+                        const SizedBox(width: 5),
+                        Text(
+                          likes > 0 ? fmt(likes) : '',
+                          style: TextStyle(
+                              fontSize: 13, // ← increased from 11
+                              color: isLiked ? Colors.red : sub,
+                              fontWeight: isLiked
+                                  ? FontWeight.w700
+                                  : FontWeight.normal),
+                        ),
+                      ]),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  // Reply button — 14 px bold
+                  GestureDetector(
+                    onTap: onReply,
+                    behavior: HitTestBehavior.opaque,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 4, horizontal: 2),
+                      child: Text(
+                        'Reply',
+                        style: TextStyle(
+                          fontSize: 14, // ← increased from 11
+                          color: sub,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ),
                 ]),
-              ),
-              const SizedBox(width: 14),
-              // Reply
-              GestureDetector(
-                onTap: onReply,
-                child: Text('Reply', style: TextStyle(
-                    fontSize: 11, color: sub, fontWeight: FontWeight.w600)),
-              ),
-            ]),
-          ])),
+              ],
+            ),
+          ),
         ]),
       ),
     );
