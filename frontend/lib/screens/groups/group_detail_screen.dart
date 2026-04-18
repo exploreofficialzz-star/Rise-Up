@@ -1,11 +1,13 @@
 // frontend/lib/screens/groups/group_detail_screen.dart
-// Production-ready — proper endpoints, posts, members, likes, ads, error handling
 
+import 'dart:convert';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 import '../../services/ad_manager.dart';
@@ -27,29 +29,33 @@ class GroupDetailScreen extends StatefulWidget {
 
 class _GroupDetailScreenState extends State<GroupDetailScreen>
     with SingleTickerProviderStateMixin {
+
   late TabController _tabs;
 
-  // ── Data ──────────────────────────────────────────────────────
-  Map _group = {};
-  List _posts = [];
+  // ── Cache keys ─────────────────────────────────────────────────────────────
+  String get _kGroup   => 'riseup_group_${widget.groupId}_v1';
+  String get _kPosts   => 'riseup_gposts_${widget.groupId}_v1';
+  String get _kMembers => 'riseup_gmembers_${widget.groupId}_v1';
+
+  // ── Data ───────────────────────────────────────────────────────────────────
+  Map  _group   = {};
+  List _posts   = [];
   List _members = [];
 
-  // ── Loading / error states ────────────────────────────────────
+  // ── State ──────────────────────────────────────────────────────────────────
   bool _loadingGroup   = true;
   bool _loadingPosts   = true;
   bool _loadingMembers = false;
   bool _groupError     = false;
   bool _postsError     = false;
+  bool _joined         = false;
+  bool _posting        = false;
 
-  // ── UI state ──────────────────────────────────────────────────
-  bool _joined  = false;
-  bool _posting = false;
+  // ── Optimistic like state ──────────────────────────────────────────────────
+  final Set<String>      _likedPosts = {};
+  final Map<String, int> _likeCounts = {};
 
-  // ── Like state (optimistic) ───────────────────────────────────
-  final Set<String>    _likedPosts     = {};
-  final Map<String, int> _likeCounts   = {};
-
-  // ── Post composer ─────────────────────────────────────────────
+  // ── Composer ───────────────────────────────────────────────────────────────
   final _postCtrl = TextEditingController();
 
   @override
@@ -57,8 +63,9 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
     super.initState();
     _tabs = TabController(length: 3, vsync: this);
     _tabs.addListener(_onTabChanged);
-    _loadGroup();
-    _loadPosts();
+    _restoreCache();
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _silentRefresh());
   }
 
   @override
@@ -71,83 +78,129 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
   }
 
   void _onTabChanged() {
-    // Lazy-load members on first visit
     if (_tabs.index == 1 && _members.isEmpty && !_loadingMembers) {
       _loadMembers();
     }
   }
 
-  // ── Data loading ──────────────────────────────────────────────
+  // ── Cache restore (instant) ────────────────────────────────────────────────
 
-  Future<void> _loadGroup() async {
-    if (!mounted) return;
-    setState(() { _loadingGroup = true; _groupError = false; });
+  Future<void> _restoreCache() async {
     try {
-      final data = await api.get('/groups/${widget.groupId}');
-      if (mounted) {
-        final group = data['group'] as Map? ?? data;
+      final prefs = await SharedPreferences.getInstance();
+
+      // Group
+      final gRaw = prefs.getString(_kGroup);
+      if (gRaw != null && mounted) {
+        final g = Map<dynamic, dynamic>.from(jsonDecode(gRaw) as Map);
         setState(() {
-          _group = group;
-          _joined = group['is_joined'] == true || group['is_member'] == true;
+          _group        = g;
+          _joined       = g['is_joined'] == true || g['is_member'] == true;
           _loadingGroup = false;
         });
       }
-    } catch (_) {
-      if (mounted) setState(() { _loadingGroup = false; _groupError = true; });
-    }
+
+      // Posts
+      final pRaw = prefs.getString(_kPosts);
+      if (pRaw != null && mounted) {
+        final posts = (jsonDecode(pRaw) as List).cast<Map>();
+        _seedLikeState(posts);
+        setState(() { _posts = posts; _loadingPosts = false; });
+      }
+
+      // Members (optional restore)
+      final mRaw = prefs.getString(_kMembers);
+      if (mRaw != null && mounted) {
+        setState(() =>
+            _members = (jsonDecode(mRaw) as List).cast<Map>());
+      }
+    } catch (_) {}
   }
 
-  Future<void> _loadPosts() async {
-    if (!mounted) return;
-    setState(() { _loadingPosts = true; _postsError = false; });
-    try {
-      final data = await api.get('/groups/${widget.groupId}/posts');
-      if (mounted) {
-        final posts = data['posts'] as List? ?? [];
-        // Seed like state from server data
-        final newLikes  = <String, int>{};
-        final newLiked  = <String>{};
-        for (final p in posts) {
-          final id = p['id']?.toString() ?? '';
-          if (id.isEmpty) continue;
-          newLikes[id] = (p['likes_count'] as int?)
-              ?? (p['likes'] as int?)
-              ?? 0;
-          if (p['is_liked'] == true) newLiked.add(id);
-        }
-        setState(() {
-          _posts = posts;
-          _likeCounts.addAll(newLikes);
-          _likedPosts.addAll(newLiked);
-          _loadingPosts = false;
-        });
-      }
-    } catch (_) {
-      if (mounted) setState(() { _loadingPosts = false; _postsError = true; });
-    }
-  }
+  // ── Background refresh ─────────────────────────────────────────────────────
 
-  Future<void> _loadMembers() async {
+  Future<void> _silentRefresh() async {
     if (!mounted) return;
-    setState(() => _loadingMembers = true);
-    try {
-      final data = await api.get('/groups/${widget.groupId}/members');
-      if (mounted) {
-        setState(() {
-          _members = data['members'] as List? ?? [];
-          _loadingMembers = false;
-        });
-      }
-    } catch (_) {
-      if (mounted) setState(() => _loadingMembers = false);
-    }
+    await Future.wait([_loadGroup(), _loadPosts()]);
   }
 
   Future<void> _refresh() async {
     await Future.wait([_loadGroup(), _loadPosts()]);
   }
 
-  // ── Mutations ─────────────────────────────────────────────────
+  // ── Load group ─────────────────────────────────────────────────────────────
+
+  Future<void> _loadGroup() async {
+    if (!mounted) return;
+    if (_group.isEmpty) setState(() { _loadingGroup = true; _groupError = false; });
+    try {
+      final data  = await api.get('/groups/${widget.groupId}');
+      final group = data['group'] as Map? ?? data;
+      if (mounted) {
+        setState(() {
+          _group        = group;
+          _joined       = group['is_joined'] == true || group['is_member'] == true;
+          _loadingGroup = false;
+        });
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_kGroup, jsonEncode(group));
+      }
+    } catch (_) {
+      if (mounted && _group.isEmpty) {
+        setState(() { _loadingGroup = false; _groupError = true; });
+      }
+    }
+  }
+
+  // ── Load posts ─────────────────────────────────────────────────────────────
+
+  Future<void> _loadPosts() async {
+    if (!mounted) return;
+    if (_posts.isEmpty) setState(() { _loadingPosts = true; _postsError = false; });
+    try {
+      final data  = await api.get('/groups/${widget.groupId}/posts');
+      final posts = (data['posts'] as List? ?? []).cast<Map>();
+      _seedLikeState(posts);
+      if (mounted) {
+        setState(() { _posts = posts; _loadingPosts = false; });
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_kPosts, jsonEncode(posts));
+      }
+    } catch (_) {
+      if (mounted && _posts.isEmpty) {
+        setState(() { _loadingPosts = false; _postsError = true; });
+      }
+    }
+  }
+
+  // ── Load members ───────────────────────────────────────────────────────────
+
+  Future<void> _loadMembers() async {
+    if (!mounted) return;
+    setState(() => _loadingMembers = true);
+    try {
+      final data    = await api.get('/groups/${widget.groupId}/members');
+      final members = (data['members'] as List? ?? []).cast<Map>();
+      if (mounted) {
+        setState(() { _members = members; _loadingMembers = false; });
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_kMembers, jsonEncode(members));
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loadingMembers = false);
+    }
+  }
+
+  void _seedLikeState(List posts) {
+    for (final p in posts) {
+      final id = p['id']?.toString() ?? '';
+      if (id.isEmpty) continue;
+      _likeCounts[id] = (p['likes_count'] as int?) ?? (p['likes'] as int?) ?? 0;
+      if (p['is_liked'] == true) _likedPosts.add(id);
+    }
+  }
+
+  // ── Mutations ──────────────────────────────────────────────────────────────
 
   Future<void> _toggleJoin() async {
     final wasJoined = _joined;
@@ -185,16 +238,10 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
     try {
       await api.post('/groups/${widget.groupId}/posts/$id/like', {});
     } catch (_) {
-      // Revert on failure
       if (mounted) {
         setState(() {
-          if (wasLiked) {
-            _likedPosts.add(id);
-            _likeCounts[id] = prevCount;
-          } else {
-            _likedPosts.remove(id);
-            _likeCounts[id] = prevCount;
-          }
+          if (wasLiked) { _likedPosts.add(id); } else { _likedPosts.remove(id); }
+          _likeCounts[id] = prevCount;
         });
         _showErrorSnack('Could not like post. Please try again.');
       }
@@ -214,11 +261,9 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
       _postCtrl.clear();
       if (mounted) Navigator.pop(context);
       await _loadPosts();
-
       if (mounted) {
         HapticFeedback.lightImpact();
         _showSuccessSnack('✅ Post shared with the group!');
-        // Show an interstitial after posting (respects frequency cap)
         unawaited(adManager.showInterstitial());
       }
     } catch (_) {
@@ -228,7 +273,7 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
     }
   }
 
-  // ── Helpers ───────────────────────────────────────────────────
+  // ── Helpers ────────────────────────────────────────────────────────────────
 
   void _showErrorSnack(String msg) {
     if (!mounted) return;
@@ -250,25 +295,68 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
     ));
   }
 
-  /// Interleave ad sentinels into a real list.
   List _withAdSlots(List real) {
     if (adManager.isPremium) return real;
-    final out = [];
+    final out = <dynamic>[];
     for (int i = 0; i < real.length; i++) {
       out.add(real[i]);
-      if ((i + 1) % 5 == 0 && i + 1 < real.length) {
-        out.add({'_isAd': true});
-      }
+      if ((i + 1) % 5 == 0 && i + 1 < real.length) out.add({'_isAd': true});
     }
     return out;
   }
 
-  // ── Derived ───────────────────────────────────────────────────
+  void _navigateToUserProfile(String? userId) {
+    if (userId == null || userId.isEmpty) return;
+    context.push('/user/$userId');
+  }
 
-  int get _memberCount =>
-      _group['member_count'] as int? ??
-      _group['members_count'] as int? ??
-      0;
+  // ── User avatar widget ─────────────────────────────────────────────────────
+  // Shows real avatar photo when available; falls back to gradient + initial.
+
+  Widget _buildUserAvatar({
+    required String? avatarUrl,
+    required String  name,
+    required double  size,
+  }) {
+    final initial = name.isNotEmpty ? name[0].toUpperCase() : '?';
+    final fSize   = size * 0.38;
+
+    Widget fallback = Container(
+      width: size, height: size,
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [AppColors.primary, AppColors.accent],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        shape: BoxShape.circle,
+      ),
+      child: Center(
+        child: Text(initial,
+            style: TextStyle(
+                fontSize: fSize,
+                color: Colors.white,
+                fontWeight: FontWeight.w700)),
+      ),
+    );
+
+    if (avatarUrl == null || avatarUrl.isEmpty) return fallback;
+
+    return ClipOval(
+      child: CachedNetworkImage(
+        imageUrl:    avatarUrl,
+        width:       size,
+        height:      size,
+        fit:         BoxFit.cover,
+        placeholder: (_, __) => fallback,
+        errorWidget: (_, __, ___) => fallback,
+      ),
+    );
+  }
+
+  // ── Derived ────────────────────────────────────────────────────────────────
+
+  int    get _memberCount => _group['member_count'] as int? ?? _group['members_count'] as int? ?? 0;
   String get _emoji       => _group['emoji']?.toString() ?? '💬';
   String get _description => _group['description']?.toString() ?? '';
   String get _tag         =>
@@ -277,9 +365,7 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
       _group['category']?.toString() ??
       '';
 
-  // ─────────────────────────────────────────────────────────────
-  // BUILD
-  // ─────────────────────────────────────────────────────────────
+  // ── BUILD ──────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -299,24 +385,26 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
         surfaceTintColor: Colors.transparent,
         leading: IconButton(
           icon: Icon(Icons.arrow_back_rounded, color: text),
-          onPressed: () => context.pop(),
+          onPressed: () {
+            if (Navigator.of(context).canPop()) {
+              Navigator.of(context).pop();
+            } else {
+              context.go('/groups');
+            }
+          },
         ),
         title: Row(children: [
-          // Show emoji from loaded group data, fallback to placeholder
-          Text(
-            _loadingGroup ? '💬' : _emoji,
-            style: const TextStyle(fontSize: 20),
-          ),
+          Text(_loadingGroup ? '💬' : _emoji,
+              style: const TextStyle(fontSize: 20)),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(
-              widget.groupName,
-              style: TextStyle(
-                fontSize: 16, fontWeight: FontWeight.w700, color: text,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
+            child: Text(widget.groupName,
+                style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: text),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
           ),
         ]),
         actions: [
@@ -325,23 +413,24 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 200),
               margin: const EdgeInsets.only(right: 16, top: 10, bottom: 10),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
               decoration: BoxDecoration(
                 color: _joined ? Colors.transparent : AppColors.primary,
                 borderRadius: BorderRadius.circular(20),
                 border: _joined
                     ? Border.all(
-                        color: isDark ? Colors.white24 : Colors.grey.shade300,
-                      )
+                        color: isDark
+                            ? Colors.white24
+                            : Colors.grey.shade300)
                     : null,
               ),
               child: Text(
                 _joined ? 'Joined ✓' : 'Join',
                 style: TextStyle(
-                  color: _joined ? sub : Colors.white,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
+                    color: _joined ? sub : Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600),
               ),
             ),
           ),
@@ -356,15 +445,12 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
               indicatorColor: AppColors.primary,
               indicatorWeight: 2,
               labelStyle: const TextStyle(
-                fontSize: 13, fontWeight: FontWeight.w600,
-              ),
+                  fontSize: 13, fontWeight: FontWeight.w600),
               tabs: [
                 const Tab(text: 'Posts'),
-                Tab(
-                  text: _memberCount > 0
-                      ? 'Members ($_memberCount)'
-                      : 'Members',
-                ),
+                Tab(text: _memberCount > 0
+                    ? 'Members ($_memberCount)'
+                    : 'Members'),
                 const Tab(text: 'About'),
               ],
             ),
@@ -372,57 +458,43 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
           ]),
         ),
       ),
-      body: Column(
-        children: [
-          Expanded(
-            child: TabBarView(
-              controller: _tabs,
-              children: [
-                _buildPostsTab(isDark, bg, card, border, text, sub, surface),
-                _buildMembersTab(isDark, card, border, text, sub),
-                _buildAboutTab(isDark, card, text, sub),
-              ],
-            ),
-          ),
-          // ── Sticky bottom banner (hidden for premium) ──────────
-          if (!adManager.isPremium) ScreenBannerAd(isDark: isDark),
-        ],
-      ),
-    );
-  }
-
-  // ─────────────────────────────────────────────────────────────
-  // TAB: POSTS
-  // ─────────────────────────────────────────────────────────────
-
-  Widget _buildPostsTab(
-    bool isDark, Color bg, Color card,
-    Color border, Color text, Color sub, Color surface,
-  ) {
-    return Column(
-      children: [
-        // ── Composer bar (only for members) ───────────────────
-        if (_joined) _buildComposer(card, surface, sub, isDark, border, text),
-        Divider(height: 1, color: border),
-
-        // ── Post list ─────────────────────────────────────────
+      body: Column(children: [
         Expanded(
-          child: _loadingPosts
-              ? _buildPostSkeleton(isDark, card, border)
-              : _postsError
-                  ? _buildPostsError(text, sub)
-                  : _posts.isEmpty
-                      ? _buildEmptyPosts(sub)
-                      : _buildPostList(isDark, card, border, text, sub),
+          child: TabBarView(
+            controller: _tabs,
+            children: [
+              _buildPostsTab(isDark, bg, card, border, text, sub, surface),
+              _buildMembersTab(isDark, card, border, text, sub),
+              _buildAboutTab(isDark, card, text, sub),
+            ],
+          ),
         ),
-      ],
+        if (!adManager.isPremium) ScreenBannerAd(isDark: isDark),
+      ]),
     );
   }
 
-  Widget _buildComposer(
-    Color card, Color surface, Color sub,
-    bool isDark, Color border, Color text,
-  ) {
+  // ── Posts tab ──────────────────────────────────────────────────────────────
+
+  Widget _buildPostsTab(bool isDark, Color bg, Color card, Color border,
+      Color text, Color sub, Color surface) {
+    return Column(children: [
+      if (_joined) _buildComposer(card, surface, sub, isDark, border, text),
+      Divider(height: 1, color: border),
+      Expanded(
+        child: _loadingPosts && _posts.isEmpty
+            ? _buildPostSkeleton(isDark, card, border)
+            : _postsError
+                ? _buildPostsError(text, sub)
+                : _posts.isEmpty
+                    ? _buildEmptyPosts(sub)
+                    : _buildPostList(isDark, card, border, text, sub),
+      ),
+    ]);
+  }
+
+  Widget _buildComposer(Color card, Color surface, Color sub, bool isDark,
+      Color border, Color text) {
     return Container(
       color: card,
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
@@ -430,25 +502,31 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
         Container(
           width: 36, height: 36,
           decoration: BoxDecoration(
-            color: AppColors.primary.withOpacity(0.12),
+            gradient: const LinearGradient(
+                colors: [AppColors.primary, AppColors.accent]),
             shape: BoxShape.circle,
           ),
-          child: const Center(child: Text('🌱', style: TextStyle(fontSize: 18))),
+          child: Center(
+            child: Text(
+              '✍️',
+              style: const TextStyle(fontSize: 16),
+            ),
+          ),
         ),
         const SizedBox(width: 10),
         Expanded(
           child: GestureDetector(
-            onTap: () => _showPostSheet(context, isDark, border, text, sub),
+            onTap: () =>
+                _showPostSheet(context, isDark, border, text, sub),
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 14, vertical: 11),
               decoration: BoxDecoration(
                 color: surface,
                 borderRadius: BorderRadius.circular(20),
               ),
-              child: Text(
-                'Share something with the group...',
-                style: TextStyle(color: sub, fontSize: 13),
-              ),
+              child: Text('Share something with the group...',
+                  style: TextStyle(color: sub, fontSize: 13)),
             ),
           ),
         ),
@@ -460,7 +538,8 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
     return ListView.separated(
       padding: EdgeInsets.zero,
       itemCount: 4,
-      separatorBuilder: (_, __) => Divider(height: 8, thickness: 8, color: border),
+      separatorBuilder: (_, __) =>
+          Divider(height: 8, thickness: 8, color: border),
       itemBuilder: (_, __) => Container(
         height: 110,
         color: card,
@@ -476,23 +555,35 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
           const SizedBox(width: 10),
           Expanded(
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(height: 12, width: 120, color: isDark ? Colors.white10 : Colors.grey.shade200),
-                const SizedBox(height: 8),
-                Container(height: 10, color: isDark ? Colors.white10 : Colors.grey.shade200),
-                const SizedBox(height: 4),
-                Container(height: 10, width: 200, color: isDark ? Colors.white10 : Colors.grey.shade200),
-              ],
-            ),
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+              Container(
+                  height: 12,
+                  width: 120,
+                  color: isDark
+                      ? Colors.white10
+                      : Colors.grey.shade200),
+              const SizedBox(height: 8),
+              Container(
+                  height: 10,
+                  color: isDark
+                      ? Colors.white10
+                      : Colors.grey.shade200),
+              const SizedBox(height: 4),
+              Container(
+                  height: 10,
+                  width: 200,
+                  color: isDark
+                      ? Colors.white10
+                      : Colors.grey.shade200),
+            ]),
           ),
         ]),
       )
           .animate(onPlay: (c) => c.repeat(reverse: true))
           .shimmer(
-            duration: 1200.ms,
-            color: isDark ? Colors.white10 : Colors.grey.shade100,
-          ),
+              duration: 1200.ms,
+              color: isDark ? Colors.white10 : Colors.grey.shade100),
     );
   }
 
@@ -503,29 +594,28 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
           const Text('⚠️', style: TextStyle(fontSize: 40)),
           const SizedBox(height: 12),
-          Text(
-            'Could not load posts',
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: text),
-          ),
+          Text('Could not load posts',
+              style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: text)),
           const SizedBox(height: 8),
-          Text(
-            'Check your connection and try again.',
-            style: TextStyle(color: sub, fontSize: 13),
-            textAlign: TextAlign.center,
-          ),
+          Text('Check your connection and try again.',
+              style: TextStyle(color: sub, fontSize: 13),
+              textAlign: TextAlign.center),
           const SizedBox(height: 20),
           GestureDetector(
             onTap: _loadPosts,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 11),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 24, vertical: 11),
               decoration: BoxDecoration(
-                color: AppColors.primary,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: const Text(
-                'Retry',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
-              ),
+                  color: AppColors.primary,
+                  borderRadius: BorderRadius.circular(20)),
+              child: const Text('Retry',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700)),
             ),
           ),
         ]),
@@ -538,42 +628,38 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
       child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
         Text(_emoji, style: const TextStyle(fontSize: 48)),
         const SizedBox(height: 12),
-        Text(
-          'No posts yet in this group',
-          style: TextStyle(color: sub, fontSize: 14),
-        ),
+        Text('No posts yet in this group',
+            style: TextStyle(color: sub, fontSize: 14)),
         if (_joined) ...[
           const SizedBox(height: 8),
           GestureDetector(
             onTap: () {
-              final isDark = Theme.of(context).brightness == Brightness.dark;
-              final border = isDark ? AppColors.bgSurface : Colors.grey.shade200;
-              final text   = isDark ? Colors.white        : Colors.black87;
-              final sub2   = isDark ? Colors.white54      : Colors.black45;
-              _showPostSheet(context, isDark, border, text, sub2);
+              final isDark =
+                  Theme.of(context).brightness == Brightness.dark;
+              _showPostSheet(
+                context,
+                isDark,
+                isDark ? AppColors.bgSurface : Colors.grey.shade200,
+                isDark ? Colors.white : Colors.black87,
+                isDark ? Colors.white54 : Colors.black45,
+              );
             },
-            child: Text(
-              'Be the first to post!',
-              style: TextStyle(
-                color: AppColors.primary,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
+            child: Text('Be the first to post!',
+                style: TextStyle(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w600)),
           ),
         ] else ...[
           const SizedBox(height: 10),
-          Text(
-            'Join the group to start posting.',
-            style: TextStyle(color: sub, fontSize: 12),
-          ),
+          Text('Join the group to start posting.',
+              style: TextStyle(color: sub, fontSize: 12)),
         ],
       ]),
     );
   }
 
   Widget _buildPostList(
-    bool isDark, Color card, Color border, Color text, Color sub,
-  ) {
+      bool isDark, Color card, Color border, Color text, Color sub) {
     final items = _withAdSlots(_posts);
 
     return RefreshIndicator(
@@ -587,7 +673,6 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
         itemBuilder: (_, i) {
           final item = items[i];
 
-          // ── Ad slot ──────────────────────────────────────────
           if (item is Map && item['_isAd'] == true) {
             return Padding(
               padding: const EdgeInsets.symmetric(vertical: 4),
@@ -601,145 +686,179 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
             );
           }
 
-          // ── Real post ─────────────────────────────────────────
-          final post   = item as Map;
-          final id     = post['id']?.toString() ?? '';
-          final liked  = _likedPosts.contains(id);
-          final likes  = _likeCounts[id]
-              ?? (post['likes_count'] as int?)
-              ?? (post['likes'] as int?)
-              ?? 0;
-          final comments = (post['comments_count'] as int?)
-              ?? (post['comments'] as int?)
-              ?? 0;
+          final post     = item as Map;
+          final id       = post['id']?.toString() ?? '';
+          final liked    = _likedPosts.contains(id);
+          final likes    = _likeCounts[id] ?? (post['likes_count'] as int?) ?? (post['likes'] as int?) ?? 0;
+          final comments = (post['comments_count'] as int?) ?? (post['comments'] as int?) ?? 0;
+          final authorName = post['author_name']?.toString() ?? post['name']?.toString() ?? 'Member';
+          final authorId   = post['author_id']?.toString() ?? post['user_id']?.toString() ?? '';
+          final avatarUrl  = post['avatar_url']?.toString();
 
           return Container(
             color: card,
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Author row
+                // ── Author row ────────────────────────────────────────
                 Row(children: [
-                  Container(
-                    width: 38, height: 38,
-                    decoration: BoxDecoration(
-                      color: AppColors.primary.withOpacity(0.12),
-                      shape: BoxShape.circle,
-                    ),
-                    child: Center(
-                      child: Text(
-                        post['avatar']?.toString() ?? '🌱',
-                        style: const TextStyle(fontSize: 18),
-                      ),
-                    ),
+                  // Tappable avatar
+                  GestureDetector(
+                    onTap: () => _navigateToUserProfile(authorId),
+                    child: _buildUserAvatar(
+                        avatarUrl: avatarUrl,
+                        name: authorName,
+                        size: 40),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          post['author_name']?.toString() ??
-                              post['name']?.toString() ??
-                              'Member',
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                            color: text,
-                          ),
-                        ),
+                    child: GestureDetector(
+                      onTap: () => _navigateToUserProfile(authorId),
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                        Text(authorName,
+                            style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                                color: text)),
                         Text(
                           _formatTimestamp(
-                            post['created_at']?.toString() ??
-                                post['time']?.toString() ??
-                                '',
-                          ),
+                              post['created_at']?.toString() ?? ''),
                           style: TextStyle(fontSize: 11, color: sub),
                         ),
-                      ],
+                      ]),
                     ),
                   ),
                 ]),
                 const SizedBox(height: 10),
 
-                // Content
-                Text(
-                  post['content']?.toString() ?? '',
-                  style: TextStyle(fontSize: 14, color: text, height: 1.55),
-                ),
-                const SizedBox(height: 10),
+                // ── Content ───────────────────────────────────────────
+                Text(post['content']?.toString() ?? '',
+                    style: TextStyle(
+                        fontSize: 14, color: text, height: 1.55)),
+                const SizedBox(height: 6),
 
-                // Reactions
+                // ── Reactions — Material + InkWell for instant feedback
                 Row(children: [
-                  GestureDetector(
-                    onTap: () => _toggleLike(post),
-                    behavior: HitTestBehavior.opaque,
-                    child: Padding(
-                      padding: const EdgeInsets.only(right: 4),
-                      child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 200),
-                        transitionBuilder: (child, anim) =>
-                            ScaleTransition(scale: anim, child: child),
-                        child: Icon(
-                          liked
-                              ? Icons.favorite_rounded
-                              : Icons.favorite_border_rounded,
-                          color: liked ? AppColors.error : sub,
-                          size: 18,
-                          key: ValueKey(liked),
-                        ),
+                  // Like button
+                  Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: () => _toggleLike(post),
+                      borderRadius: BorderRadius.circular(20),
+                      splashColor:
+                          AppColors.error.withOpacity(0.15),
+                      highlightColor:
+                          AppColors.error.withOpacity(0.08),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 8),
+                        child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                          AnimatedSwitcher(
+                            duration:
+                                const Duration(milliseconds: 200),
+                            transitionBuilder: (child, anim) =>
+                                ScaleTransition(
+                                    scale: anim, child: child),
+                            child: Icon(
+                              liked
+                                  ? Icons.favorite_rounded
+                                  : Icons.favorite_border_rounded,
+                              color: liked
+                                  ? AppColors.error
+                                  : sub,
+                              size: 20,
+                              key: ValueKey(liked),
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                          Text('$likes',
+                              style: TextStyle(
+                                  color: liked
+                                      ? AppColors.error
+                                      : sub,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600)),
+                        ]),
                       ),
                     ),
                   ),
-                  Text(
-                    '$likes',
-                    style: TextStyle(color: sub, fontSize: 12),
-                  ),
-                  const SizedBox(width: 16),
-                  Icon(Iconsax.message, color: sub, size: 18),
                   const SizedBox(width: 4),
-                  Text('$comments', style: TextStyle(color: sub, fontSize: 12)),
+
+                  // Comment button
+                  Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: () {
+                        HapticFeedback.lightImpact();
+                        // Navigate to comments when available
+                        // context.push('/comments/$id');
+                      },
+                      borderRadius: BorderRadius.circular(20),
+                      splashColor:
+                          AppColors.primary.withOpacity(0.12),
+                      highlightColor:
+                          AppColors.primary.withOpacity(0.06),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 8),
+                        child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                          Icon(Iconsax.message,
+                              color: sub, size: 20),
+                          const SizedBox(width: 5),
+                          Text('$comments',
+                              style: TextStyle(
+                                  color: sub,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600)),
+                        ]),
+                      ),
+                    ),
+                  ),
                 ]),
               ],
             ),
-          ).animate().fadeIn(delay: Duration(milliseconds: i * 40));
+          ).animate().fadeIn(
+              delay: Duration(milliseconds: i * 40));
         },
       ),
     );
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // TAB: MEMBERS
-  // ─────────────────────────────────────────────────────────────
+  // ── Members tab ────────────────────────────────────────────────────────────
 
   Widget _buildMembersTab(
-    bool isDark, Color card, Color border, Color text, Color sub,
-  ) {
-    if (_loadingMembers) {
+      bool isDark, Color card, Color border, Color text, Color sub) {
+    if (_loadingMembers && _members.isEmpty) {
       return const Center(
         child: CircularProgressIndicator(
-          color: AppColors.primary, strokeWidth: 2,
-        ),
+            color: AppColors.primary, strokeWidth: 2),
       );
     }
 
     if (_members.isEmpty) {
       return Center(
-        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+        child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
           const Text('👥', style: TextStyle(fontSize: 48)),
           const SizedBox(height: 12),
-          Text('No members yet', style: TextStyle(color: sub, fontSize: 14)),
+          Text('No members yet',
+              style: TextStyle(color: sub, fontSize: 14)),
           if (!_joined) ...[
             const SizedBox(height: 10),
             GestureDetector(
               onTap: _toggleJoin,
-              child: Text(
-                'Be the first to join!',
-                style: TextStyle(
-                  color: AppColors.primary, fontWeight: FontWeight.w600,
-                ),
-              ),
+              child: Text('Be the first to join!',
+                  style: TextStyle(
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w600)),
             ),
           ],
         ]),
@@ -754,70 +873,57 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
         final m       = _members[i];
         final isAdmin = m['is_admin'] == true || m['role'] == 'admin';
         final name    = m['name']?.toString() ?? m['username']?.toString() ?? 'Member';
-        final avatar  = m['avatar']?.toString() ?? '🌱';
-        final joined  = m['joined_at']?.toString() ?? m['created_at']?.toString() ?? '';
+        final uid     = m['id']?.toString() ?? '';
+        final avUrl   = m['avatar_url']?.toString();
+        final joined  = m['joined_at']?.toString() ?? '';
 
-        return ListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 0, vertical: 4),
-          leading: Container(
-            width: 44, height: 44,
-            decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(0.12),
-              shape: BoxShape.circle,
-            ),
-            child: Center(
-              child: Text(avatar, style: const TextStyle(fontSize: 20)),
-            ),
-          ),
-          title: Row(children: [
-            Text(
-              name,
-              style: TextStyle(
-                fontSize: 14, fontWeight: FontWeight.w600, color: text,
-              ),
-            ),
-            if (isAdmin) ...[
-              const SizedBox(width: 6),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: const Text(
-                  'Admin',
+        return GestureDetector(
+          onTap: () => _navigateToUserProfile(uid),
+          child: ListTile(
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 0, vertical: 4),
+            leading: _buildUserAvatar(
+                avatarUrl: avUrl, name: name, size: 44),
+            title: Row(children: [
+              Text(name,
                   style: TextStyle(
-                    fontSize: 9,
-                    color: AppColors.primary,
-                    fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: text)),
+              if (isAdmin) ...[
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(6),
                   ),
+                  child: const Text('Admin',
+                      style: TextStyle(
+                          fontSize: 9,
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w600)),
                 ),
-              ),
-            ],
-          ]),
-          subtitle: joined.isNotEmpty
-              ? Text(
-                  'Joined ${_formatTimestamp(joined)}',
-                  style: TextStyle(fontSize: 11, color: sub),
-                )
-              : null,
+              ],
+            ]),
+            subtitle: joined.isNotEmpty
+                ? Text('Joined ${_formatTimestamp(joined)}',
+                    style: TextStyle(fontSize: 11, color: sub))
+                : null,
+          ),
         ).animate().fadeIn(delay: Duration(milliseconds: i * 30));
       },
     );
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // TAB: ABOUT
-  // ─────────────────────────────────────────────────────────────
+  // ── About tab ──────────────────────────────────────────────────────────────
 
-  Widget _buildAboutTab(
-    bool isDark, Color card, Color text, Color sub,
-  ) {
-    if (_loadingGroup) {
+  Widget _buildAboutTab(bool isDark, Color card, Color text, Color sub) {
+    if (_loadingGroup && _group.isEmpty) {
       return const Center(
         child: CircularProgressIndicator(
-          color: AppColors.primary, strokeWidth: 2,
-        ),
+            color: AppColors.primary, strokeWidth: 2),
       );
     }
 
@@ -825,26 +931,29 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
-          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
             const Text('⚠️', style: TextStyle(fontSize: 40)),
             const SizedBox(height: 12),
-            Text(
-              'Could not load group details',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: text),
-            ),
+            Text('Could not load group details',
+                style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: text)),
             const SizedBox(height: 20),
             GestureDetector(
               onTap: _loadGroup,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 11),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 24, vertical: 11),
                 decoration: BoxDecoration(
-                  color: AppColors.primary,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: const Text(
-                  'Retry',
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
-                ),
+                    color: AppColors.primary,
+                    borderRadius: BorderRadius.circular(20)),
+                child: const Text('Retry',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700)),
               ),
             ),
           ]),
@@ -854,160 +963,131 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Group info card
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: isDark ? AppColors.bgCard : const Color(0xFFF8F8F8),
-              borderRadius: AppRadius.lg,
-            ),
-            child: Column(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: isDark
+                ? AppColors.bgCard
+                : const Color(0xFFF8F8F8),
+            borderRadius: AppRadius.lg,
+          ),
+          child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(children: [
-                  Text(_emoji, style: const TextStyle(fontSize: 36)),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          widget.groupName,
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700,
-                            color: text,
-                          ),
-                        ),
-                        if (_tag.isNotEmpty) ...[
-                          const SizedBox(height: 4),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 3,
-                            ),
-                            decoration: BoxDecoration(
-                              color: AppColors.primary.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(
-                              _tag,
-                              style: const TextStyle(
-                                fontSize: 10,
-                                color: AppColors.primary,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ],
+            Row(children: [
+              Text(_emoji, style: const TextStyle(fontSize: 36)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                  Text(widget.groupName,
+                      style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: text)),
+                  if (_tag.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color:
+                            AppColors.primary.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(_tag,
+                          style: const TextStyle(
+                              fontSize: 10,
+                              color: AppColors.primary,
+                              fontWeight: FontWeight.w600)),
                     ),
-                  ),
+                  ],
                 ]),
-                if (_description.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  Text(
-                    _description,
-                    style: TextStyle(fontSize: 13, color: sub, height: 1.5),
-                  ),
-                ],
-                const SizedBox(height: 16),
-                Row(children: [
-                  Icon(Iconsax.people, size: 16, color: sub),
-                  const SizedBox(width: 6),
-                  Text(
-                    '$_memberCount member${_memberCount == 1 ? '' : 's'}',
-                    style: TextStyle(
+              ),
+            ]),
+            if (_description.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text(_description,
+                  style: TextStyle(
+                      fontSize: 13, color: sub, height: 1.5)),
+            ],
+            const SizedBox(height: 16),
+            Row(children: [
+              Icon(Iconsax.people, size: 16, color: sub),
+              const SizedBox(width: 6),
+              Text(
+                  '$_memberCount member${_memberCount == 1 ? '' : 's'}',
+                  style: TextStyle(
                       fontSize: 13,
                       color: text,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ]),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          // Join CTA when not a member
-          if (!_joined) ...[
-            GestureDetector(
-              onTap: _toggleJoin,
-              child: Container(
-                width: double.infinity,
-                height: 50,
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [AppColors.primary, AppColors.accent],
-                  ),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: const Center(
-                  child: Text(
-                    'Join This Group',
+                      fontWeight: FontWeight.w600)),
+            ]),
+          ]),
+        ),
+        const SizedBox(height: 16),
+        if (!_joined) ...[
+          GestureDetector(
+            onTap: _toggleJoin,
+            child: Container(
+              width: double.infinity,
+              height: 50,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                    colors: [AppColors.primary, AppColors.accent]),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: const Center(
+                child: Text('Join This Group',
                     style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 15,
-                    ),
-                  ),
-                ),
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 15)),
               ),
             ),
-            const SizedBox(height: 20),
-          ],
-
-          // Community guidelines
-          Text(
-            'Community Guidelines',
-            style: TextStyle(
-              fontSize: 15, fontWeight: FontWeight.w700, color: text,
-            ),
           ),
-          const SizedBox(height: 12),
-          ...[
-            '✅ Share real experiences and income wins',
-            '✅ Ask questions — no question is too basic',
-            '🚫 No spam or self-promotion without value',
-            '🚫 Be respectful to all members',
-            '💡 Help others when you can',
-          ].map((rule) => Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: Text(
-                  rule,
-                  style: TextStyle(fontSize: 13, color: sub, height: 1.5),
-                ),
-              )),
+          const SizedBox(height: 20),
         ],
-      ),
+        Text('Community Guidelines',
+            style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+                color: text)),
+        const SizedBox(height: 12),
+        ...[
+          '✅ Share real experiences and income wins',
+          '✅ Ask questions — no question is too basic',
+          '🚫 No spam or self-promotion without value',
+          '🚫 Be respectful to all members',
+          '💡 Help others when you can',
+        ].map((rule) => Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Text(rule,
+                  style: TextStyle(
+                      fontSize: 13, color: sub, height: 1.5)),
+            )),
+      ]),
     );
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // POST SHEET
-  // ─────────────────────────────────────────────────────────────
+  // ── Post sheet ─────────────────────────────────────────────────────────────
 
-  void _showPostSheet(
-    BuildContext ctx, bool isDark,
-    Color border, Color text, Color sub,
-  ) {
+  void _showPostSheet(BuildContext ctx, bool isDark, Color border,
+      Color text, Color sub) {
     showModalBottomSheet(
       context: ctx,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => Padding(
         padding: EdgeInsets.only(
-          bottom: MediaQuery.of(ctx).viewInsets.bottom,
-        ),
+            bottom: MediaQuery.of(ctx).viewInsets.bottom),
         child: Container(
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
             color: isDark ? AppColors.bgCard : Colors.white,
             borderRadius: const BorderRadius.vertical(
-              top: Radius.circular(20),
-            ),
+                top: Radius.circular(20)),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -1023,12 +1103,11 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
                 ),
               ),
               const SizedBox(height: 16),
-              Text(
-                'Post to ${widget.groupName}',
-                style: TextStyle(
-                  fontSize: 16, fontWeight: FontWeight.w700, color: text,
-                ),
-              ),
+              Text('Post to ${widget.groupName}',
+                  style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: text)),
               const SizedBox(height: 12),
               TextField(
                 controller: _postCtrl,
@@ -1036,8 +1115,10 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
                 maxLength: 500,
                 style: TextStyle(fontSize: 14, color: text),
                 decoration: InputDecoration(
-                  hintText: 'Share a win, question, or insight...',
-                  hintStyle: TextStyle(color: sub),
+                  hintText:
+                      'Share a win, question, or insight...',
+                  hintStyle:
+                      TextStyle(color: sub),
                   filled: true,
                   fillColor: isDark
                       ? AppColors.bgSurface
@@ -1046,7 +1127,8 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
                     borderRadius: BorderRadius.circular(12),
                     borderSide: BorderSide.none,
                   ),
-                  counterStyle: TextStyle(color: sub, fontSize: 11),
+                  counterStyle:
+                      TextStyle(color: sub, fontSize: 11),
                 ),
                 autofocus: true,
               ),
@@ -1063,22 +1145,17 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
                         AppColors.primary.withOpacity(0.45),
                     padding: const EdgeInsets.symmetric(vertical: 13),
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
+                        borderRadius: BorderRadius.circular(12)),
                   ),
                   child: _posting
                       ? const SizedBox(
                           width: 20, height: 20,
                           child: CircularProgressIndicator(
-                            color: Colors.white, strokeWidth: 2,
-                          ),
-                        )
-                      : const Text(
-                          'Post',
+                              color: Colors.white, strokeWidth: 2))
+                      : const Text('Post',
                           style: TextStyle(
-                            color: Colors.white, fontWeight: FontWeight.w700,
-                          ),
-                        ),
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700)),
                 ),
               ),
             ],
@@ -1088,20 +1165,17 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
     );
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // UTILITIES
-  // ─────────────────────────────────────────────────────────────
+  // ── Timestamp ──────────────────────────────────────────────────────────────
 
-  /// Lightweight relative-time formatter.
   String _formatTimestamp(String raw) {
     if (raw.isEmpty) return '';
     try {
-      final dt = DateTime.parse(raw).toLocal();
+      final dt   = DateTime.parse(raw).toLocal();
       final diff = DateTime.now().difference(dt);
-      if (diff.inSeconds < 60)  return 'just now';
-      if (diff.inMinutes < 60)  return '${diff.inMinutes}m ago';
-      if (diff.inHours   < 24)  return '${diff.inHours}h ago';
-      if (diff.inDays    < 7)   return '${diff.inDays}d ago';
+      if (diff.inSeconds < 60) return 'just now';
+      if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+      if (diff.inHours   < 24) return '${diff.inHours}h ago';
+      if (diff.inDays    <  7) return '${diff.inDays}d ago';
       return '${dt.day}/${dt.month}/${dt.year}';
     } catch (_) {
       return raw;
@@ -1109,5 +1183,4 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
   }
 }
 
-/// Fire-and-forget helper — suppresses unhandled future lint.
 void unawaited(Future<void> f) {}
