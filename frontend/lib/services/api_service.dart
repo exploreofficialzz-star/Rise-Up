@@ -1,11 +1,14 @@
 // frontend/lib/services/api_service.dart
 //
-// Changes vs original:
-//  • _addAuthInterceptor: when refresh fails → authService.onAuthenticationFailed()
-//  • signIn now calls authService.onLoginSuccess()
-//  • signOut now calls authService.onLogout()
-//  • registerFcmToken updated to named parameters    ← NEW (matches notification_service.dart)
-//  • unregisterFcmToken added                        ← NEW
+// Changelog:
+//  v2.2: getGroups() → /groups (full groups feature, fixes GroupsScreen 404)
+//        toggleGroup() → /groups/{id}/join  (fixes "Failed to create group")
+//        getMessageGroups() added → /messages/groups (Messages tab groups list)
+//  v2.1: _addAuthInterceptor: when refresh fails → authService.onLogout()
+//        signIn calls authService.onLoginSuccess()
+//        signOut calls authService.onLogout()
+//        registerFcmToken updated to named parameters
+//        unregisterFcmToken added
 //
 import 'dart:io';
 import 'package:dio/dio.dart';
@@ -122,7 +125,7 @@ class ApiService {
               return handler.next(error);
             }
           } else {
-           await authService.onLogout();
+            await authService.onLogout();
             return handler.next(error);
           }
         }
@@ -627,29 +630,29 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>> createPost({
-  required String content,
-  required String tag,
-  String? mediaUrl,
-  String? mediaType,
-  String? linkUrl,
-  String? linkTitle,
-  Map<String, dynamic>? extra,   // ← ADD THIS LINE
-}) async {
-  try {
-    final body = <String, dynamic>{
-      'content': content,
-      'tag':     tag,
-      if (mediaUrl  != null && mediaUrl.isNotEmpty)  'media_url':  mediaUrl,
-      if (mediaType != null && mediaType.isNotEmpty) 'media_type': mediaType,
-      if (linkUrl   != null && linkUrl.isNotEmpty)   'link_url':   linkUrl,
-      if (linkTitle != null && linkTitle.isNotEmpty) 'link_title': linkTitle,
-      if (extra != null) ...extra,   // ← ADD THIS LINE (spreads extra fields into body)
-    };
-    final r = await _dio.post('/posts', data: body);
-    return r.data as Map<String, dynamic>;
-  } catch (e) { throw _handleError(e); }
+    required String content,
+    required String tag,
+    String? mediaUrl,
+    String? mediaType,
+    String? linkUrl,
+    String? linkTitle,
+    Map<String, dynamic>? extra,
+  }) async {
+    try {
+      final body = <String, dynamic>{
+        'content': content,
+        'tag':     tag,
+        if (mediaUrl  != null && mediaUrl.isNotEmpty)  'media_url':  mediaUrl,
+        if (mediaType != null && mediaType.isNotEmpty) 'media_type': mediaType,
+        if (linkUrl   != null && linkUrl.isNotEmpty)   'link_url':   linkUrl,
+        if (linkTitle != null && linkTitle.isNotEmpty) 'link_title': linkTitle,
+        if (extra != null) ...extra,
+      };
+      final r = await _dio.post('/posts', data: body);
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
   }
-  
+
   Future<Map<String, dynamic>> updatePost(
     String postId, {
     String? content,
@@ -949,7 +952,6 @@ class ApiService {
 
   // ── Notifications ─────────────────────────────────────────────────────────
 
-  // ← UPDATED: changed to named parameters to match notification_service.dart
   Future<void> registerFcmToken({
     required String token,
     required String platform,
@@ -962,7 +964,6 @@ class ApiService {
     }
   }
 
-  // ← NEW: called by notification_service.dart on logout
   Future<void> unregisterFcmToken(String token) async {
     try {
       await _dio.delete('/notifications/unregister-token',
@@ -1190,17 +1191,37 @@ class ApiService {
   }
 
   // ── Groups ────────────────────────────────────────────────────────────────
+  //
+  // TWO separate concepts:
+  //   getGroups()        → GET /groups       — full groups feature (GroupsScreen)
+  //   getMessageGroups() → GET /messages/groups — joined groups for Messages tab
+  //
+  // getGroups() used by groups_screen.dart ─────────────────────────────────
 
+  /// Returns all groups with membership status for the GroupsScreen.
+  /// Hits GET /api/v1/groups
   Future<Map<String, dynamic>> getGroups() async {
     try {
-      final r = await _dio.get('/messages/groups');
+      final r = await _dio.get('/groups');
       return r.data as Map<String, dynamic>;
     } catch (e) { throw _handleError(e); }
   }
 
+  /// Toggle join / leave a group.
+  /// Hits POST /api/v1/groups/{id}/join
+  /// Returns: { "joined": true|false }
   Future<Map<String, dynamic>> toggleGroup(String groupId) async {
     try {
-      final r = await _dio.post('/messages/groups/$groupId/join', data: {});
+      final r = await _dio.post('/groups/$groupId/join', data: {});
+      return r.data as Map<String, dynamic>;
+    } catch (e) { throw _handleError(e); }
+  }
+
+  /// Returns groups the user has joined — shown in the Messages tab.
+  /// Hits GET /api/v1/messages/groups
+  Future<Map<String, dynamic>> getMessageGroups() async {
+    try {
+      final r = await _dio.get('/messages/groups');
       return r.data as Map<String, dynamic>;
     } catch (e) { throw _handleError(e); }
   }
