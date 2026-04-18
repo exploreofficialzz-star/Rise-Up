@@ -1,14 +1,27 @@
 // frontend/lib/screens/auth/splash_screen.dart
-// v3.0 — Adaptive splash timing (Facebook/Instagram model)
+// v4.0 — Token-First Routing
 //
-// Timing strategy:
-//  • Returning authenticated user → 1 500 ms  (fast path to content)
-//  • Unknown status (resolving)   → waits for auth + minimum 1 500 ms
-//  • New / unauthenticated user   → 2 000 ms  (shows brand before login)
+// CHANGE vs v3:
+//  The old _resolveDestination() polled authService.status, which could briefly
+//  be 'unauthenticated' right after an update while Supabase was validating the
+//  restored session. If the poll caught that brief dip, the user was sent to
+//  /login. GoRouter then also saw 'unauthenticated' and confirmed the redirect.
 //
-// Auth resolution runs in parallel with the timer so there is zero idle
-// wait — the user always navigates the instant both complete.
+//  Fix — token-first approach:
+//    If tokens exist in storage → go to /home, unconditionally.
+//    The auth service validates in background. If truly invalid, GoRouter
+//    redirects to /login AFTER the user is at /home (rare, graceful).
+//    Only send to /login when storage is confirmed empty AND status is
+//    unauthenticated (or timed out after 3 s).
+//
+//  This mirrors how Facebook/Instagram/YouTube work: the stored credential
+//  IS the login — no server round-trip is needed before showing the feed.
+//
+// Timing strategy (unchanged):
+//  • Returning user (tokens found)  → 800 ms  (very fast: straight to feed)
+//  • New / logged-out user          → 2 000 ms (brand moment before /login)
 
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../services/auth_service.dart';
@@ -22,8 +35,8 @@ class SplashScreen extends StatefulWidget {
 
 class _SplashScreenState extends State<SplashScreen>
     with SingleTickerProviderStateMixin {
-  late AnimationController _dotsCtrl;
-  late Animation<double>   _fadeIn;
+  late final AnimationController _dotsCtrl;
+  late final Animation<double>   _fadeIn;
 
   @override
   void initState() {
@@ -52,59 +65,85 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<void> _navigate() async {
-    // Determine the minimum display time based on current auth state.
-    // Returning users see a short splash; new users see a full brand moment.
-    final minDisplay = _minDisplayDuration();
-
-    // Run timer and auth resolution in parallel — navigate when both done.
+    // Check tokens and decide route in parallel with minimum display timer.
     final results = await Future.wait([
-      Future.delayed(minDisplay),
       _resolveDestination(),
+      _minTimer(),
     ]);
 
     if (!mounted) return;
-    context.go(results[1] as String);
+    context.go(results[0] as String);
   }
 
-  /// Minimum time the splash is shown.
-  Duration _minDisplayDuration() {
-    switch (authService.status) {
-      case AuthStatus.authenticated:
-        // User is already verified — brief splash before jumping to feed
-        return const Duration(milliseconds: 1500);
-      case AuthStatus.unauthenticated:
-        // New or logged-out user — show brand moment before login screen
-        return const Duration(milliseconds: 2000);
-      case AuthStatus.unknown:
-        // Auth is still resolving — wait long enough for it to finish
-        return const Duration(milliseconds: 1500);
-    }
-  }
-
-  /// Determines the target route. initialize() in main() will have already
-  /// resolved the status in most cases; the polls below are a safety net
-  /// for any startup race conditions on slower devices.
+  // ── Token-first routing ────────────────────────────────────────────────────
+  //
+  // Priority order:
+  //  1. Tokens in storage → /home  (offline-first, like Facebook)
+  //  2. authService says authenticated → /home
+  //  3. authService says unauthenticated + no tokens → /login
+  //  4. Timeout (3 s) + no tokens → /login
+  //
+  // Why tokens take priority over authService.status:
+  //   After a new deploy, Supabase can fire signedOut within the first
+  //   few seconds while validating the session. If the backend is cold-
+  //   starting, the refresh request times out and status briefly shows
+  //   as unauthenticated — even though the user IS authenticated and has
+  //   valid tokens in storage. Routing based on tokens avoids this race.
   Future<String> _resolveDestination() async {
-    // Fast path — already resolved before splash rendered
-    if (authService.status == AuthStatus.authenticated) return '/home';
+    // Step 1: Read tokens from storage — this is the ground truth.
+    // Uses the dual-storage (secure + SharedPreferences backup on web)
+    // so tokens are found even during a service worker swap.
+    final refresh = await storageService.read(key: 'refresh_token');
+    final access  = await storageService.read(key: 'access_token');
+    final hasTokens = refresh != null || access != null;
+
+    if (hasTokens) {
+      // Tokens exist → the user is authenticated.
+      // Wait briefly for authService to confirm (fast path), but
+      // never send them to /login even if the status is briefly wrong.
+      for (int i = 0; i < 10; i++) {
+        await Future.delayed(const Duration(milliseconds: 100));
+        if (authService.status == AuthStatus.authenticated) return '/home';
+        // Even if status says unauthenticated here, tokens exist — go home.
+        // The auth service's startup grace period + background refresh
+        // will validate the session without the user ever seeing /login.
+        if (authService.status == AuthStatus.unauthenticated) return '/home';
+      }
+      // Status stayed 'unknown' for 1 s but tokens exist — still go home.
+      return '/home';
+    }
+
+    // Step 2: No tokens in storage.
+    // Fast path if auth service has already resolved.
+    if (authService.status == AuthStatus.authenticated)   return '/home';
     if (authService.status == AuthStatus.unauthenticated) return '/login';
 
-    // Status still unknown — poll with short intervals (max ~3 s total)
+    // Step 3: No tokens + status still unknown → poll up to 3 s.
     for (int i = 0; i < 15; i++) {
       await Future.delayed(const Duration(milliseconds: 200));
-      if (authService.status == AuthStatus.authenticated) return '/home';
+      if (authService.status == AuthStatus.authenticated)   return '/home';
       if (authService.status == AuthStatus.unauthenticated) return '/login';
     }
 
-    // Timeout fallback — check raw token presence
-    final access  = await storageService.read(key: 'access_token');
-    final refresh = await storageService.read(key: 'refresh_token');
-
-    // Prefer keeping the user in if any token exists (offline-first)
-    if (refresh != null || access != null) return '/home';
+    // Step 4: 3-second timeout, no tokens, status never resolved → new user.
     return '/login';
   }
 
+  // Minimum display duration so the splash doesn't flash by too quickly.
+  Future<void> _minTimer() async {
+    // Returning users (tokens found) feel fastest; new users see the brand.
+    final hasTokens =
+        await storageService.read(key: 'refresh_token') != null ||
+        await storageService.read(key: 'access_token')  != null;
+
+    await Future.delayed(
+      hasTokens
+          ? const Duration(milliseconds: 800)   // fast path to feed
+          : const Duration(milliseconds: 2000),  // brand moment for new user
+    );
+  }
+
+  // ── UI (unchanged from v3) ─────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     final isDark      = Theme.of(context).brightness == Brightness.dark;
@@ -118,7 +157,7 @@ class _SplashScreenState extends State<SplashScreen>
         opacity: _fadeIn,
         child: Stack(
           children: [
-            // ── Logo + wordmark ─────────────────────────────────────────
+            // ── Logo + wordmark ──────────────────────────────────────────
             Positioned(
               top:   screenH * 0.28,
               left:  0,
@@ -164,7 +203,7 @@ class _SplashScreenState extends State<SplashScreen>
               ),
             ),
 
-            // ── Animated loading dots ───────────────────────────────────
+            // ── Animated loading dots ────────────────────────────────────
             Positioned(
               bottom: 100,
               left:   0,
@@ -187,7 +226,7 @@ class _SplashScreenState extends State<SplashScreen>
               ),
             ),
 
-            // ── Footer ──────────────────────────────────────────────────
+            // ── Footer ───────────────────────────────────────────────────
             Positioned(
               bottom: 40,
               left:   0,
@@ -210,7 +249,7 @@ class _SplashScreenState extends State<SplashScreen>
   }
 }
 
-// ── Bouncing dot ───────────────────────────────────────────────────────────
+// ── Bouncing dot (unchanged) ──────────────────────────────────────────────────
 class _Dot extends StatelessWidget {
   final AnimationController ctrl;
   final double delay;
