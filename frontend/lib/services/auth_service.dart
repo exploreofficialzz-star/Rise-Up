@@ -86,11 +86,13 @@ class AuthService extends ChangeNotifier {
   // ── RESTORE SUPABASE SESSION ──────────────────────────────────────────
   // Silently push stored tokens into the Supabase client so it can manage
   // its own refresh cycle. Called on cold start and after every refresh.
+  // setSession() in this supabase_flutter version takes only the refresh token.
+  // Supabase will exchange it internally and restore the full session.
   void _restoreSupabaseSession(String access, String refresh) {
     try {
-      Supabase.instance.client.auth.setSession(access, refresh);
+      Supabase.instance.client.auth.setSession(refresh);
     } catch (_) {
-      // Tokens may be expired — that's fine; background refresh handles it.
+      // Tokens may be expired — background refresh handles it.
     }
   }
 
