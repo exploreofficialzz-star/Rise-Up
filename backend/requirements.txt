@@ -21,6 +21,11 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 python-multipart==0.0.9
 
+# Database (SQLAlchemy async + Postgres drivers)
+sqlalchemy==2.0.31
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+
 # Utils
 tenacity==8.3.0
 python-dateutil==2.9.0
