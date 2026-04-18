@@ -1,7 +1,29 @@
 // frontend/lib/screens/messages/ai_mentor_screen.dart
-// RiseUp AI Mentor — Production v2.0
-// All AI calls routed through /messages/... endpoints (messages.py).
-// Removed broken /ai/chat and /ai/conversations references.
+// RiseUp AI Mentor — Production v3.0
+//
+// ROOT CAUSE FIX (two issues found and resolved):
+//
+// ISSUE 1 — ai_service.py GroqClient.TPM_LIMITS (silent model skip):
+//   v3.1 introduced TPM_LIMITS which compares single-request token estimates
+//   against tokens-per-MINUTE rate limits — fundamentally different things.
+//   Groq context windows are 128K tokens. The RISEUP_MENTOR_PROMPT alone is
+//   ~8,000+ chars. After 4-5 exchanges the accumulated history pushed the
+//   estimate above all three TPM values (6K–8K), silently skipping ALL Groq
+//   models. Other screens worked because they never persist history across
+//   calls so they always start fresh and stay under the threshold.
+//   FIX → Remove GroqClient.TPM_LIMITS and _estimate_tokens entirely in
+//   ai_service.py. Let Groq fail via real API errors if TPM is actually
+//   exceeded, then fall back naturally to the next model.
+//
+// ISSUE 2 — Wrong endpoint (screen → /ai/chat instead of /mentor/chat):
+//   /ai/chat is designed for generic single-turn AI calls (ai_agent.py).
+//   /mentor/chat (mentor.py) is the purpose-built endpoint with proper
+//   session management (chat_sessions / chat_messages tables), full brain
+//   context injection, APEX delegation detection, and onboarding.
+//   FIX → Route all calls through POST /mentor/chat. Session IDs returned
+//   by the server are cached in SharedPreferences under a new key
+//   (_kSessionIdKey) so history reloads correctly on re-open.
+//
 // Route: /ai-mentor
 // ignore_for_file: deprecated_member_use
 
@@ -25,17 +47,17 @@ import '../../services/api_service.dart';
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
-const int _kFreeMessages = 3;
-const int _kAdsPerCycle  = 2;
-const int _kMsgsPerCycle = 3;
-const int _kMaxResponses = 30;
-const Duration _kCycleLock = Duration(hours: 3);
-const Duration _kDailyLock = Duration(hours: 24);
+const int      _kFreeMessages = 3;
+const int      _kAdsPerCycle  = 2;
+const int      _kMsgsPerCycle = 3;
+const int      _kMaxResponses = 30;
+const Duration _kCycleLock    = Duration(hours: 3);
+const Duration _kDailyLock    = Duration(hours: 24);
 
-const String _kQuotaKey   = 'riseup_ai_quota_v4';
-const String _kConvIdKey  = 'riseup_ai_conv_id_v3'; // bumped to clear stale cached IDs
-const String _kGreetedKey = 'riseup_ai_greeted_v2_new';
-const int    _kCtxWindow  = 50;
+const String _kQuotaKey     = 'riseup_ai_quota_v4';
+// New key namespace — stores /mentor/chat session IDs, not old conv IDs
+const String _kSessionIdKey = 'riseup_mentor_session_v1';
+const String _kGreetedKey   = 'riseup_ai_greeted_v2_new';
 
 const List<String> _kAiErrorPhrases = [
   'experiencing technical difficulties',
@@ -48,7 +70,7 @@ const List<String> _kAiErrorPhrases = [
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Brain data model — retained for future use, populated when available
+// Brain data model
 // ─────────────────────────────────────────────────────────────────────────────
 class _BrainData {
   final String intent;
@@ -58,13 +80,13 @@ class _BrainData {
   final String? escalationReason, suggestedTaskType;
 
   const _BrainData({
-    this.intent = 'explore',
-    this.internalFound = false,
-    this.methods = const [],
-    this.marketplace = const [],
-    this.serviceProviders = const [],
+    this.intent            = 'explore',
+    this.internalFound     = false,
+    this.methods           = const [],
+    this.marketplace       = const [],
+    this.serviceProviders  = const [],
     this.complementaryUsers = const [],
-    this.needsExternal = false,
+    this.needsExternal     = false,
     this.escalationReason,
     this.suggestedTaskType,
   });
@@ -74,15 +96,15 @@ class _BrainData {
   bool get hasComplementary => complementaryUsers.isNotEmpty;
 
   factory _BrainData.fromResponse(Map<String, dynamic> r) => _BrainData(
-        intent:             r['brain_intent']?.toString() ?? 'explore',
-        internalFound:      r['brain_internal_found'] == true,
-        methods:            (r['brain_methods']          as List?) ?? [],
-        marketplace:        (r['brain_marketplace']      as List?) ?? [],
+        intent:             r['brain_intent']?.toString()          ?? 'explore',
+        internalFound:      r['brain_internal_found']              == true,
+        methods:            (r['brain_methods']           as List?) ?? [],
+        marketplace:        (r['brain_marketplace']       as List?) ?? [],
         serviceProviders:   (r['brain_service_providers'] as List?) ?? [],
-        needsExternal:      r['brain_needs_external'] == true,
+        needsExternal:      r['brain_needs_external']              == true,
         escalationReason:   r['brain_escalation_reason']?.toString(),
         suggestedTaskType:  r['brain_suggested_task_type']?.toString(),
-        complementaryUsers: (r['complementary_users']    as List?) ?? [],
+        complementaryUsers: (r['complementary_users']     as List?) ?? [],
       );
 }
 
@@ -108,7 +130,7 @@ class _DelegationPayload {
 class _Msg {
   final String id;
   final bool isMe, isAI, isError;
-  bool isDeleted, isEdited, isTyping;
+  bool isDeleted, isTyping;
   String content, displayText;
   _BrainData? brainData;
   _DelegationPayload? delegation;
@@ -118,10 +140,9 @@ class _Msg {
     String? id,
     required this.content,
     required this.isMe,
-    this.isAI = false,
-    this.isError = false,
+    this.isAI      = false,
+    this.isError   = false,
     this.isDeleted = false,
-    this.isEdited = false,
     this.brainData,
     this.delegation,
     DateTime? time,
@@ -156,14 +177,14 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
   bool _scrollLocked     = false;
   bool _showQuickActions = false;
 
-  String? _convId;
-  String? _lastPollTime;
+  // Session managed by mentor.py → chat_sessions / chat_messages tables
+  String? _sessionId;
+
   String? _cachedMyId;
   String? _cachedMyName;
   String? _lastSentText;
 
   Timer? _typingTimer;
-  Timer? _pollTimer;
 
   Map<String, dynamic> _quota = {
     'free_used':           0,
@@ -226,7 +247,6 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
   @override
   void dispose() {
     _typingTimer?.cancel();
-    _pollTimer?.cancel();
     _textCtrl.dispose();
     _inputFocus.dispose();
     _scroll.removeListener(_onScroll);
@@ -241,7 +261,6 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     await _loadQuota();
     await _fetchMyInfo();
     await _loadHistory();
-    _startPolling();
     if (widget.postContext?.isNotEmpty == true) {
       await Future.delayed(const Duration(milliseconds: 600));
       await _sendAI(
@@ -270,7 +289,6 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
         }
       }
     } catch (_) {}
-
     try {
       final remote = await api.getAIQuota();
       if (mounted) {
@@ -297,17 +315,6 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     } catch (_) {}
   }
 
-  /// Sync server quota fields into local state after each AI response.
-  void _syncQuotaFromResponse(Map<String, dynamic> quotaMap) {
-    final serverFreeUsed  = (quotaMap['free_used']  as int?) ?? 0;
-    final serverIsPremium = quotaMap['is_premium']  == true;
-    setState(() {
-      _quota['free_used']  = max(_freeUsed, serverFreeUsed);
-      _quota['is_premium'] = serverIsPremium;
-    });
-    _saveQuota();
-  }
-
   _QuotaResult _checkQuota() {
     if (_isPremium)      return _QuotaResult.allowed;
     if (_inDailyLockout) return _QuotaResult.hardLockout;
@@ -320,18 +327,16 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
   Future<void> _consumeAdMessage() async {
     final newMsgs  = _cycleMsgs + 1;
     final newTotal = _totalResponses + 1;
-    final cycleExhausted = newMsgs >= _kMsgsPerCycle;
-    final hitDailyMax    = newTotal >= _kMaxResponses;
     setState(() {
       _quota['cycle_msgs']      = newMsgs;
       _quota['total_responses'] = newTotal;
-      if (hitDailyMax) {
+      if (newTotal >= _kMaxResponses) {
         _quota['daily_lockout_until'] =
             DateTime.now().add(_kDailyLock).toIso8601String();
         _quota['cycle_lockout_until'] = null;
         _quota['cycle_ads']           = 0;
         _quota['cycle_msgs']          = 0;
-      } else if (cycleExhausted) {
+      } else if (newMsgs >= _kMsgsPerCycle) {
         _quota['cycle_lockout_until'] =
             DateTime.now().add(_kCycleLock).toIso8601String();
         _quota['cycle_ads']  = 0;
@@ -356,78 +361,73 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
   }
 
   // ── History ────────────────────────────────────────────────────────────────
-  /// Gets (or creates) the dedicated AI conversation, then loads its messages.
-  /// Uses /messages/ai-conversation and /messages/conversations/{id}/messages.
+  /// Loads mentor session history via GET /mentor/sessions + GET /mentor/session/{id}.
+  /// mentor.py writes to chat_sessions / chat_messages — separate from DM tables.
   Future<void> _loadHistory() async {
-    // ── Step 1: Resolve the AI conversation ID from the server.
-    // Always call this — it creates the conversation if it doesn't exist yet
-    // and returns a greeting message on first call.
+    // 1. Restore cached session ID from prefs
     try {
-      final res = await api.get('/messages/ai-conversation');
-      final serverConvId = res['conversation_id']?.toString() ?? '';
-      if (serverConvId.isNotEmpty) {
-        _convId = serverConvId;
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString(_kConvIdKey, _convId!);
-      }
-    } catch (e) {
-      // Fallback: try cached ID from prefs
+      final prefs = await SharedPreferences.getInstance();
+      _sessionId  = prefs.getString(_kSessionIdKey);
+    } catch (_) {}
+
+    // 2. If no cached session, ask the server for the most recent one
+    if (_sessionId == null || _sessionId!.isEmpty) {
       try {
-        final prefs  = await SharedPreferences.getInstance();
-        final cached = prefs.getString(_kConvIdKey);
-        if (cached?.isNotEmpty == true) _convId = cached;
+        final res  = await api.get('/mentor/sessions', queryParams: {'limit': 1});
+        final list = (res['sessions'] as List?) ?? [];
+        if (list.isNotEmpty) {
+          _sessionId = list.first['id']?.toString() ?? '';
+          if (_sessionId!.isNotEmpty) {
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString(_kSessionIdKey, _sessionId!);
+          }
+        }
       } catch (_) {}
     }
 
-    if (_convId == null || _convId!.isEmpty) {
-      if (mounted) setState(() => _historyLoaded = true);
-      await _maybeShowGreeting();
-      return;
-    }
+    // 3. Load messages for that session
+    if (_sessionId != null && _sessionId!.isNotEmpty) {
+      try {
+        final res  = await api.get(
+          '/mentor/session/$_sessionId',
+          queryParams: {'limit': 50},
+        );
+        final msgs = (res['messages'] as List?) ?? [];
+        if (!mounted) return;
 
-    // ── Step 2: Load messages for this conversation.
-    try {
-      final msgs = await api.getDMMessages(_convId!, limit: _kCtxWindow);
-      if (!mounted) return;
-
-      // Filter AI error phrases that were persisted in DB from previous failures.
-      final filtered = msgs.where((m) {
-        final role    = m['role']?.toString() ?? '';
-        final content = m['content']?.toString() ?? '';
-        if (role == 'assistant' && _isErrorPhrase(content)) return false;
-        return true;
-      }).toList();
-
-      if (filtered.isNotEmpty) {
-        setState(() {
-          _msgs.clear();
-          for (final m in filtered) _msgs.add(_parseMsgFromAPI(m as Map));
-          _historyLoaded = true;
-        });
-        _lastPollTime = (msgs.last)['created_at']?.toString();
-        WidgetsBinding.instance.addPostFrameCallback((_) => _scrollDown(jump: true));
-      } else {
-        setState(() => _historyLoaded = true);
-        await _maybeShowGreeting();
+        if (msgs.isNotEmpty) {
+          setState(() {
+            _msgs.clear();
+            for (final raw in msgs) {
+              final m       = raw as Map;
+              final role    = m['role']?.toString() ?? 'user';
+              final isAI    = role == 'assistant';
+              final content = m['content']?.toString() ?? '';
+              // Skip persisted error phrases from old AI failures
+              if (isAI && _isErrorPhrase(content)) continue;
+              if (content.isEmpty) continue;
+              _msgs.add(_Msg(content: content, isMe: !isAI, isAI: isAI));
+            }
+            _historyLoaded = true;
+          });
+          if (_msgs.isNotEmpty) {
+            WidgetsBinding.instance
+                .addPostFrameCallback((_) => _scrollDown(jump: true));
+            return;
+          }
+        }
+      } catch (_) {
+        // Session may have been deleted — clear and start fresh
+        _sessionId = null;
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.remove(_kSessionIdKey);
+        } catch (_) {}
       }
-    } catch (e) {
-      if (mounted) setState(() => _historyLoaded = true);
-      await _maybeShowGreeting();
     }
-  }
 
-  _Msg _parseMsgFromAPI(Map m) {
-    final role = m['role']?.toString() ?? 'user';
-    final isAI = role == 'assistant';
-    return _Msg(
-      id:        m['id']?.toString(),
-      content:   m['content']?.toString() ?? '',
-      isMe:      !isAI,
-      isAI:      isAI,
-      isDeleted: m['is_deleted'] == true,
-      isEdited:  m['is_edited']  == true,
-      time:      DateTime.tryParse(m['created_at']?.toString() ?? '')?.toLocal(),
-    );
+    if (mounted) setState(() => _historyLoaded = true);
+    await _maybeShowGreeting();
   }
 
   Future<void> _maybeShowGreeting() async {
@@ -450,55 +450,6 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     );
     setState(() => _msgs.add(greeting));
     _typeMessage(greeting);
-  }
-
-  // ── Polling ────────────────────────────────────────────────────────────────
-  void _startPolling() {
-    _pollTimer?.cancel();
-    _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _poll());
-  }
-
-  Future<void> _poll() async {
-    if (!_historyLoaded || _aiResponding || _convId == null) return;
-    try {
-      final msgs = await api.getDMMessages(
-        _convId!,
-        since: _lastPollTime,
-        limit: 20,
-      );
-      if (msgs.isEmpty || !mounted) return;
-
-      final existingIds = _msgs.map((m) => m.id).toSet();
-      final sinceTime   = _lastPollTime != null
-          ? DateTime.tryParse(_lastPollTime!)
-          : null;
-      bool added = false;
-
-      setState(() {
-        for (final raw in msgs) {
-          final m       = raw as Map;
-          final id      = m['id']?.toString() ?? '';
-          if (id.isEmpty || existingIds.contains(id)) continue;
-
-          final msgTime =
-              DateTime.tryParse(m['created_at']?.toString() ?? '');
-          if (sinceTime != null &&
-              msgTime != null &&
-              !msgTime.isAfter(sinceTime)) continue;
-
-          final parsed = _parseMsgFromAPI(m);
-          if (parsed.isAI && _isErrorPhrase(parsed.content)) continue;
-          _msgs.add(parsed);
-          existingIds.add(id);
-          added = true;
-        }
-      });
-
-      if (msgs.isNotEmpty) {
-        _lastPollTime = (msgs.last)['created_at']?.toString();
-      }
-      if (added) _scrollDown();
-    } catch (_) {}
   }
 
   bool _isErrorPhrase(String content) {
@@ -529,19 +480,13 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     await _sendAI(text);
   }
 
-  /// Sends a message to the AI via POST /messages/conversations/{convId}/ai-message.
+  /// Core send — POST /mentor/chat.
+  /// mentor.py owns session creation, brain context injection, and APEX detection.
   Future<void> _sendAI(
     String text, {
     bool adUnlocked = false,
     bool isContext  = false,
   }) async {
-    // Ensure we have a valid conversation ID before sending.
-    if (_convId == null || _convId!.isEmpty) await _ensureConv();
-    if (_convId == null || _convId!.isEmpty) {
-      _addErrorBubble('Could not connect to AI. Please try again.');
-      return;
-    }
-
     _textCtrl.clear();
     final localId = 'local_${DateTime.now().microsecondsSinceEpoch}';
     setState(() {
@@ -551,15 +496,15 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     _scrollDown();
 
     try {
-      final res = await api.post(
-        '/messages/conversations/$_convId/ai-message',
-        {'content': text, 'ad_unlocked': adUnlocked},
-      );
+      final res = await api.post('/mentor/chat', {
+        'message':       text,
+        if (_sessionId != null && _sessionId!.isNotEmpty) 'session_id': _sessionId,
+        'include_brain': true,
+      });
 
       final aiContent = (res['content'] ?? '').toString().trim();
       if (aiContent.isEmpty) throw Exception('Empty AI response');
 
-      // If the server somehow returned an error phrase, treat it as a failure.
       if (_isErrorPhrase(aiContent)) {
         if (!mounted) return;
         setState(() {
@@ -571,15 +516,17 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
         return;
       }
 
-      // Sync server quota into local state.
-      if (res['quota'] is Map) {
-        _syncQuotaFromResponse(
-            Map<String, dynamic>.from(res['quota'] as Map));
+      // Persist the session ID from the server
+      final returnedSessionId = res['session_id']?.toString() ?? '';
+      if (returnedSessionId.isNotEmpty) {
+        _sessionId = returnedSessionId;
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(_kSessionIdKey, _sessionId!);
+        } catch (_) {}
       }
 
-      _lastPollTime = DateTime.now().toUtc().toIso8601String();
-
-      // Local quota accounting for the ribbon UI.
+      // Local quota accounting
       if (!_isPremium && !isContext) {
         if (_freeUsed < _kFreeMessages) {
           final newTotal = _totalResponses + 1;
@@ -599,29 +546,35 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
 
       if (!mounted) return;
 
-      // Reconcile optimistic user bubble with the server-confirmed ID.
-      final realUserMsgId = res['user_message_id']?.toString() ?? '';
-      if (realUserMsgId.isNotEmpty) {
-        final idx = _msgs.indexWhere((m) => m.id == localId);
-        if (idx != -1) {
-          final old = _msgs[idx];
-          _msgs[idx] =
-              _Msg(id: realUserMsgId, content: old.content, isMe: true, time: old.time);
+      // Brain data — present when mentor.py brain search returns results
+      final brainData = _BrainData.fromResponse(Map<String, dynamic>.from(res));
+
+      // Delegation — prefer server-detected, fall back to client inference
+      _DelegationPayload? del;
+      final serverDel = res['delegation'];
+      if (serverDel is Map) {
+        final type    = serverDel['type']?.toString() ?? '';
+        final task    = serverDel['task']?.toString()
+                        ?? serverDel['goal']?.toString()
+                        ?? _extractTask(aiContent);
+        final session = _sessionId ?? '';
+        if (type == 'apex') {
+          del = _DelegationPayload(
+              type: _DelegationType.apex, task: task,
+              sessionId: session, message: aiContent);
+        } else if (type == 'workflow') {
+          del = _DelegationPayload(
+              type: _DelegationType.workflow, task: task,
+              sessionId: session, message: aiContent);
         }
       }
-
-      // Brain data and delegation — available if endpoint returns them.
-      final brainData = _BrainData.fromResponse(
-          Map<String, dynamic>.from(res));
-      final convIdForSession = _convId ?? '';
-      _DelegationPayload? del = _inferDelegation(aiContent, convIdForSession);
+      del ??= _inferDelegation(aiContent, _sessionId ?? '');
       if (del == null && brainData.needsExternal) {
         del = _DelegationPayload(
-          type:      _DelegationType.workflow,
-          task:      _extractTask(aiContent),
-          sessionId: convIdForSession,
-          message:   aiContent,
-        );
+            type:      _DelegationType.workflow,
+            task:      _extractTask(aiContent),
+            sessionId: _sessionId ?? '',
+            message:   aiContent);
       }
 
       final aiMsg = _Msg(
@@ -648,7 +601,8 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
       } else if (e.statusCode == 429) {
         _showLockoutSheet(isDaily: true);
       } else if (e.statusCode == 503) {
-        _addErrorBubble('AI service is temporarily unavailable. Please try again shortly.');
+        _addErrorBubble(
+            'AI service is temporarily unavailable. Please try again shortly.');
         _showRetrySnack(text);
       } else {
         _addErrorBubble('Error ${e.statusCode}. Please try again.');
@@ -666,204 +620,7 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     }
   }
 
-  /// Ensures _convId is set. Uses /messages/ai-conversation as the source of truth.
-  Future<void> _ensureConv() async {
-    try {
-      final res     = await api.get('/messages/ai-conversation');
-      final convId  = res['conversation_id']?.toString() ?? '';
-      if (convId.isNotEmpty) {
-        _convId = convId;
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString(_kConvIdKey, _convId!);
-        return;
-      }
-    } catch (_) {}
-    // Last-resort: check prefs cache.
-    try {
-      final prefs  = await SharedPreferences.getInstance();
-      final cached = prefs.getString(_kConvIdKey);
-      if (cached?.isNotEmpty == true) _convId = cached;
-    } catch (_) {}
-  }
-
-  // ── Edit ───────────────────────────────────────────────────────────────────
-  Future<void> _editMessage(_Msg msg) async {
-    final ctrl = TextEditingController(text: msg.content);
-    final confirmed = await showDialog<String>(
-      context: context,
-      builder: (ctx) {
-        final isDark = Theme.of(ctx).brightness == Brightness.dark;
-        return AlertDialog(
-          backgroundColor: isDark ? AppColors.bgCard : Colors.white,
-          title: Text('Edit message',
-              style: TextStyle(
-                  color: isDark ? Colors.white : Colors.black87, fontSize: 16)),
-          content: TextField(
-            controller: ctrl,
-            autofocus: true,
-            maxLines: 5,
-            minLines: 1,
-            style: TextStyle(color: isDark ? Colors.white : Colors.black87),
-            decoration: InputDecoration(
-              filled: true,
-              fillColor: isDark ? AppColors.bgSurface : Colors.grey.shade100,
-              border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none),
-            ),
-          ),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancel')),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primary),
-              onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
-              child: const Text('Save',
-                  style: TextStyle(color: Colors.white)),
-            ),
-          ],
-        );
-      },
-    );
-    ctrl.dispose();
-    if (confirmed == null || confirmed.isEmpty || confirmed == msg.content) return;
-
-    final convId = _convId ?? '';
-    if (convId.isEmpty) return;
-
-    try {
-      await api.patch(
-          '/messages/conversations/$convId/messages/${msg.id}',
-          {'content': confirmed});
-      if (mounted) {
-        setState(() {
-          msg.content     = confirmed;
-          msg.displayText = confirmed;
-          msg.isEdited    = true;
-        });
-      }
-    } catch (_) {
-      if (mounted) _showSnack('Could not edit message. Please try again.');
-    }
-  }
-
-  // ── Delete ─────────────────────────────────────────────────────────────────
-  Future<void> _deleteMessage(_Msg msg) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) {
-        final isDark = Theme.of(ctx).brightness == Brightness.dark;
-        return AlertDialog(
-          backgroundColor: isDark ? AppColors.bgCard : Colors.white,
-          title: Text('Delete message',
-              style: TextStyle(
-                  color: isDark ? Colors.white : Colors.black87, fontSize: 16)),
-          content: Text('This cannot be undone.',
-              style: TextStyle(
-                  color: isDark ? Colors.white70 : Colors.black54)),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Cancel')),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.error),
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Delete',
-                  style: TextStyle(color: Colors.white)),
-            ),
-          ],
-        );
-      },
-    );
-    if (confirmed != true) return;
-
-    final convId = _convId ?? '';
-    if (convId.isEmpty) return;
-
-    try {
-      await api.delete(
-          '/messages/conversations/$convId/messages/${msg.id}');
-      if (mounted) {
-        setState(() {
-          msg.content     = 'This message was deleted.';
-          msg.displayText = 'This message was deleted.';
-          msg.isDeleted   = true;
-        });
-      }
-    } catch (_) {
-      if (mounted) _showSnack('Could not delete message. Please try again.');
-    }
-  }
-
-  // ── Bubble long-press menu ─────────────────────────────────────────────────
-  void _showBubbleMenu(BuildContext ctx, _Msg m) {
-    HapticFeedback.mediumImpact();
-    final isDark = Theme.of(ctx).brightness == Brightness.dark;
-    showModalBottomSheet(
-      context: ctx,
-      backgroundColor: Colors.transparent,
-      builder: (_) => Container(
-        margin: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-            color: isDark ? AppColors.bgCard : Colors.white,
-            borderRadius: BorderRadius.circular(20)),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const SizedBox(height: 8),
-          Container(
-              width: 36, height: 4,
-              decoration: BoxDecoration(
-                  color: isDark ? Colors.white24 : Colors.black12,
-                  borderRadius: BorderRadius.circular(2))),
-          _menuItem(Icons.copy_rounded, 'Copy', isDark, () {
-            Navigator.pop(ctx);
-            Clipboard.setData(ClipboardData(text: m.content));
-            _showSnack('Copied ✓');
-          }),
-          if (m.isMe && !m.isDeleted) ...[
-            _menuItem(Icons.edit_rounded, 'Edit', isDark, () {
-              Navigator.pop(ctx);
-              _editMessage(m);
-            }),
-            _menuItem(Icons.delete_rounded, 'Delete', isDark, () {
-              Navigator.pop(ctx);
-              _deleteMessage(m);
-            }, color: AppColors.error),
-          ],
-          if (!m.isMe && m.isAI && !m.isError && !m.isDeleted)
-            _menuItem(Icons.share_rounded, 'Share insight', isDark, () {
-              Navigator.pop(ctx);
-              Clipboard.setData(ClipboardData(
-                  text: '💡 RiseUp AI:\n\n${m.content}\n\n— via RiseUp'));
-              _showSnack('Copied to share! ✓');
-            }),
-          SizedBox(height: MediaQuery.of(ctx).padding.bottom + 12),
-        ]),
-      ),
-    );
-  }
-
-  Widget _menuItem(
-    IconData icon,
-    String label,
-    bool isDark,
-    VoidCallback onTap, {
-    Color? color,
-  }) =>
-      ListTile(
-        leading: Icon(icon, color: color ?? AppColors.primary, size: 20),
-        title: Text(label,
-            style: TextStyle(
-                color: color ?? (isDark ? Colors.white : Colors.black87),
-                fontSize: 14,
-                fontWeight: FontWeight.w500)),
-        onTap: onTap,
-        dense: true,
-      );
-
-  // ── Delegation inference ───────────────────────────────────────────────────
+  // ── Delegation inference (client-side fallback) ────────────────────────────
   _DelegationPayload? _inferDelegation(String content, String sessionId) {
     final lower = content.toLowerCase();
     const apexKw = [
@@ -928,6 +685,61 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     context.push('/workflow/new', extra: {'prefillGoal': goal});
   }
 
+  // ── Bubble long-press menu ─────────────────────────────────────────────────
+  void _showBubbleMenu(BuildContext ctx, _Msg m) {
+    HapticFeedback.mediumImpact();
+    final isDark = Theme.of(ctx).brightness == Brightness.dark;
+    showModalBottomSheet(
+      context: ctx,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Container(
+        margin: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+            color: isDark ? AppColors.bgCard : Colors.white,
+            borderRadius: BorderRadius.circular(20)),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const SizedBox(height: 8),
+          Container(
+              width: 36, height: 4,
+              decoration: BoxDecoration(
+                  color: isDark ? Colors.white24 : Colors.black12,
+                  borderRadius: BorderRadius.circular(2))),
+          _menuItem(Icons.copy_rounded, 'Copy', isDark, () {
+            Navigator.pop(ctx);
+            Clipboard.setData(ClipboardData(text: m.content));
+            _showSnack('Copied ✓');
+          }),
+          if (!m.isMe && m.isAI && !m.isError && !m.isDeleted)
+            _menuItem(Icons.share_rounded, 'Share insight', isDark, () {
+              Navigator.pop(ctx);
+              Clipboard.setData(ClipboardData(
+                  text: '💡 RiseUp AI:\n\n${m.content}\n\n— via RiseUp'));
+              _showSnack('Copied to share! ✓');
+            }),
+          SizedBox(height: MediaQuery.of(ctx).padding.bottom + 12),
+        ]),
+      ),
+    );
+  }
+
+  Widget _menuItem(
+    IconData icon,
+    String label,
+    bool isDark,
+    VoidCallback onTap, {
+    Color? color,
+  }) =>
+      ListTile(
+        leading: Icon(icon, color: color ?? AppColors.primary, size: 20),
+        title: Text(label,
+            style: TextStyle(
+                color: color ?? (isDark ? Colors.white : Colors.black87),
+                fontSize: 14,
+                fontWeight: FontWeight.w500)),
+        onTap: onTap,
+        dense: true,
+      );
+
   // ── Typing animation ───────────────────────────────────────────────────────
   void _typeMessage(_Msg msg) {
     msg.isTyping    = true;
@@ -961,16 +773,15 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
         _scroll.jumpTo(maxExt);
       } else {
         _scroll.animateTo(maxExt,
-            duration: const Duration(milliseconds: 180),
-            curve: Curves.easeOut);
+            duration: const Duration(milliseconds: 180), curve: Curves.easeOut);
       }
     });
   }
 
   void _addErrorBubble(String msg) {
     if (!mounted) return;
-    setState(() => _msgs.add(
-        _Msg(content: msg, isMe: false, isAI: true, isError: true)));
+    setState(() =>
+        _msgs.add(_Msg(content: msg, isMe: false, isAI: true, isError: true)));
     _scrollDown();
   }
 
@@ -1009,7 +820,6 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     }
   }
 
-  // ── Ad gate ────────────────────────────────────────────────────────────────
   Future<void> _showAdGate(String pendingText) async {
     final success = await showModalBottomSheet<bool>(
       context: context,
@@ -1056,12 +866,12 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
   @override
   Widget build(BuildContext context) {
     final isDark    = Theme.of(context).brightness == Brightness.dark;
-    final bg        = isDark ? Colors.black       : Colors.white;
-    final card      = isDark ? AppColors.bgCard   : Colors.white;
-    final border    = isDark ? AppColors.bgSurface: Colors.grey.shade200;
-    final textColor = isDark ? Colors.white       : Colors.black87;
-    final subColor  = isDark ? Colors.white54     : Colors.black45;
-    final surf      = isDark ? AppColors.bgSurface: Colors.grey.shade100;
+    final bg        = isDark ? Colors.black        : Colors.white;
+    final card      = isDark ? AppColors.bgCard    : Colors.white;
+    final border    = isDark ? AppColors.bgSurface : Colors.grey.shade200;
+    final textColor = isDark ? Colors.white        : Colors.black87;
+    final subColor  = isDark ? Colors.white54      : Colors.black45;
+    final surf      = isDark ? AppColors.bgSurface : Colors.grey.shade100;
 
     return Scaffold(
       backgroundColor: bg,
@@ -1106,7 +916,7 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
         ),
         if (_showQuickActions)
           _QuickActionBar(
-            isDark:     isDark,
+            isDark: isDark,
             onApex: () {
               setState(() => _showQuickActions = false);
               _textCtrl.text = 'Do it for me: ';
@@ -1179,7 +989,8 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
                 ),
               ]),
               const Text('Always online',
-                  style: TextStyle(fontSize: 11, color: AppColors.success)),
+                  style: TextStyle(
+                      fontSize: 11, color: AppColors.success)),
             ],
           ),
         ]),
@@ -1202,8 +1013,7 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
       Color text, Color sub, Color surf) =>
       Container(
         decoration: BoxDecoration(
-            color: card,
-            border: Border(top: BorderSide(color: border))),
+            color: card, border: Border(top: BorderSide(color: border))),
         padding: EdgeInsets.fromLTRB(
             12, 8, 12, MediaQuery.of(context).padding.bottom + 8),
         child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
@@ -1273,17 +1083,15 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
       );
 
   // ── Message bubble ─────────────────────────────────────────────────────────
-  Widget _buildBubble(_Msg m, bool isDark, Color textColor, Color surf) {
+  Widget _buildBubble(
+      _Msg m, bool isDark, Color textColor, Color surf) {
     final aiBg     = isDark ? const Color(0xFF1A1A2E) : Colors.grey.shade100;
     final errorBg  = isDark ? const Color(0xFF2D1515) : const Color(0xFFFFF0F0);
-    final deleteBg = isDark ? AppColors.bgSurface      : Colors.grey.shade200;
-    final bubbleBg = m.isDeleted
-        ? deleteBg
-        : m.isError
-            ? errorBg
-            : m.isMe
-                ? AppColors.userBubble
-                : aiBg;
+    final bubbleBg = m.isError
+        ? errorBg
+        : m.isMe
+            ? AppColors.userBubble
+            : aiBg;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 14),
@@ -1291,6 +1099,7 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
         crossAxisAlignment:
             m.isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
         children: [
+          // Sender label for AI messages
           if (!m.isMe)
             Padding(
               padding: const EdgeInsets.only(bottom: 4, left: 36),
@@ -1324,6 +1133,7 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
               ]),
             ),
 
+          // Bubble row
           Row(
             mainAxisAlignment:
                 m.isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
@@ -1365,75 +1175,53 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
                             offset: const Offset(0, 2))
                       ],
                     ),
-                    child: m.isDeleted
-                        ? Text(
-                            'This message was deleted.',
-                            style: TextStyle(
-                                color: isDark
-                                    ? Colors.white38
-                                    : Colors.black38,
-                                fontSize: 13,
-                                fontStyle: FontStyle.italic),
-                          )
-                        : (m.isMe || !m.isAI)
-                            ? SelectionArea(
-                                child: Text(m.displayText,
-                                    style: TextStyle(
-                                        color: m.isMe
-                                            ? Colors.white
-                                            : m.isError
-                                                ? AppColors.error
-                                                : textColor,
-                                        fontSize: 14,
-                                        height:   1.5)))
-                            : SelectionArea(
-                                child: MarkdownBody(
-                                  data:      m.displayText,
-                                  onTapLink: (_, href, __) {
-                                    if (href != null) _openLink(href);
-                                  },
-                                  styleSheet: MarkdownStyleSheet(
-                                    p: TextStyle(
-                                        color: m.isError
+                    child: (m.isMe || !m.isAI)
+                        ? SelectionArea(
+                            child: Text(m.displayText,
+                                style: TextStyle(
+                                    color: m.isMe
+                                        ? Colors.white
+                                        : m.isError
                                             ? AppColors.error
-                                            : isDark
-                                                ? const Color(0xFFE8E8F0)
-                                                : Colors.black87,
-                                        fontSize: 14,
-                                        height:   1.55),
-                                    strong: const TextStyle(
-                                        fontWeight: FontWeight.w700,
-                                        color: AppColors.primaryLight),
-                                    a: const TextStyle(
-                                        color: AppColors.primary,
-                                        decoration: TextDecoration.underline),
-                                    code: TextStyle(
-                                        fontFamily: 'monospace',
-                                        backgroundColor: isDark
-                                            ? const Color(0xFF2A2A3E)
-                                            : Colors.grey.shade200,
-                                        fontSize: 13),
-                                  ),
-                                )),
+                                            : textColor,
+                                    fontSize: 14,
+                                    height:   1.5)))
+                        : SelectionArea(
+                            child: MarkdownBody(
+                              data:      m.displayText,
+                              onTapLink: (_, href, __) {
+                                if (href != null) _openLink(href);
+                              },
+                              styleSheet: MarkdownStyleSheet(
+                                p: TextStyle(
+                                    color: m.isError
+                                        ? AppColors.error
+                                        : isDark
+                                            ? const Color(0xFFE8E8F0)
+                                            : Colors.black87,
+                                    fontSize: 14,
+                                    height:   1.55),
+                                strong: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.primaryLight),
+                                a: const TextStyle(
+                                    color: AppColors.primary,
+                                    decoration: TextDecoration.underline),
+                                code: TextStyle(
+                                    fontFamily: 'monospace',
+                                    backgroundColor: isDark
+                                        ? const Color(0xFF2A2A3E)
+                                        : Colors.grey.shade200,
+                                    fontSize: 13),
+                              ),
+                            )),
                   ),
                 ),
               ),
             ],
           ),
 
-          if (m.isEdited && !m.isDeleted)
-            Padding(
-              padding: EdgeInsets.only(
-                  top: 2,
-                  left: m.isMe ? 0 : 40,
-                  right: m.isMe ? 4 : 0),
-              child: Text('edited',
-                  style: TextStyle(
-                      fontSize: 10,
-                      color: isDark ? Colors.white24 : Colors.black26,
-                      fontStyle: FontStyle.italic)),
-            ),
-
+          // Delegation card
           if (!m.isError &&
               !m.isDeleted &&
               m.delegation != null &&
@@ -1449,6 +1237,7 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
               ),
             ),
 
+          // Brain results card
           if (!m.isError &&
               !m.isDeleted &&
               m.isAI &&
@@ -1459,6 +1248,7 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
               child: _BrainCard(brainData: m.brainData!, isDark: isDark),
             ),
 
+          // Complementary users row
           if (!m.isError &&
               !m.isDeleted &&
               m.isAI &&
@@ -1479,6 +1269,7 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
               ),
             ),
 
+          // Timestamp
           Padding(
             padding: EdgeInsets.only(
                 top: 4,
@@ -1491,7 +1282,8 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
           ),
         ],
       ),
-    ).animate().fadeIn(duration: 200.ms).slideY(begin: 0.08, curve: Curves.easeOut);
+    ).animate().fadeIn(duration: 200.ms)
+        .slideY(begin: 0.08, curve: Curves.easeOut);
   }
 
   // ── Typing indicator ───────────────────────────────────────────────────────
@@ -1509,7 +1301,8 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
           ),
           const SizedBox(width: 8),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+            padding: const EdgeInsets.symmetric(
+                horizontal: 16, vertical: 13),
             decoration: BoxDecoration(
                 color: isDark ? AppColors.aiBubble : surf,
                 borderRadius: BorderRadius.circular(18)),
@@ -1556,13 +1349,16 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
                           colors: [AppColors.primary, AppColors.accent]),
                       shape: BoxShape.circle),
                   child: const Center(
-                      child: Text('🤖', style: TextStyle(fontSize: 40))))
+                      child: Text('🤖',
+                          style: TextStyle(fontSize: 40))))
               .animate()
               .scale(duration: 400.ms, curve: Curves.elasticOut),
           const SizedBox(height: 20),
           Text('Your AI Wealth Mentor + APEX Agent',
               style: TextStyle(
-                  fontSize: 20, fontWeight: FontWeight.w800, color: text),
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  color: text),
               textAlign: TextAlign.center),
           const SizedBox(height: 8),
           Text(
@@ -1575,7 +1371,9 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
           const SizedBox(height: 32),
           Text('Try:',
               style: TextStyle(
-                  fontSize: 12, color: sub, fontWeight: FontWeight.w600)),
+                  fontSize: 12,
+                  color: sub,
+                  fontWeight: FontWeight.w600)),
           const SizedBox(height: 10),
           ...prompts.map((p) => GestureDetector(
                 onTap: () {
@@ -1594,10 +1392,13 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
                       child: Text(p,
                           style: TextStyle(
                               fontSize: 13,
-                              color: isDark ? Colors.white70 : Colors.black87,
+                              color: isDark
+                                  ? Colors.white70
+                                  : Colors.black87,
                               height: 1.4)))
                     .animate()
-                    .fadeIn(delay: Duration(milliseconds: prompts.indexOf(p) * 80)),
+                    .fadeIn(delay: Duration(
+                        milliseconds: prompts.indexOf(p) * 80)),
               )),
         ],
       ),
@@ -1660,41 +1461,49 @@ class _BrainCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: color.withOpacity(0.25)),
       ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          const Text('🧠', style: TextStyle(fontSize: 13)),
-          const SizedBox(width: 6),
-          Text('RiseUp Brain Found',
-              style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  color: isDark ? Colors.white70 : Colors.black87)),
-        ]),
-        const SizedBox(height: 8),
-        ...items.map((item) => Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Row(children: [
-                Text(item['icon']!, style: const TextStyle(fontSize: 14)),
-                const SizedBox(width: 8),
-                Expanded(
-                    child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                      Text(item['label']!,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: isDark ? Colors.white : Colors.black87)),
-                      Text(item['sub']!,
-                          style: TextStyle(
-                              fontSize: 10,
-                              color: isDark ? Colors.white38 : Colors.black38)),
-                    ])),
-              ]),
-            )),
-      ]),
+      child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              const Text('🧠', style: TextStyle(fontSize: 13)),
+              const SizedBox(width: 6),
+              Text('RiseUp Brain Found',
+                  style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: isDark ? Colors.white70 : Colors.black87)),
+            ]),
+            const SizedBox(height: 8),
+            ...items.map((item) => Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Row(children: [
+                    Text(item['icon']!,
+                        style: const TextStyle(fontSize: 14)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                        child: Column(
+                            crossAxisAlignment:
+                                CrossAxisAlignment.start,
+                            children: [
+                          Text(item['label']!,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: isDark
+                                      ? Colors.white
+                                      : Colors.black87)),
+                          Text(item['sub']!,
+                              style: TextStyle(
+                                  fontSize: 10,
+                                  color: isDark
+                                      ? Colors.white38
+                                      : Colors.black38)),
+                        ])),
+                  ]),
+                )),
+          ]),
     ).animate().fadeIn(duration: 300.ms).slideY(begin: 0.1, end: 0);
   }
 }
@@ -1728,8 +1537,10 @@ class _ComplementaryRow extends StatelessWidget {
           itemCount: users.length,
           itemBuilder: (_, i) {
             final u      = users[i] as Map;
-            final userId = u['user_id']?.toString() ?? u['id']?.toString() ?? '';
-            final name   = u['full_name']?.toString() ?? u['username']?.toString() ?? 'User';
+            final userId = u['user_id']?.toString() ??
+                u['id']?.toString() ?? '';
+            final name   = u['full_name']?.toString() ??
+                u['username']?.toString() ?? 'User';
             final avatar = u['avatar_url']?.toString() ?? '';
             final reason = u['match_reason']?.toString() ?? '';
             final isUrl  = avatar.startsWith('http');
@@ -1738,28 +1549,35 @@ class _ComplementaryRow extends StatelessWidget {
               onTap: () => onTap(userId, name, avatar),
               child: Container(
                 width:  60,
-                margin: EdgeInsets.only(right: i < users.length - 1 ? 10 : 0),
+                margin: EdgeInsets.only(
+                    right: i < users.length - 1 ? 10 : 0),
                 child: Column(children: [
                   Container(
                     width: 42, height: 42,
                     decoration: BoxDecoration(
                       gradient: isUrl
                           ? null
-                          : const LinearGradient(
-                              colors: [AppColors.primary, AppColors.accent]),
+                          : const LinearGradient(colors: [
+                              AppColors.primary,
+                              AppColors.accent
+                            ]),
                       image: isUrl
                           ? DecorationImage(
-                              image: NetworkImage(avatar), fit: BoxFit.cover)
+                              image: NetworkImage(avatar),
+                              fit: BoxFit.cover)
                           : null,
                       shape: BoxShape.circle,
                       border: Border.all(
-                          color: AppColors.primary.withOpacity(0.4), width: 1.5),
+                          color: AppColors.primary.withOpacity(0.4),
+                          width: 1.5),
                     ),
                     child: isUrl
                         ? null
                         : Center(
                             child: Text(
-                              name.isNotEmpty ? name[0].toUpperCase() : '👤',
+                              name.isNotEmpty
+                                  ? name[0].toUpperCase()
+                                  : '👤',
                               style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 16,
@@ -1773,7 +1591,9 @@ class _ComplementaryRow extends StatelessWidget {
                       textAlign: TextAlign.center,
                       style: TextStyle(
                           fontSize: 10,
-                          color: isDark ? Colors.white70 : Colors.black87,
+                          color: isDark
+                              ? Colors.white70
+                              : Colors.black87,
                           fontWeight: FontWeight.w500)),
                   if (reason.isNotEmpty)
                     Text(reason,
@@ -1782,7 +1602,9 @@ class _ComplementaryRow extends StatelessWidget {
                         textAlign: TextAlign.center,
                         style: TextStyle(
                             fontSize: 8,
-                            color: isDark ? Colors.white38 : Colors.black38)),
+                            color: isDark
+                                ? Colors.white38
+                                : Colors.black38)),
                 ]),
               ),
             );
@@ -1801,7 +1623,9 @@ class _DelegationCard extends StatelessWidget {
   final bool isDark;
   final VoidCallback onLaunch;
   const _DelegationCard(
-      {required this.payload, required this.isDark, required this.onLaunch});
+      {required this.payload,
+      required this.isDark,
+      required this.onLaunch});
 
   @override
   Widget build(BuildContext context) {
@@ -1824,39 +1648,45 @@ class _DelegationCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: color.withOpacity(0.30)),
       ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Text(icon, style: const TextStyle(fontSize: 18)),
-          const SizedBox(width: 8),
-          Expanded(
-              child: Text(label,
-                  style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                      color: isDark ? Colors.white : Colors.black87))),
-        ]),
-        const SizedBox(height: 4),
-        Text(desc,
-            style: TextStyle(
-                fontSize: 11,
-                color: isDark ? Colors.white54 : Colors.black45,
-                height: 1.4)),
-        const SizedBox(height: 10),
-        SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: onLaunch,
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: color,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 10),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                  textStyle: const TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w700)),
-              child: Text(label),
-            )),
-      ]),
+      child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Text(icon, style: const TextStyle(fontSize: 18)),
+              const SizedBox(width: 8),
+              Expanded(
+                  child: Text(label,
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: isDark
+                              ? Colors.white
+                              : Colors.black87))),
+            ]),
+            const SizedBox(height: 4),
+            Text(desc,
+                style: TextStyle(
+                    fontSize: 11,
+                    color: isDark ? Colors.white54 : Colors.black45,
+                    height: 1.4)),
+            const SizedBox(height: 10),
+            SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: onLaunch,
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: color,
+                      foregroundColor: Colors.white,
+                      padding:
+                          const EdgeInsets.symmetric(vertical: 10),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                      textStyle: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700)),
+                  child: Text(label),
+                )),
+          ]),
     ).animate().fadeIn(duration: 300.ms).slideY(begin: 0.1, end: 0);
   }
 }
@@ -1875,16 +1705,18 @@ class _QuickActionBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bg = isDark ? const Color(0xFF0F0F13) : const Color(0xFFF5F5F8);
+    final bg = isDark
+        ? const Color(0xFF0F0F13)
+        : const Color(0xFFF5F5F8);
     return Container(
       color: bg,
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
       child: Row(children: [
-        _chip('🤖 APEX',     AppColors.primary, onApex),
+        _chip('🤖 APEX',    AppColors.primary, onApex),
         const SizedBox(width: 8),
-        _chip('⚡ Workflow',  AppColors.success, onWorkflow),
+        _chip('⚡ Workflow', AppColors.success, onWorkflow),
         const SizedBox(width: 8),
-        _chip('🔍 Search',   AppColors.info,    onSearch),
+        _chip('🔍 Search',  AppColors.info,    onSearch),
       ]),
     );
   }
@@ -1898,7 +1730,8 @@ class _QuickActionBar extends StatelessWidget {
                 decoration: BoxDecoration(
                     color: color.withOpacity(0.10),
                     borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: color.withOpacity(0.25))),
+                    border: Border.all(
+                        color: color.withOpacity(0.25))),
                 child: Text(label,
                     textAlign: TextAlign.center,
                     style: TextStyle(
@@ -1952,7 +1785,8 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
   @override
   void didUpdateWidget(_QuotaRibbon old) {
     super.didUpdateWidget(old);
-    if ((widget.inCycleLockout || widget.inDailyLockout) && _timer == null) _start();
+    if ((widget.inCycleLockout || widget.inDailyLockout) &&
+        _timer == null) _start();
     if (!widget.inCycleLockout && !widget.inDailyLockout) {
       _timer?.cancel();
       _timer = null;
@@ -1961,7 +1795,8 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
 
   void _start() {
     _update();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _update());
+    _timer =
+        Timer.periodic(const Duration(seconds: 1), (_) => _update());
   }
 
   void _update() {
@@ -1972,50 +1807,75 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
     final exp = DateTime.tryParse(lockStr ?? '');
     if (exp == null) return;
     final diff = exp.difference(DateTime.now());
-    if (diff.isNegative) { setState(() => _countdown = ''); return; }
+    if (diff.isNegative) {
+      setState(() => _countdown = '');
+      return;
+    }
     final h = diff.inHours;
     final m = (diff.inMinutes % 60).toString().padLeft(2, '0');
     final s = (diff.inSeconds % 60).toString().padLeft(2, '0');
-    setState(() => _countdown = h > 0 ? '${h}h ${m}m' : '$m:$s');
+    setState(() =>
+        _countdown = h > 0 ? '${h}h ${m}m' : '$m:$s');
   }
 
   @override
-  void dispose() { _timer?.cancel(); super.dispose(); }
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     if (widget.isPremium) return const SizedBox.shrink();
 
     if (widget.inDailyLockout)
-      return _ribbon(Icons.lock_rounded, AppColors.error,
-          'Daily limit reached${_countdown.isNotEmpty ? ' · resets in $_countdown' : ''}',
-          AppColors.error.withOpacity(0.08), null);
+      return _ribbon(
+          Icons.lock_rounded,
+          AppColors.error,
+          'Daily limit reached'
+          '${_countdown.isNotEmpty ? ' · resets in $_countdown' : ''}',
+          AppColors.error.withOpacity(0.08),
+          null);
 
     if (widget.inCycleLockout)
-      return _ribbon(Icons.hourglass_bottom_rounded, AppColors.warning,
-          'Take a break${_countdown.isNotEmpty ? ' · unlocks in $_countdown' : ''}',
-          AppColors.warning.withOpacity(0.08), null);
+      return _ribbon(
+          Icons.hourglass_bottom_rounded,
+          AppColors.warning,
+          'Take a break'
+          '${_countdown.isNotEmpty ? ' · unlocks in $_countdown' : ''}',
+          AppColors.warning.withOpacity(0.08),
+          null);
 
     final freeLeft = widget.freeTotal - widget.freeUsed;
     if (freeLeft > 0)
-      return _ribbon(Icons.chat_bubble_outline_rounded, AppColors.primary,
+      return _ribbon(
+          Icons.chat_bubble_outline_rounded,
+          AppColors.primary,
           '$freeLeft free message${freeLeft == 1 ? '' : 's'} remaining',
-          AppColors.primary.withOpacity(0.06), null);
+          AppColors.primary.withOpacity(0.06),
+          null);
 
     if (widget.cycleAds < widget.adsPerCycle) {
       final adsLeft = widget.adsPerCycle - widget.cycleAds;
-      return _ribbon(Icons.play_circle_outline_rounded, AppColors.warning,
-          'Watch $adsLeft ad${adsLeft == 1 ? '' : 's'} for ${widget.msgsPerCycle} more messages',
-          AppColors.warning.withOpacity(0.08), widget.onWatchAds);
+      return _ribbon(
+          Icons.play_circle_outline_rounded,
+          AppColors.warning,
+          'Watch $adsLeft ad${adsLeft == 1 ? '' : 's'} for '
+          '${widget.msgsPerCycle} more messages',
+          AppColors.warning.withOpacity(0.08),
+          widget.onWatchAds);
     }
 
     if (widget.cycleAds >= widget.adsPerCycle) {
       final left = widget.msgsPerCycle - widget.cycleMsgs;
       if (left > 0)
-        return _ribbon(Icons.lock_open_rounded, AppColors.success,
+        return _ribbon(
+            Icons.lock_open_rounded,
+            AppColors.success,
             '$left message${left == 1 ? '' : 's'} left · '
             '${widget.totalResponses}/${widget.maxResponses} today',
-            Colors.transparent, null);
+            Colors.transparent,
+            null);
     }
 
     return const SizedBox.shrink();
@@ -2027,18 +1887,24 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
         onTap: onTap,
         child: Container(
           width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          padding: const EdgeInsets.symmetric(
+              horizontal: 14, vertical: 6),
           color: bg,
           child: Row(children: [
             Icon(icon, size: 13, color: color),
             const SizedBox(width: 6),
-            Expanded(child: Text(label,
-                style: TextStyle(
-                    fontSize: 12, color: color, fontWeight: FontWeight.w500))),
+            Expanded(
+                child: Text(label,
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: color,
+                        fontWeight: FontWeight.w500))),
             if (onTap != null)
               Text('Tap to watch',
                   style: TextStyle(
-                      fontSize: 11, color: color, fontWeight: FontWeight.w700)),
+                      fontSize: 11,
+                      color: color,
+                      fontWeight: FontWeight.w700)),
             const SizedBox(width: 8),
             GestureDetector(
               onTap: () => GoRouter.of(context).go('/premium'),
@@ -2057,7 +1923,8 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
 // Ad Gate Sheet
 // ─────────────────────────────────────────────────────────────────────────────
 class _AdGateSheet extends StatefulWidget {
-  final int cycleAdsWatched, adsPerCycle, msgsPerCycle, totalResponses, maxResponses;
+  final int cycleAdsWatched, adsPerCycle, msgsPerCycle,
+      totalResponses, maxResponses;
   final Future<void> Function() onAdWatched;
 
   const _AdGateSheet({
@@ -2086,7 +1953,8 @@ class _AdGateSheetState extends State<_AdGateSheet> {
   Future<void> _watchAd() async {
     if (_watching || _cycleComplete) return;
     if (!adService.isRewardedReady) {
-      setState(() => _error = 'Ad not ready yet. Please try again in a moment.');
+      setState(() =>
+          _error = 'Ad not ready yet. Please try again in a moment.');
       return;
     }
     setState(() { _watching = true; _error = null; });
@@ -2122,58 +1990,86 @@ class _AdGateSheetState extends State<_AdGateSheet> {
     return Container(
       decoration: BoxDecoration(
           color: bg,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(28))),
+          borderRadius: const BorderRadius.vertical(
+              top: Radius.circular(28))),
       padding: EdgeInsets.fromLTRB(
-          24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
+          24, 20, 24,
+          MediaQuery.of(context).padding.bottom + 24),
+      child:
+          Column(mainAxisSize: MainAxisSize.min, children: [
         Container(
             width: 40, height: 4,
             decoration: BoxDecoration(
-                color: isDark ? Colors.white24 : Colors.black12,
+                color: isDark
+                    ? Colors.white24
+                    : Colors.black12,
                 borderRadius: BorderRadius.circular(2))),
         const SizedBox(height: 24),
         _success
-            ? const Text('🎉', style: TextStyle(fontSize: 56))
+            ? const Text('🎉',
+                style: TextStyle(fontSize: 56))
             : Container(
                 width: 72, height: 72,
                 decoration: const BoxDecoration(
-                    gradient: LinearGradient(
-                        colors: [AppColors.primary, AppColors.accent]),
+                    gradient: LinearGradient(colors: [
+                      AppColors.primary,
+                      AppColors.accent
+                    ]),
                     shape: BoxShape.circle),
                 child: const Center(
-                    child: Text('🤖', style: TextStyle(fontSize: 36)))),
+                    child: Text('🤖',
+                        style:
+                            TextStyle(fontSize: 36)))),
         const SizedBox(height: 16),
-        Text(_success ? 'Unlocked! 🚀' : 'Unlock AI Messages',
+        Text(
+            _success
+                ? 'Unlocked! 🚀'
+                : 'Unlock AI Messages',
             style: TextStyle(
-                fontSize: 20, fontWeight: FontWeight.w800, color: text)),
+                fontSize: 20,
+                fontWeight: FontWeight.w800,
+                color: text)),
         const SizedBox(height: 8),
         if (!_success) ...[
           Text(
-              'Watch $_adsRemaining more ad${_adsRemaining == 1 ? '' : 's'} to unlock '
+              'Watch $_adsRemaining more '
+              'ad${_adsRemaining == 1 ? '' : 's'} to unlock '
               '${widget.msgsPerCycle} messages.',
-              style: TextStyle(fontSize: 14, color: sub, height: 1.5),
+              style: TextStyle(
+                  fontSize: 14,
+                  color: sub,
+                  height: 1.5),
               textAlign: TextAlign.center),
           const SizedBox(height: 8),
           Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisAlignment:
+                  MainAxisAlignment.center,
               children: List.generate(
                   widget.adsPerCycle,
                   (i) => Padding(
                         padding: EdgeInsets.only(
-                            right: i < widget.adsPerCycle - 1 ? 6 : 0),
+                            right: i < widget.adsPerCycle - 1
+                                ? 6
+                                : 0),
                         child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 300),
-                            width: 28, height: 8,
+                            duration: const Duration(
+                                milliseconds: 300),
+                            width: 28,
+                            height: 8,
                             decoration: BoxDecoration(
                               color: i < _totalWatched
                                   ? AppColors.success
-                                  : AppColors.primary.withOpacity(0.2),
-                              borderRadius: BorderRadius.circular(4)))))),
+                                  : AppColors.primary
+                                      .withOpacity(0.2),
+                              borderRadius:
+                                  BorderRadius.circular(4)))))),
         ],
         if (_error != null) ...[
           const SizedBox(height: 8),
           Text(_error!,
-              style: const TextStyle(fontSize: 12, color: AppColors.error),
+              style: const TextStyle(
+                  fontSize: 12,
+                  color: AppColors.error),
               textAlign: TextAlign.center),
         ],
         const SizedBox(height: 24),
@@ -2184,21 +2080,29 @@ class _AdGateSheetState extends State<_AdGateSheet> {
                 onPressed: _watching ? null : _watchAd,
                 icon: _watching
                     ? const SizedBox(
-                        width: 18, height: 18,
+                        width: 18,
+                        height: 18,
                         child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Colors.white))
-                    : const Icon(Icons.play_circle_fill_rounded, size: 20),
+                            strokeWidth: 2,
+                            color: Colors.white))
+                    : const Icon(
+                        Icons.play_circle_fill_rounded,
+                        size: 20),
                 label: Text(_watching
                     ? 'Loading ad...'
-                    : 'Watch Ad ${_totalWatched + 1} of ${widget.adsPerCycle}'),
+                    : 'Watch Ad ${_totalWatched + 1} of '
+                        '${widget.adsPerCycle}'),
                 style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.primary,
                     foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    padding: const EdgeInsets.symmetric(
+                        vertical: 16),
                     shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
+                        borderRadius:
+                            BorderRadius.circular(14)),
                     textStyle: const TextStyle(
-                        fontSize: 15, fontWeight: FontWeight.w700)),
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700)),
               )),
           const SizedBox(height: 12),
           SizedBox(
@@ -2208,19 +2112,28 @@ class _AdGateSheetState extends State<_AdGateSheet> {
                   Navigator.pop(context, false);
                   GoRouter.of(context).go('/premium');
                 },
-                icon: const Icon(Icons.workspace_premium_rounded, size: 18),
-                label: const Text('Go Premium — Unlimited AI'),
+                icon: const Icon(
+                    Icons.workspace_premium_rounded,
+                    size: 18),
+                label: const Text(
+                    'Go Premium — Unlimited AI'),
                 style: OutlinedButton.styleFrom(
                     foregroundColor: AppColors.gold,
-                    side: const BorderSide(color: AppColors.gold),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    side: const BorderSide(
+                        color: AppColors.gold),
+                    padding: const EdgeInsets.symmetric(
+                        vertical: 14),
                     shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14))),
+                        borderRadius:
+                            BorderRadius.circular(14))),
               )),
           const SizedBox(height: 12),
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('Not now', style: TextStyle(color: sub, fontSize: 13)),
+            onPressed: () =>
+                Navigator.pop(context, false),
+            child: Text('Not now',
+                style: TextStyle(
+                    color: sub, fontSize: 13)),
           ),
         ],
       ]),
@@ -2253,19 +2166,26 @@ class _LockoutSheetState extends State<_LockoutSheet> {
   void initState() {
     super.initState();
     _update();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _update());
+    _timer = Timer.periodic(
+        const Duration(seconds: 1), (_) => _update());
   }
 
   void _update() {
     if (!mounted) return;
     final exp = DateTime.tryParse(widget.lockoutUntil);
     if (exp == null) {
-      setState(() { _countdown = '—'; _expired = true; });
+      setState(() {
+        _countdown = '—';
+        _expired   = true;
+      });
       return;
     }
     final diff = exp.difference(DateTime.now());
     if (diff.isNegative) {
-      setState(() { _countdown = 'Ready!'; _expired = true; });
+      setState(() {
+        _countdown = 'Ready!';
+        _expired   = true;
+      });
       return;
     }
     final h = diff.inHours.toString().padLeft(2, '0');
@@ -2275,7 +2195,10 @@ class _LockoutSheetState extends State<_LockoutSheet> {
   }
 
   @override
-  void dispose() { _timer?.cancel(); super.dispose(); }
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2284,28 +2207,43 @@ class _LockoutSheetState extends State<_LockoutSheet> {
     final text = isDark ? Colors.white     : Colors.black87;
     final sub  = isDark ? Colors.white60   : Colors.black54;
     final title = _expired
-        ? (widget.isDaily ? 'Daily Limit Reset! ✅' : 'Break Over! ✅')
-        : (widget.isDaily ? 'Daily Limit Reached' : 'Time for a Break ⏸️');
+        ? (widget.isDaily
+            ? 'Daily Limit Reset! ✅'
+            : 'Break Over! ✅')
+        : (widget.isDaily
+            ? 'Daily Limit Reached'
+            : 'Time for a Break ⏸️');
 
     return Container(
       decoration: BoxDecoration(
           color: bg,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(28))),
+          borderRadius: const BorderRadius.vertical(
+              top: Radius.circular(28))),
       padding: EdgeInsets.fromLTRB(
-          24, 20, 24, MediaQuery.of(context).padding.bottom + 24),
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
+          24, 20, 24,
+          MediaQuery.of(context).padding.bottom + 24),
+      child:
+          Column(mainAxisSize: MainAxisSize.min, children: [
         Container(
-            width: 40, height: 4,
+            width: 40,
+            height: 4,
             decoration: BoxDecoration(
-                color: isDark ? Colors.white24 : Colors.black12,
+                color: isDark
+                    ? Colors.white24
+                    : Colors.black12,
                 borderRadius: BorderRadius.circular(2))),
         const SizedBox(height: 24),
-        Text(_expired ? '✅' : (widget.isDaily ? '🔒' : '⏸️'),
+        Text(
+            _expired
+                ? '✅'
+                : (widget.isDaily ? '🔒' : '⏸️'),
             style: const TextStyle(fontSize: 52)),
         const SizedBox(height: 12),
         Text(title,
             style: TextStyle(
-                fontSize: 20, fontWeight: FontWeight.w800, color: text)),
+                fontSize: 20,
+                fontWeight: FontWeight.w800,
+                color: text)),
         const SizedBox(height: 8),
         Text(
           _expired
@@ -2315,19 +2253,27 @@ class _LockoutSheetState extends State<_LockoutSheet> {
               : (widget.isDaily
                   ? 'Used all 30 responses today. Upgrade for unlimited.'
                   : 'Take a 3-hour break, then watch ads for more.'),
-          style: TextStyle(fontSize: 14, color: sub, height: 1.5),
+          style: TextStyle(
+              fontSize: 14, color: sub, height: 1.5),
           textAlign: TextAlign.center,
         ),
         if (!_expired) ...[
           const SizedBox(height: 24),
           Container(
-              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 28, vertical: 16),
               decoration: BoxDecoration(
-                  color: AppColors.primary.withOpacity(0.08),
-                  borderRadius: BorderRadius.circular(16)),
+                  color: AppColors.primary
+                      .withOpacity(0.08),
+                  borderRadius:
+                      BorderRadius.circular(16)),
               child: Column(children: [
-                Text(widget.isDaily ? 'Resets in' : 'Unlocks in',
-                    style: TextStyle(fontSize: 12, color: sub)),
+                Text(
+                    widget.isDaily
+                        ? 'Resets in'
+                        : 'Unlocks in',
+                    style: TextStyle(
+                        fontSize: 12, color: sub)),
                 const SizedBox(height: 6),
                 Text(_countdown,
                     style: TextStyle(
@@ -2343,22 +2289,32 @@ class _LockoutSheetState extends State<_LockoutSheet> {
             width: double.infinity,
             child: ElevatedButton.icon(
               onPressed: widget.onUpgrade,
-              icon: const Icon(Icons.workspace_premium_rounded, size: 20),
-              label: const Text('Upgrade — Unlimited AI Forever'),
+              icon: const Icon(
+                  Icons.workspace_premium_rounded,
+                  size: 20),
+              label: const Text(
+                  'Upgrade — Unlimited AI Forever'),
               style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.gold,
                   foregroundColor: Colors.black87,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  padding: const EdgeInsets.symmetric(
+                      vertical: 16),
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14)),
+                      borderRadius:
+                          BorderRadius.circular(14)),
                   textStyle: const TextStyle(
-                      fontSize: 15, fontWeight: FontWeight.w700)),
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700)),
             )),
         const SizedBox(height: 12),
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: Text(_expired ? 'Start chatting!' : 'Come back later',
-              style: TextStyle(color: sub, fontSize: 13)),
+          child: Text(
+              _expired
+                  ? 'Start chatting!'
+                  : 'Come back later',
+              style:
+                  TextStyle(color: sub, fontSize: 13)),
         ),
       ]),
     );
