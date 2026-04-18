@@ -1,17 +1,19 @@
 // lib/main.dart
-// Fix v1 — Two boot bugs resolved:
+// Fix v2 — Three boot/lifecycle bugs resolved:
 //
-//  BUG 1 (re-login every restart):
-//    storageService.init() was NOT awaited, so storage wasn't ready
-//    when authService.initialize() read tokens → always got null → unauthenticated.
+//  BUG 1 (re-login every restart) — ORIGINAL v1 comment said it was fixed,
+//    but storageService.init() was still NOT awaited. Tokens read before
+//    storage was ready → always null → unauthenticated → forced re-login.
 //    Fix: await storageService.init()
 //
-//  BUG 2 (black screen before splash):
-//    authService.initialize() was awaited BEFORE runApp(), and when the
-//    token was expired it made a 10-second HTTP call — app sat on a blank
-//    screen the whole time.
-//    Fix: authService.initialize() is now instant (local-only). Network
-//    refresh fires in background from auth_service.dart itself.
+//  BUG 2 (silent logout after ~1 hr in background):
+//    didChangeAppLifecycleState was empty, so tokens were never refreshed
+//    when the app resumed. By the time the user opened the app after
+//    background time, the token was expired, the first API call got 401,
+//    and the refresh race lost to the Supabase signedOut event.
+//    Fix: call authService.tryRefreshOnResume() on AppLifecycleState.resumed
+//
+//  BUG 3 (black screen before splash) — already fixed in v1, retained here.
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -51,11 +53,11 @@ Future<void> _initNotifications() async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // ── FIX 1: AWAIT storage init so tokens can be read immediately ──────
-  // Previously this was called without await — storage wasn't ready when
-  // authService.initialize() tried to read tokens, causing every boot to
-  // look like "no tokens" → unauthenticated → forced re-login.
-  storageService.init();
+  // ── FIX 1: AWAIT storage init ────────────────────────────────────────
+  // Without await, storage isn't ready when authService.initialize()
+  // reads tokens milliseconds later → always returns null → unauthenticated.
+  // This was the primary cause of "re-login on every cold start".
+  await storageService.init();
 
   if (!kIsWeb) {
     SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
@@ -75,10 +77,8 @@ void main() async {
 
   await _initSupabase();
 
-  // ── FIX 2: authService.initialize() is now instant (local reads only) ──
-  // It no longer makes any HTTP calls during boot, so this await returns
-  // in microseconds. The splash screen renders immediately after runApp().
-  // Any token refresh that is needed fires silently in the background.
+  // authService.initialize() is instant (local reads only).
+  // Any token refresh fires silently in the background from auth_service.dart.
   await Future.wait([
     authService.initialize(),
     _initNotifications(),
@@ -127,8 +127,17 @@ class _RiseUpAppState extends State<RiseUpApp> with WidgetsBindingObserver {
     super.dispose();
   }
 
+  // ── FIX 2: Refresh token when app resumes from background ────────────
+  // Without this, a user who leaves the app for 1+ hours comes back to an
+  // expired token. The first API call gets a 401, triggers handleUnauthorized,
+  // but by then Supabase may have already fired signedOut → logged out.
+  // Now we proactively refresh the moment the app is foregrounded.
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {}
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      authService.tryRefreshOnResume();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
