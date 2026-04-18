@@ -1,6 +1,7 @@
 """
-RiseUp Backend — Main Application (Production v2.1)
+RiseUp Backend — Main Application (Production v2.2)
 
+v2.2: Added groups router registration (fixes 404 on /groups and /messages/groups).
 v2.1: Added mentor router registration (fixes 404 on /mentor/chat).
 """
 import sys
@@ -18,7 +19,7 @@ from config import settings
 app = FastAPI(
     title="RiseUp API",
     description="AI-powered wealth platform with social features",
-    version="2.1.0",
+    version="2.2.0",
     docs_url="/docs" if not settings.is_production else None,
     redoc_url=None,
 )
@@ -126,6 +127,7 @@ load_router("notifications", "notifications")
 load_router("admin",         "admin")
 load_router("posts",         "posts")
 load_router("messages",      "messages")
+load_router("groups",        "groups")        # ← NEW: /groups/* full groups feature
 load_router("live",          "live")
 load_router("agent",         "agent")
 load_router("collaboration", "collaboration")
@@ -160,7 +162,7 @@ print("=" * 60 + "\n")
 async def root():
     return {
         "name":            "RiseUp API",
-        "version":         "2.1.0",
+        "version":         "2.2.0",
         "status":          "running",
         "platform":        "Social Wealth Platform",
         "loaded_routers":  loaded_routers,
@@ -182,7 +184,7 @@ async def health():
 
 @app.get("/debug/routers")
 async def debug_routers():
-    """List every registered route — useful for confirming mentor endpoints exist."""
+    """List every registered route — useful for confirming endpoints exist."""
     routes = []
     for route in app.routes:
         if hasattr(route, "methods") and hasattr(route, "path"):
