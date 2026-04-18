@@ -1,12 +1,5 @@
 // frontend/lib/screens/workflow/workflow_hub_screen.dart
-// v3.3 — Icon-overlap fix · Interstitial-on-saved-workflow-tap · Responsive · Natural UI
-//
-// Key changes:
-//  1. Icon moved into SliverAppBar title row — never overlaps back arrow
-//  2. adManager.showInterstitial() fires when tapping EXISTING saved workflow
-//  3. _WorkflowCard: richer design with timeSinceCreated + better viability badge
-//  4. _StatCard: adaptive font size via LayoutBuilder for narrow screens
-//  5. All hardcoded sizes use MediaQuery fractions
+// v3.4 — Clean header: back arrow inside title row · Bigger logo · Taller toolbar
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -108,7 +101,7 @@ class WorkflowHubNotifier extends StateNotifier<WorkflowHubState> {
     }
   }
 
-  void setFilter(String f)     => state = state.copyWith(selectedFilter: f);
+  void setFilter(String f)      => state = state.copyWith(selectedFilter: f);
   void setSearchQuery(String q) => state = state.copyWith(searchQuery: q);
 
   Future<void> deleteWorkflow(String id) async {
@@ -162,21 +155,21 @@ class WorkflowModel {
   });
 
   factory WorkflowModel.fromJson(Map d) => WorkflowModel(
-        id:              d['id']?.toString()                        ?? '',
-        title:           d['title']?.toString()                    ?? '',
-        goal:            d['goal']?.toString()                     ?? '',
-        incomeType:      d['income_type']?.toString()              ?? 'other',
-        status:          d['status']?.toString()                   ?? 'active',
+        id:              d['id']?.toString()                         ?? '',
+        title:           d['title']?.toString()                     ?? '',
+        goal:            d['goal']?.toString()                      ?? '',
+        incomeType:      d['income_type']?.toString()               ?? 'other',
+        status:          d['status']?.toString()                    ?? 'active',
         totalRevenue:    (d['total_revenue']    as num?)?.toDouble() ?? 0.0,
-        currency:        d['currency']?.toString()                 ?? 'USD',
-        language:        d['language']?.toString()                 ?? 'en',
-        region:          d['region']?.toString()                   ?? 'global',
-        progressPercent: (d['progress_percent'] as num?)?.toInt() ?? 0,
-        viabilityScore:  (d['viability_score']  as num?)?.toInt() ?? 75,
-        timeline:        d['realistic_timeline']?.toString()       ?? '',
+        currency:        d['currency']?.toString()                  ?? 'USD',
+        language:        d['language']?.toString()                  ?? 'en',
+        region:          d['region']?.toString()                    ?? 'global',
+        progressPercent: (d['progress_percent'] as num?)?.toInt()  ?? 0,
+        viabilityScore:  (d['viability_score']  as num?)?.toInt()  ?? 75,
+        timeline:        d['realistic_timeline']?.toString()        ?? '',
         potentialMin:    (d['potential_min']    as num?)?.toDouble() ?? 0.0,
         potentialMax:    (d['potential_max']    as num?)?.toDouble() ?? 0.0,
-        createdAt:       d['created_at']?.toString()               ?? '',
+        createdAt:       d['created_at']?.toString()                ?? '',
         timezone:        d['timezone']?.toString(),
       );
 
@@ -204,8 +197,8 @@ class WorkflowModel {
 // ═══════════════════════════════════════════════════════════
 
 class IncomeTypeConfig {
-  final String emoji, label;
-  final Color  color;
+  final String   emoji, label;
+  final Color    color;
   final IconData icon;
   const IncomeTypeConfig({
     required this.emoji, required this.label,
@@ -240,7 +233,10 @@ const _incomeTypeConfigs = <String, IncomeTypeConfig>{
 };
 
 IncomeTypeConfig _cfg(String type) =>
-    _incomeTypeConfigs[type] ?? const IncomeTypeConfig(emoji: '💡', color: Color(0xFF6C5CE7), label: 'Other', icon: Iconsax.activity);
+    _incomeTypeConfigs[type] ??
+    const IncomeTypeConfig(
+        emoji: '💡', color: Color(0xFF6C5CE7),
+        label: 'Other', icon: Iconsax.activity);
 
 // ═══════════════════════════════════════════════════════════
 // MAIN SCREEN
@@ -269,21 +265,18 @@ class _WorkflowHubScreenState extends ConsumerState<WorkflowHubScreen> {
     super.dispose();
   }
 
-  // ── Navigate to NEW workflow ──────────────────────────────────────────────
   Future<void> _goToNewWorkflow() async {
     HapticFeedback.mediumImpact();
-    await adManager.showInterstitial(); // frequency-capped
+    await adManager.showInterstitial();
     if (mounted) context.push('/workflow/new');
   }
 
-  // ── Navigate to EXISTING saved workflow — interstitial fires here ─────────
   Future<void> _goToSavedWorkflow(String workflowId) async {
     HapticFeedback.mediumImpact();
-    await adManager.showInterstitial(); // frequency-capped
+    await adManager.showInterstitial();
     if (mounted) context.push('/workflow/$workflowId');
   }
 
-  // ── Rewarded gate for free limit ─────────────────────────────────────────
   Future<void> _handleNewWorkflowTap() async {
     if (adManager.canCreateWorkflow) {
       await _goToNewWorkflow();
@@ -306,7 +299,10 @@ class _WorkflowHubScreenState extends ConsumerState<WorkflowHubScreen> {
           final ok = await adManager.watchAdForWorkflow(context);
           if (ok && mounted) await _goToNewWorkflow();
         },
-        onUpgrade: () { Navigator.pop(context); context.push('/upgrade'); },
+        onUpgrade: () {
+          Navigator.pop(context);
+          context.push('/upgrade');
+        },
       ),
     );
   }
@@ -325,14 +321,13 @@ class _WorkflowHubScreenState extends ConsumerState<WorkflowHubScreen> {
     );
 
     return Scaffold(
-      backgroundColor:    isDark ? AppColors.bgDark : const Color(0xFFF5F5F8),
+      backgroundColor:     isDark ? AppColors.bgDark : const Color(0xFFF5F5F8),
       bottomNavigationBar: adManager.getStickyBanner(context),
       body: RefreshIndicator(
         onRefresh: notifier.loadWorkflows,
         color:     AppColors.primary,
         child: CustomScrollView(
           slivers: [
-            // ── HEADER: icon in title row — zero overlap risk ──────────────
             _SliverHeader(
               workflowCount:   state.workflows.length,
               activeCount:     state.activeCount,
@@ -355,7 +350,8 @@ class _WorkflowHubScreenState extends ConsumerState<WorkflowHubScreen> {
 
             if (state.isLoading)
               const SliverFillRemaining(
-                child: Center(child: CircularProgressIndicator(color: AppColors.primary)),
+                child: Center(
+                    child: CircularProgressIndicator(color: AppColors.primary)),
               )
             else if (state.error != null)
               SliverFillRemaining(
@@ -400,8 +396,7 @@ class _WorkflowHubScreenState extends ConsumerState<WorkflowHubScreen> {
                       return _WorkflowCard(
                         workflow:       wf,
                         currencyFormat: currencyFormat,
-                        // interstitial fires inside _goToSavedWorkflow
-                        onTap: () => _goToSavedWorkflow(wf.id),
+                        onTap:          () => _goToSavedWorkflow(wf.id),
                       )
                           .animate()
                           .fadeIn(delay: (visualIndex * 55).ms)
@@ -430,7 +425,7 @@ class _WorkflowHubScreenState extends ConsumerState<WorkflowHubScreen> {
 }
 
 // ═══════════════════════════════════════════════════════════
-// SLIVER HEADER  — FIX: workflow icon placed inside title row
+// SLIVER HEADER  — v3.4: back arrow inside title row, bigger logo
 // ═══════════════════════════════════════════════════════════
 
 class _SliverHeader extends StatelessWidget {
@@ -461,86 +456,129 @@ class _SliverHeader extends StatelessWidget {
     final isNarrow = MediaQuery.of(context).size.width < 360;
 
     return SliverAppBar(
-      expandedHeight: 190,
-      pinned:         true,
-      stretch:        true,
-      elevation:      0,
-      // Match gradient to avoid colour-mismatch when pinned
-      backgroundColor: const Color(0xFF6C5CE7),
-      // Back arrow is in leading (auto-implied). Our icon lives in TITLE.
-      leading: Navigator.canPop(context)
-          ? IconButton(
-              icon:      const Icon(Iconsax.arrow_left_2, color: Colors.white),
-              onPressed: () => Navigator.of(context).maybePop())
-          : const SizedBox.shrink(),
+      expandedHeight:            215,
+      toolbarHeight:             72,
+      pinned:                    true,
+      stretch:                   true,
+      elevation:                 0,
+      backgroundColor:           const Color(0xFF6C5CE7),
       automaticallyImplyLeading: false,
-      // ── Title row: ⚡ icon + text ────────────────────────────────────────
-      title: Row(children: [
-        Container(
-          width:  32,
-          height: 32,
-          decoration: BoxDecoration(
-            color:        Colors.white.withOpacity(0.22),
-            borderRadius: BorderRadius.circular(10)),
-          child: const Center(child: Text('⚡', style: TextStyle(fontSize: 16))),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize:       MainAxisSize.min,
-            children: [
-              Text(
-                'Workflow Engine',
-                style: TextStyle(
-                    color:      Colors.white,
-                    fontWeight: FontWeight.w800,
-                    fontSize:   isNarrow ? 13 : 15),
-                maxLines:  1,
-                overflow:  TextOverflow.ellipsis,
+      titleSpacing:              0,
+
+      // ── Title row: back arrow + ⚡ logo + text ──────────────────────────
+      title: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        child: Row(children: [
+          // Back arrow — only shown when there is a route to pop
+          if (Navigator.canPop(context))
+            GestureDetector(
+              onTap: () => Navigator.of(context).maybePop(),
+              child: Container(
+                width:  42,
+                height: 42,
+                margin: const EdgeInsets.only(right: 10),
+                decoration: BoxDecoration(
+                  color:        Colors.white.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(13),
+                ),
+                child: const Icon(
+                  Iconsax.arrow_left_2,
+                  color: Colors.white,
+                  size:  20,
+                ),
               ),
-              Text(
-                'Your global income command center',
-                style: TextStyle(
-                    color:    Colors.white.withOpacity(0.76),
-                    fontSize: isNarrow ? 9 : 10),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ],
+            ),
+
+          // ⚡ Logo box — same frosted style as the original
+          Container(
+            width:  52,
+            height: 52,
+            decoration: BoxDecoration(
+              color:        Colors.white.withOpacity(0.22),
+              borderRadius: BorderRadius.circular(15),
+              boxShadow: [
+                BoxShadow(
+                  color:      Colors.black.withOpacity(0.15),
+                  blurRadius: 10,
+                  offset:     const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: const Center(
+              child: Text('⚡', style: TextStyle(fontSize: 28)),
+            ),
           ),
-        ),
-      ]),
-      // ── + New button ────────────────────────────────────────────────────
+
+          const SizedBox(width: 12),
+
+          // Title + subtitle
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize:       MainAxisSize.min,
+              children: [
+                Text(
+                  'Workflow Engine',
+                  style: TextStyle(
+                    color:         Colors.white,
+                    fontWeight:    FontWeight.w800,
+                    fontSize:      isNarrow ? 15 : 17,
+                    letterSpacing: -0.3,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Your global income command center',
+                  style: TextStyle(
+                    color:    Colors.white.withOpacity(0.76),
+                    fontSize: isNarrow ? 10 : 11,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+        ]),
+      ),
+
+      // ── + New button ─────────────────────────────────────────────────────
       actions: [
         GestureDetector(
           onTap: onNewWorkflow,
           child: Container(
-            margin: EdgeInsets.only(right: 14, top: 9, bottom: 9),
+            margin:  const EdgeInsets.only(right: 14, top: 10, bottom: 10),
             padding: EdgeInsets.symmetric(
-                horizontal: isNarrow ? 10 : 14, vertical: 6),
+                horizontal: isNarrow ? 12 : 16, vertical: 8),
             decoration: BoxDecoration(
               color:        Colors.white,
               borderRadius: AppRadius.pill,
               boxShadow: [
                 BoxShadow(
-                    color:      Colors.black.withOpacity(0.18),
-                    blurRadius: 8,
-                    offset:     const Offset(0, 3))
+                  color:      Colors.black.withOpacity(0.18),
+                  blurRadius: 8,
+                  offset:     const Offset(0, 3),
+                ),
               ],
             ),
             child: Row(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Iconsax.add, color: AppColors.primary, size: 16),
+              const Icon(Iconsax.add, color: AppColors.primary, size: 18),
               const SizedBox(width: 4),
-              Text('New',
-                  style: TextStyle(
-                      color:      AppColors.primary,
-                      fontWeight: FontWeight.w700,
-                      fontSize:   isNarrow ? 11 : 13)),
+              Text(
+                'New',
+                style: TextStyle(
+                  color:      AppColors.primary,
+                  fontWeight: FontWeight.w700,
+                  fontSize:   isNarrow ? 12 : 14,
+                ),
+              ),
             ]),
           ),
         ),
       ],
+
       // ── Flexible background: gradient + stat cards ───────────────────────
       flexibleSpace: FlexibleSpaceBar(
         stretchModes: const [
@@ -557,28 +595,31 @@ class _SliverHeader extends StatelessWidget {
           ),
           child: SafeArea(
             child: Padding(
-              // top 58 = consumed by appbar title area already
-              padding: const EdgeInsets.fromLTRB(16, 58, 16, 0),
+              // top = toolbarHeight (72) so cards sit just below the toolbar
+              padding: const EdgeInsets.fromLTRB(16, 72, 16, 0),
               child: LayoutBuilder(builder: (_, box) {
                 return Row(children: [
                   _StatCard(
-                      value: nf.format(workflowCount),
-                      label: 'Workflows',
-                      icon:  Iconsax.task_square,
-                      boxW:  box.maxWidth),
+                    value: nf.format(workflowCount),
+                    label: 'Workflows',
+                    icon:  Iconsax.task_square,
+                    boxW:  box.maxWidth,
+                  ),
                   const SizedBox(width: 10),
                   _StatCard(
-                      value: nf.format(activeCount),
-                      label: 'Active',
-                      icon:  Iconsax.flash_circle,
-                      boxW:  box.maxWidth),
+                    value: nf.format(activeCount),
+                    label: 'Active',
+                    icon:  Iconsax.flash_circle,
+                    boxW:  box.maxWidth,
+                  ),
                   const SizedBox(width: 10),
                   _StatCard(
-                      value:         _fmtRevenue(totalRevenue, primaryCurrency),
-                      label:         'Total Earned',
-                      icon:          Iconsax.money_tick,
-                      boxW:          box.maxWidth,
-                      isHighlighted: totalRevenue > 0),
+                    value:         _fmtRevenue(totalRevenue, primaryCurrency),
+                    label:         'Total Earned',
+                    icon:          Iconsax.money_tick,
+                    boxW:          box.maxWidth,
+                    isHighlighted: totalRevenue > 0,
+                  ),
                 ]);
               }),
             ),
@@ -588,6 +629,10 @@ class _SliverHeader extends StatelessWidget {
     );
   }
 }
+
+// ═══════════════════════════════════════════════════════════
+// STAT CARD
+// ═══════════════════════════════════════════════════════════
 
 class _StatCard extends StatelessWidget {
   final String   value, label;
@@ -605,13 +650,12 @@ class _StatCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Adaptive font size based on available card width
     final cardW = (boxW - 20) / 3;
-    final vSize = cardW < 90 ? 12.0 : 15.0;
+    final vSize = cardW < 90 ? 13.0 : 16.0;
 
     return Expanded(
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
         decoration: BoxDecoration(
           color: isHighlighted
               ? Colors.white.withOpacity(0.28)
@@ -622,20 +666,25 @@ class _StatCard extends StatelessWidget {
               : null,
         ),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon, color: Colors.white, size: 18),
-          const SizedBox(height: 5),
+          Icon(icon, color: Colors.white, size: 20),
+          const SizedBox(height: 6),
           Text(
             value,
             style: TextStyle(
-                color:      Colors.white,
-                fontWeight: FontWeight.w800,
-                fontSize:   vSize),
-            maxLines:  1,
-            overflow:  TextOverflow.ellipsis,
+              color:      Colors.white,
+              fontWeight: FontWeight.w800,
+              fontSize:   vSize,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
+          const SizedBox(height: 2),
           Text(
             label,
-            style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 9),
+            style: TextStyle(
+              color:    Colors.white.withOpacity(0.8),
+              fontSize: 10,
+            ),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
@@ -682,17 +731,30 @@ class _SearchBarDelegate extends SliverPersistentHeaderDelegate {
             fillColor: isDark ? AppColors.bgSurface : Colors.white,
             border:    OutlineInputBorder(
                 borderRadius: AppRadius.pill, borderSide: BorderSide.none),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
           ),
         ),
         const SizedBox(height: 8),
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: Row(children: [
-            _FilterChip(label: 'All',         isSelected: selectedFilter == 'all',          onTap: () => onFilterChanged('all')),
-            _FilterChip(label: 'Active',      isSelected: selectedFilter == 'active',       onTap: () => onFilterChanged('active')),
-            _FilterChip(label: 'Completed',   isSelected: selectedFilter == 'completed',    onTap: () => onFilterChanged('completed')),
-            _FilterChip(label: '💰 Earning',   isSelected: selectedFilter == 'high_earners', onTap: () => onFilterChanged('high_earners')),
+            _FilterChip(
+                label:      'All',
+                isSelected: selectedFilter == 'all',
+                onTap:      () => onFilterChanged('all')),
+            _FilterChip(
+                label:      'Active',
+                isSelected: selectedFilter == 'active',
+                onTap:      () => onFilterChanged('active')),
+            _FilterChip(
+                label:      'Completed',
+                isSelected: selectedFilter == 'completed',
+                onTap:      () => onFilterChanged('completed')),
+            _FilterChip(
+                label:      '💰 Earning',
+                isSelected: selectedFilter == 'high_earners',
+                onTap:      () => onFilterChanged('high_earners')),
           ]),
         ),
       ]),
@@ -708,30 +770,32 @@ class _FilterChip extends StatelessWidget {
   final String       label;
   final bool         isSelected;
   final VoidCallback onTap;
-  const _FilterChip({required this.label, required this.isSelected, required this.onTap});
+  const _FilterChip(
+      {required this.label, required this.isSelected, required this.onTap});
 
   @override
   Widget build(BuildContext context) => GestureDetector(
-    onTap: onTap,
-    child: AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      margin:   const EdgeInsets.only(right: 8),
-      padding:  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      decoration: BoxDecoration(
-        color:        isSelected ? AppColors.primary : Colors.transparent,
-        borderRadius: AppRadius.pill,
-        border:       Border.all(
-            color: isSelected ? AppColors.primary : AppColors.textMuted),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-            color:      isSelected ? Colors.white : AppColors.textSecondary,
-            fontSize:   12,
-            fontWeight: FontWeight.w600),
-      ),
-    ),
-  );
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          margin:   const EdgeInsets.only(right: 8),
+          padding:  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          decoration: BoxDecoration(
+            color:        isSelected ? AppColors.primary : Colors.transparent,
+            borderRadius: AppRadius.pill,
+            border: Border.all(
+                color: isSelected ? AppColors.primary : AppColors.textMuted),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color:      isSelected ? Colors.white : AppColors.textSecondary,
+              fontSize:   12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -741,7 +805,7 @@ class _FilterChip extends StatelessWidget {
 class _WorkflowCard extends StatelessWidget {
   final WorkflowModel workflow;
   final NumberFormat  currencyFormat;
-  final VoidCallback  onTap; // interstitial wired from parent
+  final VoidCallback  onTap;
 
   const _WorkflowCard({
     required this.workflow,
@@ -762,12 +826,13 @@ class _WorkflowCard extends StatelessWidget {
         decoration: BoxDecoration(
           color:        isDark ? AppColors.bgCard : Colors.white,
           borderRadius: AppRadius.lg,
-          border: Border.all(color: cfg.color.withOpacity(0.18)),
+          border:       Border.all(color: cfg.color.withOpacity(0.18)),
           boxShadow: [
             BoxShadow(
-                color:      Colors.black.withOpacity(isDark ? 0.15 : 0.06),
-                blurRadius: 12,
-                offset:     const Offset(0, 4))
+              color:      Colors.black.withOpacity(isDark ? 0.15 : 0.06),
+              blurRadius: 12,
+              offset:     const Offset(0, 4),
+            ),
           ],
         ),
         child: Column(children: [
@@ -782,47 +847,58 @@ class _WorkflowCard extends StatelessWidget {
                   gradient: LinearGradient(
                     colors: [
                       cfg.color.withOpacity(0.18),
-                      cfg.color.withOpacity(0.06)
+                      cfg.color.withOpacity(0.06),
                     ],
                     begin: Alignment.topLeft,
                     end:   Alignment.bottomRight,
                   ),
                   borderRadius: AppRadius.md,
                 ),
-                child: Center(child: Text(cfg.emoji, style: const TextStyle(fontSize: 26))),
+                child: Center(
+                    child: Text(cfg.emoji,
+                        style: const TextStyle(fontSize: 26))),
               ),
               const SizedBox(width: 12),
               // Title + tags
               Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                   Row(children: [
                     Expanded(
                       child: Text(
                         workflow.title,
                         style: TextStyle(
-                            color:      isDark ? Colors.white : Colors.black87,
-                            fontSize:   14,
-                            fontWeight: FontWeight.w700),
-                        maxLines:  2,
-                        overflow:  TextOverflow.ellipsis,
+                          color:      isDark ? Colors.white : Colors.black87,
+                          fontSize:   14,
+                          fontWeight: FontWeight.w700,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                     if (workflow.isCompleted)
                       Container(
                         margin:  const EdgeInsets.only(left: 6),
-                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 7, vertical: 3),
                         decoration: BoxDecoration(
-                            color:        AppColors.success.withOpacity(0.12),
-                            borderRadius: AppRadius.pill),
-                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                          Icon(Iconsax.tick_circle, size: 10, color: AppColors.success),
-                          SizedBox(width: 3),
-                          Text('Done',
-                              style: TextStyle(
-                                  color:      AppColors.success,
-                                  fontSize:   9,
-                                  fontWeight: FontWeight.w700)),
-                        ]),
+                          color:        AppColors.success.withOpacity(0.12),
+                          borderRadius: AppRadius.pill,
+                        ),
+                        child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Iconsax.tick_circle,
+                                  size: 10, color: AppColors.success),
+                              SizedBox(width: 3),
+                              Text('Done',
+                                  style: TextStyle(
+                                    color:      AppColors.success,
+                                    fontSize:   9,
+                                    fontWeight: FontWeight.w700,
+                                  )),
+                            ]),
                       ),
                   ]),
                   const SizedBox(height: 6),
@@ -847,13 +923,14 @@ class _WorkflowCard extends StatelessWidget {
                       ? '+${currencyFormat.format(workflow.totalRevenue)}'
                       : '${workflow.currency} 0',
                   style: TextStyle(
-                      color:      isEarning ? AppColors.success : AppColors.textMuted,
-                      fontWeight: FontWeight.w800,
-                      fontSize:   13),
+                    color:      isEarning ? AppColors.success : AppColors.textMuted,
+                    fontWeight: FontWeight.w800,
+                    fontSize:   13,
+                  ),
                 ),
                 Text('earned',
-                    style: TextStyle(
-                        color:    AppColors.textMuted, fontSize: 9)),
+                    style:
+                        TextStyle(color: AppColors.textMuted, fontSize: 9)),
               ]),
             ]),
           ),
@@ -861,18 +938,22 @@ class _WorkflowCard extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
             child: Column(children: [
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Text('${workflow.progressPercent}% done',
-                    style: const TextStyle(
-                        color:      AppColors.textSecondary,
-                        fontSize:   10,
-                        fontWeight: FontWeight.w600)),
-                Text('${workflow.viabilityScore}/100 viability',
-                    style: TextStyle(
-                        color:      cfg.color,
-                        fontSize:   10,
-                        fontWeight: FontWeight.w600)),
-              ]),
+              Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('${workflow.progressPercent}% done',
+                        style: const TextStyle(
+                          color:      AppColors.textSecondary,
+                          fontSize:   10,
+                          fontWeight: FontWeight.w600,
+                        )),
+                    Text('${workflow.viabilityScore}/100 viability',
+                        style: TextStyle(
+                          color:      cfg.color,
+                          fontSize:   10,
+                          fontWeight: FontWeight.w600,
+                        )),
+                  ]),
               const SizedBox(height: 6),
               ClipRRect(
                 borderRadius: AppRadius.pill,
@@ -900,13 +981,16 @@ class _MiniTag extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-    decoration: BoxDecoration(
-        color: color.withOpacity(0.10), borderRadius: AppRadius.pill),
-    child: Text(label,
-        style: TextStyle(
-            color: color, fontSize: 9, fontWeight: FontWeight.w700)),
-  );
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+        decoration: BoxDecoration(
+            color:        color.withOpacity(0.10),
+            borderRadius: AppRadius.pill),
+        child: Text(label,
+            style: TextStyle(
+                color:      color,
+                fontSize:   9,
+                fontWeight: FontWeight.w700)),
+      );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -919,27 +1003,29 @@ class _InlineBannerAdCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-    margin: const EdgeInsets.only(bottom: 12),
-    decoration: BoxDecoration(
-        color:        isDark ? AppColors.bgCard : Colors.white,
-        borderRadius: AppRadius.lg,
-        border:       Border.all(color: Colors.grey.withOpacity(0.12))),
-    clipBehavior: Clip.antiAlias,
-    child: Stack(children: [
-      Center(
-          child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child:   adManager.getBannerWidget())),
-      Positioned(
-        top: 5, right: 8,
-        child: Text('Ad',
-            style: TextStyle(
-                fontSize:   9,
-                color:      (isDark ? Colors.white : Colors.black).withOpacity(0.3),
-                fontWeight: FontWeight.w600)),
-      ),
-    ]),
-  );
+        margin: const EdgeInsets.only(bottom: 12),
+        decoration: BoxDecoration(
+          color:        isDark ? AppColors.bgCard : Colors.white,
+          borderRadius: AppRadius.lg,
+          border:       Border.all(color: Colors.grey.withOpacity(0.12)),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Stack(children: [
+          Center(
+              child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child:   adManager.getBannerWidget())),
+          Positioned(
+            top: 5, right: 8,
+            child: Text('Ad',
+                style: TextStyle(
+                  fontSize:   9,
+                  color: (isDark ? Colors.white : Colors.black).withOpacity(0.3),
+                  fontWeight: FontWeight.w600,
+                )),
+          ),
+        ]),
+      );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -949,61 +1035,73 @@ class _InlineBannerAdCard extends StatelessWidget {
 class _WorkflowLimitSheet extends StatelessWidget {
   final bool         isDark;
   final VoidCallback onWatchAd, onUpgrade;
-  const _WorkflowLimitSheet({required this.isDark, required this.onWatchAd, required this.onUpgrade});
+  const _WorkflowLimitSheet(
+      {required this.isDark,
+      required this.onWatchAd,
+      required this.onUpgrade});
 
   @override
   Widget build(BuildContext context) => Container(
-    padding: EdgeInsets.fromLTRB(24, 24, 24, MediaQuery.of(context).padding.bottom + 24),
-    decoration: BoxDecoration(
-        color:        isDark ? AppColors.bgCard : Colors.white,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(24))),
-    child: Column(mainAxisSize: MainAxisSize.min, children: [
-      Container(
-          width: 36, height: 4,
-          decoration: BoxDecoration(color: Colors.grey.shade400, borderRadius: AppRadius.pill)),
-      const SizedBox(height: 20),
-      const Text('🚀', style: TextStyle(fontSize: 40)),
-      const SizedBox(height: 12),
-      Text('Free Workflow Limit Reached',
-          style: AppTextStyles.h3.copyWith(color: isDark ? Colors.white : Colors.black87),
-          textAlign: TextAlign.center),
-      const SizedBox(height: 8),
-      Text(
-          'Watch a short ad to create another workflow free, or upgrade to Pro for unlimited workflows.',
-          style: AppTextStyles.body.copyWith(color: isDark ? Colors.white70 : Colors.black54),
-          textAlign: TextAlign.center),
-      const SizedBox(height: 24),
-      SizedBox(
-        width: double.infinity,
-        child: ElevatedButton.icon(
-          onPressed:  onWatchAd,
-          icon:       const Icon(Iconsax.play_circle),
-          label:      const Text('Watch Ad & Create Free'),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: AppColors.success,
-            foregroundColor: Colors.white,
-            padding:         const EdgeInsets.symmetric(vertical: 14),
-            shape:           RoundedRectangleBorder(borderRadius: AppRadius.pill),
-          ),
+        padding: EdgeInsets.fromLTRB(
+            24, 24, 24, MediaQuery.of(context).padding.bottom + 24),
+        decoration: BoxDecoration(
+          color:        isDark ? AppColors.bgCard : Colors.white,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
         ),
-      ),
-      const SizedBox(height: 10),
-      SizedBox(
-        width: double.infinity,
-        child: OutlinedButton.icon(
-          onPressed:  onUpgrade,
-          icon:       const Icon(Iconsax.crown, color: AppColors.warning),
-          label:      const Text('Upgrade to Pro'),
-          style: OutlinedButton.styleFrom(
-            foregroundColor: AppColors.warning,
-            side:            const BorderSide(color: AppColors.warning),
-            padding:         const EdgeInsets.symmetric(vertical: 14),
-            shape:           RoundedRectangleBorder(borderRadius: AppRadius.pill),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(
+              width:  36,
+              height: 4,
+              decoration: BoxDecoration(
+                  color:        Colors.grey.shade400,
+                  borderRadius: AppRadius.pill)),
+          const SizedBox(height: 20),
+          const Text('🚀', style: TextStyle(fontSize: 40)),
+          const SizedBox(height: 12),
+          Text('Free Workflow Limit Reached',
+              style: AppTextStyles.h3
+                  .copyWith(color: isDark ? Colors.white : Colors.black87),
+              textAlign: TextAlign.center),
+          const SizedBox(height: 8),
+          Text(
+              'Watch a short ad to create another workflow free, or upgrade to Pro for unlimited workflows.',
+              style: AppTextStyles.body
+                  .copyWith(color: isDark ? Colors.white70 : Colors.black54),
+              textAlign: TextAlign.center),
+          const SizedBox(height: 24),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: onWatchAd,
+              icon:      const Icon(Iconsax.play_circle),
+              label:     const Text('Watch Ad & Create Free'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.success,
+                foregroundColor: Colors.white,
+                padding:         const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                    borderRadius: AppRadius.pill),
+              ),
+            ),
           ),
-        ),
-      ),
-    ]),
-  );
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: onUpgrade,
+              icon:      const Icon(Iconsax.crown, color: AppColors.warning),
+              label:     const Text('Upgrade to Pro'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.warning,
+                side:            const BorderSide(color: AppColors.warning),
+                padding:         const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                    borderRadius: AppRadius.pill),
+              ),
+            ),
+          ),
+        ]),
+      );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1023,7 +1121,10 @@ class _BrainSuggestionsPanelState extends State<_BrainSuggestionsPanel> {
   bool          _loaded      = false;
 
   @override
-  void initState() { super.initState(); _load(); }
+  void initState() {
+    super.initState();
+    _load();
+  }
 
   Future<void> _load() async {
     try {
@@ -1057,9 +1158,10 @@ class _BrainSuggestionsPanelState extends State<_BrainSuggestionsPanel> {
           const SizedBox(width: 6),
           const Text('Brain matched for your goals',
               style: TextStyle(
-                  color:      AppColors.primary,
-                  fontSize:   11,
-                  fontWeight: FontWeight.w600)),
+                color:      AppColors.primary,
+                fontSize:   11,
+                fontWeight: FontWeight.w600,
+              )),
           const Spacer(),
           GestureDetector(
             onTap: () => context.push('/marketplace'),
@@ -1092,7 +1194,8 @@ class _BrainSuggestionsPanelState extends State<_BrainSuggestionsPanel> {
                   }
                 },
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
                     color:        clr.withOpacity(0.07),
                     borderRadius: BorderRadius.circular(12),
@@ -1102,12 +1205,13 @@ class _BrainSuggestionsPanelState extends State<_BrainSuggestionsPanel> {
                     CircleAvatar(
                       radius:          12,
                       backgroundColor: clr.withOpacity(0.15),
-                      child:           Text(
+                      child: Text(
                         name.isNotEmpty ? name[0].toUpperCase() : '?',
                         style: TextStyle(
-                            fontSize:   11,
-                            fontWeight: FontWeight.w800,
-                            color:      clr),
+                          fontSize:   11,
+                          fontWeight: FontWeight.w800,
+                          color:      clr,
+                        ),
                       ),
                     ),
                     const SizedBox(width: 7),
@@ -1117,9 +1221,10 @@ class _BrainSuggestionsPanelState extends State<_BrainSuggestionsPanel> {
                       children: [
                         Text(name.split(' ').first,
                             style: TextStyle(
-                                fontSize:   11,
-                                fontWeight: FontWeight.w600,
-                                color:      text)),
+                              fontSize:   11,
+                              fontWeight: FontWeight.w600,
+                              color:      text,
+                            )),
                         Text(
                           type == 'buyer'
                               ? 'BUYER'
@@ -1127,9 +1232,10 @@ class _BrainSuggestionsPanelState extends State<_BrainSuggestionsPanel> {
                                   ? 'SERVICE'
                                   : 'MATCH',
                           style: TextStyle(
-                              fontSize:   8,
-                              fontWeight: FontWeight.w700,
-                              color:      clr),
+                            fontSize:   8,
+                            fontWeight: FontWeight.w700,
+                            color:      clr,
+                          ),
                         ),
                       ],
                     ),
@@ -1175,7 +1281,8 @@ class _EmptyState extends StatelessWidget {
                     offset:     const Offset(0, 10))
               ],
             ),
-            child: const Center(child: Text('⚡', style: TextStyle(fontSize: 54))),
+            child: const Center(
+                child: Text('⚡', style: TextStyle(fontSize: 54))),
           ).animate().scale(duration: 600.ms).then().shimmer(duration: 2.seconds),
           const SizedBox(height: 28),
           Text('Start Your Income Journey',
@@ -1210,17 +1317,18 @@ class _EmptyState extends StatelessWidget {
                 SizedBox(width: 8),
                 Text('Create My First Workflow',
                     style: TextStyle(
-                        color:      Colors.white,
-                        fontWeight: FontWeight.w700,
-                        fontSize:   14)),
+                      color:      Colors.white,
+                      fontWeight: FontWeight.w700,
+                      fontSize:   14,
+                    )),
               ]),
             ),
           ),
           const SizedBox(height: 20),
           Wrap(
-            spacing:   8,
+            spacing:    8,
             runSpacing: 8,
-            alignment: WrapAlignment.center,
+            alignment:  WrapAlignment.center,
             children: const [
               _SuggChip('YouTube Channel'),
               _SuggChip('Freelance Design'),
@@ -1240,74 +1348,86 @@ class _SuggChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Chip(
-    label:           Text(label),
-    backgroundColor: AppColors.primary.withOpacity(0.1),
-    labelStyle:      const TextStyle(color: AppColors.primary, fontSize: 12),
-  );
+        label:           Text(label),
+        backgroundColor: AppColors.primary.withOpacity(0.1),
+        labelStyle:
+            const TextStyle(color: AppColors.primary, fontSize: 12),
+      );
 }
 
 class _ErrorState extends StatelessWidget {
-  final String error; final VoidCallback onRetry; final bool isDark;
-  const _ErrorState({required this.error, required this.onRetry, required this.isDark});
+  final String error;
+  final VoidCallback onRetry;
+  final bool isDark;
+  const _ErrorState(
+      {required this.error, required this.onRetry, required this.isDark});
 
   @override
   Widget build(BuildContext context) => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(32),
-      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        const Icon(Iconsax.warning_2, size: 64, color: AppColors.error),
-        const SizedBox(height: 16),
-        Text('Something went wrong',
-            style: AppTextStyles.h3
-                .copyWith(color: isDark ? Colors.white : Colors.black87)),
-        const SizedBox(height: 8),
-        Text(error,
-            style: AppTextStyles.body
-                .copyWith(color: isDark ? Colors.white70 : Colors.black54),
-            textAlign: TextAlign.center),
-        const SizedBox(height: 24),
-        ElevatedButton.icon(
-          onPressed: onRetry,
-          icon:  const Icon(Iconsax.refresh),
-          label: const Text('Try Again'),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: AppColors.primary,
-            foregroundColor: Colors.white,
-            padding:         const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-            shape:           RoundedRectangleBorder(borderRadius: AppRadius.pill),
-          ),
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            const Icon(Iconsax.warning_2, size: 64, color: AppColors.error),
+            const SizedBox(height: 16),
+            Text('Something went wrong',
+                style: AppTextStyles.h3
+                    .copyWith(color: isDark ? Colors.white : Colors.black87)),
+            const SizedBox(height: 8),
+            Text(error,
+                style: AppTextStyles.body.copyWith(
+                    color: isDark ? Colors.white70 : Colors.black54),
+                textAlign: TextAlign.center),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              onPressed: onRetry,
+              icon:      const Icon(Iconsax.refresh),
+              label:     const Text('Try Again'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 24, vertical: 12),
+                shape: RoundedRectangleBorder(
+                    borderRadius: AppRadius.pill),
+              ),
+            ),
+          ]),
         ),
-      ]),
-    ),
-  );
+      );
 }
 
 class _NoResultsState extends StatelessWidget {
-  final String searchQuery; final VoidCallback onClear; final bool isDark;
-  const _NoResultsState({required this.searchQuery, required this.onClear, required this.isDark});
+  final String searchQuery;
+  final VoidCallback onClear;
+  final bool isDark;
+  const _NoResultsState(
+      {required this.searchQuery,
+      required this.onClear,
+      required this.isDark});
 
   @override
   Widget build(BuildContext context) => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(32),
-      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        const Icon(Iconsax.search_normal, size: 64, color: AppColors.textMuted),
-        const SizedBox(height: 16),
-        Text('No workflows found',
-            style: AppTextStyles.h3
-                .copyWith(color: isDark ? Colors.white : Colors.black87)),
-        const SizedBox(height: 8),
-        Text('No results for "$searchQuery"',
-            style: AppTextStyles.body
-                .copyWith(color: isDark ? Colors.white70 : Colors.black54),
-            textAlign: TextAlign.center),
-        const SizedBox(height: 24),
-        TextButton.icon(
-          onPressed: onClear,
-          icon:  const Icon(Iconsax.close_circle),
-          label: const Text('Clear Search'),
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            const Icon(Iconsax.search_normal,
+                size: 64, color: AppColors.textMuted),
+            const SizedBox(height: 16),
+            Text('No workflows found',
+                style: AppTextStyles.h3
+                    .copyWith(color: isDark ? Colors.white : Colors.black87)),
+            const SizedBox(height: 8),
+            Text('No results for "$searchQuery"',
+                style: AppTextStyles.body.copyWith(
+                    color: isDark ? Colors.white70 : Colors.black54),
+                textAlign: TextAlign.center),
+            const SizedBox(height: 24),
+            TextButton.icon(
+              onPressed: onClear,
+              icon:      const Icon(Iconsax.close_circle),
+              label:     const Text('Clear Search'),
+            ),
+          ]),
         ),
-      ]),
-    ),
-  );
+      );
 }
