@@ -9,12 +9,10 @@ from typing import Optional
 from datetime import datetime
 import uuid
 
-from ..database import get_db
-from ..models.user import User
-from ..models.group import (
-    Group, GroupMember, GroupPost, GroupPostLike,
-)
-from ..routers.auth import get_current_user
+from database import get_db
+from models.user import User
+from models.group import Group, GroupMember, GroupPost, GroupPostLike
+from routers.auth import get_current_user
 
 router = APIRouter(prefix="/groups", tags=["groups"])
 
@@ -86,7 +84,7 @@ def _member_dict(user: User, membership: GroupMember) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GET /groups  — list all groups (with membership status)
+# GET /groups
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("")
@@ -94,11 +92,9 @@ async def list_groups(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # Fetch all groups
     result = await db.execute(select(Group).order_by(Group.created_at.desc()))
     groups = result.scalars().all()
 
-    # For each group get member count and whether current user joined
     out = []
     for g in groups:
         count_res = await db.execute(
@@ -121,7 +117,7 @@ async def list_groups(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# POST /groups  — create a group
+# POST /groups
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -148,7 +144,6 @@ async def create_group(
     db.add(group)
     await db.flush()
 
-    # Auto-join creator as admin
     membership = GroupMember(
         id=uuid.uuid4(),
         group_id=group.id,
@@ -164,7 +159,7 @@ async def create_group(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GET /groups/{group_id}  — group detail
+# GET /groups/{group_id}
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/{group_id}")
@@ -199,7 +194,7 @@ async def get_group(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# POST /groups/{group_id}/join  — toggle join/leave
+# POST /groups/{group_id}/join
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/{group_id}/join")
@@ -270,17 +265,14 @@ async def list_posts(
 
     out = []
     for p in posts:
-        # Author
         user_res = await db.execute(select(User).where(User.id == p.user_id))
         author = user_res.scalar_one_or_none()
 
-        # Like count
         like_res = await db.execute(
             select(func.count()).where(GroupPostLike.post_id == p.id)
         )
         like_count = like_res.scalar() or 0
 
-        # Is liked by current user
         liked_res = await db.execute(
             select(GroupPostLike).where(
                 and_(
@@ -290,14 +282,13 @@ async def list_posts(
             )
         )
         is_liked = liked_res.scalar_one_or_none() is not None
-
         out.append(_post_dict(p, author, like_count, is_liked))
 
     return {"posts": out}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# POST /groups/{group_id}/posts  — create a post
+# POST /groups/{group_id}/posts
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/{group_id}/posts", status_code=status.HTTP_201_CREATED)
@@ -334,7 +325,7 @@ async def create_post(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# POST /groups/{group_id}/posts/{post_id}/like  — toggle like
+# POST /groups/{group_id}/posts/{post_id}/like
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/{group_id}/posts/{post_id}/like")
@@ -413,4 +404,3 @@ async def list_members(
             out.append(_member_dict(user, m))
 
     return {"members": out}
-
