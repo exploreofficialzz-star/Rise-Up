@@ -57,7 +57,7 @@ void main() async {
   // Without await, storage isn't ready when authService.initialize()
   // reads tokens milliseconds later → always returns null → unauthenticated.
   // This was the primary cause of "re-login on every cold start".
-  await storageService.init();
+  storageService.init(); // init() is synchronous (returns void) — no await needed
 
   if (!kIsWeb) {
     SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
