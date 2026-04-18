@@ -1,15 +1,12 @@
 # backend/models/group.py
-# Group, GroupMember, GroupPost, GroupPostLike models
 
 import uuid
 from datetime import datetime
-from sqlalchemy import (
-    Column, String, Boolean, DateTime, Text, ForeignKey, Integer
-)
+from sqlalchemy import Column, String, Boolean, DateTime, Text, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
-from ..database import Base
+from database import Base
 
 
 class Group(Base):
@@ -25,16 +22,16 @@ class Group(Base):
     created_by  = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at  = Column(DateTime, default=datetime.utcnow)
 
-    members  = relationship("GroupMember", back_populates="group", cascade="all, delete-orphan")
-    posts    = relationship("GroupPost", back_populates="group", cascade="all, delete-orphan")
+    members = relationship("GroupMember", back_populates="group", cascade="all, delete-orphan")
+    posts   = relationship("GroupPost",   back_populates="group", cascade="all, delete-orphan")
 
 
 class GroupMember(Base):
     __tablename__ = "group_members"
 
     id        = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    group_id  = Column(UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), nullable=False)
-    user_id   = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    group_id  = Column(UUID(as_uuid=True), ForeignKey("groups.id",  ondelete="CASCADE"), nullable=False)
+    user_id   = Column(UUID(as_uuid=True), ForeignKey("users.id",   ondelete="CASCADE"), nullable=False)
     is_admin  = Column(Boolean, default=False)
     joined_at = Column(DateTime, default=datetime.utcnow)
 
@@ -46,7 +43,7 @@ class GroupPost(Base):
 
     id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     group_id   = Column(UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), nullable=False)
-    user_id    = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id    = Column(UUID(as_uuid=True), ForeignKey("users.id",  ondelete="CASCADE"), nullable=False)
     content    = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -59,7 +56,7 @@ class GroupPostLike(Base):
 
     id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     post_id    = Column(UUID(as_uuid=True), ForeignKey("group_posts.id", ondelete="CASCADE"), nullable=False)
-    user_id    = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id    = Column(UUID(as_uuid=True), ForeignKey("users.id",       ondelete="CASCADE"), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     post = relationship("GroupPost", back_populates="likes")
