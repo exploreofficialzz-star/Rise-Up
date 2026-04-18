@@ -1,18 +1,33 @@
 // frontend/lib/services/auth_service.dart
-// v6.0 — Persistent login (Facebook/Instagram-style)
+// v7.0 — Token-First, Post-Update Resilient Auth
 //
-// FIXES vs v5:
-//  FIX 1: Restore Supabase session on startup so its internal
-//          auto-refresh fires correctly and doesn't trigger signedOut.
-//  FIX 2: _listenToSupabase() no longer immediately clears session on
-//          signedOut — it attempts a silent refresh first. Only clears
-//          after _maxRefreshFailures consecutive unrecoverable failures.
-//  FIX 3: _isExpiringSoon() replaces _isExpired() — proactive refresh
-//          5 minutes before expiry instead of after.
-//  FIX 4: saveSession() and _silentRefresh() also restore Supabase
-//          session so the internal refresh cycle stays in sync.
-//  FIX 5: tryRefreshOnResume() now actually called (main.dart wires it
-//          via didChangeAppLifecycleState).
+// FIXES vs v6:
+//
+//  FIX 1 — signedOut + _refreshInFlight race (the main post-update bug):
+//    When a background refresh was already running AND Supabase fired signedOut
+//    simultaneously, the old code skipped the recovery block entirely and fell
+//    straight through to incrementing the failure counter. After 3 rapid events
+//    (which Supabase fires freely during cold-start validation), _clearSession()
+//    was called and the user was logged out. Fix: when _refreshInFlight is true,
+//    return immediately — the in-flight refresh will resolve the state correctly.
+//
+//  FIX 2 — No startup grace period:
+//    Supabase fires signedOut within the first few seconds while validating the
+//    session restored by setSession(). During that same window, Render.com cold-
+//    starts the backend (10-30 s), so the refresh request times out. Without a
+//    grace period, rapid signedOut events during this window hit the failure
+//    counter before any real failure has occurred. Fix: _startupGrace = true for
+//    the first 10 s. During grace, signedOut only fires a background refresh
+//    attempt — failure counters are never incremented.
+//
+//  FIX 3 — Token-first rule:
+//    unauthenticated status is now ONLY set when ALL of these are true:
+//      a) Explicit logout, OR
+//      b) Both access_token AND refresh_token are absent from storage, AND
+//         _silentRefresh() returned false (definitive backend rejection)
+//    A Supabase event alone can never log the user out while tokens exist.
+//
+//  FIX 4 — _maxRefreshFailures raised to 5, counters reset on any success.
 
 import 'dart:async';
 import 'dart:convert';
@@ -38,65 +53,61 @@ class AuthService extends ChangeNotifier {
   AuthStatus get status => _status;
   bool get isAuthenticated => _status == AuthStatus.authenticated;
 
-  bool _refreshInFlight = false;
-  int  _refreshFailures = 0;
-  static const int _maxRefreshFailures = 3;
+  bool _refreshInFlight  = false;
+  int  _refreshFailures  = 0;
+  int  _supabaseFailures = 0;
 
-  // Guard: only log out from Supabase signedOut AFTER we've tried and
-  // failed to recover. Incremented on each unrecoverable signedOut.
-  int _supabaseSignOutFailures = 0;
+  // FIX 2: Grace period — no failure counting for the first 10 seconds.
+  // Covers Supabase session validation delay + Render cold-start window.
+  bool   _startupGrace = true;
+  Timer? _graceTimer;
+
+  static const int _maxRefreshFailures = 5; // FIX 4: raised from 3
 
   StreamSubscription<AuthState>? _supabaseSub;
 
-  // ── INIT ─────────────────────────────────────────────────────────────
+  // ── INIT ─────────────────────────────────────────────────────────────────
   Future<void> initialize() async {
     try {
       final access  = await storageService.read(key: _kAccess);
       final refresh = await storageService.read(key: _kRefresh);
 
       if (access == null && refresh == null) {
+        _startupGrace = false; // No tokens = new user; grace not needed
         _setStatus(AuthStatus.unauthenticated);
         _listenToSupabase();
         return;
       }
 
-      // We have stored credentials — user is authenticated immediately.
+      // Tokens found → authenticated immediately.
+      // Never wait for network validation before showing content.
       _setStatus(AuthStatus.authenticated);
 
-      // FIX 1: Restore Supabase's in-memory session from our stored tokens.
-      // Without this, Supabase has no session on every cold start, so its
-      // internal refresh loop never runs, and it eventually fires signedOut.
+      // Restore Supabase in-memory session so its internal refresh cycle works.
       if (access != null && refresh != null) {
         _restoreSupabaseSession(access, refresh);
       }
 
       _listenToSupabase();
 
-      // Proactively refresh if token is expiring within 5 minutes.
+      // Proactively refresh if expiring within 5 minutes.
       if (refresh != null && (access == null || _isExpiringSoon(access))) {
         _backgroundRefresh(refresh);
       }
+
+      // FIX 2: Start grace timer AFTER subscribing to Supabase events.
+      _graceTimer?.cancel();
+      _graceTimer = Timer(const Duration(seconds: 10), () {
+        _startupGrace = false;
+      });
     } catch (_) {
-      // Storage read error — assume authenticated so we don't force a logout.
+      // Storage read error — default to authenticated (offline-first).
       _setStatus(AuthStatus.authenticated);
       _listenToSupabase();
     }
   }
 
-  // ── RESTORE SUPABASE SESSION ──────────────────────────────────────────
-  // Silently push stored tokens into the Supabase client so it can manage
-  // its own refresh cycle. Called on cold start and after every refresh.
-  // setSession() in this supabase_flutter version takes only the refresh token.
-  // Supabase will exchange it internally and restore the full session.
-  void _restoreSupabaseSession(String access, String refresh) {
-    try {
-      Supabase.instance.client.auth.setSession(refresh);
-    } catch (_) {
-      // Tokens may be expired — background refresh handles it.
-    }
-  }
-
-  // ── RESUME REFRESH ────────────────────────────────────────────────────
+  // ── RESUME REFRESH ────────────────────────────────────────────────────────
   Future<void> tryRefreshOnResume() async {
     if (!isAuthenticated) return;
     if (_refreshInFlight) return;
@@ -110,12 +121,13 @@ class AuthService extends ChangeNotifier {
     }
   }
 
-  // ── BACKGROUND REFRESH ────────────────────────────────────────────────
+  // ── BACKGROUND REFRESH ────────────────────────────────────────────────────
   Future<void> _backgroundRefresh(String refreshToken) async {
     final result = await _silentRefresh(refreshToken);
 
     if (result == true) {
-      _refreshFailures = 0;
+      _refreshFailures  = 0;
+      _supabaseFailures = 0;
       return;
     }
 
@@ -125,10 +137,10 @@ class AuthService extends ChangeNotifier {
         await _clearSession();
       }
     }
-    // result == null means network error — keep user logged in, retry later.
+    // null = network error → keep user in, retry on next resume
   }
 
-  // ── API INTERCEPTOR HANDLER ───────────────────────────────────────────
+  // ── API INTERCEPTOR ────────────────────────────────────────────────────────
   Future<bool> handleUnauthorized() async {
     if (_refreshInFlight) {
       await Future.delayed(const Duration(seconds: 2));
@@ -144,7 +156,8 @@ class AuthService extends ChangeNotifier {
     final result = await _silentRefresh(refresh);
 
     if (result == true) {
-      _refreshFailures = 0;
+      _refreshFailures  = 0;
+      _supabaseFailures = 0;
       return true;
     }
 
@@ -159,7 +172,7 @@ class AuthService extends ChangeNotifier {
     return isAuthenticated;
   }
 
-  // ── SILENT REFRESH ────────────────────────────────────────────────────
+  // ── SILENT REFRESH ────────────────────────────────────────────────────────
   Future<bool?> _silentRefresh(String refreshToken) async {
     if (_refreshInFlight) return null;
     _refreshInFlight = true;
@@ -171,10 +184,10 @@ class AuthService extends ChangeNotifier {
         Uri.parse('$kApiBaseUrl/auth/refresh'),
         headers: {
           'Content-Type': 'application/json',
-          'X-Device-ID': deviceId,
+          'X-Device-ID':  deviceId,
         },
         body: json.encode({'refresh_token': refreshToken}),
-      ).timeout(const Duration(seconds: 15));
+      ).timeout(const Duration(seconds: 20)); // extended for Render cold starts
 
       if (res.statusCode == 200) {
         final body = json.decode(res.body);
@@ -189,34 +202,29 @@ class AuthService extends ChangeNotifier {
           if (userId     != null) storageService.write(key: _kUserId,  value: userId),
         ]);
 
-        // FIX 4: Keep Supabase's in-memory session in sync with new tokens.
         if (newAccess != null && newRefresh != null) {
           _restoreSupabaseSession(newAccess, newRefresh);
         }
 
-        _refreshFailures = 0;
+        _refreshFailures  = 0;
+        _supabaseFailures = 0;
         return true;
       }
 
-      // Hard auth failure — refresh token is invalid/revoked.
-      if (res.statusCode == 401 || res.statusCode == 403) {
-        return false;
-      }
+      // 401/403 = backend definitively rejected the refresh token
+      if (res.statusCode == 401 || res.statusCode == 403) return false;
 
-      // Server error / network hiccup — don't log the user out.
+      // 5xx / unexpected = server hiccup or cold start → keep user in
       return null;
     } catch (_) {
-      // Network unreachable — keep the user logged in.
+      // Network unreachable / timeout → keep user in
       return null;
     } finally {
       _refreshInFlight = false;
     }
   }
 
-  // ── TOKEN EXPIRY CHECKS ───────────────────────────────────────────────
-
-  // FIX 3: Refresh proactively 5 minutes before expiry, not after.
-  // This prevents the 1-second window where a request hits an expired token.
+  // ── TOKEN EXPIRY ──────────────────────────────────────────────────────────
   bool _isExpiringSoon(String token) {
     try {
       final payload = json.decode(
@@ -227,24 +235,33 @@ class AuthService extends ChangeNotifier {
       final exp = payload['exp'] as int?;
       if (exp == null) return true;
       final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-      return now >= (exp - 300); // 5-minute buffer
+      return now >= (exp - 300); // refresh 5 min before expiry
     } catch (_) {
       return true;
     }
   }
 
-  // Kept for backward-compat callers; delegates to _isExpiringSoon.
-  bool _isExpired(String token) => _isExpiringSoon(token);
+  // ── RESTORE SUPABASE SESSION ──────────────────────────────────────────────
+  void _restoreSupabaseSession(String access, String refresh) {
+    try {
+      // This version of supabase_flutter takes only the refresh token.
+      Supabase.instance.client.auth.setSession(refresh);
+    } catch (_) {}
+  }
 
-  // ── SUPABASE SESSION SYNC ─────────────────────────────────────────────
-  // FIX 2: The old code called _clearSession() immediately on signedOut.
-  // Supabase fires signedOut when *its* internal JWT expires (~1 hr) and it
-  // can't auto-refresh (e.g. network hiccup, or our tokens were restored but
-  // Supabase hadn't refreshed its copy yet). The correct behaviour is:
-  //   • session != null  → save the new/refreshed tokens, stay logged in
-  //   • signedOut        → try our own silent refresh FIRST; only clear
-  //                        session if that fails _maxRefreshFailures times
-  //   • anything else    → ignore (initialSession with null, etc.)
+  // ── SUPABASE STREAM LISTENER ──────────────────────────────────────────────
+  //
+  // Why post-update logouts happened here:
+  //   Supabase fires signedOut while validating the session after setSession().
+  //   Simultaneously, the backend is cold-starting (Render), so _silentRefresh
+  //   times out. The three-event failure counter was hit before any real auth
+  //   failure occurred, triggering _clearSession().
+  //
+  // The fix — three-layer protection:
+  //   Layer 1: if _refreshInFlight → return immediately (FIX 1)
+  //   Layer 2: if _startupGrace   → try refresh, never count (FIX 2)
+  //   Layer 3: if tokens exist    → try refresh, count only on definitive
+  //                                  rejection (false), not timeouts (FIX 3)
   void _listenToSupabase() {
     _supabaseSub?.cancel();
     _supabaseSub = Supabase.instance.client.auth.onAuthStateChange.listen(
@@ -252,67 +269,81 @@ class AuthService extends ChangeNotifier {
         final session = data.session;
         final event   = data.event;
 
+        // ── Session available ────────────────────────────────────────────
         if (session != null) {
-          // Supabase refreshed or confirmed the session — persist the tokens.
           await Future.wait([
             storageService.write(key: _kAccess,  value: session.accessToken),
             if (session.refreshToken != null)
               storageService.write(key: _kRefresh, value: session.refreshToken!),
             storageService.write(key: _kUserId, value: session.user.id),
           ]);
-          _refreshFailures       = 0;
-          _supabaseSignOutFailures = 0;
+          _refreshFailures  = 0;
+          _supabaseFailures = 0;
+          _startupGrace     = false;
+          _graceTimer?.cancel();
           _setStatus(AuthStatus.authenticated);
           return;
         }
 
-        // session == null below this point.
+        // ── No session ───────────────────────────────────────────────────
+        if (event != AuthChangeEvent.signedOut) return; // ignore non-signedOut
 
-        if (event == AuthChangeEvent.signedOut) {
-          // Don't trust this event blindly — Supabase fires it for network
-          // hiccups too. Try our own refresh before giving up.
-          if (!_refreshInFlight) {
-            final storedRefresh = await storageService.read(key: _kRefresh);
-            if (storedRefresh != null) {
-              final result = await _silentRefresh(storedRefresh);
-              if (result == true) {
-                // Recovered — stay logged in.
-                _supabaseSignOutFailures = 0;
-                _refreshFailures        = 0;
-                return;
-              }
-              if (result == null) {
-                // Network error — don't log out, retry on next resume.
-                return;
-              }
-            }
-          }
+        // LAYER 1 — FIX 1: Refresh already running → it will resolve state.
+        if (_refreshInFlight) return;
 
-          // result == false (or no refresh token) → genuine auth failure.
-          _supabaseSignOutFailures++;
-          _refreshFailures++;
-          if (_supabaseSignOutFailures >= _maxRefreshFailures ||
-              _refreshFailures        >= _maxRefreshFailures) {
-            await _clearSession();
-          }
-          // Otherwise hold on — could be a transient failure.
+        // LAYER 2 — FIX 2: Startup grace → never count, just try refresh.
+        if (_startupGrace) {
+          final r = await storageService.read(key: _kRefresh);
+          if (r != null) _silentRefresh(r); // fire-and-forget
+          return;
         }
 
-        // All other events with null session (e.g. initialSession with no
-        // prior Supabase storage) are silently ignored.
+        // LAYER 3 — FIX 3: Token-first approach.
+        final storedRefresh = await storageService.read(key: _kRefresh);
+        final storedAccess  = await storageService.read(key: _kAccess);
+
+        if (storedRefresh != null) {
+          final result = await _silentRefresh(storedRefresh);
+
+          if (result == true) {
+            _supabaseFailures = 0;
+            _refreshFailures  = 0;
+            return; // Session recovered
+          }
+
+          if (result == null) return; // Network error — stay logged in
+
+          // result == false: backend confirmed token is invalid
+          _supabaseFailures++;
+          _refreshFailures++;
+          if (_supabaseFailures  < _maxRefreshFailures &&
+              _refreshFailures   < _maxRefreshFailures) {
+            return; // More attempts remain
+          }
+          await _clearSession();
+          return;
+        }
+
+        // Has access token but no refresh token — keep going until access expires
+        if (storedAccess != null) return;
+
+        // Truly no tokens + signedOut = genuinely logged out
+        await _clearSession();
       },
-      onError: (_) {/* Supabase stream errors are non-fatal */},
+      onError: (_) {},
     );
   }
 
-  // ── LOGIN ─────────────────────────────────────────────────────────────
+  // ── LOGIN ─────────────────────────────────────────────────────────────────
   Future<void> saveSession({
     required String accessToken,
     required String refreshToken,
     required String userId,
   }) async {
-    _refreshFailures        = 0;
-    _supabaseSignOutFailures = 0;
+    _refreshFailures  = 0;
+    _supabaseFailures = 0;
+    _startupGrace     = false;
+    _graceTimer?.cancel();
 
     await Future.wait([
       storageService.write(key: _kAccess,  value: accessToken),
@@ -320,25 +351,26 @@ class AuthService extends ChangeNotifier {
       storageService.write(key: _kUserId,  value: userId),
     ]);
 
-    // FIX 4: Sync new login credentials into Supabase immediately.
     _restoreSupabaseSession(accessToken, refreshToken);
-
     _status = AuthStatus.authenticated;
     notifyListeners();
-
     _listenToSupabase();
   }
 
   void onLoginSuccess() {
-    _refreshFailures        = 0;
-    _supabaseSignOutFailures = 0;
+    _refreshFailures  = 0;
+    _supabaseFailures = 0;
+    _startupGrace     = false;
+    _graceTimer?.cancel();
     _status = AuthStatus.authenticated;
     notifyListeners();
     _listenToSupabase();
   }
 
-  // ── LOGOUT ────────────────────────────────────────────────────────────
+  // ── LOGOUT ────────────────────────────────────────────────────────────────
   Future<void> onLogout() async {
+    _graceTimer?.cancel();
+    _startupGrace = false;
     _supabaseSub?.cancel();
     try {
       await Supabase.instance.client.auth.signOut();
@@ -353,8 +385,8 @@ class AuthService extends ChangeNotifier {
       storageService.delete(key: _kUserId),
       storageService.clearProfileCache(),
     ]);
-    _refreshFailures        = 0;
-    _supabaseSignOutFailures = 0;
+    _refreshFailures  = 0;
+    _supabaseFailures = 0;
     _setStatus(AuthStatus.unauthenticated);
   }
 
@@ -366,6 +398,7 @@ class AuthService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _graceTimer?.cancel();
     _supabaseSub?.cancel();
     super.dispose();
   }
