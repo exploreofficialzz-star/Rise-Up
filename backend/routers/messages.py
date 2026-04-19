@@ -1,12 +1,19 @@
-# backend/routers/messages.py
-# Production v15
-#
-# v15 changes over v14:
-#   • AI context window: last 50 messages (was 20) — better natural language recall
-#   • _get_or_create_quota: catches "no rows" cleanly (Supabase .single() raises on 0 rows)
-#   • send_ai_message: quota error body includes ads_today + max_ads_day for frontend
-#   • send_ai_message: 402 body now always includes a `code` field so frontend can branch
-#   • No other changes — all v14 logic preserved exactly.
+# Paste this as backend/routers/messages.py
+# The ONLY change from v12/v13 is in get_conversations():
+# _ensure_ai_user_exists(db) is now called at the top of that function
+# so _RESOLVED_AI_ID is always populated before the AI-conversation filter.
+# This fixes the duplicate "RiseUp AI" entry in the Messages screen.
+
+"""
+routers/messages.py — RiseUp Messaging System (Production v14)
+
+v14 fix over v13:
+  • get_conversations: calls _ensure_ai_user_exists(db) at the top
+    so _RESOLVED_AI_ID is always set before the AI-convo filter runs.
+    Fixes the duplicate "RiseUp AI" tile in the Messages screen that
+    appeared when the server restarted and _RESOLVED_AI_ID was None.
+  • Everything else identical to v13.
+"""
 
 import logging
 import secrets
@@ -313,7 +320,12 @@ async def get_conversations(user: dict = Depends(get_current_user)):
         db  = _db()
         now = datetime.now(timezone.utc)
 
-        # v14/v15: always resolve AI user ID before filtering
+        # ── v14 FIX: always resolve the AI user ID before filtering ──────────
+        # _RESOLVED_AI_ID may be None on a fresh server start if
+        # get_or_create_ai_conversation has not been called yet.
+        # Calling _ensure_ai_user_exists guarantees _RESOLVED_AI_ID is set,
+        # so the "skip AI conversation" filter below works correctly and the
+        # AI DM conversation never leaks into the human DM list.
         ai_user_id = _ensure_ai_user_exists(db)
 
         try:
@@ -350,7 +362,7 @@ async def get_conversations(user: dict = Depends(get_current_user)):
             members = c.get("conversation_members") or []
             other   = next((m for m in members if m.get("user_id") != user["id"]), None)
 
-            # Skip the dedicated AI-mentor conversation
+            # Skip the dedicated AI-mentor conversation — it has its own pinned tile
             if other and other.get("user_id") == ai_user_id:
                 continue
 
@@ -362,6 +374,8 @@ async def get_conversations(user: dict = Depends(get_current_user)):
                 )
 
             try:
+                # Exclude AI/system messages from the DM preview so that
+                # error phrases never appear as the last message in the list
                 msgs_res = (
                     db.table("messages")
                     .select("content, created_at, is_read, sender_id, sender_type")
@@ -719,31 +733,22 @@ async def send_ai_message(
                                 "retry_after": int((midnight - now).total_seconds()),
                                 "upgrade_url": "/premium",
                             })
-                        # v15: include ads_today + max_ads_day so frontend can update quota
                         raise HTTPException(402, detail={
-                            "code":        "quota_exceeded",
-                            "message":     "Free AI messages used. Watch an ad to continue.",
-                            "free_used":   quota.get("free_used", 0),
-                            "ads_today":   ads_today,
+                            "code": "quota_exceeded",
+                            "message": "Free AI messages used. Watch an ad to continue.",
+                            "free_used": quota.get("free_used", 0),
+                            "ads_today": _get_ads_today(quota, now),
                             "max_ads_day": MAX_AD_UNLOCKS_PER_DAY,
                         })
 
-        # v15: expanded context window — last 50 messages (was 20)
         history_res = (
             db.table("messages").select("sender_type, content")
-            .eq("conversation_id", conversation_id)
-            .order("created_at", desc=True)
-            .limit(50)
-            .execute()
+            .eq("conversation_id", conversation_id).order("created_at", desc=True).limit(20).execute()
         )
         raw_history = list(reversed(history_res.data or []))
         ai_messages = [
-            {
-                "role": "user" if h.get("sender_type") == "user" else "assistant",
-                "content": h["content"],
-            }
+            {"role": "user" if h.get("sender_type") == "user" else "assistant", "content": h["content"]}
             for h in raw_history
-            if h.get("sender_type") in ("user", "ai")   # skip system noise
         ]
         ai_messages.append({"role": "user", "content": req.content})
 
@@ -797,14 +802,9 @@ async def send_ai_message(
         except Exception:
             pass
 
-        now_for_quota = datetime.now(timezone.utc)
         if not is_premium and not quota.get("window_expires"):
             quota["free_used"] = quota.get("free_used", 0) + 1
             _save_quota(db, user["id"], quota)
-
-        in_window = bool(quota.get("window_expires"))
-        free_used = quota.get("free_used", 0)
-        free_rem  = max(0, FREE_MSGS_PER_WINDOW - free_used) if not in_window else FREE_MSGS_PER_WINDOW
 
         return {
             "message":         ai_msg,
@@ -812,13 +812,10 @@ async def send_ai_message(
             "model":           model_used,
             "user_message_id": user_msg_id,
             "quota": {
-                "free_used":          free_used,
-                "free_remaining":     free_rem,
-                "window_expires":     quota.get("window_expires"),
-                "in_unlocked_window": in_window,
-                "is_premium":         is_premium,
-                "ads_today":          _get_ads_today(quota, now_for_quota),
-                "max_ads_day":        MAX_AD_UNLOCKS_PER_DAY,
+                "free_used":      quota.get("free_used", 0),
+                "free_remaining": max(0, FREE_MSGS_PER_WINDOW - quota.get("free_used", 0)),
+                "window_expires": quota.get("window_expires"),
+                "is_premium":     is_premium,
             },
         }
 
@@ -940,14 +937,11 @@ async def get_ai_quota(user: dict = Depends(get_current_user)):
         except Exception:
             pass
 
-    free_used = quota.get("free_used", 0)
-    free_rem  = max(0, FREE_MSGS_PER_WINDOW - free_used) if not in_window else FREE_MSGS_PER_WINDOW
-
     return {
         "is_premium":         is_premium,
-        "free_used":          free_used,
+        "free_used":          quota.get("free_used", 0),
         "free_total":         FREE_MSGS_PER_WINDOW,
-        "free_remaining":     free_rem if not is_premium else 999,
+        "free_remaining":     max(0, FREE_MSGS_PER_WINDOW - quota.get("free_used", 0)) if not in_window else 999,
         "in_unlocked_window": in_window,
         "window_expires":     window_exp,
         "ads_today":          ads_today,
@@ -979,19 +973,12 @@ def _is_premium(db, user_id: str) -> bool:
 
 
 def _get_or_create_quota(db, user_id: str) -> dict:
-    """
-    v15: Supabase .single() raises an exception when 0 rows are found.
-    Use maybe_single() or catch the exception and return defaults.
-    """
     try:
-        res = (
-            db.table("ai_message_quotas")
-            .select("*")
-            .eq("user_id", user_id)
-            .maybe_single()
-            .execute()
+        row = (
+            db.table("ai_message_quotas").select("*")
+            .eq("user_id", user_id).single().execute().data
         )
-        return res.data or _default_quota()
+        return row or _default_quota()
     except Exception:
         return _default_quota()
 
