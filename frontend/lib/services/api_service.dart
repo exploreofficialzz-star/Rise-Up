@@ -1,8 +1,6 @@
 // frontend/lib/services/api_service.dart
 //
 // Changelog:
-//  v2.3: ApiException gains `body` field so callers can inspect raw error payload
-//        (fixes ai_mentor_screen.dart: "The getter 'body' isn't defined for ApiException")
 //  v2.2: getGroups() → /groups (full groups feature, fixes GroupsScreen 404)
 //        toggleGroup() → /groups/{id}/join  (fixes "Failed to create group")
 //        getMessageGroups() added → /messages/groups (Messages tab groups list)
@@ -23,13 +21,9 @@ import 'auth_service.dart';
 // Custom exception
 // ─────────────────────────────────────────────────────────────────────────────
 class ApiException implements Exception {
-  final int?    statusCode;
-  final String  message;
-  /// Raw response body from the server (may be a Map, List, String, or null).
-  /// Callers can inspect quota / error details from this field.
-  final dynamic body;
-
-  const ApiException(this.message, {this.statusCode, this.body});
+  final int? statusCode;
+  final String message;
+  const ApiException(this.message, {this.statusCode});
 
   @override
   String toString() =>
@@ -156,9 +150,6 @@ class ApiService {
     }
   }
 
-  /// Converts a [DioException] (or any error) into an [ApiException].
-  /// The raw response body is forwarded as [ApiException.body] so callers
-  /// can inspect quota maps, error codes, etc. without re-parsing strings.
   ApiException _handleError(dynamic e) {
     if (e is DioException) {
       final data = e.response?.data;
@@ -166,11 +157,7 @@ class ApiService {
           (data is Map ? data['detail'] ?? data['message'] : null) ??
               e.message ??
               'Something went wrong';
-      return ApiException(
-        msg.toString(),
-        statusCode: e.response?.statusCode,
-        body: data,
-      );
+      return ApiException(msg.toString(), statusCode: e.response?.statusCode);
     }
     return ApiException(e.toString());
   }
@@ -1204,7 +1191,15 @@ class ApiService {
   }
 
   // ── Groups ────────────────────────────────────────────────────────────────
+  //
+  // TWO separate concepts:
+  //   getGroups()        → GET /groups       — full groups feature (GroupsScreen)
+  //   getMessageGroups() → GET /messages/groups — joined groups for Messages tab
+  //
+  // getGroups() used by groups_screen.dart ─────────────────────────────────
 
+  /// Returns all groups with membership status for the GroupsScreen.
+  /// Hits GET /api/v1/groups
   Future<Map<String, dynamic>> getGroups() async {
     try {
       final r = await _dio.get('/groups');
@@ -1212,6 +1207,9 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
+  /// Toggle join / leave a group.
+  /// Hits POST /api/v1/groups/{id}/join
+  /// Returns: { "joined": true|false }
   Future<Map<String, dynamic>> toggleGroup(String groupId) async {
     try {
       final r = await _dio.post('/groups/$groupId/join', data: {});
@@ -1219,6 +1217,8 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
+  /// Returns groups the user has joined — shown in the Messages tab.
+  /// Hits GET /api/v1/messages/groups
   Future<Map<String, dynamic>> getMessageGroups() async {
     try {
       final r = await _dio.get('/messages/groups');
