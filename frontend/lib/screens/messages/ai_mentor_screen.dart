@@ -1,17 +1,17 @@
 // frontend/lib/screens/messages/ai_mentor_screen.dart
-// RiseUp AI Mentor — Production v3.1
+// RiseUp AI Mentor — Production v4
 //
-// v3.1 changes:
-//  • Removed the empty-state / sample-prompts screen entirely.
-//    When there is no chat history the welcome greeting is shown
-//    immediately as a typed chat bubble.
-//  • Removed _kGreetedKey prefs gate — it permanently suppressed
-//    the greeting after the first open, leaving a blank screen
-//    whenever history was empty. _showGreeting() is now called
-//    unconditionally whenever history is absent.
-//  • History loads from GET /mentor/sessions + GET /mentor/session/{id}
-//    and always scrolls to the last message on restore.
-//  • All AI calls route through POST /mentor/chat (mentor.py).
+// v4 complete rewrite of data layer (UI unchanged from v3.1):
+//  • Uses messages.py conversation API — REAL persistent chat history
+//    - GET  /messages/ai-conversation            → get/create the AI DM conversation
+//    - GET  /messages/conversations/{id}/messages → restore history on every open
+//    - POST /messages/conversations/{id}/ai-message → send user message, get AI reply
+//  • Quota synced from server on every response (no more stale local counters)
+//  • _kAdsPerCycle = 1  (one ad unlocks 3 messages for 4 hours — matches backend)
+//  • APEX launch: try /agent/handoff first, graceful degradation to /agent + snack
+//  • Workflow launch: try-catch so navigation error never crashes the screen
+//  • Service unavailable shows a friendly inline error bubble, never an exception
+//  • All history restored immediately on screen open — no re-greeting on return
 //
 // Route: /ai-mentor
 // ignore_for_file: deprecated_member_use
@@ -26,7 +26,6 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../config/app_constants.dart';
@@ -36,15 +35,10 @@ import '../../services/api_service.dart';
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
-const int      _kFreeMessages = 3;
-const int      _kAdsPerCycle  = 2;
-const int      _kMsgsPerCycle = 3;
-const int      _kMaxResponses = 30;
-const Duration _kCycleLock    = Duration(hours: 3);
-const Duration _kDailyLock    = Duration(hours: 24);
-
-const String _kQuotaKey     = 'riseup_ai_quota_v4';
-const String _kSessionIdKey = 'riseup_mentor_session_v1';
+const int      _kFreeMessages = 3;   // matches backend FREE_MSGS_PER_WINDOW
+const int      _kAdsPerCycle  = 1;   // 1 ad = 1 unlock window
+const int      _kMsgsPerCycle = 3;   // messages gained per ad watch
+const int      _kMaxAdsDay    = 5;   // matches backend MAX_AD_UNLOCKS_PER_DAY
 
 const List<String> _kAiErrorPhrases = [
   'experiencing technical difficulties',
@@ -139,7 +133,7 @@ class _Msg {
         time        = time ?? DateTime.now();
 }
 
-enum _QuotaResult { allowed, showAdGate, cycleLockout, hardLockout }
+enum _QuotaResult { allowed, showAdGate, hardLockout }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Screen
@@ -164,61 +158,67 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
   bool _scrollLocked     = false;
   bool _showQuickActions = false;
 
-  String? _sessionId;
-  String? _cachedMyId;
+  /// The persistent AI DM conversation ID (from messages.py).
+  String? _conversationId;
   String? _cachedMyName;
   String? _lastSentText;
 
   Timer? _typingTimer;
 
+  // ── Server-driven quota — synced from /messages/ai-quota and each response ──
   Map<String, dynamic> _quota = {
-    'free_used':           0,
-    'cycle_ads':           0,
-    'cycle_msgs':          0,
-    'total_responses':     0,
-    'cycle_lockout_until': null,
-    'daily_lockout_until': null,
-    'is_premium':          false,
+    'free_used':      0,
+    'free_remaining': _kFreeMessages,
+    'window_expires': null,
+    'is_premium':     false,
+    'ads_today':      0,
+    'max_ads_day':    _kMaxAdsDay,
+    'in_window':      false,
   };
 
-  bool get _isPremium      => _quota['is_premium'] == true;
-  int  get _freeUsed       => (_quota['free_used']       as int?) ?? 0;
-  int  get _cycleAds       => (_quota['cycle_ads']       as int?) ?? 0;
-  int  get _cycleMsgs      => (_quota['cycle_msgs']      as int?) ?? 0;
-  int  get _totalResponses => (_quota['total_responses'] as int?) ?? 0;
-  bool get _cycleActive    => _cycleAds >= _kAdsPerCycle && _cycleMsgs < _kMsgsPerCycle;
+  bool   get _isPremium     => _quota['is_premium']     == true;
+  int    get _freeRemaining => (_quota['free_remaining'] as int?) ?? _kFreeMessages;
+  int    get _freeUsed      => (_quota['free_used']      as int?) ?? 0;
+  int    get _adsToday      => (_quota['ads_today']      as int?) ?? 0;
+  bool   get _inWindow      => _quota['in_window']       == true;
+  String? get _windowExpires => _quota['window_expires'] as String?;
 
-  bool get _inDailyLockout {
-    final exp = _quota['daily_lockout_until'] as String?;
-    if (exp == null) return false;
-    final dt = DateTime.tryParse(exp);
-    if (dt == null) return false;
-    if (DateTime.now().isAfter(dt)) {
-      _quota['daily_lockout_until'] = null;
-      _quota['total_responses']     = 0;
-      _quota['cycle_lockout_until'] = null;
-      _quota['cycle_ads']           = 0;
-      _quota['cycle_msgs']          = 0;
-      _saveQuota();
-      return false;
-    }
-    return true;
+  _QuotaResult _checkQuota() {
+    if (_isPremium) return _QuotaResult.allowed;
+    if (_inWindow)  return _QuotaResult.allowed;
+    if (_freeRemaining > 0) return _QuotaResult.allowed;
+    if (_adsToday >= _kMaxAdsDay) return _QuotaResult.hardLockout;
+    return _QuotaResult.showAdGate;
   }
 
-  bool get _inCycleLockout {
-    if (_inDailyLockout) return false;
-    final exp = _quota['cycle_lockout_until'] as String?;
-    if (exp == null) return false;
-    final dt = DateTime.tryParse(exp);
-    if (dt == null) return false;
-    if (DateTime.now().isAfter(dt)) {
-      _quota['cycle_lockout_until'] = null;
-      _quota['cycle_ads']           = 0;
-      _quota['cycle_msgs']          = 0;
-      _saveQuota();
-      return false;
-    }
-    return true;
+  void _applyQuotaMap(Map? q) {
+    if (q == null || !mounted) return;
+    setState(() {
+      if (q['free_used']       != null) _quota['free_used']      = q['free_used'];
+      if (q['free_remaining']  != null) _quota['free_remaining'] = q['free_remaining'];
+      if (q['is_premium']      != null) _quota['is_premium']     = q['is_premium'];
+      if (q['max_ads_day']     != null) _quota['max_ads_day']    = q['max_ads_day'];
+
+      // Accept both field names from different response shapes
+      final exp = q['window_expires'];
+      if (exp != null) _quota['window_expires'] = exp;
+
+      final adsToday = q['ads_today'] ?? q['ads_count'];
+      if (adsToday != null) _quota['ads_today'] = adsToday;
+
+      // in_unlocked_window (from /ai-quota) OR compute from window_expires
+      if (q['in_unlocked_window'] != null) {
+        _quota['in_window'] = q['in_unlocked_window'];
+      } else {
+        final expStr = _quota['window_expires'] as String?;
+        if (expStr == null) {
+          _quota['in_window'] = false;
+        } else {
+          final dt = DateTime.tryParse(expStr);
+          _quota['in_window'] = dt != null && DateTime.now().isBefore(dt);
+        }
+      }
+    });
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -242,8 +242,9 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
   void _onScroll() {}
 
   Future<void> _bootstrap() async {
-    await _loadQuota();
     await _fetchMyInfo();
+    await _loadQuota();
+    await _initConversation();
     await _loadHistory();
     if (widget.postContext?.isNotEmpty == true) {
       await Future.delayed(const Duration(milliseconds: 600));
@@ -254,88 +255,12 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     }
   }
 
-  // ── Quota ──────────────────────────────────────────────────────────────────
-  Future<void> _loadQuota() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw   = prefs.getString(_kQuotaKey);
-      if (raw != null) {
-        final local = Map<String, dynamic>.from(jsonDecode(raw) as Map);
-        if (mounted) {
-          setState(() {
-            _quota['free_used']           = (local['free_used']           as int?) ?? 0;
-            _quota['cycle_ads']           = (local['cycle_ads']           as int?) ?? 0;
-            _quota['cycle_msgs']          = (local['cycle_msgs']          as int?) ?? 0;
-            _quota['total_responses']     = (local['total_responses']     as int?) ?? 0;
-            _quota['cycle_lockout_until'] =  local['cycle_lockout_until'] as String?;
-            _quota['daily_lockout_until'] =  local['daily_lockout_until'] as String?;
-          });
-        }
-      }
-    } catch (_) {}
-    try {
-      final remote = await api.getAIQuota();
-      if (mounted) {
-        setState(() {
-          _quota['free_used']  = max(_freeUsed, (remote['free_used'] as int?) ?? 0);
-          _quota['is_premium'] = remote['is_premium'] ?? false;
-        });
-        await _saveQuota();
-      }
-    } catch (_) {}
-  }
-
-  Future<void> _saveQuota() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_kQuotaKey, jsonEncode({
-        'free_used':           _freeUsed,
-        'cycle_ads':           _cycleAds,
-        'cycle_msgs':          _cycleMsgs,
-        'total_responses':     _totalResponses,
-        'cycle_lockout_until': _quota['cycle_lockout_until'],
-        'daily_lockout_until': _quota['daily_lockout_until'],
-      }));
-    } catch (_) {}
-  }
-
-  _QuotaResult _checkQuota() {
-    if (_isPremium)      return _QuotaResult.allowed;
-    if (_inDailyLockout) return _QuotaResult.hardLockout;
-    if (_inCycleLockout) return _QuotaResult.cycleLockout;
-    if (_freeUsed < _kFreeMessages) return _QuotaResult.allowed;
-    if (_cycleActive) return _QuotaResult.allowed;
-    return _QuotaResult.showAdGate;
-  }
-
-  Future<void> _consumeAdMessage() async {
-    final newMsgs  = _cycleMsgs + 1;
-    final newTotal = _totalResponses + 1;
-    setState(() {
-      _quota['cycle_msgs']      = newMsgs;
-      _quota['total_responses'] = newTotal;
-      if (newTotal >= _kMaxResponses) {
-        _quota['daily_lockout_until'] =
-            DateTime.now().add(_kDailyLock).toIso8601String();
-        _quota['cycle_lockout_until'] = null;
-        _quota['cycle_ads']           = 0;
-        _quota['cycle_msgs']          = 0;
-      } else if (newMsgs >= _kMsgsPerCycle) {
-        _quota['cycle_lockout_until'] =
-            DateTime.now().add(_kCycleLock).toIso8601String();
-        _quota['cycle_ads']  = 0;
-        _quota['cycle_msgs'] = 0;
-      }
-    });
-    await _saveQuota();
-  }
-
-  // ── My info ────────────────────────────────────────────────────────────────
+  // ── User info ──────────────────────────────────────────────────────────────
   Future<void> _fetchMyInfo() async {
     try {
-      _cachedMyId ??= await api.getUserId();
-      if (_cachedMyId != null) {
-        final p = await api.getUserProfile(_cachedMyId!);
+      final userId = await api.getUserId();
+      if (userId != null) {
+        final p = await api.getUserProfile(userId);
         _cachedMyName = (p['full_name'] as String?)?.trim();
         if (_cachedMyName?.isEmpty != false) {
           _cachedMyName = (p['username'] as String?)?.trim();
@@ -344,73 +269,82 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     } catch (_) {}
   }
 
+  // ── Quota ──────────────────────────────────────────────────────────────────
+  Future<void> _loadQuota() async {
+    try {
+      final remote = await api.getAIQuota();
+      _applyQuotaMap(remote);
+    } catch (_) {}
+  }
+
+  // ── Conversation bootstrap ─────────────────────────────────────────────────
+  /// Gets or creates the dedicated AI DM conversation from messages.py.
+  Future<void> _initConversation() async {
+    try {
+      final res = await api.get('/messages/ai-conversation');
+      _conversationId = res['conversation_id']?.toString();
+    } catch (e) {
+      debugPrint('[AiMentorScreen] _initConversation failed: $e');
+    }
+  }
+
   // ── History ────────────────────────────────────────────────────────────────
   Future<void> _loadHistory() async {
-    // 1. Restore cached session ID
+    if (_conversationId == null) {
+      // Conversation could not be created — show greeting as fallback
+      if (mounted) setState(() => _historyLoaded = true);
+      _showGreeting();
+      return;
+    }
+
     try {
-      final prefs = await SharedPreferences.getInstance();
-      _sessionId  = prefs.getString(_kSessionIdKey);
-    } catch (_) {}
+      final res = await api.get(
+        '/messages/conversations/$_conversationId/messages',
+        queryParams: {'limit': '100'},
+      );
+      final msgs = (res['messages'] as List?) ?? [];
 
-    // 2. If no cached ID, ask server for the most recent session
-    if (_sessionId == null || _sessionId!.isEmpty) {
-      try {
-        final res  = await api.get('/mentor/sessions', queryParams: {'limit': 1});
-        final list = (res['sessions'] as List?) ?? [];
-        if (list.isNotEmpty) {
-          _sessionId = list.first['id']?.toString() ?? '';
-          if (_sessionId!.isNotEmpty) {
-            final prefs = await SharedPreferences.getInstance();
-            await prefs.setString(_kSessionIdKey, _sessionId!);
-          }
+      if (!mounted) return;
+
+      if (msgs.isNotEmpty) {
+        final built = <_Msg>[];
+        for (final raw in msgs) {
+          final m          = raw as Map;
+          final senderType = m['sender_type']?.toString() ?? 'user';
+          final role       = m['role']?.toString()        ?? 'user';
+          final isAI       = senderType == 'ai'  || role == 'assistant';
+          final isSys      = senderType == 'system' || role == 'system';
+          final content    = m['content']?.toString() ?? '';
+          if (isSys) continue;
+          if (content.isEmpty) continue;
+          if (isAI && _isErrorPhrase(content)) continue;
+          built.add(_Msg(
+            id:    m['id']?.toString(),
+            content: content,
+            isMe:  !isAI,
+            isAI:  isAI,
+            time:  DateTime.tryParse(m['created_at']?.toString() ?? '') ?? DateTime.now(),
+          ));
         }
-      } catch (_) {}
-    }
 
-    // 3. Load messages for that session
-    if (_sessionId != null && _sessionId!.isNotEmpty) {
-      try {
-        final res  = await api.get(
-          '/mentor/session/$_sessionId',
-          queryParams: {'limit': 80},
-        );
-        final msgs = (res['messages'] as List?) ?? [];
-        if (!mounted) return;
-
-        if (msgs.isNotEmpty) {
-          setState(() {
-            _msgs.clear();
-            for (final raw in msgs) {
-              final m       = raw as Map;
-              final role    = m['role']?.toString() ?? 'user';
-              final isAI    = role == 'assistant';
-              final content = m['content']?.toString() ?? '';
-              if (isAI && _isErrorPhrase(content)) continue;
-              if (content.isEmpty) continue;
-              _msgs.add(_Msg(content: content, isMe: !isAI, isAI: isAI));
-            }
-            _historyLoaded = true;
-          });
-          WidgetsBinding.instance
-              .addPostFrameCallback((_) => _scrollDown(jump: true));
-          return;
-        }
-      } catch (_) {
-        _sessionId = null;
-        try {
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.remove(_kSessionIdKey);
-        } catch (_) {}
+        setState(() {
+          _msgs
+            ..clear()
+            ..addAll(built);
+          _historyLoaded = true;
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) => _scrollDown(jump: true));
+        return;
       }
+    } catch (e) {
+      debugPrint('[AiMentorScreen] _loadHistory error: $e');
     }
 
-    // 4. No history — show greeting as a chat bubble
+    // No messages yet — show greeting bubble
     if (mounted) setState(() => _historyLoaded = true);
     _showGreeting();
   }
 
-  /// Always called when there is no prior history.
-  /// No prefs gate — shows fresh every time history is absent.
   void _showGreeting() {
     if (!mounted) return;
     final name = _cachedMyName?.split(' ').first ?? 'there';
@@ -444,11 +378,8 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
       case _QuotaResult.showAdGate:
         await _showAdGate(text);
         return;
-      case _QuotaResult.cycleLockout:
-        _showLockoutSheet(isDaily: false);
-        return;
       case _QuotaResult.hardLockout:
-        _showLockoutSheet(isDaily: true);
+        _showLockoutSheet();
         return;
       case _QuotaResult.allowed:
         break;
@@ -461,6 +392,15 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     bool adUnlocked = false,
     bool isContext  = false,
   }) async {
+    if (_conversationId == null) {
+      // Retry initializing conversation once
+      await _initConversation();
+      if (_conversationId == null) {
+        _addErrorBubble('Could not connect to AI. Please check your connection and try again.');
+        return;
+      }
+    }
+
     _textCtrl.clear();
     final localId = 'local_${DateTime.now().microsecondsSinceEpoch}';
     setState(() {
@@ -470,16 +410,17 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     _scrollDown();
 
     try {
-      final res = await api.post('/mentor/chat', {
-        'message':       text,
-        if (_sessionId != null && _sessionId!.isNotEmpty) 'session_id': _sessionId,
-        'include_brain': true,
-      });
+      final res = await api.post(
+        '/messages/conversations/$_conversationId/ai-message',
+        {'content': text, 'ad_unlocked': adUnlocked},
+      );
 
-      final aiContent = (res['content'] ?? '').toString().trim();
-      if (aiContent.isEmpty) throw Exception('Empty AI response');
+      // ── Sync quota from response ──────────────────────────────────────────
+      _applyQuotaMap(res['quota'] as Map?);
 
-      if (_isErrorPhrase(aiContent)) {
+      final aiContent = (res['content'] ?? res['message']?['content'] ?? '').toString().trim();
+
+      if (aiContent.isEmpty || _isErrorPhrase(aiContent)) {
         if (!mounted) return;
         setState(() {
           _aiResponding = false;
@@ -490,57 +431,19 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
         return;
       }
 
-      final returnedSessionId = res['session_id']?.toString() ?? '';
-      if (returnedSessionId.isNotEmpty) {
-        _sessionId = returnedSessionId;
-        try {
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString(_kSessionIdKey, _sessionId!);
-        } catch (_) {}
-      }
-
-      if (!_isPremium && !isContext) {
-        if (_freeUsed < _kFreeMessages) {
-          final newTotal = _totalResponses + 1;
-          setState(() {
-            _quota['free_used']       = _freeUsed + 1;
-            _quota['total_responses'] = newTotal;
-            if (newTotal >= _kMaxResponses) {
-              _quota['daily_lockout_until'] =
-                  DateTime.now().add(_kDailyLock).toIso8601String();
-            }
-          });
-          await _saveQuota();
-        } else if (adUnlocked || _cycleActive) {
-          await _consumeAdMessage();
-        }
-      }
-
       if (!mounted) return;
 
+      // Parse brain / delegation signals from response
       final brainData = _BrainData.fromResponse(Map<String, dynamic>.from(res));
-
       _DelegationPayload? del;
-      final serverDel = res['delegation'];
-      if (serverDel is Map) {
-        final type    = serverDel['type']?.toString() ?? '';
-        final task    = serverDel['task']?.toString()
-                        ?? serverDel['goal']?.toString()
-                        ?? _extractTask(aiContent);
-        final session = _sessionId ?? '';
-        if (type == 'apex') {
-          del = _DelegationPayload(type: _DelegationType.apex,
-              task: task, sessionId: session, message: aiContent);
-        } else if (type == 'workflow') {
-          del = _DelegationPayload(type: _DelegationType.workflow,
-              task: task, sessionId: session, message: aiContent);
-        }
-      }
-      del ??= _inferDelegation(aiContent, _sessionId ?? '');
+      del ??= _inferDelegation(aiContent, _conversationId ?? '');
       if (del == null && brainData.needsExternal) {
-        del = _DelegationPayload(type: _DelegationType.workflow,
-            task: _extractTask(aiContent),
-            sessionId: _sessionId ?? '', message: aiContent);
+        del = _DelegationPayload(
+          type: _DelegationType.workflow,
+          task: _extractTask(aiContent),
+          sessionId: _conversationId ?? '',
+          message: aiContent,
+        );
       }
 
       final aiMsg = _Msg(
@@ -553,10 +456,14 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() { _aiResponding = false; _msgs.removeWhere((m) => m.id == localId); });
+
+      // Try to sync quota data from error body
+      if (e.body is Map) _applyQuotaMap(e.body as Map);
+
       if (e.statusCode == 402) {
         await _showAdGate(text);
       } else if (e.statusCode == 429) {
-        _showLockoutSheet(isDaily: true);
+        _showLockoutSheet();
       } else if (e.statusCode == 503) {
         _addErrorBubble('AI service is temporarily unavailable. Please try again shortly.');
         _showRetrySnack(text);
@@ -572,6 +479,7 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     }
   }
 
+  // ── Delegation inference ──────────────────────────────────────────────────
   _DelegationPayload? _inferDelegation(String content, String sessionId) {
     final lower = content.toLowerCase();
     const apexKw = [
@@ -580,16 +488,24 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
       'sign you up', 'activating apex', "i'll set up",
     ];
     if (apexKw.any((k) => lower.contains(k))) {
-      return _DelegationPayload(type: _DelegationType.apex,
-          task: _extractTask(content), sessionId: sessionId, message: content);
+      return _DelegationPayload(
+        type: _DelegationType.apex,
+        task: _extractTask(content),
+        sessionId: sessionId,
+        message: content,
+      );
     }
     const wfKw = [
       'build you a workflow', 'create a workflow', 'step-by-step plan',
       'income plan', 'build a roadmap', 'action plan',
     ];
     if (wfKw.any((k) => lower.contains(k))) {
-      return _DelegationPayload(type: _DelegationType.workflow,
-          task: _extractTask(content), sessionId: sessionId, message: content);
+      return _DelegationPayload(
+        type: _DelegationType.workflow,
+        task: _extractTask(content),
+        sessionId: sessionId,
+        message: content,
+      );
     }
     return null;
   }
@@ -601,31 +517,62 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     return clean.length > 100 ? '${clean.substring(0, 97)}...' : clean;
   }
 
+  // ── APEX launch — crash-safe ───────────────────────────────────────────────
   Future<void> _launchApex(String task, String sessionId) async {
     HapticFeedback.mediumImpact();
+    if (!mounted) return;
+
     try {
       final res = await api.post('/agent/handoff', {
         'task': task, 'source': 'mentor', 'source_conv_id': sessionId,
       });
       final apexId    = res['session_id']?.toString() ?? '';
-      final questions =
-          (res['questions'] as List?)?.cast<Map<String, dynamic>>() ?? [];
-      if (mounted) {
-        context.push('/agent', extra: {
-          'handoffTask': task, 'handoffSessionId': apexId,
-          'handoffTemplate': res['template'], 'handoffQuestions': questions,
-        });
-      }
+      final questions = (res['questions'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+      if (!mounted) return;
+      context.push('/agent', extra: {
+        'handoffTask':      task,
+        'handoffSessionId': apexId.isNotEmpty ? apexId : null,
+        'handoffTemplate':  res['template'],
+        'handoffQuestions': questions,
+      });
     } catch (_) {
-      if (mounted) context.push('/agent', extra: {'handoffTask': task});
+      if (!mounted) return;
+      // Graceful degradation — open APEX without handoff context
+      try {
+        context.push('/agent', extra: {'handoffTask': task});
+      } catch (_) {
+        // Navigation itself failed — show snack, never crash
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: const Text('APEX is temporarily unavailable. Please try again shortly.'),
+          backgroundColor: AppColors.bgCard,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 3),
+        ));
+      }
     }
   }
 
+  // ── Workflow launch — crash-safe ───────────────────────────────────────────
   void _launchWorkflow(String goal) {
     HapticFeedback.mediumImpact();
-    context.push('/workflow/new', extra: {'prefillGoal': goal});
+    if (!mounted) return;
+    try {
+      context.push('/workflow/new', extra: {'prefillGoal': goal});
+    } catch (_) {
+      try {
+        context.push('/workflow/new');
+      } catch (_) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: const Text('Workflow engine is temporarily unavailable.'),
+          backgroundColor: AppColors.bgCard,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 3),
+        ));
+      }
+    }
   }
 
+  // ── Bubble long-press menu ─────────────────────────────────────────────────
   void _showBubbleMenu(BuildContext ctx, _Msg m) {
     HapticFeedback.mediumImpact();
     final isDark = Theme.of(ctx).brightness == Brightness.dark;
@@ -660,8 +607,8 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     );
   }
 
-  Widget _menuItem(IconData icon, String label, bool isDark,
-      VoidCallback onTap, {Color? color}) =>
+  Widget _menuItem(IconData icon, String label, bool isDark, VoidCallback onTap,
+      {Color? color}) =>
       ListTile(
         leading: Icon(icon, color: color ?? AppColors.primary, size: 20),
         title: Text(label,
@@ -671,6 +618,7 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
         onTap: onTap, dense: true,
       );
 
+  // ── Typing animation ───────────────────────────────────────────────────────
   void _typeMessage(_Msg msg) {
     msg.isTyping    = true;
     msg.displayText = '';
@@ -750,18 +698,20 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     }
   }
 
+  // ── Ad gate ────────────────────────────────────────────────────────────────
   Future<void> _showAdGate(String pendingText) async {
     final success = await showModalBottomSheet<bool>(
       context: context, isScrollControlled: true,
       isDismissible: true, backgroundColor: Colors.transparent,
       builder: (_) => _AdGateSheet(
-        cycleAdsWatched: _cycleAds, adsPerCycle: _kAdsPerCycle,
-        msgsPerCycle: _kMsgsPerCycle, totalResponses: _totalResponses,
-        maxResponses: _kMaxResponses,
+        adsWatchedToday: _adsToday,
+        maxAdsDay: _kMaxAdsDay,
+        msgsPerUnlock: _kMsgsPerCycle,
         onAdWatched: () async {
           if (!mounted) return;
-          setState(() => _quota['cycle_ads'] = _cycleAds + 1);
-          await _saveQuota();
+          setState(() {
+            _quota['ads_today'] = _adsToday + 1;
+          });
         },
       ),
     );
@@ -769,15 +719,12 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     await _sendAI(pendingText, adUnlocked: true);
   }
 
-  void _showLockoutSheet({required bool isDaily}) =>
+  void _showLockoutSheet() =>
       showModalBottomSheet(
         context: context, isScrollControlled: true,
         backgroundColor: Colors.transparent,
         builder: (_) => _LockoutSheet(
-          lockoutUntil: isDaily
-              ? (_quota['daily_lockout_until'] as String?) ?? ''
-              : (_quota['cycle_lockout_until'] as String?) ?? '',
-          isDaily: isDaily,
+          windowExpires: _windowExpires ?? '',
           onUpgrade: () { Navigator.pop(context); context.go('/premium'); },
         ),
       );
@@ -801,14 +748,14 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
       body: Column(children: [
         if (!_isPremium)
           _QuotaRibbon(
-            isPremium: _isPremium, inDailyLockout: _inDailyLockout,
-            inCycleLockout: _inCycleLockout, freeUsed: _freeUsed,
-            freeTotal: _kFreeMessages, cycleAds: _cycleAds,
-            adsPerCycle: _kAdsPerCycle, cycleMsgs: _cycleMsgs,
-            msgsPerCycle: _kMsgsPerCycle, totalResponses: _totalResponses,
-            maxResponses: _kMaxResponses,
-            cycleLockoutUntil: _quota['cycle_lockout_until'] as String?,
-            dailyLockoutUntil: _quota['daily_lockout_until'] as String?,
+            isPremium: _isPremium,
+            freeUsed: _freeUsed,
+            freeTotal: _kFreeMessages,
+            freeRemaining: _freeRemaining,
+            inWindow: _inWindow,
+            windowExpires: _windowExpires,
+            adsToday: _adsToday,
+            maxAdsDay: _kMaxAdsDay,
             onWatchAds: () => _showAdGate(_lastSentText ?? ''),
           ),
         Expanded(
@@ -1151,6 +1098,7 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
   }
 }
 
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Brain Card
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1221,6 +1169,7 @@ class _BrainCard extends StatelessWidget {
     ).animate().fadeIn(duration: 300.ms).slideY(begin: 0.1, end: 0);
   }
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Complementary Users Row
@@ -1298,6 +1247,7 @@ class _ComplementaryRow extends StatelessWidget {
   }
 }
 
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Delegation Card
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1356,6 +1306,7 @@ class _DelegationCard extends StatelessWidget {
   }
 }
 
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Quick Action Bar
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1396,24 +1347,26 @@ class _QuickActionBar extends StatelessWidget {
           )));
 }
 
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Quota Ribbon
+// Quota Ribbon  (simplified — server-driven)
 // ─────────────────────────────────────────────────────────────────────────────
 class _QuotaRibbon extends StatefulWidget {
-  final bool isPremium, inDailyLockout, inCycleLockout;
-  final int freeUsed, freeTotal, cycleAds, adsPerCycle, cycleMsgs,
-      msgsPerCycle, totalResponses, maxResponses;
-  final String? cycleLockoutUntil, dailyLockoutUntil;
+  final bool isPremium, inWindow;
+  final int freeUsed, freeTotal, freeRemaining, adsToday, maxAdsDay;
+  final String? windowExpires;
   final VoidCallback onWatchAds;
 
   const _QuotaRibbon({
-    required this.isPremium, required this.inDailyLockout,
-    required this.inCycleLockout, required this.freeUsed,
-    required this.freeTotal, required this.cycleAds,
-    required this.adsPerCycle, required this.cycleMsgs,
-    required this.msgsPerCycle, required this.totalResponses,
-    required this.maxResponses, required this.onWatchAds,
-    this.cycleLockoutUntil, this.dailyLockoutUntil,
+    required this.isPremium,
+    required this.inWindow,
+    required this.freeUsed,
+    required this.freeTotal,
+    required this.freeRemaining,
+    required this.adsToday,
+    required this.maxAdsDay,
+    required this.onWatchAds,
+    this.windowExpires,
   });
 
   @override
@@ -1427,16 +1380,14 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
   @override
   void initState() {
     super.initState();
-    if (widget.inCycleLockout || widget.inDailyLockout) _start();
+    if (widget.inWindow && widget.windowExpires != null) _start();
   }
 
   @override
   void didUpdateWidget(_QuotaRibbon old) {
     super.didUpdateWidget(old);
-    if ((widget.inCycleLockout || widget.inDailyLockout) && _timer == null) _start();
-    if (!widget.inCycleLockout && !widget.inDailyLockout) {
-      _timer?.cancel(); _timer = null;
-    }
+    if (widget.inWindow && widget.windowExpires != null && _timer == null) _start();
+    if (!widget.inWindow) { _timer?.cancel(); _timer = null; }
   }
 
   void _start() {
@@ -1446,9 +1397,7 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
 
   void _update() {
     if (!mounted) return;
-    final lockStr = widget.inDailyLockout
-        ? widget.dailyLockoutUntil : widget.cycleLockoutUntil;
-    final exp = DateTime.tryParse(lockStr ?? '');
+    final exp = DateTime.tryParse(widget.windowExpires ?? '');
     if (exp == null) return;
     final diff = exp.difference(DateTime.now());
     if (diff.isNegative) { setState(() => _countdown = ''); return; }
@@ -1464,35 +1413,40 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
   @override
   Widget build(BuildContext context) {
     if (widget.isPremium) return const SizedBox.shrink();
-    if (widget.inDailyLockout)
+
+    // In unlocked window
+    if (widget.inWindow) {
+      final left = widget.freeRemaining;
+      return _ribbon(
+        Icons.lock_open_rounded, AppColors.success,
+        '$left message${left == 1 ? '' : 's'} left'
+        '${_countdown.isNotEmpty ? ' · unlocks in $_countdown' : ''}',
+        Colors.transparent, null,
+      );
+    }
+
+    // Daily lockout
+    if (widget.adsToday >= widget.maxAdsDay) {
       return _ribbon(Icons.lock_rounded, AppColors.error,
-          'Daily limit reached${_countdown.isNotEmpty ? ' · resets in $_countdown' : ''}',
+          'Daily limit reached — resets tomorrow',
           AppColors.error.withOpacity(0.08), null);
-    if (widget.inCycleLockout)
-      return _ribbon(Icons.hourglass_bottom_rounded, AppColors.warning,
-          'Take a break${_countdown.isNotEmpty ? ' · unlocks in $_countdown' : ''}',
-          AppColors.warning.withOpacity(0.08), null);
-    final freeLeft = widget.freeTotal - widget.freeUsed;
-    if (freeLeft > 0)
+    }
+
+    // Free messages remaining
+    if (widget.freeRemaining > 0) {
       return _ribbon(Icons.chat_bubble_outline_rounded, AppColors.primary,
-          '$freeLeft free message${freeLeft == 1 ? '' : 's'} remaining',
+          '${widget.freeRemaining} free message${widget.freeRemaining == 1 ? '' : 's'} remaining',
           AppColors.primary.withOpacity(0.06), null);
-    if (widget.cycleAds < widget.adsPerCycle) {
-      final adsLeft = widget.adsPerCycle - widget.cycleAds;
-      return _ribbon(Icons.play_circle_outline_rounded, AppColors.warning,
-          'Watch $adsLeft ad${adsLeft == 1 ? '' : 's'} for ${widget.msgsPerCycle} more messages',
-          AppColors.warning.withOpacity(0.08), widget.onWatchAds);
     }
-    if (widget.cycleAds >= widget.adsPerCycle) {
-      final left = widget.msgsPerCycle - widget.cycleMsgs;
-      if (left > 0)
-        return _ribbon(Icons.lock_open_rounded, AppColors.success,
-            '$left message${left == 1 ? '' : 's'} left · '
-            '${widget.totalResponses}/${widget.maxResponses} today',
-            Colors.transparent, null);
-    }
-    return const SizedBox.shrink();
+
+    // Need to watch an ad
+    final adsLeft = widget.maxAdsDay - widget.adsToday;
+    return _ribbon(Icons.play_circle_outline_rounded, AppColors.warning,
+        'Watch an ad for ${_QuotaRibbon._kMsgsPerCycle} more messages · $adsLeft unlock${adsLeft == 1 ? '' : 's'} left today',
+        AppColors.warning.withOpacity(0.08), widget.onWatchAds);
   }
+
+  static const _kMsgsPerCycle = 3;
 
   Widget _ribbon(IconData icon, Color color, String label,
       Color bg, VoidCallback? onTap) =>
@@ -1522,17 +1476,19 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
       );
 }
 
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Ad Gate Sheet
+// Ad Gate Sheet  (1 ad = 3 messages unlock)
 // ─────────────────────────────────────────────────────────────────────────────
 class _AdGateSheet extends StatefulWidget {
-  final int cycleAdsWatched, adsPerCycle, msgsPerCycle, totalResponses, maxResponses;
+  final int adsWatchedToday, maxAdsDay, msgsPerUnlock;
   final Future<void> Function() onAdWatched;
 
   const _AdGateSheet({
-    required this.cycleAdsWatched, required this.adsPerCycle,
-    required this.msgsPerCycle, required this.totalResponses,
-    required this.maxResponses, required this.onAdWatched,
+    required this.adsWatchedToday,
+    required this.maxAdsDay,
+    required this.msgsPerUnlock,
+    required this.onAdWatched,
   });
 
   @override
@@ -1540,17 +1496,15 @@ class _AdGateSheet extends StatefulWidget {
 }
 
 class _AdGateSheetState extends State<_AdGateSheet> {
-  int     _localWatched = 0;
-  bool    _watching     = false;
+  bool    _watching = false;
   String? _error;
-  bool    _success      = false;
+  bool    _success  = false;
 
-  int  get _totalWatched  => widget.cycleAdsWatched + _localWatched;
-  int  get _adsRemaining  => widget.adsPerCycle - _totalWatched;
-  bool get _cycleComplete => _totalWatched >= widget.adsPerCycle;
+  int  get _adsLeft => widget.maxAdsDay - widget.adsWatchedToday;
+  bool get _canWatch => _adsLeft > 0;
 
   Future<void> _watchAd() async {
-    if (_watching || _cycleComplete) return;
+    if (_watching || !_canWatch) return;
     if (!adService.isRewardedReady) {
       setState(() => _error = 'Ad not ready yet. Please try again in a moment.');
       return;
@@ -1561,12 +1515,9 @@ class _AdGateSheetState extends State<_AdGateSheet> {
       onRewarded: () async {
         await widget.onAdWatched();
         if (!mounted) return;
-        setState(() { _localWatched++; _watching = false; });
-        if (_cycleComplete) {
-          setState(() => _success = true);
-          await Future.delayed(const Duration(milliseconds: 700));
-          if (mounted) Navigator.pop(context, true);
-        }
+        setState(() { _watching = false; _success = true; });
+        await Future.delayed(const Duration(milliseconds: 700));
+        if (mounted) Navigator.pop(context, true);
       },
       onDismissed: () {
         if (!mounted) return;
@@ -1611,22 +1562,12 @@ class _AdGateSheetState extends State<_AdGateSheet> {
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: text)),
         const SizedBox(height: 8),
         if (!_success) ...[
-          Text('Watch $_adsRemaining more ad${_adsRemaining == 1 ? '' : 's'} to unlock '
-              '${widget.msgsPerCycle} messages.',
-              style: TextStyle(fontSize: 14, color: sub, height: 1.5),
-              textAlign: TextAlign.center),
-          const SizedBox(height: 8),
-          Row(mainAxisAlignment: MainAxisAlignment.center,
-              children: List.generate(widget.adsPerCycle, (i) => Padding(
-                padding: EdgeInsets.only(right: i < widget.adsPerCycle - 1 ? 6 : 0),
-                child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 300),
-                    width: 28, height: 8,
-                    decoration: BoxDecoration(
-                      color: i < _totalWatched
-                          ? AppColors.success
-                          : AppColors.primary.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(4)))))),
+          Text(
+            _canWatch
+              ? 'Watch 1 short ad to unlock ${widget.msgsPerUnlock} more messages. ($_adsLeft unlock${_adsLeft == 1 ? '' : 's'} left today)'
+              : 'You\'ve reached your daily ad limit. Come back tomorrow or upgrade.',
+            style: TextStyle(fontSize: 14, color: sub, height: 1.5),
+            textAlign: TextAlign.center),
         ],
         if (_error != null) ...[
           const SizedBox(height: 8),
@@ -1634,7 +1575,7 @@ class _AdGateSheetState extends State<_AdGateSheet> {
               textAlign: TextAlign.center),
         ],
         const SizedBox(height: 24),
-        if (!_success) ...[
+        if (!_success && _canWatch) ...[
           SizedBox(width: double.infinity,
               child: ElevatedButton.icon(
                 onPressed: _watching ? null : _watchAd,
@@ -1643,8 +1584,7 @@ class _AdGateSheetState extends State<_AdGateSheet> {
                         child: CircularProgressIndicator(
                             strokeWidth: 2, color: Colors.white))
                     : const Icon(Icons.play_circle_fill_rounded, size: 20),
-                label: Text(_watching ? 'Loading ad...'
-                    : 'Watch Ad ${_totalWatched + 1} of ${widget.adsPerCycle}'),
+                label: Text(_watching ? 'Loading ad...' : 'Watch Ad — Unlock ${widget.msgsPerUnlock} Messages'),
                 style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.primary,
                     foregroundColor: Colors.white,
@@ -1655,41 +1595,40 @@ class _AdGateSheetState extends State<_AdGateSheet> {
                         fontSize: 15, fontWeight: FontWeight.w700)),
               )),
           const SizedBox(height: 12),
-          SizedBox(width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () {
-                  Navigator.pop(context, false);
-                  GoRouter.of(context).go('/premium');
-                },
-                icon: const Icon(Icons.workspace_premium_rounded, size: 18),
-                label: const Text('Go Premium — Unlimited AI'),
-                style: OutlinedButton.styleFrom(
-                    foregroundColor: AppColors.gold,
-                    side: const BorderSide(color: AppColors.gold),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14))),
-              )),
-          const SizedBox(height: 12),
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('Not now', style: TextStyle(color: sub, fontSize: 13)),
-          ),
         ],
+        SizedBox(width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () {
+                Navigator.pop(context, false);
+                GoRouter.of(context).go('/premium');
+              },
+              icon: const Icon(Icons.workspace_premium_rounded, size: 18),
+              label: const Text('Go Premium — Unlimited AI'),
+              style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.gold,
+                  side: const BorderSide(color: AppColors.gold),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14))),
+            )),
+        const SizedBox(height: 12),
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: Text('Not now', style: TextStyle(color: sub, fontSize: 13)),
+        ),
       ]),
     );
   }
 }
 
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Lockout Sheet
+// Lockout Sheet  (daily ad limit reached)
 // ─────────────────────────────────────────────────────────────────────────────
 class _LockoutSheet extends StatefulWidget {
   final String lockoutUntil;
-  final bool isDaily;
   final VoidCallback onUpgrade;
-  const _LockoutSheet({required this.lockoutUntil, required this.isDaily,
-      required this.onUpgrade});
+  const _LockoutSheet({required this.lockoutUntil, required this.onUpgrade});
 
   @override
   State<_LockoutSheet> createState() => _LockoutSheetState();
@@ -1709,11 +1648,10 @@ class _LockoutSheetState extends State<_LockoutSheet> {
 
   void _update() {
     if (!mounted) return;
-    final exp = DateTime.tryParse(widget.lockoutUntil);
-    if (exp == null) {
-      setState(() { _countdown = '—'; _expired = true; }); return;
-    }
-    final diff = exp.difference(DateTime.now());
+    // Daily limit — countdown to midnight
+    final now     = DateTime.now();
+    final tomorrow = DateTime(now.year, now.month, now.day + 1);
+    final diff    = tomorrow.difference(now);
     if (diff.isNegative) {
       setState(() { _countdown = 'Ready!'; _expired = true; }); return;
     }
@@ -1732,9 +1670,6 @@ class _LockoutSheetState extends State<_LockoutSheet> {
     final bg   = isDark ? AppColors.bgCard : Colors.white;
     final text = isDark ? Colors.white     : Colors.black87;
     final sub  = isDark ? Colors.white60   : Colors.black54;
-    final title = _expired
-        ? (widget.isDaily ? 'Daily Limit Reset! ✅' : 'Break Over! ✅')
-        : (widget.isDaily ? 'Daily Limit Reached' : 'Time for a Break ⏸️');
 
     return Container(
       decoration: BoxDecoration(color: bg,
@@ -1747,20 +1682,15 @@ class _LockoutSheetState extends State<_LockoutSheet> {
                 color: isDark ? Colors.white24 : Colors.black12,
                 borderRadius: BorderRadius.circular(2))),
         const SizedBox(height: 24),
-        Text(_expired ? '✅' : (widget.isDaily ? '🔒' : '⏸️'),
-            style: const TextStyle(fontSize: 52)),
+        Text(_expired ? '✅' : '🔒', style: const TextStyle(fontSize: 52)),
         const SizedBox(height: 12),
-        Text(title,
+        Text(_expired ? 'Daily Limit Reset! ✅' : 'Daily Limit Reached',
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: text)),
         const SizedBox(height: 8),
         Text(
           _expired
-              ? (widget.isDaily
-                  ? 'Daily limit reset. Watch ads to keep chatting!'
-                  : 'Break over — watch ads to unlock more!')
-              : (widget.isDaily
-                  ? 'Used all 30 responses today. Upgrade for unlimited.'
-                  : 'Take a 3-hour break, then watch ads for more.'),
+              ? 'Daily limit reset. Watch an ad to keep chatting!'
+              : 'Used all AI messages today. Upgrade for unlimited, or come back tomorrow.',
           style: TextStyle(fontSize: 14, color: sub, height: 1.5),
           textAlign: TextAlign.center,
         ),
@@ -1772,8 +1702,7 @@ class _LockoutSheetState extends State<_LockoutSheet> {
                   color: AppColors.primary.withOpacity(0.08),
                   borderRadius: BorderRadius.circular(16)),
               child: Column(children: [
-                Text(widget.isDaily ? 'Resets in' : 'Unlocks in',
-                    style: TextStyle(fontSize: 12, color: sub)),
+                Text('Resets in', style: TextStyle(fontSize: 12, color: sub)),
                 const SizedBox(height: 6),
                 Text(_countdown, style: TextStyle(
                     fontSize: 32, fontWeight: FontWeight.w800, color: text,
@@ -1797,7 +1726,7 @@ class _LockoutSheetState extends State<_LockoutSheet> {
         const SizedBox(height: 12),
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: Text(_expired ? 'Start chatting!' : 'Come back later',
+          child: Text(_expired ? 'Start chatting!' : 'Come back tomorrow',
               style: TextStyle(color: sub, fontSize: 13)),
         ),
       ]),
