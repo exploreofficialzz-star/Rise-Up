@@ -458,6 +458,7 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
       setState(() { _aiResponding = false; _msgs.removeWhere((m) => m.id == localId); });
 
       // Try to sync quota data from error body
+      // FIX: e.body is now a valid field on ApiException (added in api_service v2.3)
       if (e.body is Map) _applyQuotaMap(e.body as Map);
 
       if (e.statusCode == 402) {
@@ -719,12 +720,14 @@ class _AiMentorScreenState extends State<AiMentorScreen> {
     await _sendAI(pendingText, adUnlocked: true);
   }
 
+  // FIX: was passing `windowExpires:` which is not a parameter on _LockoutSheet.
+  // The constructor uses `lockoutUntil` — corrected here.
   void _showLockoutSheet() =>
       showModalBottomSheet(
         context: context, isScrollControlled: true,
         backgroundColor: Colors.transparent,
         builder: (_) => _LockoutSheet(
-          windowExpires: _windowExpires ?? '',
+          lockoutUntil: _windowExpires ?? '',
           onUpgrade: () { Navigator.pop(context); context.go('/premium'); },
         ),
       );
@@ -1440,13 +1443,13 @@ class _QuotaRibbonState extends State<_QuotaRibbon> {
     }
 
     // Need to watch an ad
+    // FIX: was `_QuotaRibbon._kMsgsPerCycle` (member not found on widget class).
+    // Using top-level constant `_kMsgsPerCycle` instead.
     final adsLeft = widget.maxAdsDay - widget.adsToday;
     return _ribbon(Icons.play_circle_outline_rounded, AppColors.warning,
-        'Watch an ad for ${_QuotaRibbon._kMsgsPerCycle} more messages · $adsLeft unlock${adsLeft == 1 ? '' : 's'} left today',
+        'Watch an ad for $_kMsgsPerCycle more messages · $adsLeft unlock${adsLeft == 1 ? '' : 's'} left today',
         AppColors.warning.withOpacity(0.08), widget.onWatchAds);
   }
-
-  static const _kMsgsPerCycle = 3;
 
   Widget _ribbon(IconData icon, Color color, String label,
       Color bg, VoidCallback? onTap) =>
