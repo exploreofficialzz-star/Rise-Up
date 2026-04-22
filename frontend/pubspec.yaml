@@ -65,6 +65,15 @@ dependencies:
   timeago: ^3.7.0
   url_launcher: ^6.3.0
 
+  # ── WebView (APEX in-app browser) ───────────────────
+  webview_flutter: ^4.8.0
+
+  # ── Audio & Sounds ──────────────────────────────────
+  audioplayers: ^6.0.0
+
+  # ── Animations ──────────────────────────────────────
+  lottie: ^3.1.2
+
   # ── QR & Barcode ────────────────────────────────────
   mobile_scanner: ^5.2.3
   qr_flutter: ^4.1.0
@@ -138,6 +147,7 @@ flutter:
     - assets/animations/
     - assets/icons/
     - assets/fonts/
+    - assets/sounds/
 
 msix_config:
   display_name: RiseUp

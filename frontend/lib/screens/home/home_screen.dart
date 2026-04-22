@@ -1,3191 +1,1293 @@
 // frontend/lib/screens/home/home_screen.dart
-// v11 — 5 Fixes
+// RiseUp v3.0 — The Mission Command Center
 //
-// FIX 1: REWARDED AD CRASH — _adInProgress guard prevents re-entry;
-//         ad service now nulls the instance BEFORE show() (see ad_service_mobile.dart v2.1)
-// FIX 2: DELETE POST — optimistic instant removal + "Post deleted" snackbar;
-//         post is removed from UI immediately, API called in background
-// FIX 3: STATUS REACTIONS PERSISTENCE — reactions stored in _HomeScreenState +
-//         SharedPreferences; survive sheet close/reopen
-// FIX 4: STATUS ADS — sponsored story item injected every 4 real user stories
-//         (free users only); opens _SponsoredStatusSheet with 2 ad slides
-// FIX 5: SPEED — RepaintBoundary on every PostCard; const constructors throughout
+// Architecture:
+//   • One screen. No bottom nav.
+//   • Top bar: ≡ | RiseUp 🪙tokens | 🔍 | 🔔
+//   • Mission circles (horizontal scroll, like stories)
+//   • Chat interface (Claude-like) — messages from RiseUp + user
+//   • APEX mode: split panel (left=thoughts, right=browser screenshot)
+//   • Ad gate overlay when tokens exhausted
+//   • Sidebar drawer: profile, missions list, navigation
+// ignore_for_file: deprecated_member_use
 
 import 'dart:async';
-import 'dart:collection';
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
+
+import 'package:audioplayers/audioplayers.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:go_router/go_router.dart';
 import 'package:iconsax/iconsax.dart';
-import 'package:flutter_animate/flutter_animate.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
+
 import '../../config/app_constants.dart';
-import '../../services/api_service.dart';
 import '../../services/ad_service.dart';
-import '../../services/ad_manager.dart';
-import '../../services/notification_service.dart';
-import '../../widgets/ad_widgets.dart';
-import 'create_status_screen.dart';
-import 'package:video_player/video_player.dart';
-import 'package:chewie/chewie.dart';
-import 'package:photo_view/photo_view.dart';
+import '../../services/api_service.dart';
+import '../../services/auth_service.dart';
 
-// =============================================================================
-// SOUND SERVICE
-// =============================================================================
-class SoundService {
-  static void tap()     => HapticFeedback.selectionClick();
-  static void like()    => HapticFeedback.lightImpact();
-  static void save()    => HapticFeedback.lightImpact();
-  static void comment() => HapticFeedback.mediumImpact();
-  static void share()   => HapticFeedback.mediumImpact();
-  static void follow()  => HapticFeedback.heavyImpact();
+// ─────────────────────────────────────────────────────────────────────────────
+// MODELS
+// ─────────────────────────────────────────────────────────────────────────────
 
-  static Future<void> post() async {
-    HapticFeedback.heavyImpact();
-    try {
-      notificationService.showLocalNotification(
-        id: 1001, title: '🚀 Post shared!',
-        body: 'Your post is now live in the community',
-      );
-    } catch (_) {}
-  }
+enum MessageRole { user, riseup, system }
+enum ApexStatus  { idle, thinking, browsing, paused, done, error }
+enum MissionStatus { active, paused, completed }
 
-  static Future<void> statusPost() async {
-    HapticFeedback.heavyImpact();
-    try {
-      notificationService.showLocalNotification(
-        id: 1002, title: '📸 Status posted!',
-        body: 'Your status is now visible to your followers',
-      );
-    } catch (_) {}
-  }
+class ChatMessage {
+  final String       id;
+  final MessageRole  role;
+  final String       text;
+  final DateTime     ts;
+  final bool         isStreaming;
+  final String?      apexThought;
+  final Uint8List?   screenshotBytes;
+  final Map<String, dynamic>? actionCard;
 
-  static Future<void> notification() async => HapticFeedback.mediumImpact();
-}
-
-// =============================================================================
-// STAGE HELPER
-// =============================================================================
-class StageInfo {
-  static Map<String, dynamic> get(String stage) {
-    const s = <String, Map<String, dynamic>>{
-      'survival': {'emoji': '🆘', 'label': 'Survival', 'color': Color(0xFFE17055)},
-      'earning':  {'emoji': '💪', 'label': 'Earning',  'color': Color(0xFF0984E3)},
-      'growing':  {'emoji': '🚀', 'label': 'Growing',  'color': Color(0xFF00B894)},
-      'wealth':   {'emoji': '💎', 'label': 'Wealth',   'color': Color(0xFF6C5CE7)},
-    };
-    return s[stage] ?? s['survival']!;
-  }
-}
-
-// =============================================================================
-// POST MODEL
-// =============================================================================
-class PostModel {
-  final String  id, name, username, time, avatar, avatarUrl, tag;
-  String        content;
-  final String? mediaUrl, mediaType, linkUrl, linkTitle, backgroundColor;
-  int  likes, comments, shares, viewsCount;
-  final bool verified, isPremiumPost;
-  bool isLiked, isSaved, isFollowing;
-  final String userId;
-
-  PostModel({
+  ChatMessage({
     required this.id,
-    required this.name,
-    required this.username,
-    required this.time,
-    required this.avatar,
-    this.avatarUrl = '',
-    required this.tag,
-    required this.content,
-    this.mediaUrl,
-    this.mediaType,
-    this.linkUrl,
-    this.linkTitle,
-    this.backgroundColor,
-    required this.likes,
-    required this.comments,
-    required this.shares,
-    this.viewsCount    = 0,
-    this.verified      = false,
-    this.isPremiumPost = false,
-    this.isLiked       = false,
-    this.isSaved       = false,
-    this.isFollowing   = false,
-    this.userId        = '',
+    required this.role,
+    required this.text,
+    required this.ts,
+    this.isStreaming    = false,
+    this.apexThought,
+    this.screenshotBytes,
+    this.actionCard,
   });
 
-  factory PostModel.fromApi(Map<String, dynamic> d) {
-    final profile  = (d['profiles'] as Map?)?.cast<String, dynamic>() ?? {};
-    final created  = DateTime.tryParse(d['created_at']?.toString() ?? '') ?? DateTime.now();
-    final diff     = DateTime.now().difference(created);
-    final String t;
-    if (diff.inMinutes < 1)       t = 'just now';
-    else if (diff.inMinutes < 60) t = '${diff.inMinutes}m ago';
-    else if (diff.inHours < 24)   t = '${diff.inHours}h ago';
-    else if (diff.inDays < 7)     t = '${diff.inDays}d ago';
-    else                          t = '${(diff.inDays / 7).floor()}w ago';
-
-    final name      = profile['full_name']?.toString() ?? 'User';
-    final stageInfo = StageInfo.get(profile['stage']?.toString() ?? 'survival');
-    final userId    = d['user_id']?.toString().isNotEmpty == true
-        ? d['user_id'].toString()
-        : profile['id']?.toString() ?? '';
-
-    String raw = d['content']?.toString() ?? '';
-    if (raw == '🔗 Link post' || raw == 'Link post') raw = '';
-
-    return PostModel(
-      id:              d['id']?.toString() ?? '',
-      name:            name,
-      username:        '@${name.toLowerCase().replaceAll(' ', '')}',
-      time:            t,
-      avatar:          stageInfo['emoji'] as String,
-      avatarUrl:       profile['avatar_url']?.toString() ?? '',
-      tag:             d['tag']?.toString() ?? '💰 Wealth',
-      content:         raw,
-      mediaUrl:        d['media_url']?.toString(),
-      mediaType:       d['media_type']?.toString(),
-      linkUrl:         d['link_url']?.toString(),
-      linkTitle:       d['link_title']?.toString(),
-      backgroundColor: d['background_color']?.toString(),
-      likes:       (d['likes_count']    as num?)?.toInt() ?? 0,
-      comments:    (d['comments_count'] as num?)?.toInt() ?? 0,
-      shares:      (d['shares_count']   as num?)?.toInt() ?? 0,
-      viewsCount:  (d['views_count']    as num?)?.toInt() ?? 0,
-      verified:      profile['is_verified']       == true,
-      isPremiumPost: profile['subscription_tier'] == 'premium',
-      isLiked:       d['is_liked']     == true,
-      isSaved:       d['is_saved']     == true,
-      isFollowing:   d['is_following'] == true,
-      userId:        userId,
-    );
-  }
-}
-
-// =============================================================================
-// VIDEO PRELOAD MANAGER
-// =============================================================================
-final videoPreloadManager = _VideoPreloadManager();
-
-class _PreloadEntry {
-  final String url;
-  VideoPlayerController? controller;
-  bool isReady   = false;
-  bool _disposed = false;
-
-  _PreloadEntry(this.url);
-
-  Future<void> init() async {
-    if (kIsWeb) return;
-    try {
-      final c = VideoPlayerController.networkUrl(Uri.parse(url));
-      await c.initialize();
-      if (_disposed) { c.dispose(); return; }
-      await c.setVolume(0);
-      await c.play();
-      await Future.delayed(const Duration(milliseconds: 500));
-      if (_disposed) { c.dispose(); return; }
-      await c.pause();
-      await c.seekTo(Duration.zero);
-      if (_disposed) { c.dispose(); return; }
-      controller = c;
-      isReady    = true;
-    } catch (_) {}
-  }
-
-  void dispose() {
-    _disposed  = true;
-    isReady    = false;
-    controller?.dispose();
-    controller = null;
-  }
-}
-
-class _VideoPreloadManager {
-  final LinkedHashMap<String, _PreloadEntry> _pool    = LinkedHashMap();
-  final Set<String>                          _loading = {};
-  static const int _maxReady = 4;
-
-  void preload(String url) {
-    if (kIsWeb || url.isEmpty || _pool.containsKey(url) || _loading.contains(url)) return;
-    _loading.add(url);
-    final entry = _PreloadEntry(url);
-    entry.init().then((_) {
-      _loading.remove(url);
-      if (!entry.isReady) return;
-      while (_pool.length >= _maxReady) {
-        final oldest = _pool.keys.first;
-        _pool[oldest]?.dispose();
-        _pool.remove(oldest);
-      }
-      _pool[url] = entry;
-    });
-  }
-
-  VideoPlayerController? claim(String url) {
-    if (kIsWeb) return null;
-    final entry = _pool[url];
-    if (entry == null || !entry.isReady || entry.controller == null) return null;
-    final c = entry.controller!;
-    entry.controller = null;
-    _pool.remove(url);
-    return c;
-  }
-
-  bool isReady(String url) => !kIsWeb && (_pool[url]?.isReady == true);
-
-  void disposeAll() {
-    for (final e in _pool.values) e.dispose();
-    _pool.clear();
-    _loading.clear();
-  }
-}
-
-// =============================================================================
-// SHIMMER HELPERS
-// =============================================================================
-class _Sh extends StatelessWidget {
-  const _Sh({this.w, required this.h, this.r = 8, this.circle = false});
-  final double? w;
-  final double  h, r;
-  final bool    circle;
-
-  @override
-  Widget build(BuildContext ctx) {
-    final dark = Theme.of(ctx).brightness == Brightness.dark;
-    return Container(
-      width: w, height: h,
-      decoration: BoxDecoration(
-        color:        dark ? const Color(0xFF2A2A2A) : const Color(0xFFE4E4E4),
-        borderRadius: circle ? null : BorderRadius.circular(r),
-        shape:        circle ? BoxShape.circle : BoxShape.rectangle,
-      ),
-    ).animate(onPlay: (c) => c.repeat())
-     .shimmer(duration: 1200.ms, color: dark ? Colors.white10 : Colors.white70);
-  }
-}
-
-class _PostCardSkeleton extends StatelessWidget {
-  const _PostCardSkeleton({required this.isDark});
-  final bool isDark;
-
-  @override
-  Widget build(BuildContext ctx) {
-    final w = MediaQuery.of(ctx).size.width;
-    return Container(
-      color: isDark ? AppColors.bgCard : Colors.white,
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          const _Sh(w: 44, h: 44, circle: true),
-          const SizedBox(width: 10),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            _Sh(w: w * .35, h: 13),
-            const SizedBox(height: 5),
-            _Sh(w: w * .25, h: 11),
-          ])),
-          const _Sh(w: 60, h: 26, r: 13),
-        ]),
-        const SizedBox(height: 14),
-        const _Sh(h: 13),
-        const SizedBox(height: 6),
-        const _Sh(h: 13),
-        const SizedBox(height: 6),
-        _Sh(w: w * .55, h: 13),
-        const SizedBox(height: 12),
-        AspectRatio(aspectRatio: 16 / 9, child: _Sh(h: double.infinity, r: 12)),
-        const SizedBox(height: 14),
-        Row(children: const [
-          _Sh(w: 72, h: 34, r: 17), SizedBox(width: 10),
-          _Sh(w: 72, h: 34, r: 17), SizedBox(width: 10),
-          _Sh(w: 72, h: 34, r: 17), Spacer(),
-          _Sh(w: 34, h: 34, r: 17),
-        ]),
-        const SizedBox(height: 12),
-        Row(children: const [
-          Expanded(child: _Sh(h: 38, r: 10)),
-          SizedBox(width: 8),
-          Expanded(child: _Sh(h: 38, r: 10)),
-        ]),
-      ]),
-    );
-  }
-}
-
-class _StoriesSkel extends StatelessWidget {
-  const _StoriesSkel({super.key, required this.isDark});
-  final bool isDark;
-
-  @override
-  Widget build(BuildContext ctx) => Container(
-    color: isDark ? AppColors.bgCard : Colors.white,
-    height: 92,
-    child: ListView.builder(
-      scrollDirection: Axis.horizontal,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      itemCount: 5,
-      itemBuilder: (_, __) => const Padding(
-        padding: EdgeInsets.only(right: 14),
-        child: Column(children: [
-          _Sh(w: 58, h: 58, circle: true),
-          SizedBox(height: 5),
-          _Sh(w: 42, h: 10, r: 5),
-        ]),
-      ),
-    ),
+  ChatMessage copyWith({String? text, bool? isStreaming,
+      String? apexThought, Uint8List? screenshotBytes}) => ChatMessage(
+    id: id, role: role, ts: ts,
+    text:            text            ?? this.text,
+    isStreaming:     isStreaming      ?? this.isStreaming,
+    apexThought:     apexThought     ?? this.apexThought,
+    screenshotBytes: screenshotBytes ?? this.screenshotBytes,
+    actionCard:      actionCard,
   );
 }
 
-// =============================================================================
-// IN-APP NOTIFICATION BANNER
-// =============================================================================
-class _NotifBannerManager {
-  static OverlayEntry? _entry;
+class Mission {
+  final String id;
+  final String title;
+  final String emoji;
+  final MissionStatus status;
+  final String platform;
+  final List<ChatMessage> messages;
+  final int incomeEarned;
+  final DateTime createdAt;
 
-  static void show(
-    BuildContext context, {
-    required String   title,
-    required String   message,
-    required Color    color,
-    required IconData icon,
-    VoidCallback?     onTap,
-  }) {
-    _entry?.remove();
-    _entry = null;
-    _entry = OverlayEntry(builder: (_) => _InAppNotifBanner(
-      title: title, message: message, color: color, icon: icon,
-      onTap: onTap ?? () {},
-      onDismiss: () { _entry?.remove(); _entry = null; },
-    ));
-    try { Overlay.of(context).insert(_entry!); } catch (_) {}
-  }
-
-  static void dismiss() { _entry?.remove(); _entry = null; }
-}
-
-class _InAppNotifBanner extends StatefulWidget {
-  final String title, message;
-  final Color color;
-  final IconData icon;
-  final VoidCallback onTap, onDismiss;
-
-  const _InAppNotifBanner({
+  Mission({
+    required this.id,
     required this.title,
-    required this.message,
-    required this.color,
-    required this.icon,
-    required this.onTap,
-    required this.onDismiss,
+    required this.emoji,
+    required this.status,
+    required this.platform,
+    required this.messages,
+    this.incomeEarned = 0,
+    required this.createdAt,
   });
 
-  @override
-  State<_InAppNotifBanner> createState() => _InAppNotifBannerState();
+  Mission copyWith({List<ChatMessage>? messages, MissionStatus? status, int? incomeEarned}) =>
+      Mission(
+        id: id, title: title, emoji: emoji, platform: platform, createdAt: createdAt,
+        status:        status        ?? this.status,
+        messages:      messages      ?? this.messages,
+        incomeEarned:  incomeEarned  ?? this.incomeEarned,
+      );
 }
 
-class _InAppNotifBannerState extends State<_InAppNotifBanner>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _ctrl;
-  late Animation<Offset>   _slide;
-  late Animation<double>   _fade;
-  Timer? _autoTimer;
+class TokenState {
+  final int remaining;
+  final int dailyLimit;
+  final bool exhausted;
+  final bool canRedeemAds;
+  final int nextRewardTokens;
+  final int redemptionsLeft;
+  final bool locked;
+  final int lockMinutesLeft;
+  final bool dayLocked;
+  final bool isPremium;
 
-  @override
-  void initState() {
-    super.initState();
-    _ctrl  = AnimationController(duration: const Duration(milliseconds: 380), vsync: this);
-    _slide = Tween<Offset>(begin: const Offset(0, -1.5), end: Offset.zero)
-        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOutCubic));
-    _fade  = Tween<double>(begin: 0.0, end: 1.0)
-        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOut));
-    _ctrl.forward();
-    _autoTimer = Timer(const Duration(seconds: 4), _dismiss);
-  }
+  const TokenState({
+    this.remaining       = 500,
+    this.dailyLimit      = 500,
+    this.exhausted       = false,
+    this.canRedeemAds    = true,
+    this.nextRewardTokens= 40,
+    this.redemptionsLeft = 3,
+    this.locked          = false,
+    this.lockMinutesLeft = 0,
+    this.dayLocked       = false,
+    this.isPremium       = false,
+  });
 
-  @override
-  void dispose() { _autoTimer?.cancel(); _ctrl.dispose(); super.dispose(); }
-
-  Future<void> _dismiss() async {
-    _autoTimer?.cancel();
-    if (mounted) await _ctrl.reverse();
-    widget.onDismiss();
-  }
-
-  @override
-  Widget build(BuildContext ctx) => SafeArea(
-    child: Align(
-      alignment: Alignment.topCenter,
-      child: SlideTransition(
-        position: _slide,
-        child: FadeTransition(
-          opacity: _fade,
-          child: GestureDetector(
-            onTap: () { _dismiss(); widget.onTap(); },
-            onVerticalDragEnd: (d) { if (d.velocity.pixelsPerSecond.dy < 0) _dismiss(); },
-            child: Container(
-              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.92),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: widget.color.withOpacity(0.4), width: 1),
-                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.35), blurRadius: 18, offset: const Offset(0, 6))],
-              ),
-              child: Row(children: [
-                Container(width: 40, height: 40,
-                  decoration: BoxDecoration(color: widget.color.withOpacity(0.18), borderRadius: BorderRadius.circular(12)),
-                  child: Center(child: Icon(widget.icon, color: widget.color, size: 20))),
-                const SizedBox(width: 12),
-                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-                  Text(widget.title, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700, height: 1.2)),
-                  const SizedBox(height: 2),
-                  Text(widget.message, style: TextStyle(color: Colors.white.withOpacity(0.72), fontSize: 12, height: 1.3), maxLines: 2, overflow: TextOverflow.ellipsis),
-                ])),
-                const SizedBox(width: 8),
-                GestureDetector(onTap: _dismiss, child: Icon(Icons.close_rounded, color: Colors.white.withOpacity(0.5), size: 16)),
-              ]),
-            ),
-          ),
-        ),
-      ),
-    ),
+  factory TokenState.fromJson(Map<String, dynamic> j) => TokenState(
+    remaining:        j['tokens_remaining']  ?? 500,
+    dailyLimit:       j['tokens_daily_limit']?? 500,
+    exhausted:        j['exhausted']         ?? false,
+    canRedeemAds:     j['can_redeem_ads']    ?? true,
+    nextRewardTokens: j['next_reward_tokens']?? 40,
+    redemptionsLeft:  j['redemptions_left']  ?? 3,
+    locked:           j['locked']            ?? false,
+    lockMinutesLeft:  j['lock_minutes_left'] ?? 0,
+    dayLocked:        j['day_locked']        ?? false,
+    isPremium:        j['is_premium']        ?? false,
   );
 }
 
-// =============================================================================
-// SPONSORED STATUS DATA
-// FIX 4: Static ad slides shown in _SponsoredStatusSheet
-// =============================================================================
-class _SponsoredAdSlide {
-  final String id, headline, body, cta, ctaRoute, sponsor, emoji;
-  final Color  bgColor;
-  const _SponsoredAdSlide({
-    required this.id,
-    required this.headline,
-    required this.body,
-    required this.cta,
-    required this.ctaRoute,
-    required this.sponsor,
-    required this.emoji,
-    required this.bgColor,
-  });
+// ─────────────────────────────────────────────────────────────────────────────
+// SOUND SERVICE
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _Sound {
+  static final _player = AudioPlayer();
+
+  static Future<void> _play(String asset) async {
+    try { await _player.play(AssetSource(asset)); } catch (_) {}
+  }
+
+  static void tap()     => HapticFeedback.selectionClick();
+  static void send()    { HapticFeedback.mediumImpact(); _play('sounds/send.mp3'); }
+  static void receive() { HapticFeedback.lightImpact();  _play('sounds/receive.mp3'); }
+  static void apexStart(){ HapticFeedback.heavyImpact(); _play('sounds/apex_start.mp3'); }
+  static void success() { HapticFeedback.heavyImpact();  _play('sounds/success.mp3'); }
+  static void token()   { HapticFeedback.lightImpact();  _play('sounds/token.mp3'); }
 }
 
-const _kSponsoredSlides = [
-  _SponsoredAdSlide(
-    id:        'sp_premium',
-    headline:  '🚀 Unlock Unlimited AI',
-    body:      'Unlimited AI responses, full Workflow Engine, zero ads, and every income tool — all included in RiseUp Premium.',
-    cta:       'Go Premium Free',
-    ctaRoute:  '/premium',
-    sponsor:   'RiseUp Premium',
-    emoji:     '👑',
-    bgColor:   Color(0xFF6C5CE7),
-  ),
-  _SponsoredAdSlide(
-    id:        'sp_community',
-    headline:  '💼 Join 50K+ Wealth Builders',
-    body:      'Network with top earners, share wins, get accountability partners, and grow your income with a proven community.',
-    cta:       'Join Now',
-    ctaRoute:  '/premium',
-    sponsor:   'RiseUp Community',
-    emoji:     '🤝',
-    bgColor:   Color(0xFFFF6B00),
-  ),
-];
-
-// =============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
 // HOME SCREEN
-// =============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
+
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  final String? openMissionId;
+  const HomeScreen({super.key, this.openMissionId});
+
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
 
-  late TabController _tab;
-  Map<String, dynamic> _profile = {};
-  DateTime? _lastPaused;
-  static const _refreshGap = Duration(minutes: 5);
+  // ── State ──────────────────────────────────────────────────────────────────
+  final _scrollCtrl  = ScrollController();
+  final _inputCtrl   = TextEditingController();
+  final _inputFocus  = FocusNode();
+  final _globalKey   = GlobalKey<ScaffoldState>();
 
-  // AI quota
-  int _aiUsed = 0, _adsWatched = 0;
-  DateTime? _adLockout;
-  static const int _freeLimit = 3, _maxAds = 5;
-  static const Duration _lockDur = Duration(hours: 4);
+  List<Mission>  _missions       = [];
+  String?        _activeMissionId;
+  TokenState     _tokens         = const TokenState();
+  ApexStatus     _apexStatus     = ApexStatus.idle;
+  bool           _apexMode       = false; // split-panel active
+  String         _apexThought    = '';
+  Uint8List?     _apexScreenshot;
+  bool           _isLoading      = false;
+  bool           _isSending      = false;
+  String?        _userAvatar;
+  String?        _userName;
+  String         _userStage      = 'survival';
+  bool           _showAdGate     = false;
+  int            _adWatchCount   = 0;   // ads watched in current cycle
+  StreamSubscription? _apexSub;
 
-  // FIX 1: Guard against re-entrant rewarded ad calls
-  bool _adInProgress = false;
+  late final AnimationController _tokenPulse;
+  late final AnimationController _apexPulse;
 
-  // Notification badge + polling
-  int _notifCount = 0, _lastSeenNotifCount = 0;
-  Timer? _notifTimer;
-
-  // Session view tracker
-  final Set<String> _viewedPosts = {};
-
-  // Cache keys
-  static const _kQ       = 'riseup_ai_quota_v1';
-  static const _kP       = 'riseup_profile_cache_v1';
-  static const _kF       = 'riseup_feed_for_you_v2';
-  static const _kSt      = 'riseup_status_cache_v1';
-  static const _kFw      = 'riseup_followed_users';
-  // FIX 3: Persistent reactions cache key
-  static const _kReacted = 'riseup_reacted_statuses_v1';
-
-  // Status
-  List<dynamic>    _statusUsers   = [];
-  bool             _statusLoaded  = false;
-  // FIX 3: Persisted reactions map — survives sheet close/reopen
-  final Map<String, bool> _reactedStatuses = {};
-
-  // Feed state
-  final _feeds   = <String, List<PostModel>>{'for_you': [], 'following': [], 'trending': []};
-  final _loading = <String, bool>            {'for_you': false, 'following': false, 'trending': false};
-  final _errors  = <String, String?>         {'for_you': null,  'following': null,  'trending': null};
-  final _offsets = <String, int>             {'for_you': 0,     'following': 0,     'trending': 0};
-  final _hasMore = <String, bool>            {'for_you': true,  'following': true,  'trending': true};
-  final _tabs    = ['for_you', 'following', 'trending'];
-  final GlobalKey<ScaffoldState> _sk = GlobalKey<ScaffoldState>();
-  final Map<String, bool> _follows = {};
-
+  // ── Lifecycle ──────────────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _tab = TabController(length: 3, vsync: this)
-      ..addListener(() {
-        if (_tab.indexIsChanging) return;
-        final t = _tabs[_tab.index];
-        if (_feeds[t]!.isEmpty && _errors[t] == null) _loadFeed(t);
-      });
-    _restoreCache().then((_) => _refreshAll());
-    _notifTimer = Timer.periodic(
-        const Duration(seconds: 30), (_) => _pollNotifications());
+    _tokenPulse = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat(reverse: true);
+    _apexPulse  = AnimationController(vsync: this, duration: const Duration(milliseconds: 800))..repeat(reverse: true);
+    _boot();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _tab.dispose();
-    _notifTimer?.cancel();
-    if (!kIsWeb) videoPreloadManager.disposeAll();
+    _scrollCtrl.dispose(); _inputCtrl.dispose(); _inputFocus.dispose();
+    _tokenPulse.dispose(); _apexPulse.dispose();
+    _apexSub?.cancel();
     super.dispose();
   }
 
   @override
-  void didChangeAppLifecycleState(AppLifecycleState s) {
-    if (s == AppLifecycleState.paused) {
-      _lastPaused = DateTime.now();
-    } else if (s == AppLifecycleState.resumed && mounted) {
-      if (_lastPaused == null ||
-          DateTime.now().difference(_lastPaused!) >= _refreshGap) {
-        _lastPaused = null;
-        _refreshAll();
-      }
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      authService.tryRefreshOnResume();
+      _fetchTokens();
     }
   }
 
-  // ── Cache restore ────────────────────────────────────────────────────────
-  Future<void> _restoreCache() async {
-    try {
-      final p = await SharedPreferences.getInstance();
+  // ── Boot ───────────────────────────────────────────────────────────────────
+  Future<void> _boot() async {
+    setState(() => _isLoading = true);
+    await Future.wait([_fetchProfile(), _fetchTokens(), _fetchMissions()]);
+    setState(() => _isLoading = false);
 
-      try {
-        final r = p.getString(_kP);
-        if (r != null && mounted) setState(() => _profile = Map<String, dynamic>.from(jsonDecode(r) as Map));
-      } catch (_) {}
-
-      try {
-        final r = p.getString(_kSt);
-        if (r != null && mounted) {
-          setState(() {
-            _statusUsers  = (jsonDecode(r) as List?) ?? [];
-            _statusLoaded = _statusUsers.isNotEmpty;
-          });
-        }
-      } catch (_) {}
-
-      try {
-        final r = p.getString(_kF);
-        if (r != null) {
-          final posts = (jsonDecode(r) as List)
-              .map((x) => PostModel.fromApi(Map<String, dynamic>.from(x as Map)))
-              .toList();
-          if (posts.isNotEmpty && mounted) {
-            setState(() => _feeds['for_you'] = posts);
-            if (!kIsWeb) _preloadFeedVideos(posts, startIdx: 0);
-          }
-        }
-      } catch (_) {}
-
-      try {
-        final r = p.getString(_kQ);
-        if (r != null) {
-          final sv    = Map<String, dynamic>.from(jsonDecode(r) as Map);
-          final today = DateTime.now().toIso8601String().substring(0, 10);
-          if (sv['date'] == today && mounted) {
-            setState(() {
-              _aiUsed     = sv['used']    as int? ?? 0;
-              _adsWatched = sv['ads']     as int? ?? 0;
-              final ls    = sv['lockout'] as String?;
-              _adLockout  = ls == null ? null : DateTime.tryParse(ls);
-            });
-          }
-        }
-      } catch (_) {}
-
-      try {
-        final fw = p.getStringList(_kFw) ?? [];
-        if (mounted) setState(() { for (final u in fw) _follows[u] = true; });
-      } catch (_) {}
-
-      // FIX 3: Restore persisted reactions
-      try {
-        final reacted = p.getStringList(_kReacted) ?? [];
-        if (mounted) setState(() { for (final id in reacted) _reactedStatuses[id] = true; });
-      } catch (_) {}
-
-    } catch (_) {}
-  }
-
-  // ── Parallel refresh ─────────────────────────────────────────────────────
-  Future<void> _refreshAll() => Future.wait([
-    _loadProfile(),
-    _loadStatus(),
-    _loadFeed('for_you', refresh: true),
-    _loadNotifCount(),
-  ]);
-
-  // ── Notifications ─────────────────────────────────────────────────────────
-  Future<void> _loadNotifCount() async {
-    try {
-      final d = await api.get('/notifications/unread-count');
-      if (mounted) setState(() => _notifCount = (d['count'] as num?)?.toInt() ?? 0);
-    } catch (_) {}
-  }
-
-  Future<void> _pollNotifications() async {
-    try {
-      final d     = await api.get('/notifications/unread-count');
-      if (!mounted) return;
-      final count = (d['count'] as num?)?.toInt() ?? 0;
-      if (count > _lastSeenNotifCount) {
-        try {
-          final nd     = await api.get('/notifications/?limit=1');
-          final notifs = (nd['notifications'] as List?) ?? [];
-          if (notifs.isNotEmpty && mounted) {
-            final n = notifs.first as Map;
-            if (n['is_read'] != true) {
-              _showInAppBanner(
-                title:   n['title']?.toString()   ?? 'RiseUp',
-                message: n['message']?.toString() ?? '',
-                type:    n['type']?.toString()    ?? 'system',
-                data:    (n['data'] as Map?)?.cast<String, dynamic>() ?? {},
-              );
-              SoundService.notification();
-            }
-          }
-        } catch (_) {}
-      }
-      // Only setState if count actually changed to reduce repaints
-      if (count != _notifCount) {
-        setState(() { _notifCount = count; _lastSeenNotifCount = count; });
-      } else {
-        _lastSeenNotifCount = count;
-      }
-    } catch (_) {}
-  }
-
-  void _showInAppBanner({
-    required String title,
-    required String message,
-    required String type,
-    Map<String, dynamic> data = const {},
-  }) {
-    if (!mounted) return;
-    Color color; IconData icon;
-    switch (type) {
-      case 'like':            color = Colors.red;         icon = Icons.favorite_rounded;     break;
-      case 'comment':         color = AppColors.primary;  icon = Iconsax.message;            break;
-      case 'follow':          color = AppColors.success;  icon = Iconsax.user_add;           break;
-      case 'share':           color = Colors.blue;        icon = Iconsax.send_1;             break;
-      case 'save':            color = AppColors.primary;  icon = Iconsax.archive_add;        break;
-      case 'new_post':        color = AppColors.accent;   icon = Icons.post_add_rounded;     break;
-      case 'status_reaction': color = Colors.pink;        icon = Icons.favorite_rounded;     break;
-      case 'new_status':      color = AppColors.accent;   icon = Icons.auto_stories_rounded; break;
-      default:                color = AppColors.primary;  icon = Iconsax.notification;
-    }
-    final postId = data['post_id']?.toString();
-    final route  = data['route']?.toString();
-    _NotifBannerManager.show(context,
-      title: title, message: message, color: color, icon: icon,
-      onTap: () {
-        if (route != null && route.isNotEmpty) context.push(route);
-        else if (postId != null) context.push('/comments/$postId');
-      },
-    );
-  }
-
-  // ── View recording ────────────────────────────────────────────────────────
-  Future<void> _handleView(String postId) async {
-    if (postId.isEmpty || _viewedPosts.contains(postId)) return;
-    _viewedPosts.add(postId);
-    try { await api.post('/posts/$postId/view', {}); } catch (_) {}
-  }
-
-  // ── Quota ─────────────────────────────────────────────────────────────────
-  Future<void> _saveQuota() async {
-    try {
-      final p = await SharedPreferences.getInstance();
-      await p.setString(_kQ, jsonEncode({
-        'date':    DateTime.now().toIso8601String().substring(0, 10),
-        'used':    _aiUsed,
-        'ads':     _adsWatched,
-        'lockout': _adLockout?.toIso8601String(),
-      }));
-    } catch (_) {}
-  }
-
-  // ── Profile & Status ──────────────────────────────────────────────────────
-  Future<void> _loadProfile() async {
-    try {
-      final d    = await api.getProfile();
-      final prof = (d['profile'] as Map?)?.cast<String, dynamic>() ?? {};
-      if (mounted && prof.isNotEmpty) {
-        setState(() => _profile = prof);
-        final p = await SharedPreferences.getInstance();
-        await p.setString(_kP, jsonEncode(prof));
-      }
-    } catch (_) {}
-  }
-
-  Future<void> _loadStatus() async {
-    try {
-      final d     = await api.get('/posts/status/feed');
-      final users = ((d as Map<String, dynamic>?)?['users'] as List?) ?? [];
-      if (mounted) {
-        setState(() { _statusUsers = users; _statusLoaded = true; });
-        try {
-          final p = await SharedPreferences.getInstance();
-          await p.setString(_kSt, jsonEncode(users));
-        } catch (_) {}
-      }
-    } catch (_) {
-      if (mounted) setState(() => _statusLoaded = true);
-    }
-  }
-
-  // ── Feed loading ──────────────────────────────────────────────────────────
-  Future<void> _loadFeed(String tab, {bool refresh = false}) async {
-    if (_loading[tab] == true) return;
-    if (refresh) {
-      _offsets[tab] = 0;
-      _hasMore[tab] = true;
-      if (mounted) setState(() => _errors[tab] = null);
-    }
-    if (!(_hasMore[tab] ?? true)) return;
-    if (mounted) setState(() { _loading[tab] = true; _errors[tab] = null; });
-
-    int attempts = 0; Object? lastErr; List? raws;
-    while (attempts < 3) {
-      attempts++;
-      try {
-        final d = await api.getFeed(tab: tab, limit: 20, offset: _offsets[tab]!);
-        raws    = (d['posts'] as List?) ?? [];
-        lastErr = null;
-        break;
-      } catch (e) {
-        lastErr = e;
-        if (attempts < 3) await Future.delayed(Duration(seconds: attempts));
-      }
-    }
-
-    if (lastErr != null) {
-      if (mounted) setState(() { _loading[tab] = false; _errors[tab] = _friendlyError(lastErr!); });
-      return;
-    }
-
-    if (tab == 'for_you' && (_offsets[tab] == 0 || refresh)) _cacheRaw(raws!);
-
-    final posts = raws!.map((x) => PostModel.fromApi(x as Map<String, dynamic>)).toList();
-
-    if (mounted) {
-      setState(() {
-        for (final post in posts) {
-          if (post.userId.isNotEmpty && _follows[post.userId] == null) {
-            _follows[post.userId] = post.isFollowing;
-          }
-        }
-        if (refresh) {
-          _feeds[tab] = posts;
-        } else {
-          _feeds[tab] = [..._feeds[tab]!, ...posts];
-        }
-        _offsets[tab] = (_offsets[tab] ?? 0) + posts.length;
-        _hasMore[tab] = posts.length == 20;
-        _loading[tab] = false;
-        _errors[tab]  = null;
-      });
-      if (!kIsWeb) _preloadFeedVideos(posts, startIdx: 0);
-    }
-  }
-
-  String _friendlyError(Object e) {
-    final s = e.toString();
-    if (s.contains('SocketException') || s.contains('Failed host lookup')) return 'No internet connection. Pull down to retry.';
-    if (s.contains('TimeoutException') || s.contains('timed out'))         return 'Connection timed out. Pull down to retry.';
-    if (s.contains('401') || s.contains('Unauthorized'))                   return 'Session expired. Please log in again.';
-    if (s.contains('403') || s.contains('Forbidden'))                      return 'Access denied. Please check your account.';
-    if (s.contains('500') || s.contains('Internal Server'))                return 'Server error. Our team has been notified.';
-    if (s.contains('404'))                                                  return 'Feed endpoint not found. Check API config.';
-    final clean = s.replaceAll('Exception: ', '').replaceAll('ApiException: ', '');
-    return clean.length > 100 ? '${clean.substring(0, 100)}…' : clean;
-  }
-
-  void _preloadFeedVideos(List<PostModel> posts, {required int startIdx}) {
-    if (kIsWeb) return;
-    final end = min(startIdx + 5, posts.length);
-    for (int i = startIdx; i < end; i++) {
-      final p = posts[i];
-      if (p.mediaType == 'video' && p.mediaUrl != null && p.mediaUrl!.isNotEmpty) {
-        videoPreloadManager.preload(p.mediaUrl!);
-      }
-    }
-  }
-
-  Future<void> _cacheRaw(List<dynamic> raws) async {
-    try {
-      final p = await SharedPreferences.getInstance();
-      await p.setString(_kF, jsonEncode(raws.take(40).toList()));
-    } catch (_) {}
-  }
-
-  Future<void> _saveFw() async {
-    try {
-      final p = await SharedPreferences.getInstance();
-      await p.setStringList(
-          _kFw,
-          _follows.entries.where((e) => e.value).map((e) => e.key).toList());
-    } catch (_) {}
-  }
-
-  bool get _isPremium => (_profile['subscription_tier'] ?? 'free') == 'premium';
-  int  get _aiLeft    => (_freeLimit - _aiUsed).clamp(0, _freeLimit);
-  bool get _adLocked  {
-    if (_adLockout == null) return false;
-    if (DateTime.now().isAfter(_adLockout!)) { _adLockout = null; return false; }
-    return true;
-  }
-
-  // ── Follow ────────────────────────────────────────────────────────────────
-  Future<void> _handleFollow(String uid) async {
-    if (uid.isEmpty) return;
-    SoundService.follow();
-    final prev = _follows[uid] ?? false;
-    setState(() { _follows[uid] = !prev; _syncFw(uid, !prev); });
-    try {
-      final r = await api.toggleFollow(uid);
-      final v = r['following'] == true;
-      if (mounted) { setState(() { _follows[uid] = v; _syncFw(uid, v); }); await _saveFw(); }
-    } catch (_) {
-      if (mounted) setState(() { _follows[uid] = prev; _syncFw(uid, prev); });
-    }
-  }
-
-  void _syncFw(String uid, bool v) {
-    for (final t in _tabs) {
-      for (final p in _feeds[t]!) {
-        if (p.userId == uid) p.isFollowing = v;
-      }
-    }
-  }
-
-  // ── Share ─────────────────────────────────────────────────────────────────
-  void _handleShare(PostModel post) {
-    SoundService.share();
-    setState(() => post.shares++);
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: dark ? AppColors.bgCard : Colors.white,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) => SafeArea(child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(width: 36, height: 4, margin: const EdgeInsets.only(top: 12, bottom: 4), decoration: BoxDecoration(color: Colors.grey.withOpacity(0.3), borderRadius: BorderRadius.circular(2))),
-        Padding(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8), child: Text('Share Post', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: dark ? Colors.white : Colors.black87))),
-        ListTile(
-          leading: Container(width: 40, height: 40, decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.1), borderRadius: BorderRadius.circular(10)), child: const Icon(Icons.link_rounded, color: AppColors.primary, size: 20)),
-          title: Text('Copy post link', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: dark ? Colors.white : Colors.black87)),
-          onTap: () { Navigator.pop(ctx); Clipboard.setData(ClipboardData(text: 'https://riseup.app/post/${post.id}')); _snack('Link copied', AppColors.success); },
-        ),
-        ListTile(
-          leading: Container(width: 40, height: 40, decoration: BoxDecoration(color: Colors.blue.withOpacity(0.1), borderRadius: BorderRadius.circular(10)), child: const Icon(Icons.copy_rounded, color: Colors.blue, size: 20)),
-          title: Text('Copy text', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: dark ? Colors.white : Colors.black87)),
-          onTap: () { Navigator.pop(ctx); Clipboard.setData(ClipboardData(text: post.content)); _snack('Text copied', AppColors.success); },
-        ),
-        const SizedBox(height: 12),
-      ])),
-    );
-    api.sharePost(post.id).catchError((_) {
-      if (mounted) setState(() => post.shares = (post.shares - 1).clamp(0, 999999));
-    });
-    if (post.content.isNotEmpty) {
-      api.recordInteractionSignal(action: 'share', postId: post.id, postContent: post.content);
-    }
-  }
-
-  // ── AI — FIX 1: _adInProgress guard prevents re-entry / crash ────────────
-  Future<void> _handleAI(PostModel post, {required bool isPrivate}) async {
-    // FIX 1: Block if an ad is already in flight
-    if (_adInProgress) return;
-
-    if (_isPremium) { await _execAI(post, priv: isPrivate); return; }
-    if (_aiUsed < _freeLimit) {
-      if (!mounted) return;
-      setState(() => _aiUsed++);
-      await _saveQuota();
-      if (mounted) await _execAI(post, priv: isPrivate);
-      return;
-    }
-    if (_adLocked) { _showLockout(); return; }
-    if (_adsWatched >= _maxAds) {
-      if (!mounted) return;
-      setState(() => _adLockout = DateTime.now().add(_lockDur));
-      await _saveQuota();
-      _showLockout();
-      return;
-    }
-
-    final ok = await _showAdPrompt();
-    if (!ok || !mounted) return;
-
-    // FIX 1: set flag before show, clear in finally
-    setState(() => _adInProgress = true);
-    try {
-      await adService.showRewardedAd(
-        featureKey: 'post_ai',
-        onRewarded: () async {
-          if (!mounted) return;
-          try {
-            setState(() { _aiUsed = 0; _adsWatched++; });
-            await _saveQuota();
-            if (mounted) await _execAI(post, priv: isPrivate);
-          } catch (_) {
-            if (mounted) _snack('AI unlock failed. Try again.', AppColors.error);
-          }
-        },
-        onDismissed: () {
-          if (!mounted) return;
-          try { _snack('Watch the full ad to unlock AI.', AppColors.error); } catch (_) {}
-        },
-      );
-    } catch (_) {
-      if (mounted) _snack('Ad not available right now. Try again.', AppColors.error);
-    } finally {
-      // FIX 1: always clear flag, even on exception
-      if (mounted) setState(() => _adInProgress = false);
-    }
-  }
-
-  Future<void> _execAI(PostModel post, {required bool priv}) async {
-    if (!mounted) return;
-    if (priv) {
-      context.push(
-        '/conversation/ai'
-        '?name=${Uri.encodeComponent("RiseUp AI")}'
-        '&avatar=${Uri.encodeComponent("AI")}&isAI=true'
-        '&postContext=${Uri.encodeComponent(post.content)}'
-        '&postAuthor=${Uri.encodeComponent(post.name)}',
-      );
+    if (widget.openMissionId != null) {
+      _selectMission(widget.openMissionId!);
+    } else if (_missions.isEmpty) {
+      _addWelcomeMission();
     } else {
-      await _postAIComment(post);
+      _activeMissionId = _missions.first.id;
     }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
   }
 
-  Future<void> _postAIComment(PostModel post) async {
-    if (!mounted) return;
-    final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(SnackBar(
-      content: Row(children: const [
-        SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
-        SizedBox(width: 12),
-        Text('RiseUp AI is thinking…'),
-      ]),
-      backgroundColor: AppColors.primary,
-      duration: const Duration(seconds: 120),
-    ));
-
-    final buf = StringBuffer('A RiseUp community member posted: "${post.content}"');
-    if (post.mediaUrl != null && post.mediaUrl!.isNotEmpty) {
-      if (post.mediaType == 'image') buf.write('\n\nPost includes image at: ${post.mediaUrl}. Extract any visible text, prices or key info.');
-      else if (post.mediaType == 'video') buf.write('\n\nPost includes video at: ${post.mediaUrl}. Provide video-context-aware wealth insights.');
-    }
-    if (post.linkUrl != null && post.linkUrl!.isNotEmpty) {
-      buf.write('\n\nLink: ${post.linkUrl}');
-      if (post.linkTitle != null && post.linkTitle!.isNotEmpty) buf.write(' ("${post.linkTitle}")');
-    }
-    buf.write('\n\nGive a concise (2–3 sentence) actionable wealth-building insight. Be specific and helpful.');
-
-    String err = '';
+  Future<void> _fetchProfile() async {
     try {
-      final res = await api.chat(message: buf.toString(), mode: 'general');
-      final txt = (res['content'] as String?)?.trim() ?? '';
-      if (txt.isEmpty) throw Exception('Empty AI response');
-      await api.addComment(post.id, 'RiseUp AI: $txt', isAI: true, isPinned: true);
-      if (mounted) setState(() => post.comments++);
-      messenger.hideCurrentSnackBar();
-      if (!mounted) return;
-      messenger.showSnackBar(SnackBar(
-        content: const Text('AI insight pinned in comments!'),
-        backgroundColor: AppColors.success,
-        duration: const Duration(seconds: 3),
-        action: SnackBarAction(label: 'View', textColor: Colors.white, onPressed: () {
-          if (mounted) context.push('/comments/${post.id}?content=${Uri.encodeComponent(post.content)}&author=${Uri.encodeComponent(post.name)}');
-        }),
-      ));
-      return;
-    } on ApiException catch (e) {
-      if (e.statusCode == 422)                               err = _parseValidationError(e.message);
-      else if (e.statusCode == 429)                          err = 'AI rate limit reached. Please wait a moment.';
-      else if (e.statusCode != null && e.statusCode! >= 500) err = 'AI is temporarily unavailable. Please try again.';
-      else                                                   err = e.message.isNotEmpty ? e.message : 'AI request failed.';
+      final r = await api.get('/auth/me');
+      if (r is Map) {
+        setState(() {
+          _userName   = r['full_name'] ?? r['username'] ?? 'Hustler';
+          _userAvatar = r['avatar_url'];
+          _userStage  = r['stage'] ?? 'survival';
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _fetchTokens() async {
+    try {
+      final r = await api.get('/agent/tokens');
+      if (r is Map) setState(() => _tokens = TokenState.fromJson(r.cast()));
+    } catch (_) {}
+  }
+
+  Future<void> _fetchMissions() async {
+    try {
+      final r = await api.get('/mentor/sessions');
+      if (r is Map) {
+        final sessions = (r['sessions'] as List? ?? []);
+        final missions = sessions.map<Mission>((s) => Mission(
+          id:        s['id']?.toString()    ?? _uuid(),
+          title:     s['title']?.toString() ?? 'Mission',
+          emoji:     s['emoji']?.toString() ?? '🎯',
+          platform:  s['platform']?.toString() ?? '',
+          status:    MissionStatus.active,
+          messages:  _parseMsgs(s['messages']),
+          createdAt: DateTime.tryParse(s['created_at'] ?? '') ?? DateTime.now(),
+        )).toList();
+        setState(() => _missions = missions);
+      }
+    } catch (_) {}
+  }
+
+  List<ChatMessage> _parseMsgs(dynamic raw) {
+    if (raw is! List) return [];
+    return raw.map<ChatMessage>((m) => ChatMessage(
+      id:   m['id']?.toString()   ?? _uuid(),
+      role: m['role'] == 'user'   ? MessageRole.user : MessageRole.riseup,
+      text: m['content']?.toString() ?? '',
+      ts:   DateTime.tryParse(m['created_at'] ?? '') ?? DateTime.now(),
+    )).toList();
+  }
+
+  void _addWelcomeMission() {
+    final welcome = Mission(
+      id:       _uuid(),
+      title:    'Start Here',
+      emoji:    '🚀',
+      platform: '',
+      status:   MissionStatus.active,
+      createdAt: DateTime.now(),
+      messages: [
+        ChatMessage(
+          id:   _uuid(),
+          role: MessageRole.riseup,
+          text: '## Do your best hustle with RiseUp 💪\n\nI\'m your AI income partner. I know **10,000+ ways** people make money — from freelancing to trading to building businesses.\n\nTell me where you are right now:\n- Do you have any skills or experience?\n- How much time can you dedicate daily?\n- Do you have any starting capital?\n\nOr just say **"surprise me"** and I\'ll pick the best path for you.',
+          ts:   DateTime.now(),
+        ),
+      ],
+    );
+    setState(() {
+      _missions.add(welcome);
+      _activeMissionId = welcome.id;
+    });
+  }
+
+  // ── Active mission helpers ──────────────────────────────────────────────────
+  Mission? get _activeMission =>
+      _missions.where((m) => m.id == _activeMissionId).firstOrNull;
+
+  List<ChatMessage> get _activeMessages => _activeMission?.messages ?? [];
+
+  void _selectMission(String id) {
+    setState(() => _activeMissionId = id);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
+
+  void _newMission() async {
+    _Sound.tap();
+    final m = Mission(
+      id: _uuid(), title: 'New Mission', emoji: '➕',
+      platform: '', status: MissionStatus.active,
+      createdAt: DateTime.now(),
+      messages: [ChatMessage(
+        id: _uuid(), role: MessageRole.riseup,
+        text: '## New mission started 🎯\n\nWhat income path do you want to explore? You can describe it, or ask me to **recommend something** based on your profile.',
+        ts: DateTime.now(),
+      )],
+    );
+    setState(() { _missions.insert(0, m); _activeMissionId = m.id; });
+    _scrollToBottom();
+  }
+
+  // ── Send message ──────────────────────────────────────────────────────────
+  Future<void> _sendMessage([String? override]) async {
+    final text = (override ?? _inputCtrl.text).trim();
+    if (text.isEmpty || _isSending) return;
+    if (_tokens.exhausted) { _showTokenGate(); return; }
+
+    _Sound.send();
+    _inputCtrl.clear();
+    setState(() => _isSending = true);
+
+    final userMsg = ChatMessage(id: _uuid(), role: MessageRole.user, text: text, ts: DateTime.now());
+    _appendMsg(userMsg);
+    _scrollToBottom();
+
+    // Check if this is an APEX request
+    final isApex = _detectApex(text);
+
+    // Placeholder RiseUp response
+    final placeholder = ChatMessage(id: _uuid(), role: MessageRole.riseup,
+        text: '', ts: DateTime.now(), isStreaming: true);
+    _appendMsg(placeholder);
+
+    try {
+      if (isApex) {
+        await _handleApexRequest(text, placeholder.id);
+      } else {
+        await _handleMentorChat(text, placeholder.id);
+      }
     } catch (e) {
-      final s = e.toString();
-      if (s.contains('[{') || s.contains('string_pattern_mismatch')) err = _parseValidationError(s);
-      else if (s.contains('Timeout') || s.contains('Socket'))        err = 'Connection timed out. Check your network.';
-      else { err = s.replaceAll('Exception: ', ''); if (err.length > 120) err = '${err.substring(0, 120)}…'; }
+      _updateMsg(placeholder.id, '⚠️ Connection issue. Please try again.');
+    } finally {
+      setState(() => _isSending = false);
+      _fetchTokens();
     }
-
-    messenger.hideCurrentSnackBar();
-    if (!mounted) return;
-    messenger.showSnackBar(SnackBar(
-      content: Text(err.isEmpty ? 'AI request failed. Please try again.' : err),
-      backgroundColor: AppColors.error,
-      duration: const Duration(seconds: 5),
-    ));
   }
 
-  String _parseValidationError(String raw) {
+  bool _detectApex(String text) {
+    final lower = text.toLowerCase();
+    final triggers = ['do it', 'set it up', 'create my', 'open', 'register me',
+        'sign me up', 'apply for me', 'build this', 'execute', 'run it',
+        'make it happen', 'handle it', 'automate', 'use apex', 'go ahead'];
+    return triggers.any((t) => lower.contains(t));
+  }
+
+  Future<void> _handleMentorChat(String text, String placeholderId) async {
     try {
-      final start = raw.indexOf('[{');
-      final end   = raw.lastIndexOf('}]');
-      if (start >= 0 && end > start) {
-        final list = jsonDecode(raw.substring(start, end + 2)) as List;
-        if (list.isNotEmpty) {
-          final first = list.first as Map;
-          final loc   = (first['loc'] as List?)?.join(' → ') ?? '';
-          final msg   = first['msg']?.toString() ?? '';
-          if (loc.isNotEmpty && msg.isNotEmpty) return 'Invalid request ($loc): $msg';
+      final sessionId = _activeMission?.id;
+      final res = await api.post('/mentor/chat', {
+        'message':    text,
+        'session_id': sessionId,
+      });
+      if (res is Map) {
+        final reply = res['reply']?.toString() ?? res['message']?.toString() ?? '...';
+        _updateMsg(placeholderId, reply);
+        _Sound.receive();
+
+        // Update session title if returned
+        if (res['session_title'] != null && _activeMission != null) {
+          _updateMissionTitle(_activeMissionId!, res['session_title']);
+        }
+
+        // Check if mentor wants to hand off to APEX
+        if (res['escalate_to_apex'] == true) {
+          await Future.delayed(const Duration(milliseconds: 800));
+          _launchApex(res['apex_task']?.toString() ?? text, res['apex_template']);
+        }
+      }
+    } catch (e) {
+      _updateMsg(placeholderId, 'I\'m having trouble connecting right now. Try again in a moment.');
+    }
+  }
+
+  Future<void> _handleApexRequest(String text, String placeholderId) async {
+    _Sound.apexStart();
+    setState(() { _apexStatus = ApexStatus.thinking; _apexMode = true; });
+    _updateMsg(placeholderId, '🤖 **APEX activated.** Analysing your request...');
+
+    // Classify task and get template
+    try {
+      final classify = await api.post('/agent/classify', {'task': text});
+      if (classify is Map) {
+        final template = classify['template']?.toString() ?? 'general';
+        final questions = (classify['preflight_questions'] as List?)?.cast<Map>() ?? [];
+
+        if (questions.isNotEmpty) {
+          // Ask preflight questions before starting
+          _updateMsg(placeholderId,
+              '🤖 **APEX** needs a few details before I start:\n\n' +
+              questions.asMap().entries.map((e) => '**${e.key + 1}.** ${e.value['question']}').join('\n'));
+          setState(() { _apexStatus = ApexStatus.paused; });
+        } else {
+          await _launchApex(text, {'template': template});
+        }
+      }
+    } catch (e) {
+      await _launchApex(text, null);
+    }
+  }
+
+  Future<void> _launchApex(String task, Map<String, dynamic>? template) async {
+    setState(() { _apexStatus = ApexStatus.browsing; _apexMode = true; });
+
+    try {
+      final body = <String, dynamic>{
+        'task':     task,
+        'template': template,
+        'stream':   true,
+      };
+
+      // Stream APEX events via SSE
+      final stream = api.streamPost('/agent/browser/run', body);
+      _apexSub?.cancel();
+      _apexSub = stream.listen(
+        (event) => _onApexEvent(event),
+        onError: (_) => setState(() => _apexStatus = ApexStatus.error),
+        onDone:  () => _onApexDone(),
+      );
+    } catch (e) {
+      setState(() { _apexStatus = ApexStatus.error; _apexMode = false; });
+      _appendMsg(ChatMessage(id: _uuid(), role: MessageRole.riseup,
+          text: '⚠️ APEX encountered an issue. ${e.toString()}', ts: DateTime.now()));
+    }
+  }
+
+  void _onApexEvent(Map<String, dynamic> event) {
+    final type = event['type']?.toString() ?? '';
+    setState(() {
+      if (event['thought'] != null) _apexThought = event['thought'].toString();
+      if (event['screenshot_b64'] != null) {
+        try { _apexScreenshot = base64Decode(event['screenshot_b64'].toString()); } catch (_) {}
+      }
+    });
+
+    switch (type) {
+      case 'thinking':
+        setState(() => _apexStatus = ApexStatus.thinking);
+        break;
+      case 'action':
+        setState(() => _apexStatus = ApexStatus.browsing);
+        break;
+      case 'human_required':
+        setState(() => _apexStatus = ApexStatus.paused);
+        _appendMsg(ChatMessage(id: _uuid(), role: MessageRole.riseup,
+            text: '⏸️ **APEX paused.** ${event['message'] ?? 'I need your input to continue.'}',
+            ts: DateTime.now()));
+        break;
+      case 'done':
+        _onApexDone();
+        break;
+      case 'error':
+        setState(() => _apexStatus = ApexStatus.error);
+        break;
+    }
+    _scrollToBottom();
+  }
+
+  void _onApexDone() {
+    _Sound.success();
+    setState(() { _apexStatus = ApexStatus.done; });
+    _appendMsg(ChatMessage(id: _uuid(), role: MessageRole.riseup,
+        text: '✅ **APEX mission complete!** What would you like to do next?', ts: DateTime.now()));
+    Future.delayed(const Duration(seconds: 3), () {
+      if (mounted) setState(() { _apexMode = false; _apexStatus = ApexStatus.idle; });
+    });
+    _fetchTokens();
+  }
+
+  void _stopApex() {
+    _apexSub?.cancel();
+    api.post('/agent/browser/stop', {}).catchError((_) {});
+    setState(() { _apexStatus = ApexStatus.idle; _apexMode = false; });
+  }
+
+  // ── Message helpers ────────────────────────────────────────────────────────
+  void _appendMsg(ChatMessage msg) {
+    if (_activeMissionId == null) return;
+    setState(() {
+      _missions = _missions.map((m) {
+        if (m.id != _activeMissionId) return m;
+        return m.copyWith(messages: [...m.messages, msg]);
+      }).toList();
+    });
+    Future.delayed(const Duration(milliseconds: 100), _scrollToBottom);
+  }
+
+  void _updateMsg(String id, String text) {
+    setState(() {
+      _missions = _missions.map((m) {
+        if (m.id != _activeMissionId) return m;
+        final msgs = m.messages.map((msg) =>
+            msg.id == id ? msg.copyWith(text: text, isStreaming: false) : msg).toList();
+        return m.copyWith(messages: msgs);
+      }).toList();
+    });
+    Future.delayed(const Duration(milliseconds: 100), _scrollToBottom);
+  }
+
+  void _updateMissionTitle(String id, String title) {
+    setState(() {
+      _missions = _missions.map((m) => m.id == id
+          ? Mission(id: m.id, title: title, emoji: m.emoji, platform: m.platform,
+                    status: m.status, messages: m.messages, createdAt: m.createdAt)
+          : m).toList();
+    });
+  }
+
+  void _scrollToBottom() {
+    if (_scrollCtrl.hasClients) {
+      _scrollCtrl.animateTo(_scrollCtrl.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+    }
+  }
+
+  // ── Token gate ─────────────────────────────────────────────────────────────
+  void _showTokenGate() => setState(() => _showAdGate = true);
+
+  Future<void> _watchAd() async {
+    try {
+      // Record ad watch on backend
+      final r = await api.post('/agent/tokens/record-ad', {});
+      if (r is Map && r['day_locked'] == true) {
+        _showDayLockedDialog();
+        return;
+      }
+      setState(() => _adWatchCount++);
+      _Sound.token();
+      if (r is Map && r['redemption_ready'] == true) {
+        await _claimRedemption();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _claimRedemption() async {
+    try {
+      final r = await api.post('/agent/tokens/claim-redemption', {});
+      if (r is Map && r['granted'] == true) {
+        _Sound.success();
+        setState(() { _showAdGate = false; _adWatchCount = 0; });
+        await _fetchTokens();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('🎉 ${r['tokens_granted']} tokens unlocked!'),
+            backgroundColor: AppColors.success,
+          ));
         }
       }
     } catch (_) {}
-    return 'AI request failed. Please try again.';
   }
 
-  Future<bool> _showAdPrompt() async {
-    if (!mounted) return false;
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    return await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: dark ? AppColors.bgCard : Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Text('Watch a short ad?', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18, color: dark ? Colors.white : Colors.black87)),
-        content: Text(
-          'You\'ve used your $_freeLimit free responses today.\n\nWatch a 30-second ad to unlock more.\n\n${_maxAds - _adsWatched} unlock(s) remaining today.',
-          style: TextStyle(color: dark ? Colors.white60 : Colors.black54, height: 1.5),
+  void _showDayLockedDialog() {
+    showDialog(context: context, builder: (_) => AlertDialog(
+      backgroundColor: AppColors.bgCard,
+      title: const Text('Come back tomorrow 🌅', style: TextStyle(color: Colors.white)),
+      content: const Text("You've reached today's ad limit. Your tokens reset at midnight.\n\nSubscribe to Premium for unlimited access!",
+          style: TextStyle(color: AppColors.textSecondary)),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK')),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
+          onPressed: () { Navigator.pop(context); context.push('/premium'); },
+          child: const Text('Go Premium'),
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Not now', style: TextStyle(color: AppColors.textMuted))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Watch Ad', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    ) ?? false;
+      ],
+    ));
   }
 
-  void _showLockout() {
-    if (!mounted) return;
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    final diff = _adLockout != null ? _adLockout!.difference(DateTime.now()) : Duration.zero;
-    final h    = diff.inHours;
-    final m    = (diff.inMinutes % 60).toString().padLeft(2, '0');
-    final ts   = diff.isNegative ? 'shortly' : (h > 0 ? '${h}h ${m}m' : '${diff.inMinutes}m');
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: dark ? AppColors.bgCard : Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text('Daily Limit Reached'),
-        content: Text('Resets in $ts or upgrade to Premium.', style: TextStyle(color: dark ? Colors.white60 : Colors.black54, height: 1.5)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK', style: TextStyle(color: AppColors.textMuted))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.gold, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
-            onPressed: () { Navigator.pop(context); if (mounted) context.push('/premium'); },
-            child: const Text('Go Premium', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ── Status viewing ────────────────────────────────────────────────────────
-  void _viewStatus(Map<String, dynamic> user) {
-    if ((user['items'] as List? ?? []).isEmpty) return;
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => _StatusViewSheet(
-        user: user,
-        // FIX 3: Pass persisted reactions so they survive sheet close/reopen
-        reactedStatuses: Map<String, bool>.from(_reactedStatuses),
-        onReact: _handleStatusReact,
-      ),
-    );
-  }
-
-  // FIX 3: Save reaction state persistently
-  Future<void> _handleStatusReact(String statusId, String reaction) async {
-    // Update in-memory state
-    if (mounted) setState(() => _reactedStatuses[statusId] = true);
-    // Persist to SharedPreferences
-    try {
-      final p = await SharedPreferences.getInstance();
-      await p.setStringList(_kReacted, _reactedStatuses.keys.toList());
-    } catch (_) {}
-    // Tell the backend (best-effort)
-    try {
-      await api.post('/posts/status/$statusId/react', {'reaction': reaction});
-      SoundService.like();
-    } catch (_) {}
-  }
-
-  void _snack(String msg, Color bg, {Duration duration = const Duration(seconds: 2)}) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: bg, duration: duration));
-  }
-
-  // ── BUILD ─────────────────────────────────────────────────────────────────
+  // ── Build ──────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    final dark   = Theme.of(context).brightness == Brightness.dark;
-    final bg     = dark ? Colors.black : Colors.white;
-    final card   = dark ? AppColors.bgCard : Colors.white;
-    final border = dark ? AppColors.bgSurface : Colors.grey.shade200;
-    final txt    = dark ? Colors.white : Colors.black87;
-    final sub    = dark ? Colors.white.withOpacity(0.54) : Colors.black45;
-    final ico    = dark ? Colors.white.withOpacity(0.7) : Colors.black54;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
-      backgroundColor: bg,
-      key: _sk,
-      drawer: _AppDrawer(profile: _profile, isDark: dark),
-      appBar: AppBar(
-        backgroundColor: card, elevation: 0, surfaceTintColor: Colors.transparent, titleSpacing: 0,
-        leading: IconButton(
-          icon: Icon(Icons.menu_rounded, color: ico, size: 24),
-          onPressed: () { SoundService.tap(); _sk.currentState?.openDrawer(); },
+      key: _globalKey,
+      backgroundColor: AppColors.bgDark,
+      drawer: _buildSidebar(context),
+      body: SafeArea(
+        child: Stack(
+          children: [
+            Column(children: [
+              _buildTopBar(context),
+              _buildMissionCircles(),
+              Expanded(child: _apexMode ? _buildApexSplitPanel() : _buildChatArea()),
+              if (_showAdGate) _buildAdGate() else _buildInputBar(),
+            ]),
+            if (_isLoading) const Center(child: CircularProgressIndicator(color: AppColors.primary)),
+          ],
         ),
-        title: ShaderMask(
-          shaderCallback: (b) => const LinearGradient(
-            colors: [Color(0xFFFF6B00), Color(0xFFFFD700), Color(0xFF6C5CE7)],
-            stops:  [0.0, 0.4, 1.0],
-          ).createShader(b),
-          child: const Text('RiseUp', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: Colors.white, letterSpacing: -0.5)),
-        ),
-        centerTitle: true,
-        actions: [
-          if (!_isPremium)
-            Container(
-              margin: const EdgeInsets.only(top: 12, bottom: 12),
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.12), borderRadius: BorderRadius.circular(20)),
-              child: Text('$_aiLeft left', style: const TextStyle(color: AppColors.primary, fontSize: 11, fontWeight: FontWeight.w600)),
-            ),
-          IconButton(
-            icon: Icon(Icons.search_rounded, color: ico, size: 22),
-            tooltip: 'Search posts',
-            onPressed: () { SoundService.tap(); Navigator.push(context, MaterialPageRoute(builder: (_) => _ContentSearchScreen(isDark: dark))); },
-          ),
-          Stack(children: [
-            IconButton(
-              icon: Icon(Icons.notifications_rounded, color: ico, size: 22),
-              tooltip: 'Notifications',
-              onPressed: () {
-                SoundService.tap();
-                if (mounted) setState(() { _notifCount = 0; _lastSeenNotifCount = 0; });
-                context.go('/notifications');
-              },
-            ),
-            if (_notifCount > 0)
-              Positioned(right: 8, top: 8, child: IgnorePointer(child: Container(
-                width: 17, height: 17,
-                decoration: BoxDecoration(color: AppColors.error, shape: BoxShape.circle, border: Border.all(color: card, width: 1.5)),
-                child: Center(child: Text(_notifCount > 9 ? '9+' : '$_notifCount', style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.w800))),
-              ))),
-          ]),
-          const SizedBox(width: 4),
-        ],
-        bottom: PreferredSize(preferredSize: const Size.fromHeight(1), child: Divider(height: 1, color: border)),
       ),
-      body: Column(children: [
+    );
+  }
 
-        // ── Stories ──────────────────────────────────────────────────────────
-        Container(color: card, child: Column(children: [
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 300),
-            child: !_statusLoaded
-                ? _StoriesSkel(isDark: dark, key: const ValueKey('sk'))
-                : SizedBox(
-                    key: const ValueKey('r'),
-                    height: 92,
-                    child: ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      // FIX 4: Count includes sponsored slots
-                      itemCount: _storyItemCount,
-                      itemBuilder: (_, i) {
-                        if (i == 0) {
-                          return _StoryAdd(
-                            isDark: dark,
-                            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CreateStatusScreen()))
-                                .then((_) => _loadStatus()),
-                          );
-                        }
-                        return _buildStoryItem(i - 1, dark);
-                      },
-                    ),
-                  ),
-          ),
-          Divider(height: 1, color: border),
+  // ── Top bar ────────────────────────────────────────────────────────────────
+  Widget _buildTopBar(BuildContext context) {
+    return Container(
+      height: 56,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: AppColors.bgCard,
+        border: Border(bottom: BorderSide(color: AppColors.bgSurface, width: 0.8)),
+      ),
+      child: Row(children: [
+        // ≡ Menu
+        GestureDetector(
+          onTap: () { _Sound.tap(); _globalKey.currentState?.openDrawer(); },
+          child: const Icon(Iconsax.menu_1, color: Colors.white, size: 24),
+        ),
+        const SizedBox(width: 12),
+
+        // RiseUp logo + token badge
+        Expanded(child: Row(children: [
+          RichText(text: const TextSpan(
+            children: [
+              TextSpan(text: 'Rise', style: TextStyle(fontSize: 20,
+                  fontWeight: FontWeight.w800, color: Color(0xFFFF6B00))),
+              TextSpan(text: 'Up', style: TextStyle(fontSize: 20,
+                  fontWeight: FontWeight.w800, color: AppColors.primary)),
+            ],
+          )),
+          const SizedBox(width: 8),
+          _TokenBadge(tokens: _tokens, pulse: _tokenPulse),
         ])),
 
-        // ── Tabs ──────────────────────────────────────────────────────────────
-        Container(color: card, child: Column(children: [
-          TabBar(
-            controller: _tab,
-            labelColor: AppColors.primary, unselectedLabelColor: sub,
-            indicatorColor: AppColors.primary, indicatorWeight: 2.5,
-            labelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-            tabs: const [Tab(text: 'For You'), Tab(text: 'Following'), Tab(text: 'Trending')],
-          ),
-          Divider(height: 1, color: border),
-        ])),
+        // Search
+        GestureDetector(
+          onTap: () => _Sound.tap(),
+          child: const Icon(Iconsax.search_normal, color: Colors.white70, size: 22),
+        ),
+        const SizedBox(width: 16),
 
-        // ── Feed ──────────────────────────────────────────────────────────────
-        Expanded(child: TabBarView(
-          controller: _tab,
-          children: _tabs.map((tab) => _FeedTab(
-            key: PageStorageKey(tab),
-            tab: tab,
-            posts: _feeds[tab]!,
-            isLoading: _loading[tab] == true,
-            hasMore:   _hasMore[tab] ?? true,
-            errorMsg:  _errors[tab],
-            isDark: dark, cardColor: card, borderColor: border, textColor: txt, subColor: sub,
-            isPremium: _isPremium, aiRemaining: _aiLeft,
-            needsAd: _aiLeft <= 0 && !_isPremium,
-            currentUserId: _profile['id']?.toString() ?? '',
-            followState: _follows,
-            onLoadMore: () => _loadFeed(tab),
-            onRefresh:  () => _loadFeed(tab, refresh: true),
-            onAskAI:       (p) => _handleAI(p, isPrivate: false),
-            onPrivateChat: (p) => _handleAI(p, isPrivate: true),
-            onFollow:      _handleFollow,
-            onShare:       _handleShare,
-            onPreloadVideos: _preloadFeedVideos,
-            onView:          _handleView,
-            onPostDeleted: (id) => Future.microtask(() {
-              if (mounted) setState(() { for (final t in _tabs) _feeds[t]!.removeWhere((p) => p.id == id); });
-            }),
-            onLike: (p) async {
-              SoundService.like();
-              setState(() { p.isLiked = !p.isLiked; p.likes += p.isLiked ? 1 : -1; });
-              try {
-                final r = await api.toggleLike(p.id);
-                if (mounted) setState(() => p.isLiked = r['liked'] == true);
-                if (r['liked'] == true && p.content.isNotEmpty) api.recordInteractionSignal(action: 'like', postId: p.id, postContent: p.content);
-              } catch (_) {
-                if (mounted) setState(() { p.isLiked = !p.isLiked; p.likes += p.isLiked ? 1 : -1; });
-              }
-            },
-            onSave: (p) async {
-              SoundService.save();
-              setState(() => p.isSaved = !p.isSaved);
-              try {
-                final r = await api.toggleSave(p.id);
-                if (mounted) setState(() => p.isSaved = r['saved'] == true);
-                if (r['saved'] == true && p.content.isNotEmpty) api.recordInteractionSignal(action: 'save', postId: p.id, postContent: p.content);
-              } catch (_) {
-                if (mounted) setState(() => p.isSaved = !p.isSaved);
-              }
-            },
-            onComment: (p) {
-              SoundService.comment();
-              context.push('/comments/${p.id}?content=${Uri.encodeComponent(p.content)}&author=${Uri.encodeComponent(p.name)}');
-            },
-          )).toList(),
-        )),
+        // Notifications
+        GestureDetector(
+          onTap: () { _Sound.tap(); context.push('/notifications'); },
+          child: const Icon(Iconsax.notification, color: Colors.white70, size: 22),
+        ),
       ]),
     );
   }
 
-  // ── FIX 4: Story list helpers ─────────────────────────────────────────────
-  // After every 4 real user stories, insert 1 sponsored slot (free users only).
-  // Layout (i is 0-based index of the "content" items after the +You button):
-  //   i=0..3  → user stories 0..3
-  //   i=4     → sponsored ad      (if !_isPremium)
-  //   i=5..8  → user stories 4..7
-  //   i=9     → sponsored ad
-  //   ...
-
-  static const int _storyAdAfter = 4; // inject ad after every N user stories
-
-  int get _storyItemCount {
-    if (_isPremium) return _statusUsers.length + 1; // +1 for "You"
-    final adCount = _statusUsers.length ~/ _storyAdAfter;
-    return _statusUsers.length + adCount + 1;
-  }
-
-  /// Converts visual list index `vi` (0-based, after the "+You" item) into
-  /// either a user story index or -1 meaning "show a sponsored slot here".
-  int _storyUserIndexAt(int vi) {
-    if (_isPremium) return vi;
-    // Every (_storyAdAfter + 1) items, the last one is an ad slot
-    final slot = vi % (_storyAdAfter + 1);
-    if (slot == _storyAdAfter) return -1; // sponsored slot
-    final block = vi ~/ (_storyAdAfter + 1);
-    return block * _storyAdAfter + slot;
-  }
-
-  Widget _buildStoryItem(int vi, bool dark) {
-    final ui = _storyUserIndexAt(vi);
-    if (ui == -1) {
-      // FIX 4: Sponsored story slot
-      return _SponsoredStoryItem(
-        isDark: dark,
-        onTap: () => showModalBottomSheet(
-          context: context,
-          isScrollControlled: true,
-          backgroundColor: Colors.transparent,
-          builder: (_) => const _SponsoredStatusSheet(),
-        ),
-      );
-    }
-    if (ui >= _statusUsers.length) return const SizedBox.shrink();
-    final u = _statusUsers[ui] as Map<String, dynamic>;
-    return _StoryItem(user: u, isDark: dark, onTap: () => _viewStatus(u));
-  }
-}
-
-// =============================================================================
-// CONTENT SEARCH SCREEN
-// =============================================================================
-class _ContentSearchScreen extends StatefulWidget {
-  final bool isDark;
-  const _ContentSearchScreen({super.key, required this.isDark});
-  @override
-  State<_ContentSearchScreen> createState() => _ContentSearchScreenState();
-}
-
-class _ContentSearchScreenState extends State<_ContentSearchScreen> {
-  final TextEditingController _ctrl  = TextEditingController();
-  final FocusNode             _focus = FocusNode();
-  List<PostModel> _results  = [];
-  List<String>    _recent   = [];
-  bool _loading = false, _searched = false;
-  Timer? _debounce;
-  static const _kRecent = 'riseup_search_recent_v1';
-
-  @override
-  void initState() {
-    super.initState();
-    _loadRecent();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _focus.requestFocus());
-  }
-
-  @override
-  void dispose() { _ctrl.dispose(); _focus.dispose(); _debounce?.cancel(); super.dispose(); }
-
-  Future<void> _loadRecent() async {
-    try { final p = await SharedPreferences.getInstance(); if (mounted) setState(() => _recent = p.getStringList(_kRecent) ?? []); } catch (_) {}
-  }
-
-  Future<void> _saveRecent(String q) async {
-    try {
-      final p    = await SharedPreferences.getInstance();
-      final list = [q, ..._recent.where((r) => r != q)].take(10).toList();
-      await p.setStringList(_kRecent, list);
-      if (mounted) setState(() => _recent = list);
-    } catch (_) {}
-  }
-
-  Future<void> _removeRecent(String q) async {
-    try {
-      final p    = await SharedPreferences.getInstance();
-      final list = _recent.where((r) => r != q).toList();
-      await p.setStringList(_kRecent, list);
-      if (mounted) setState(() => _recent = list);
-    } catch (_) {}
-  }
-
-  void _onChanged(String val) {
-    _debounce?.cancel();
-    if (val.trim().isEmpty) { if (mounted) setState(() { _results = []; _searched = false; }); return; }
-    _debounce = Timer(const Duration(milliseconds: 420), () => _search(val.trim()));
-  }
-
-  Future<void> _search(String q) async {
-    if (q.isEmpty || !mounted) return;
-    setState(() { _loading = true; _searched = true; });
-    await _saveRecent(q);
-    try {
-      final d     = await api.get('/posts/search?q=${Uri.encodeComponent(q)}&limit=30');
-      final posts = ((d['posts'] as List?) ?? []).map((x) => PostModel.fromApi(x as Map<String, dynamic>)).toList();
-      if (mounted) setState(() { _results = posts; _loading = false; });
-    } catch (_) {
-      if (mounted) setState(() { _results = []; _loading = false; });
-    }
-  }
-
-  @override
-  Widget build(BuildContext ctx) {
-    final dark   = widget.isDark;
-    final bg     = dark ? Colors.black : Colors.white;
-    final card   = dark ? AppColors.bgCard : Colors.white;
-    final border = dark ? AppColors.bgSurface : Colors.grey.shade200;
-    final sub    = dark ? Colors.white.withOpacity(0.54) : Colors.black45;
-    final txt    = dark ? Colors.white : Colors.black87;
-
-    return Scaffold(
-      backgroundColor: bg,
-      appBar: AppBar(
-        backgroundColor: card, elevation: 0, surfaceTintColor: Colors.transparent,
-        leading: IconButton(
-          icon: Icon(Icons.arrow_back_rounded, color: dark ? Colors.white70 : Colors.black54),
-          onPressed: () => Navigator.pop(ctx),
-        ),
-        titleSpacing: 0,
-        title: Container(
-          height: 40, margin: const EdgeInsets.only(right: 16),
-          decoration: BoxDecoration(color: dark ? AppColors.bgSurface : Colors.grey.shade100, borderRadius: BorderRadius.circular(20)),
-          child: TextField(
-            controller: _ctrl, focusNode: _focus, onChanged: _onChanged,
-            onSubmitted: (v) => _search(v.trim()),
-            style: TextStyle(fontSize: 14, color: txt, fontWeight: FontWeight.w500),
-            decoration: InputDecoration(
-              hintText: 'Search posts, hashtags, people…',
-              hintStyle: TextStyle(color: sub, fontSize: 13),
-              prefixIcon: Icon(Icons.search_rounded, color: sub, size: 18),
-              suffixIcon: _ctrl.text.isNotEmpty
-                  ? IconButton(
-                      icon: Icon(Icons.close_rounded, color: sub, size: 16),
-                      onPressed: () { _ctrl.clear(); if (mounted) setState(() { _results = []; _searched = false; }); _focus.requestFocus(); })
-                  : null,
-              filled: false, border: InputBorder.none,
-              contentPadding: const EdgeInsets.symmetric(vertical: 10),
-            ),
-          ),
-        ),
-        bottom: PreferredSize(preferredSize: const Size.fromHeight(1), child: Divider(height: 1, color: border)),
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2))
-          : !_searched
-              ? _recentView(dark, sub, txt)
-              : _results.isEmpty
-                  ? _emptyView(sub)
-                  : ListView.separated(
-                      itemCount: _results.length,
-                      separatorBuilder: (_, __) => Divider(height: 8, thickness: 8, color: border),
-                      itemBuilder: (ctx, i) {
-                        final p = _results[i];
-                        return PostCard(
-                          key: ValueKey('search_${p.id}'),
-                          post: p, isDark: dark, cardColor: card, borderColor: border, textColor: txt, subColor: sub,
-                          onAskAI: (_) {}, onPrivateChat: (_) {}, onLike: (_) {}, onSave: (_) {}, onShare: (_) {},
-                          onComment: (post) => ctx.push('/comments/${post.id}?content=${Uri.encodeComponent(post.content)}&author=${Uri.encodeComponent(post.name)}'),
-                          onFollow: (_) {}, onPostDeleted: (_) {}, onView: (_) {},
-                          isPremium: false, aiRemaining: 0, isFollowing: p.isFollowing, currentUserId: '',
-                        );
-                      },
-                    ),
-    );
-  }
-
-  Widget _recentView(bool dark, Color sub, Color txt) {
-    if (_recent.isEmpty) {
-      return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Icon(Icons.search_rounded, size: 52, color: sub.withOpacity(0.4)),
-        const SizedBox(height: 12),
-        Text('Search posts, hashtags & people', style: TextStyle(color: sub, fontSize: 14)),
-      ]));
-    }
-    return ListView(padding: const EdgeInsets.symmetric(vertical: 8), children: [
-      Padding(padding: const EdgeInsets.fromLTRB(16, 8, 16, 4), child: Row(children: [
-        Text('Recent Searches', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: sub, letterSpacing: 0.8)),
-        const Spacer(),
-        GestureDetector(
-          onTap: () async { try { final p = await SharedPreferences.getInstance(); await p.remove(_kRecent); if (mounted) setState(() => _recent = []); } catch (_) {} },
-          child: Text('Clear all', style: TextStyle(fontSize: 12, color: AppColors.primary, fontWeight: FontWeight.w600)),
-        ),
-      ])),
-      ..._recent.map((q) => ListTile(
-        dense: true,
-        leading: Icon(Icons.history_rounded, size: 18, color: sub),
-        title: Text(q, style: TextStyle(fontSize: 13, color: dark ? Colors.white : Colors.black87)),
-        trailing: IconButton(icon: Icon(Icons.close_rounded, size: 14, color: sub), onPressed: () => _removeRecent(q)),
-        onTap: () { _ctrl.text = q; _search(q); },
-      )),
-    ]);
-  }
-
-  Widget _emptyView(Color sub) => Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-    const Text('📭', style: TextStyle(fontSize: 48)),
-    const SizedBox(height: 12),
-    Text('No results found', style: TextStyle(color: sub, fontSize: 14)),
-    const SizedBox(height: 4),
-    Text('Try different keywords', style: TextStyle(color: sub, fontSize: 12)),
-  ]));
-}
-
-// =============================================================================
-// FEED TAB
-// =============================================================================
-class _FeedTab extends StatefulWidget {
-  final String tab;
-  final List<PostModel> posts;
-  final bool isLoading, hasMore, isDark, isPremium, needsAd;
-  final Color cardColor, borderColor, textColor, subColor;
-  final int aiRemaining;
-  final String currentUserId;
-  final String? errorMsg;
-  final Map<String, bool> followState;
-  final VoidCallback onLoadMore, onRefresh;
-  final Function(PostModel) onAskAI, onPrivateChat, onLike, onSave, onComment, onShare;
-  final Function(String) onFollow, onPostDeleted, onView;
-  final void Function(List<PostModel> posts, {required int startIdx}) onPreloadVideos;
-
-  const _FeedTab({
-    super.key,
-    required this.tab,           required this.posts,
-    required this.isLoading,     required this.hasMore,
-    required this.isDark,        required this.cardColor,
-    required this.borderColor,   required this.textColor,
-    required this.subColor,      required this.isPremium,
-    required this.aiRemaining,   required this.needsAd,
-    required this.currentUserId, required this.followState,
-    required this.onLoadMore,    required this.onRefresh,
-    required this.onAskAI,       required this.onPrivateChat,
-    required this.onLike,        required this.onSave,
-    required this.onComment,     required this.onShare,
-    required this.onFollow,      required this.onPostDeleted,
-    required this.onView,        required this.onPreloadVideos,
-    this.errorMsg,
-  });
-
-  @override
-  State<_FeedTab> createState() => _FeedTabState();
-}
-
-class _FeedTabState extends State<_FeedTab> with AutomaticKeepAliveClientMixin {
-  final ScrollController _sc = ScrollController();
-  bool _paginationFired  = false;
-  int  _lastPreloadedIdx = 0;
-
-  @override bool get wantKeepAlive => true;
-
-  @override void initState() { super.initState(); _sc.addListener(_onScroll); }
-  @override void dispose() { _sc.dispose(); super.dispose(); }
-
-  void _onScroll() {
-    if (!_sc.hasClients) return;
-    final pos = _sc.position;
-    if (pos.pixels >= pos.maxScrollExtent * 0.7 && !_paginationFired && !widget.isLoading && widget.hasMore) {
-      _paginationFired = true;
-      widget.onLoadMore();
-      Future.delayed(const Duration(seconds: 3), () { if (mounted) _paginationFired = false; });
-    }
-    if (!kIsWeb) {
-      const estimatedItemH = 500.0;
-      final visibleIdx     = max(0, (pos.pixels / estimatedItemH).floor());
-      final preloadFrom    = visibleIdx + 1;
-      if (preloadFrom > _lastPreloadedIdx && preloadFrom < widget.posts.length) {
-        _lastPreloadedIdx = preloadFrom;
-        widget.onPreloadVideos(widget.posts, startIdx: preloadFrom);
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext ctx) {
-    super.build(ctx);
-    final posts  = widget.posts;
-    final border = widget.borderColor;
-
-    if (widget.errorMsg != null && posts.isEmpty) {
-      return Center(child: Padding(padding: const EdgeInsets.all(32), child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Icon(Icons.cloud_off_rounded, size: 52, color: widget.subColor.withOpacity(0.5)),
-        const SizedBox(height: 16),
-        Text(widget.errorMsg!, textAlign: TextAlign.center, style: TextStyle(color: widget.subColor, fontSize: 14, height: 1.5)),
-        const SizedBox(height: 20),
-        ElevatedButton.icon(
-          style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12)),
-          icon: const Icon(Icons.refresh_rounded, color: Colors.white, size: 18),
-          label: const Text('Try Again', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-          onPressed: widget.onRefresh,
-        ),
-      ])));
-    }
-
-    if (widget.isLoading && posts.isEmpty) {
-      return ListView.separated(
-        physics: const NeverScrollableScrollPhysics(),
-        itemCount: 3,
-        separatorBuilder: (_, __) => Divider(height: 8, thickness: 8, color: border),
-        itemBuilder: (_, __) => _PostCardSkeleton(isDark: widget.isDark),
-      );
-    }
-
-    if (posts.isEmpty) {
-      return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        const Text('📭', style: TextStyle(fontSize: 48)),
-        const SizedBox(height: 12),
-        Text('No posts yet', style: TextStyle(color: widget.subColor, fontSize: 14)),
-        const SizedBox(height: 8),
-        GestureDetector(onTap: widget.onRefresh, child: const Text('Refresh', style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.w600))),
-      ]));
-    }
-
-    final total = adManager.feedItemCount(posts.length) + 1;
-
-    return RefreshIndicator(
-      onRefresh: () async => widget.onRefresh(),
-      color: AppColors.primary,
+  // ── Mission circles ────────────────────────────────────────────────────────
+  Widget _buildMissionCircles() {
+    return Container(
+      height: 88,
+      color: AppColors.bgCard,
       child: ListView.separated(
-        controller: _sc,
-        cacheExtent: 2000,  // FIX 5: reduced from 3000 — smaller = less memory
-        padding: EdgeInsets.zero,
-        itemCount: total,
-        separatorBuilder: (_, __) => Divider(height: 8, thickness: 8, color: border),
-        itemBuilder: (_, i) {
-          if (i == total - 1) {
-            if (widget.isLoading)  return _PostCardSkeleton(isDark: widget.isDark);
-            if (!widget.hasMore)   return Padding(padding: const EdgeInsets.all(20), child: Center(child: Text("You're all caught up ✓", style: TextStyle(color: widget.subColor, fontSize: 13))));
-            return const SizedBox(height: 40);
-          }
-          if (adManager.shouldShowFeedAd(i)) {
-            return FeedAdCard(isDark: widget.isDark, cardColor: widget.cardColor, borderColor: border, textColor: widget.textColor, subColor: widget.subColor);
-          }
-          final pi = adManager.realPostIndex(i);
-          if (pi >= posts.length) return const SizedBox.shrink();
-          final post = posts[pi];
-          final fol  = widget.followState[post.userId] ?? post.isFollowing;
-
-          // FIX 5: RepaintBoundary prevents expensive PostCard repaints when
-          // unrelated parents rebuild (notification badge, etc.)
-          return RepaintBoundary(
-            child: PostCard(
-              key: ValueKey('post_${post.id}'),
-              post: post, isDark: widget.isDark, cardColor: widget.cardColor,
-              borderColor: border, textColor: widget.textColor, subColor: widget.subColor,
-              onAskAI: widget.onAskAI, onPrivateChat: widget.onPrivateChat,
-              onLike: widget.onLike, onSave: widget.onSave,
-              onComment: widget.onComment, onShare: widget.onShare,
-              onFollow: widget.onFollow, onPostDeleted: widget.onPostDeleted,
-              onView: widget.onView,
-              isPremium: widget.isPremium, aiRemaining: widget.aiRemaining,
-              needsAd: widget.needsAd, isFollowing: fol, currentUserId: widget.currentUserId,
-            ).animate().fadeIn(
-              delay:    Duration(milliseconds: (pi % 5) * 20),
-              duration: const Duration(milliseconds: 200),
-            ),
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        itemCount: _missions.length + 1,
+        separatorBuilder: (_, __) => const SizedBox(width: 12),
+        itemBuilder: (ctx, i) {
+          if (i == 0) return _NewMissionCircle(onTap: _newMission);
+          final m = _missions[i - 1];
+          final isActive = m.id == _activeMissionId;
+          return _MissionCircle(
+            mission: m,
+            isActive: isActive,
+            onTap: () { _Sound.tap(); _selectMission(m.id); },
           );
         },
       ),
     );
   }
-}
 
-// =============================================================================
-// POST CARD
-// =============================================================================
-class PostCard extends StatefulWidget {
-  final PostModel post;
-  final bool isDark, isPremium, isFollowing, needsAd;
-  final Color cardColor, borderColor, textColor, subColor;
-  final Function(PostModel) onAskAI, onPrivateChat, onLike, onSave, onComment, onShare;
-  final Function(String)    onFollow, onPostDeleted, onView;
-  final int aiRemaining;
-  final String currentUserId;
-
-  const PostCard({
-    super.key,
-    required this.post,
-    required this.isDark,
-    required this.cardColor,
-    required this.borderColor,
-    required this.textColor,
-    required this.subColor,
-    required this.onAskAI,
-    required this.onPrivateChat,
-    required this.onLike,
-    required this.onSave,
-    required this.onComment,
-    required this.onShare,
-    required this.onFollow,
-    required this.onPostDeleted,
-    required this.onView,
-    required this.isPremium,
-    required this.aiRemaining,
-    required this.isFollowing,
-    this.needsAd        = false,
-    this.currentUserId  = '',
-  });
-
-  @override
-  State<PostCard> createState() => _PostCardState();
-}
-
-class _PostCardState extends State<PostCard> {
-  bool _expanded  = false;
-  bool _viewFired = false;
-  static const int _collapseAt = 180;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _fireView());
-  }
-
-  void _fireView() {
-    if (_viewFired) return;
-    _viewFired = true;
-    widget.onView(widget.post.id);
-    if (mounted) setState(() => widget.post.viewsCount++);
-  }
-
-  String _fmt(int n) {
-    if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
-    if (n >= 1000)    return '${(n / 1000).toStringAsFixed(1)}K';
-    return '$n';
-  }
-
-  bool get _isOwn  => widget.post.userId.isNotEmpty && widget.post.userId == widget.currentUserId;
-  bool get _isLong => widget.post.content.length > _collapseAt;
-  String get _displayContent => _expanded || !_isLong ? widget.post.content : '${widget.post.content.substring(0, _collapseAt)}…';
-
-  Color? get _bgColor {
-    final hex = widget.post.backgroundColor;
-    if (hex == null || hex.isEmpty) return null;
-    try { return Color(int.parse(hex.replaceAll('#', '0xFF'))); } catch (_) { return null; }
-  }
-
-  Future<void> _playVideo(BuildContext ctx, String url) async {
-    if (!widget.isPremium && widget.post.mediaType == 'video') {
-      final dur = await _getVideoDurationSeconds(url);
-      if (dur >= 60) {
-        try { await adService.forceShowInterstitial(); } catch (_) {}
-      } else {
-        try { await adService.showInterstitialIfReady(); } catch (_) {}
-      }
+  // ── Chat area ──────────────────────────────────────────────────────────────
+  Widget _buildChatArea() {
+    final msgs = _activeMessages;
+    if (msgs.isEmpty) {
+      return Center(child: Text('Select a mission or start a new one',
+          style: TextStyle(color: AppColors.textMuted)));
     }
-    if (!ctx.mounted) return;
-    Navigator.push(ctx, MaterialPageRoute(fullscreenDialog: true, builder: (_) => _VidFull(url: url)));
-  }
-
-  Future<int> _getVideoDurationSeconds(String url) async {
-    if (kIsWeb) return 0;
-    try {
-      final c = VideoPlayerController.networkUrl(Uri.parse(url));
-      await c.initialize();
-      final dur = c.value.duration.inSeconds;
-      await c.dispose();
-      return dur;
-    } catch (_) { return 0; }
-  }
-
-  void _edit() {
-    final ctrl = TextEditingController(text: widget.post.content);
-    showModalBottomSheet(
-      context: context, isScrollControlled: true,
-      backgroundColor: widget.isDark ? AppColors.bgCard : Colors.white,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, left: 20, right: 20, top: 16),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Container(width: 36, height: 4, margin: const EdgeInsets.only(bottom: 16), decoration: BoxDecoration(color: Colors.grey.withOpacity(0.3), borderRadius: BorderRadius.circular(2))),
-          Text('Edit Post', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: widget.isDark ? Colors.white : Colors.black87)),
-          const SizedBox(height: 16),
-          TextField(
-            controller: ctrl, maxLines: 5,
-            style: TextStyle(color: widget.isDark ? Colors.white : Colors.black87),
-            decoration: InputDecoration(
-              hintText: "What's on your mind?", hintStyle: TextStyle(color: widget.subColor),
-              filled: true, fillColor: widget.isDark ? AppColors.bgSurface : Colors.grey.shade100,
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-            ),
-          ),
-          const SizedBox(height: 16),
-          SizedBox(width: double.infinity, child: ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)), padding: const EdgeInsets.symmetric(vertical: 14)),
-            onPressed: () async {
-              final t = ctrl.text.trim();
-              if (t.isEmpty || t == widget.post.content) { Navigator.pop(ctx); return; }
-              Navigator.pop(ctx);
-              try { await api.updatePost(widget.post.id, content: t); if (mounted) setState(() => widget.post.content = t); } catch (_) {}
-            },
-            child: const Text('Save Changes', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
-          )),
-          const SizedBox(height: 20),
-        ]),
-      ),
+    return ListView.builder(
+      controller: _scrollCtrl,
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+      itemCount: msgs.length,
+      itemBuilder: (ctx, i) => _ChatBubble(msg: msgs[i]),
     );
   }
 
-  // FIX 2: Optimistic instant delete — remove from UI first, then call API
-  void _delete() {
-    showDialog(
-      context: context,
-      builder: (dialogCtx) => AlertDialog(
-        backgroundColor: widget.isDark ? AppColors.bgCard : Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Text('Delete Post?', style: TextStyle(color: widget.isDark ? Colors.white : Colors.black87)),
-        content: Text('This cannot be undone.', style: TextStyle(color: widget.isDark ? Colors.white60 : Colors.black54)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogCtx).pop(),
-            child: const Text('Cancel', style: TextStyle(color: AppColors.textMuted)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
-            onPressed: () async {
-              final id        = widget.post.id;
-              // Capture messenger BEFORE closing dialog
-              final messenger = ScaffoldMessenger.maybeOf(context);
-              // Close dialog with its own context
-              Navigator.of(dialogCtx).pop();
-
-              // FIX 2: Remove instantly from UI, show snackbar immediately
-              widget.onPostDeleted(id);
-              messenger?.showSnackBar(const SnackBar(
-                content: Text('Post deleted'),
-                backgroundColor: AppColors.success,
-                duration: Duration(seconds: 2),
-              ));
-
-              // API call in background — restore message on failure
-              try {
-                await api.deletePost(id);
-              } catch (_) {
-                messenger?.showSnackBar(const SnackBar(
-                  content: Text('Delete failed. Please try again.'),
-                  backgroundColor: AppColors.error,
-                  duration: Duration(seconds: 3),
-                ));
-              }
-            },
-            child: const Text('Delete', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _options() {
-    final p = widget.post;
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: widget.isDark ? AppColors.bgCard : Colors.white,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) => SafeArea(child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(width: 36, height: 4, margin: const EdgeInsets.only(top: 12, bottom: 8), decoration: BoxDecoration(color: Colors.grey.withOpacity(0.3), borderRadius: BorderRadius.circular(2))),
-        if (_isOwn) ...[
-          ListTile(leading: const Icon(Iconsax.edit, color: AppColors.primary), title: Text('Edit post', style: TextStyle(color: widget.isDark ? Colors.white : Colors.black87, fontWeight: FontWeight.w600)), onTap: () { Navigator.pop(ctx); _edit(); }),
-          ListTile(leading: const Icon(Iconsax.trash, color: AppColors.error), title: const Text('Delete post', style: TextStyle(color: AppColors.error, fontWeight: FontWeight.w600)), onTap: () { Navigator.pop(ctx); _delete(); }),
-          Divider(color: widget.borderColor, height: 1),
-        ],
-        ListTile(leading: Icon(Iconsax.copy, color: widget.isDark ? Colors.white70 : Colors.black54), title: Text('Copy text', style: TextStyle(color: widget.isDark ? Colors.white : Colors.black87)), onTap: () { Clipboard.setData(ClipboardData(text: p.content)); Navigator.pop(ctx); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied'), duration: Duration(seconds: 1))); }),
-        ListTile(leading: Icon(Iconsax.link, color: widget.isDark ? Colors.white70 : Colors.black54), title: Text('Copy post link', style: TextStyle(color: widget.isDark ? Colors.white : Colors.black87)), onTap: () { Clipboard.setData(ClipboardData(text: 'https://riseup.app/post/${p.id}')); Navigator.pop(ctx); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Link copied'), duration: Duration(seconds: 1))); }),
-        ListTile(leading: Icon(Iconsax.share, color: widget.isDark ? Colors.white70 : Colors.black54), title: Text('Share to…', style: TextStyle(color: widget.isDark ? Colors.white : Colors.black87)), onTap: () { Navigator.pop(ctx); widget.onShare(p); }),
-        if (!_isOwn) ListTile(leading: Icon(Iconsax.flag, color: widget.isDark ? Colors.white70 : Colors.black54), title: Text('Report post', style: TextStyle(color: widget.isDark ? Colors.white : Colors.black87)), onTap: () { Navigator.pop(ctx); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Report submitted. Thank you.'), duration: Duration(seconds: 2))); }),
-        const SizedBox(height: 20),
-      ])),
-    );
-  }
-
-  @override
-  Widget build(BuildContext ctx) {
-    final p  = widget.post;
-    final sw = MediaQuery.of(ctx).size.width;
-    final bg = _bgColor;
-    final bool isColoredPost = bg != null && (p.mediaUrl == null || p.mediaUrl!.isEmpty);
-
-    return Container(color: widget.cardColor, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-
-      Padding(padding: const EdgeInsets.fromLTRB(16, 14, 16, 0), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-
-        // ── Header ────────────────────────────────────────────────────────────
-        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          GestureDetector(onTap: () { SoundService.tap(); ctx.push('/user-profile/${p.userId}'); }, child: _Avatar(url: p.avatarUrl, fallback: p.avatar, size: 44)),
-          const SizedBox(width: 10),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              Flexible(child: GestureDetector(
-                onTap: () { SoundService.tap(); ctx.push('/user-profile/${p.userId}'); },
-                child: Text(p.name, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: widget.textColor), maxLines: 1, overflow: TextOverflow.ellipsis),
-              )),
-              if (p.verified)      ...[const SizedBox(width: 3), const Icon(Icons.verified_rounded, color: AppColors.primary, size: 14)],
-              if (p.isPremiumPost) ...[const SizedBox(width: 4), Container(padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1), decoration: BoxDecoration(color: AppColors.gold.withOpacity(0.2), borderRadius: BorderRadius.circular(4)), child: const Text('PRO', style: TextStyle(fontSize: 8, color: AppColors.gold, fontWeight: FontWeight.w700)))],
-            ]),
-            Text('${p.username} · ${p.time}', style: TextStyle(fontSize: 12, color: widget.subColor), maxLines: 1, overflow: TextOverflow.ellipsis),
-          ])),
-          const SizedBox(width: 6),
-          if (p.userId.isNotEmpty && !_isOwn)
-            GestureDetector(
-              onTap: () => widget.onFollow(p.userId),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color:  widget.isFollowing ? widget.subColor.withOpacity(0.12) : AppColors.primary.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: widget.isFollowing ? widget.subColor.withOpacity(0.3) : AppColors.primary.withOpacity(0.4)),
-                ),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  if (widget.isFollowing) ...[Icon(Icons.check_rounded, size: 11, color: widget.subColor.withOpacity(0.8)), const SizedBox(width: 3)],
-                  Text(widget.isFollowing ? 'Following' : 'Follow', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 11, color: widget.isFollowing ? widget.subColor.withOpacity(0.8) : AppColors.primary)),
-                ]),
-              ),
-            ),
-          const SizedBox(width: 4),
-          Flexible(child: Container(padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3), decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.1), borderRadius: BorderRadius.circular(20)), child: Text(p.tag, style: const TextStyle(fontSize: 10, color: AppColors.primary, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis))),
-          const SizedBox(width: 4),
-          GestureDetector(onTap: _options, child: Icon(Icons.more_horiz, color: widget.subColor, size: 20)),
-        ]),
-
-        const SizedBox(height: 12),
-
-        // ── Content ──────────────────────────────────────────────────────────
-        if (p.content.isNotEmpty) ...[
-          if (isColoredPost)
-            Container(
-              width: double.infinity, constraints: const BoxConstraints(minHeight: 110),
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(14)),
-              child: Center(child: Text(p.content, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600, height: 1.55))),
-            )
-          else ...[
-            _HTag(text: _displayContent, textColor: widget.isDark ? const Color(0xFFE8E8F0) : Colors.black87),
-            if (_isLong) ...[
-              const SizedBox(height: 4),
-              GestureDetector(onTap: () => setState(() => _expanded = !_expanded), child: Text(_expanded ? 'Read less' : 'Read more', style: const TextStyle(color: AppColors.primary, fontSize: 13, fontWeight: FontWeight.w600))),
-            ],
-          ],
-        ],
-
-        if (p.mediaUrl != null && p.mediaUrl!.isNotEmpty) ...[
-          const SizedBox(height: 10),
-          _PostMedia(url: p.mediaUrl!, mediaType: p.mediaType ?? 'image', isDark: widget.isDark, sw: sw, linkUrl: p.linkUrl, linkTitle: p.linkTitle, isPremium: widget.isPremium, onPlayVideo: (url) => _playVideo(ctx, url)),
-        ],
-
-        if (p.linkUrl != null && p.linkUrl!.isNotEmpty && (p.mediaUrl == null || p.mediaUrl!.isEmpty)) ...[
-          const SizedBox(height: 10),
-          _LinkCard(url: p.linkUrl!, title: p.linkTitle, isDark: widget.isDark, sub: widget.subColor, txt: widget.textColor),
-        ],
-
-        SizedBox(height: (p.content.isNotEmpty || p.mediaUrl != null || p.linkUrl != null) ? 14 : 4),
-
-        // ── Action row ────────────────────────────────────────────────────────
-        Row(children: [
-          _ActBtn(icon: p.isLiked ? Icons.favorite_rounded : Icons.favorite_border_rounded, label: _fmt(p.likes), color: p.isLiked ? Colors.red : widget.subColor, bgColor: p.isLiked ? Colors.red.withOpacity(0.10) : widget.subColor.withOpacity(0.07), onTap: () => widget.onLike(p)),
-          const SizedBox(width: 8),
-          _ActBtn(icon: Iconsax.message,  label: _fmt(p.comments), color: widget.subColor, bgColor: widget.subColor.withOpacity(0.07), onTap: () => widget.onComment(p)),
-          const SizedBox(width: 8),
-          _ActBtn(icon: Iconsax.send_1,   label: _fmt(p.shares),   color: widget.subColor, bgColor: widget.subColor.withOpacity(0.07), onTap: () => widget.onShare(p)),
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
-            decoration: BoxDecoration(color: widget.subColor.withOpacity(0.07), borderRadius: BorderRadius.circular(22)),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(Icons.visibility_outlined, color: widget.subColor, size: 21),
-              const SizedBox(width: 5),
-              Text(_fmt(p.viewsCount), style: TextStyle(color: widget.subColor, fontSize: 13, fontWeight: FontWeight.w600)),
-            ]),
-          ),
-          const Spacer(),
-          Material(color: Colors.transparent, child: InkWell(
-            borderRadius: BorderRadius.circular(22), onTap: () => widget.onSave(p),
-            child: Container(
-              padding: const EdgeInsets.all(9),
-              decoration: BoxDecoration(color: p.isSaved ? AppColors.primary.withOpacity(0.12) : widget.subColor.withOpacity(0.07), shape: BoxShape.circle),
-              child: Icon(p.isSaved ? Iconsax.archive_tick : Iconsax.archive_add, color: p.isSaved ? AppColors.primary : widget.subColor, size: 20),
+  // ── APEX split panel ───────────────────────────────────────────────────────
+  Widget _buildApexSplitPanel() {
+    return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      // LEFT — Thought process (40%)
+      Expanded(flex: 40, child: Container(
+        color: AppColors.bgCard,
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          _ApexStatusBar(status: _apexStatus, pulse: _apexPulse, onStop: _stopApex),
+          Expanded(child: SingleChildScrollView(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Chat history
+                ..._activeMessages.map((m) => _ChatBubble(msg: m, compact: true)),
+                // Current thought
+                if (_apexThought.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.primary.withOpacity(0.3)),
+                    ),
+                    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      AnimatedBuilder(animation: _apexPulse, builder: (_, __) =>
+                          Icon(Iconsax.cpu, size: 14,
+                              color: AppColors.primary.withOpacity(0.5 + _apexPulse.value * 0.5))),
+                      const SizedBox(width: 6),
+                      Expanded(child: Text(_apexThought,
+                          style: const TextStyle(color: AppColors.textSecondary, fontSize: 12))),
+                    ]),
+                  ),
+                ],
+              ],
             ),
           )),
         ]),
-        const SizedBox(height: 12),
-      ])),
+      )),
 
-      // ── AI buttons ───────────────────────────────────────────────────────────
-      Container(
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
-        decoration: BoxDecoration(
-          border: Border(top: BorderSide(color: widget.borderColor, width: 0.8)),
-          color: widget.isDark ? Colors.black.withOpacity(0.3) : Colors.grey.shade50,
-        ),
-        child: Row(children: [
-          Expanded(child: GestureDetector(
-            onTap: () => widget.onAskAI(p),
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 10),
-              decoration: BoxDecoration(color: AppColors.primary.withOpacity(widget.isDark ? 0.15 : 0.08), borderRadius: BorderRadius.circular(10), border: Border.all(color: AppColors.primary.withOpacity(0.25), width: 0.8)),
-              child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                const Icon(Icons.auto_awesome_rounded, color: AppColors.primary, size: 15),
-                const SizedBox(width: 6),
-                const Flexible(child: Text('Ask RiseUp AI', style: TextStyle(fontSize: 12, color: AppColors.primary, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis)),
-                if (widget.needsAd) ...[const SizedBox(width: 4), Icon(Icons.ondemand_video_rounded, size: 13, color: AppColors.primary.withOpacity(0.7))],
-              ]),
-            ),
-          )),
-          const SizedBox(width: 8),
-          Expanded(child: GestureDetector(
-            onTap: () => widget.onPrivateChat(p),
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 10),
-              decoration: BoxDecoration(color: AppColors.accent.withOpacity(widget.isDark ? 0.15 : 0.08), borderRadius: BorderRadius.circular(10), border: Border.all(color: AppColors.accent.withOpacity(0.25), width: 0.8)),
-              child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                Icon(Iconsax.lock_1, color: AppColors.accent, size: 14),
-                SizedBox(width: 6),
-                Text('Chat Privately', style: TextStyle(fontSize: 12, color: AppColors.accent, fontWeight: FontWeight.w600)),
-              ]),
-            ),
-          )),
-        ]),
-      ),
-    ]));
-  }
-}
+      // Divider
+      Container(width: 1, color: AppColors.bgSurface),
 
-// =============================================================================
-// SUPPORTING WIDGETS
-// =============================================================================
-class _Avatar extends StatelessWidget {
-  final String url, fallback;
-  final double size;
-  const _Avatar({required this.url, required this.fallback, required this.size});
-
-  @override
-  Widget build(BuildContext ctx) => Container(
-    width: size, height: size,
-    decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.12), shape: BoxShape.circle),
-    child: ClipOval(child: url.isNotEmpty
-        ? CachedNetworkImage(imageUrl: url, fit: BoxFit.cover, width: size, height: size, placeholder: (_, __) => _fb(), errorWidget: (_, __, ___) => _fb())
-        : _fb()),
-  );
-
-  Widget _fb() => Container(color: AppColors.primary.withOpacity(0.15), child: Center(child: Text(fallback, style: const TextStyle(fontSize: 20))));
-}
-
-class _HTag extends StatefulWidget {
-  final String text; final Color textColor;
-  const _HTag({required this.text, required this.textColor});
-  @override State<_HTag> createState() => _HTagState();
-}
-
-class _HTagState extends State<_HTag> {
-  final List<TapGestureRecognizer> _r = [];
-  @override void dispose() { for (final r in _r) r.dispose(); super.dispose(); }
-
-  List<InlineSpan> _spans() {
-    for (final r in _r) r.dispose(); _r.clear();
-    final spans = <InlineSpan>[];
-    final re = RegExp(r'(#\w+|@\w+)'); int last = 0;
-    for (final m in re.allMatches(widget.text)) {
-      if (m.start > last) spans.add(TextSpan(text: widget.text.substring(last, m.start), style: TextStyle(color: widget.textColor, fontSize: 14.5, height: 1.6)));
-      final token = m.group(0)!; final isHash = token.startsWith('#');
-      final rec = TapGestureRecognizer()..onTap = () { HapticFeedback.lightImpact(); context.push('/explore?q=${Uri.encodeComponent(isHash ? token : token.substring(1))}'); };
-      _r.add(rec);
-      spans.add(TextSpan(text: token, style: TextStyle(color: isHash ? AppColors.primary : AppColors.accent, fontSize: 14.5, height: 1.6, fontWeight: FontWeight.w600), recognizer: rec));
-      last = m.end;
-    }
-    if (last < widget.text.length) spans.add(TextSpan(text: widget.text.substring(last), style: TextStyle(color: widget.textColor, fontSize: 14.5, height: 1.6)));
-    return spans;
+      // RIGHT — Browser screenshot (60%)
+      Expanded(flex: 60, child: Container(
+        color: AppColors.bgDark,
+        child: _apexScreenshot != null
+            ? Image.memory(_apexScreenshot!, fit: BoxFit.contain)
+            : Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                AnimatedBuilder(animation: _apexPulse, builder: (_, __) =>
+                    Icon(Iconsax.monitor, size: 48,
+                        color: AppColors.primary.withOpacity(0.3 + _apexPulse.value * 0.4))),
+                const SizedBox(height: 12),
+                const Text('APEX Browser', style: TextStyle(color: AppColors.textMuted)),
+                const SizedBox(height: 4),
+                Text(_apexStatus == ApexStatus.thinking ? 'Thinking...' : 'Starting browser...',
+                    style: const TextStyle(color: AppColors.textMuted, fontSize: 12)),
+              ])),
+      )),
+    ]);
   }
 
-  @override Widget build(BuildContext ctx) => Text.rich(TextSpan(children: _spans()));
-}
-
-class _LinkCard extends StatelessWidget {
-  final String url; final String? title; final bool isDark; final Color sub, txt;
-  const _LinkCard({required this.url, this.title, required this.isDark, required this.sub, required this.txt});
-
-  String get _domain { try { return Uri.parse(url).host.replaceFirst('www.', ''); } catch (_) { return url; } }
-
-  Future<void> _open(BuildContext ctx) async {
-    final uri = Uri.parse(url.startsWith('http') ? url : 'https://$url');
-    if (kIsWeb) { try { await launchUrl(uri, mode: LaunchMode.externalApplication); } catch (_) {} return; }
-    try { if (await canLaunchUrl(uri)) { await launchUrl(uri, mode: LaunchMode.inAppWebView); return; } } catch (_) {}
-    try { await launchUrl(uri, mode: LaunchMode.externalApplication); } catch (_) {}
-  }
-
-  @override
-  Widget build(BuildContext ctx) => GestureDetector(
-    onTap: () => _open(ctx),
-    child: Container(
-      height: 68, padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(color: isDark ? AppColors.bgSurface : Colors.grey.shade100, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppColors.primary.withOpacity(0.18))),
-      child: Row(children: [
-        Container(width: 40, height: 40, decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.1), borderRadius: BorderRadius.circular(10)), child: const Icon(Icons.language_rounded, color: AppColors.primary, size: 20)),
-        const SizedBox(width: 10),
-        Expanded(child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          if (title != null && title!.isNotEmpty) Text(title!, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: txt)),
-          Text(_domain, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, color: sub)),
-        ])),
-        const SizedBox(width: 6),
-        Icon(Icons.open_in_new_rounded, color: sub, size: 16),
-      ]),
-    ),
-  );
-}
-
-class _ActBtn extends StatelessWidget {
-  final IconData icon; final String label; final Color color, bgColor; final VoidCallback onTap;
-  const _ActBtn({required this.icon, required this.label, required this.color, required this.bgColor, required this.onTap});
-
-  @override
-  Widget build(BuildContext ctx) => Material(
-    color: Colors.transparent,
-    child: InkWell(
-      borderRadius: BorderRadius.circular(22),
-      onTap: () { HapticFeedback.lightImpact(); onTap(); },
-      splashColor: color.withOpacity(0.15), highlightColor: color.withOpacity(0.08),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
-        decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(22)),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon, color: color, size: 21),
-          const SizedBox(width: 5),
-          Text(label, style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w600)),
-        ]),
-      ),
-    ),
-  );
-}
-
-class _PostMedia extends StatelessWidget {
-  final String url, mediaType; final bool isDark, isPremium; final double sw;
-  final String? linkUrl, linkTitle;
-  final Future<void> Function(String url) onPlayVideo;
-
-  const _PostMedia({required this.url, required this.mediaType, required this.isDark, required this.sw, required this.onPlayVideo, this.linkUrl, this.linkTitle, this.isPremium = false});
-
-  @override
-  Widget build(BuildContext ctx) {
-    final hasLink = linkUrl != null && linkUrl!.isNotEmpty;
-    Widget media = mediaType == 'video'
-        ? (kIsWeb ? _WebVideoPlaceholder(url: url, isDark: isDark) : _VidThumb(url: url, isDark: isDark, onPlay: () => onPlayVideo(url)))
-        : _ImgThumb(url: url, isDark: isDark);
-
-    if (!hasLink) return ClipRRect(borderRadius: BorderRadius.circular(12), child: media);
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(12),
-      child: Stack(children: [
-        mediaType == 'video'
-            ? (kIsWeb ? _WebVideoPlaceholder(url: url, isDark: isDark) : _VidThumb(url: url, isDark: isDark, onPlay: () => onPlayVideo(url)))
-            : _ImgThumb(url: url, isDark: isDark),
-        Positioned(bottom: 0, left: 0, right: 0, child: _MediaLinkOverlay(url: linkUrl!, title: linkTitle)),
-      ]),
-    );
-  }
-}
-
-class _MediaLinkOverlay extends StatelessWidget {
-  final String url; final String? title;
-  const _MediaLinkOverlay({required this.url, this.title});
-
-  String get _domain { try { return Uri.parse(url).host.replaceFirst('www.', ''); } catch (_) { return url; } }
-
-  Future<void> _open(BuildContext ctx) async {
-    final uri = Uri.parse(url.startsWith('http') ? url : 'https://$url');
-    if (kIsWeb) { try { await launchUrl(uri, mode: LaunchMode.externalApplication); } catch (_) {} return; }
-    try { if (await canLaunchUrl(uri)) { await launchUrl(uri, mode: LaunchMode.inAppWebView); return; } } catch (_) {}
-    try { await launchUrl(uri, mode: LaunchMode.externalApplication); } catch (_) {}
-  }
-
-  @override
-  Widget build(BuildContext ctx) => GestureDetector(
-    onTap: () => _open(ctx),
-    child: Container(
+  // ── Input bar ──────────────────────────────────────────────────────────────
+  Widget _buildInputBar() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
       decoration: BoxDecoration(
-        gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black.withOpacity(0.82)]),
-        borderRadius: const BorderRadius.only(bottomLeft: Radius.circular(12), bottomRight: Radius.circular(12)),
+        color: AppColors.bgCard,
+        border: Border(top: BorderSide(color: AppColors.bgSurface, width: 0.8)),
       ),
-      padding: const EdgeInsets.fromLTRB(12, 18, 12, 10),
       child: Row(children: [
-        Container(width: 28, height: 28, decoration: BoxDecoration(color: Colors.white.withOpacity(0.18), borderRadius: BorderRadius.circular(7)), child: const Icon(Icons.language_rounded, color: Colors.white, size: 16)),
-        const SizedBox(width: 8),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-          if (title != null && title!.isNotEmpty) Text(title!, style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700, height: 1.3), maxLines: 1, overflow: TextOverflow.ellipsis),
-          Text(_domain, style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 10), maxLines: 1, overflow: TextOverflow.ellipsis),
-        ])),
-        const SizedBox(width: 6),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.white.withOpacity(0.4))),
-          child: const Row(mainAxisSize: MainAxisSize.min, children: [
-            Text('Open', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w700)),
-            SizedBox(width: 3),
-            Icon(Icons.open_in_new_rounded, color: Colors.white, size: 10),
-          ]),
-        ),
-      ]),
-    ),
-  );
-}
-
-class _WebVideoPlaceholder extends StatelessWidget {
-  final String url; final bool isDark;
-  const _WebVideoPlaceholder({required this.url, required this.isDark});
-
-  @override
-  Widget build(BuildContext ctx) => GestureDetector(
-    onTap: () async { try { await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication); } catch (_) {} },
-    child: AspectRatio(aspectRatio: 16 / 9, child: Container(
-      color: isDark ? Colors.grey.shade900 : Colors.grey.shade200,
-      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Container(width: 64, height: 64, decoration: BoxDecoration(color: Colors.black.withOpacity(0.6), shape: BoxShape.circle, border: Border.all(color: Colors.white.withOpacity(0.6), width: 2)), child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 40)),
-        const SizedBox(height: 10),
-        Text('Tap to open video', style: TextStyle(color: isDark ? Colors.white60 : Colors.black45, fontSize: 12)),
-      ]),
-    )),
-  );
-}
-
-class _ImgThumb extends StatelessWidget {
-  final String url; final bool isDark;
-  const _ImgThumb({required this.url, required this.isDark});
-
-  @override
-  Widget build(BuildContext ctx) => GestureDetector(
-    onTap: () => Navigator.push(ctx, MaterialPageRoute(fullscreenDialog: true, builder: (_) => _ImgView(url: url))),
-    child: AspectRatio(aspectRatio: 4 / 3, child: Hero(tag: 'img_$url', child: CachedNetworkImage(
-      imageUrl: url, fit: BoxFit.cover, width: double.infinity,
-      placeholder: (_, __) => Container(color: isDark ? Colors.grey.shade900 : Colors.grey.shade200),
-      errorWidget: (_, __, ___) => Container(color: isDark ? Colors.grey.shade900 : Colors.grey.shade200, child: const Center(child: Icon(Icons.broken_image_rounded, color: Colors.white54, size: 36))),
-    ))),
-  );
-}
-
-class _VidThumb extends StatefulWidget {
-  final String url; final bool isDark; final VoidCallback onPlay;
-  const _VidThumb({required this.url, required this.isDark, required this.onPlay});
-  @override State<_VidThumb> createState() => _VidThumbState();
-}
-
-class _VidThumbState extends State<_VidThumb> {
-  VideoPlayerController? _c;
-  bool _ready = false, _err = false;
-
-  @override void initState() { super.initState(); if (!kIsWeb) _init(); }
-
-  Future<void> _init() async {
-    final preloaded = videoPreloadManager.claim(widget.url);
-    if (preloaded != null) {
-      if (!mounted) { preloaded.dispose(); return; }
-      setState(() { _c = preloaded; _ready = true; });
-      return;
-    }
-    try {
-      final c = VideoPlayerController.networkUrl(Uri.parse(widget.url));
-      await c.initialize(); if (!mounted) { c.dispose(); return; }
-      await c.setVolume(0); await c.play();
-      await Future.delayed(const Duration(milliseconds: 500));
-      if (!mounted) { c.dispose(); return; }
-      await c.pause(); await c.seekTo(Duration.zero);
-      if (!mounted) { c.dispose(); return; }
-      setState(() { _c = c; _ready = true; });
-    } catch (_) { if (mounted) setState(() => _err = true); }
-  }
-
-  @override void dispose() { _c?.dispose(); super.dispose(); }
-
-  @override
-  Widget build(BuildContext ctx) {
-    final ratio = (_ready && _c != null && _c!.value.aspectRatio > 0)
-        ? _c!.value.aspectRatio.clamp(0.5, 2.0) : 16 / 9;
-    return GestureDetector(
-      onTap: widget.onPlay,
-      child: AspectRatio(aspectRatio: ratio, child: Stack(children: [
-        if (_err)
-          Positioned.fill(child: Container(color: widget.isDark ? Colors.grey.shade900 : Colors.grey.shade200, child: const Center(child: Icon(Icons.broken_image_rounded, color: Colors.white54, size: 36))))
-        else if (_ready && _c != null)
-          Positioned.fill(child: VideoPlayer(_c!))
-        else
-          Positioned.fill(child: Container(color: widget.isDark ? Colors.grey.shade900 : Colors.grey.shade200, child: const Center(child: SizedBox(width: 28, height: 28, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white38))))),
-        Positioned.fill(child: Center(child: Container(width: 56, height: 56, decoration: BoxDecoration(color: Colors.black.withOpacity(0.6), shape: BoxShape.circle, border: Border.all(color: Colors.white.withOpacity(0.6), width: 2)), child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 36)))),
-        Positioned(bottom: 10, right: 10, child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), borderRadius: BorderRadius.circular(8)),
-          child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.play_circle_outline_rounded, color: Colors.white, size: 12), SizedBox(width: 4), Text('Tap to play', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w500))]),
-        )),
-      ])),
-    );
-  }
-}
-
-class _VidFull extends StatefulWidget {
-  final String url;
-  const _VidFull({super.key, required this.url});
-  @override State<_VidFull> createState() => _VidFullState();
-}
-
-class _VidFullState extends State<_VidFull> {
-  VideoPlayerController? _vp;
-  ChewieController?      _ch;
-  bool _ready = false, _err = false;
-
-  @override void initState() { super.initState(); _init(); }
-
-  Future<void> _init() async {
-    if (kIsWeb) {
-      try { await launchUrl(Uri.parse(widget.url), mode: LaunchMode.externalApplication); } catch (_) {}
-      if (mounted) Navigator.pop(context);
-      return;
-    }
-    try {
-      final vp = VideoPlayerController.networkUrl(Uri.parse(widget.url));
-      await vp.initialize();
-      final ch = ChewieController(
-        videoPlayerController: vp, autoPlay: true, looping: false,
-        allowFullScreen: true, allowMuting: true, showControls: true,
-        aspectRatio: vp.value.aspectRatio,
-        materialProgressColors: ChewieProgressColors(
-          playedColor: AppColors.primary, handleColor: AppColors.primary,
-          backgroundColor: Colors.grey.shade800, bufferedColor: AppColors.primary.withOpacity(0.3),
-        ),
-        placeholder: const Center(child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2)),
-      );
-      if (!mounted) { vp.dispose(); ch.dispose(); return; }
-      setState(() { _vp = vp; _ch = ch; _ready = true; });
-    } catch (_) { if (mounted) setState(() => _err = true); }
-  }
-
-  @override void dispose() { _ch?.dispose(); _vp?.dispose(); super.dispose(); }
-
-  @override
-  Widget build(BuildContext ctx) => Scaffold(
-    backgroundColor: Colors.black,
-    appBar: AppBar(backgroundColor: Colors.black, elevation: 0, iconTheme: const IconThemeData(color: Colors.white), title: const Text('Video', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600))),
-    body: Center(child: _err
-        ? const Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.error_outline_rounded, color: Colors.white54, size: 64), SizedBox(height: 16), Text('Could not load video', style: TextStyle(color: Colors.white70, fontSize: 16))])
-        : _ready && _ch != null
-            ? Chewie(controller: _ch!)
-            : const CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2)),
-  );
-}
-
-class _ImgView extends StatelessWidget {
-  final String url;
-  const _ImgView({super.key, required this.url});
-
-  @override
-  Widget build(BuildContext ctx) => Scaffold(
-    backgroundColor: Colors.black,
-    extendBodyBehindAppBar: true,
-    appBar: AppBar(
-      backgroundColor: Colors.black.withOpacity(0.4), elevation: 0,
-      iconTheme: const IconThemeData(color: Colors.white),
-      actions: [
-        IconButton(icon: const Icon(Icons.copy_rounded, color: Colors.white), onPressed: () => Clipboard.setData(ClipboardData(text: url))),
-        IconButton(icon: const Icon(Icons.close_rounded, color: Colors.white), onPressed: () => Navigator.pop(ctx)),
-      ],
-    ),
-    body: PhotoView(
-      imageProvider: CachedNetworkImageProvider(url),
-      heroAttributes: PhotoViewHeroAttributes(tag: 'img_$url'),
-      minScale: PhotoViewComputedScale.contained,
-      maxScale: PhotoViewComputedScale.covered * 4,
-      initialScale: PhotoViewComputedScale.contained,
-      backgroundDecoration: const BoxDecoration(color: Colors.black),
-      loadingBuilder: (_, __) => const Center(child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2)),
-      errorBuilder: (_, __, ___) => const Center(child: Icon(Icons.broken_image_rounded, color: Colors.white54, size: 64)),
-    ),
-  );
-}
-
-// =============================================================================
-// STORY WIDGETS
-// =============================================================================
-class _StoryAdd extends StatelessWidget {
-  final bool isDark; final VoidCallback onTap;
-  const _StoryAdd({required this.isDark, required this.onTap});
-
-  @override
-  Widget build(BuildContext ctx) => Padding(
-    padding: const EdgeInsets.only(right: 14),
-    child: GestureDetector(onTap: onTap, child: Column(children: [
-      Container(width: 58, height: 58, decoration: BoxDecoration(shape: BoxShape.circle, color: isDark ? AppColors.bgSurface : Colors.grey.shade200, border: Border.all(color: AppColors.primary.withOpacity(0.4), width: 1.5)), child: const Center(child: Icon(Icons.add, color: AppColors.primary, size: 24))),
-      const SizedBox(height: 5),
-      Text('You', style: TextStyle(fontSize: 11, color: isDark ? Colors.white.withOpacity(0.6) : Colors.black54, fontWeight: FontWeight.w600)),
-    ])),
-  );
-}
-
-class _StoryItem extends StatelessWidget {
-  final Map<String, dynamic> user; final bool isDark; final VoidCallback onTap;
-  const _StoryItem({required this.user, required this.isDark, required this.onTap});
-
-  @override
-  Widget build(BuildContext ctx) {
-    final prof   = (user['profile'] as Map?)?.cast<String, dynamic>() ?? {};
-    final name   = prof['full_name']?.toString() ?? 'User';
-    final av     = prof['avatar_url']?.toString() ?? '';
-    final on     = prof['is_online']  == true;
-    final unseen = user['has_unseen'] == true;
-    return Padding(
-      padding: const EdgeInsets.only(right: 14),
-      child: GestureDetector(onTap: onTap, child: Column(children: [
-        Stack(children: [
-          Container(
-            width: 58, height: 58,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: unseen ? const LinearGradient(colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)], begin: Alignment.topLeft, end: Alignment.bottomRight) : null,
-              color: unseen ? null : (isDark ? AppColors.bgSurface : Colors.grey.shade300),
-            ),
-            child: Padding(padding: const EdgeInsets.all(2.5), child: Container(
-              decoration: BoxDecoration(shape: BoxShape.circle, color: isDark ? Colors.black : Colors.white),
-              child: ClipOval(child: av.isNotEmpty ? CachedNetworkImage(imageUrl: av, fit: BoxFit.cover, width: 53, height: 53, errorWidget: (_, __, ___) => _ini(name)) : _ini(name)),
-            )),
+        Expanded(child: Container(
+          constraints: const BoxConstraints(minHeight: 40, maxHeight: 120),
+          decoration: BoxDecoration(
+            color: AppColors.bgSurface,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: AppColors.bgSurface),
           ),
-          if (on) Positioned(bottom: 1, right: 1, child: Container(width: 13, height: 13, decoration: BoxDecoration(color: AppColors.success, shape: BoxShape.circle, border: Border.all(color: isDark ? Colors.black : Colors.white, width: 2)))),
+          child: TextField(
+            controller: _inputCtrl,
+            focusNode: _inputFocus,
+            maxLines: null,
+            style: const TextStyle(color: Colors.white, fontSize: 15),
+            decoration: const InputDecoration(
+              hintText: 'Message RiseUp...',
+              hintStyle: TextStyle(color: AppColors.textMuted),
+              border: InputBorder.none,
+              contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            ),
+            onSubmitted: (_) => _sendMessage(),
+            textInputAction: TextInputAction.send,
+          ),
+        )),
+        const SizedBox(width: 8),
+        GestureDetector(
+          onTap: _isSending ? null : _sendMessage,
+          child: Container(
+            width: 40, height: 40,
+            decoration: BoxDecoration(
+              gradient: _isSending ? null : const LinearGradient(
+                colors: [Color(0xFFFF6B00), AppColors.primary]),
+              color: _isSending ? AppColors.bgSurface : null,
+              shape: BoxShape.circle,
+            ),
+            child: _isSending
+                ? const Center(child: SizedBox(width: 18, height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)))
+                : const Icon(Iconsax.send_1, color: Colors.white, size: 18),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  // ── Ad gate ────────────────────────────────────────────────────────────────
+  Widget _buildAdGate() {
+    final needed   = 2 - _adWatchCount;
+    final schedule = [40, 30, 20];
+    final idx      = _tokens.redemptionsLeft >= 0
+        ? (3 - _tokens.redemptionsLeft).clamp(0, 2)
+        : 2;
+    final reward   = idx < schedule.length ? schedule[idx] : 0;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.bgCard,
+        border: Border(top: BorderSide(color: AppColors.bgSurface, width: 0.8)),
+      ),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Row(children: [
+          const Icon(Iconsax.flash, color: AppColors.gold, size: 20),
+          const SizedBox(width: 8),
+          const Expanded(child: Text('Tokens used up', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600))),
+          TextButton(
+            onPressed: () { setState(() => _showAdGate = false); context.push('/premium'); },
+            child: const Text('Go Premium', style: TextStyle(color: AppColors.primary)),
+          ),
         ]),
-        const SizedBox(height: 5),
-        SizedBox(width: 62, child: Text(name.split(' ').first, textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, color: isDark ? Colors.white.withOpacity(0.6) : Colors.black54))),
+        const SizedBox(height: 8),
+        Text('Watch $_adWatchCount/2 ads to earn +$reward tokens',
+            style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)),
+        const SizedBox(height: 12),
+
+        // Progress dots
+        Row(mainAxisAlignment: MainAxisAlignment.center, children: List.generate(2, (i) =>
+          Container(margin: const EdgeInsets.symmetric(horizontal: 4),
+            width: 32, height: 6,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(3),
+              color: i < _adWatchCount ? AppColors.success : AppColors.bgSurface,
+            )))),
+        const SizedBox(height: 12),
+
+        Row(children: [
+          Expanded(child: OutlinedButton(
+            onPressed: () => setState(() => _showAdGate = false),
+            style: OutlinedButton.styleFrom(
+              side: const BorderSide(color: AppColors.bgSurface),
+              foregroundColor: AppColors.textSecondary,
+            ),
+            child: const Text('Later'),
+          )),
+          const SizedBox(width: 12),
+          Expanded(flex: 2, child: ElevatedButton.icon(
+            icon: const Icon(Iconsax.play, size: 16),
+            label: Text('Watch ad ($needed left)'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            onPressed: _watchAd,
+          )),
+        ]),
+      ]),
+    );
+  }
+
+  // ── Sidebar ────────────────────────────────────────────────────────────────
+  Widget _buildSidebar(BuildContext context) {
+    final stageInfo = _stageInfo(_userStage);
+    return Drawer(
+      backgroundColor: AppColors.bgCard,
+      child: SafeArea(child: Column(children: [
+        // Profile header
+        GestureDetector(
+          onTap: () { _Sound.tap(); context.push('/profile'); Navigator.pop(context); },
+          child: Container(
+            padding: const EdgeInsets.all(16),
+            child: Row(children: [
+              CircleAvatar(
+                radius: 28,
+                backgroundColor: AppColors.primary,
+                backgroundImage: _userAvatar != null ? CachedNetworkImageProvider(_userAvatar!) : null,
+                child: _userAvatar == null ? Text((_userName ?? 'R')[0].toUpperCase(),
+                    style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)) : null,
+              ),
+              const SizedBox(width: 12),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(_userName ?? 'Hustler', style: const TextStyle(color: Colors.white,
+                    fontSize: 16, fontWeight: FontWeight.w700)),
+                const SizedBox(height: 2),
+                Row(children: [
+                  Text(stageInfo['emoji']!, style: const TextStyle(fontSize: 12)),
+                  const SizedBox(width: 4),
+                  Text(stageInfo['label']!, style: TextStyle(color: stageInfo['color']! as Color, fontSize: 12)),
+                ]),
+              ])),
+              const Icon(Iconsax.arrow_right_2, color: AppColors.textMuted, size: 16),
+            ]),
+          ),
+        ),
+
+        Divider(color: AppColors.bgSurface, height: 1),
+        const SizedBox(height: 8),
+
+        // New mission button
+        Padding(padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: ElevatedButton.icon(
+            icon: const Icon(Iconsax.add, size: 18),
+            label: const Text('New Mission'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              minimumSize: const Size(double.infinity, 44),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            onPressed: () { Navigator.pop(context); _newMission(); },
+          ),
+        ),
+        const SizedBox(height: 12),
+
+        // Missions list
+        const Padding(padding: EdgeInsets.symmetric(horizontal: 16),
+          child: Align(alignment: Alignment.centerLeft,
+            child: Text('MISSIONS', style: TextStyle(color: AppColors.textMuted,
+                fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1.2)))),
+        const SizedBox(height: 6),
+        Expanded(child: ListView.builder(
+          itemCount: _missions.length,
+          itemBuilder: (ctx, i) {
+            final m = _missions[i];
+            final isActive = m.id == _activeMissionId;
+            return ListTile(
+              dense: true,
+              leading: Text(m.emoji, style: const TextStyle(fontSize: 20)),
+              title: Text(m.title, style: TextStyle(
+                  color: isActive ? Colors.white : AppColors.textSecondary,
+                  fontWeight: isActive ? FontWeight.w600 : FontWeight.w400,
+                  fontSize: 14),
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+              selected: isActive,
+              selectedTileColor: AppColors.primary.withOpacity(0.1),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              onTap: () { _Sound.tap(); Navigator.pop(context); _selectMission(m.id); },
+            );
+          },
+        )),
+
+        Divider(color: AppColors.bgSurface, height: 1),
+
+        // Bottom nav items
+        _SidebarNavItem(icon: Iconsax.chart_2,  label: 'Income',     onTap: () { Navigator.pop(context); context.push('/earnings'); }),
+        _SidebarNavItem(icon: Iconsax.target,   label: 'Goals',      onTap: () { Navigator.pop(context); context.push('/goals'); }),
+        _SidebarNavItem(icon: Iconsax.book,     label: 'Skills',     onTap: () { Navigator.pop(context); context.push('/skills'); }),
+        _SidebarNavItem(icon: Iconsax.crown_1,  label: 'Premium',    onTap: () { Navigator.pop(context); context.push('/premium'); },
+            badge: _tokens.isPremium ? null : 'Upgrade'),
+        _SidebarNavItem(icon: Iconsax.setting_2,label: 'Settings',   onTap: () { Navigator.pop(context); context.push('/settings'); }),
+        const SizedBox(height: 8),
       ])),
     );
   }
 
-  Widget _ini(String n) => Container(color: AppColors.primary.withOpacity(0.15), child: Center(child: Text(n.isNotEmpty ? n[0].toUpperCase() : '?', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: AppColors.primary))));
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  static Map<String, dynamic> _stageInfo(String stage) {
+    const s = <String, Map<String, dynamic>>{
+      'survival': {'emoji': '🆘', 'label': 'Survival',   'color': Color(0xFFE17055)},
+      'earning':  {'emoji': '💪', 'label': 'Earning',    'color': Color(0xFF0984E3)},
+      'growing':  {'emoji': '🚀', 'label': 'Growing',    'color': Color(0xFF00B894)},
+      'wealth':   {'emoji': '💎', 'label': 'Wealth',     'color': Color(0xFF6C5CE7)},
+    };
+    return s[stage] ?? s['survival']!;
+  }
+
+  static String _uuid() =>
+      DateTime.now().microsecondsSinceEpoch.toRadixString(36) +
+      Random().nextInt(9999).toString();
 }
 
-// =============================================================================
-// FIX 4: SPONSORED STORY ITEM — injected in stories bar every 4 user stories
-// =============================================================================
-class _SponsoredStoryItem extends StatelessWidget {
-  final bool isDark;
-  final VoidCallback onTap;
-  const _SponsoredStoryItem({required this.isDark, required this.onTap});
+// ─────────────────────────────────────────────────────────────────────────────
+// WIDGETS
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _TokenBadge extends StatelessWidget {
+  final TokenState tokens;
+  final AnimationController pulse;
+  const _TokenBadge({required this.tokens, required this.pulse});
 
   @override
-  Widget build(BuildContext ctx) => Padding(
-    padding: const EdgeInsets.only(right: 14),
-    child: GestureDetector(
+  Widget build(BuildContext context) {
+    final pct   = tokens.dailyLimit > 0 ? tokens.remaining / tokens.dailyLimit : 1.0;
+    final color = pct > 0.5 ? AppColors.success : pct > 0.2 ? AppColors.warning : AppColors.error;
+
+    return AnimatedBuilder(animation: pulse, builder: (_, __) => Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.15 + pulse.value * 0.05),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(Iconsax.flash_1, color: color, size: 12),
+        const SizedBox(width: 4),
+        Text('${tokens.remaining}', style: TextStyle(color: color,
+            fontSize: 12, fontWeight: FontWeight.w700)),
+      ]),
+    ));
+  }
+}
+
+class _MissionCircle extends StatelessWidget {
+  final Mission mission;
+  final bool    isActive;
+  final VoidCallback onTap;
+  const _MissionCircle({required this.mission, required this.isActive, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
       onTap: onTap,
-      child: Column(children: [
-        // Gradient ring to distinguish from regular stories
+      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
         Container(
-          width: 58, height: 58,
+          width: 52, height: 52,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            gradient: const LinearGradient(
-              colors: [Color(0xFFFF6B00), Color(0xFFFFD700)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
+            gradient: isActive ? const LinearGradient(
+                colors: [Color(0xFFFF6B00), AppColors.primary]) : null,
+            color: isActive ? null : AppColors.bgSurface,
           ),
-          child: Padding(padding: const EdgeInsets.all(2.5), child: Container(
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: isDark ? Colors.black : Colors.white,
-            ),
-            child: Center(child: Container(
-              width: 36, height: 36,
-              decoration: const BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: LinearGradient(
-                  colors: [Color(0xFF6C5CE7), Color(0xFF0984E3)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-              ),
-              child: const Center(child: Text('⭐', style: TextStyle(fontSize: 18))),
-            )),
-          )),
+          child: Center(child: Text(mission.emoji, style: const TextStyle(fontSize: 22))),
         ),
-        const SizedBox(height: 5),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-          decoration: BoxDecoration(
-            color: const Color(0xFFFF6B00).withOpacity(0.15),
-            borderRadius: BorderRadius.circular(4),
-          ),
-          child: const Text('Sponsored', style: TextStyle(fontSize: 9, color: Color(0xFFFF6B00), fontWeight: FontWeight.w700)),
-        ),
-      ]),
-    ),
-  );
-}
-
-// =============================================================================
-// FIX 4: SPONSORED STATUS SHEET — 2 ad slides in story format
-// =============================================================================
-class _SponsoredStatusSheet extends StatefulWidget {
-  const _SponsoredStatusSheet();
-  @override State<_SponsoredStatusSheet> createState() => _SponsoredStatusSheetState();
-}
-
-class _SponsoredStatusSheetState extends State<_SponsoredStatusSheet> {
-  int _idx = 0;
-
-  void _next() {
-    if (_idx < _kSponsoredSlides.length - 1) {
-      setState(() => _idx++);
-    } else {
-      Navigator.pop(context);
-    }
-  }
-
-  void _prev() {
-    if (_idx > 0) setState(() => _idx--);
-  }
-
-  @override
-  Widget build(BuildContext ctx) {
-    final sz   = MediaQuery.of(ctx).size;
-    final h    = sz.height * 0.92;
-    final sw   = sz.width;
-    final slide = _kSponsoredSlides[_idx];
-
-    return Container(
-      height: h,
-      decoration: BoxDecoration(
-        color: slide.bgColor,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      child: Stack(children: [
-
-        // Gradient background pattern
-        Positioned.fill(child: ClipRRect(
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-          child: Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  slide.bgColor,
-                  slide.bgColor.withOpacity(0.7),
-                  Colors.black.withOpacity(0.3),
-                ],
-              ),
-            ),
-          ),
-        )),
-
-        // Progress bar
-        Positioned(
-          top: 12, left: 12, right: 12,
-          child: Row(children: List.generate(_kSponsoredSlides.length, (i) => Expanded(child: Container(
-            height: 3, margin: const EdgeInsets.symmetric(horizontal: 2),
-            decoration: BoxDecoration(
-              color: i <= _idx ? Colors.white : Colors.white.withOpacity(0.3),
-              borderRadius: BorderRadius.circular(2),
-            ),
-          )))),
-        ),
-
-        // Header
-        Positioned(
-          top: 24, left: 16, right: 16,
-          child: Row(children: [
-            Container(
-              width: 36, height: 36,
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.2),
-                shape: BoxShape.circle,
-              ),
-              child: Center(child: Text(slide.emoji, style: const TextStyle(fontSize: 18))),
-            ),
-            const SizedBox(width: 8),
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('RiseUp', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13)),
-              Row(children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.25),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: const Text('Sponsored', style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.w700)),
-                ),
-              ]),
-            ])),
-            IconButton(
-              icon: const Icon(Icons.close_rounded, color: Colors.white),
-              onPressed: () => Navigator.pop(ctx),
-            ),
-          ]),
-        ),
-
-        // Main content — centered
-        Positioned(
-          top: h * 0.2, left: 24, right: 24, bottom: 160,
-          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-            // Large emoji
-            Text(slide.emoji, style: const TextStyle(fontSize: 64)),
-            const SizedBox(height: 20),
-            // Headline
-            Text(
-              slide.headline,
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w900, height: 1.25),
-            ),
-            const SizedBox(height: 14),
-            // Body
-            Text(
-              slide.body,
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white.withOpacity(0.88), fontSize: 15, height: 1.55),
-            ),
-          ]),
-        ),
-
-        // Navigation zones
-        Positioned(top: 80, bottom: 140, left: 0, width: sw * 0.3,
-          child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: _prev, child: const ColoredBox(color: Colors.transparent))),
-        Positioned(top: 80, bottom: 140, right: 0, width: sw * 0.3,
-          child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: _next, child: const ColoredBox(color: Colors.transparent))),
-
-        // Bottom CTA
-        Positioned(
-          bottom: 0, left: 0, right: 0,
-          child: Container(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 40),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.bottomCenter,
-                end: Alignment.topCenter,
-                colors: [Colors.black.withOpacity(0.65), Colors.transparent],
-              ),
-            ),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              // CTA Button
-              GestureDetector(
-                onTap: () {
-                  Navigator.pop(ctx);
-                  ctx.push(slide.ctaRoute);
-                },
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Text(
-                    slide.cta,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: slide.bgColor,
-                      fontWeight: FontWeight.w800,
-                      fontSize: 15,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              // Swipe hint or skip
-              GestureDetector(
-                onTap: _next,
-                child: Text(
-                  _idx < _kSponsoredSlides.length - 1 ? 'Next →' : 'Close',
-                  style: TextStyle(color: Colors.white.withOpacity(0.65), fontSize: 13, fontWeight: FontWeight.w500),
-                ),
-              ),
-            ]),
-          ),
-        ),
-
-        // Dot indicators at mid-bottom
-        Positioned(
-          bottom: 110, left: 0, right: 0,
-          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: List.generate(_kSponsoredSlides.length, (i) => Container(
-            width: i == _idx ? 18 : 6,
-            height: 6,
-            margin: const EdgeInsets.symmetric(horizontal: 3),
-            decoration: BoxDecoration(
-              color: i == _idx ? Colors.white : Colors.white.withOpacity(0.4),
-              borderRadius: BorderRadius.circular(3),
-            ),
-          ))),
-        ),
+        const SizedBox(height: 4),
+        SizedBox(width: 56, child: Text(mission.title,
+            textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: isActive ? Colors.white : AppColors.textMuted, fontSize: 10))),
       ]),
     );
   }
 }
 
-// =============================================================================
-// STATUS VIEWER — FIX 3: accepts reactedStatuses, persists across open/close
-// =============================================================================
-class _StatusViewSheet extends StatefulWidget {
-  final Map<String, dynamic> user;
-  // FIX 3: Initial reactions loaded from persistent parent state
-  final Map<String, bool> reactedStatuses;
-  final Future<void> Function(String statusId, String reaction) onReact;
-
-  const _StatusViewSheet({
-    required this.user,
-    required this.reactedStatuses,
-    required this.onReact,
-  });
-
-  @override State<_StatusViewSheet> createState() => _StatusViewSheetState();
+class _NewMissionCircle extends StatelessWidget {
+  final VoidCallback onTap;
+  const _NewMissionCircle({required this.onTap});
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+        Container(
+          width: 52, height: 52,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: AppColors.primary, width: 2, style: BorderStyle.solid),
+          ),
+          child: const Center(child: Icon(Iconsax.add, color: AppColors.primary, size: 22)),
+        ),
+        const SizedBox(height: 4),
+        const Text('New', style: TextStyle(color: AppColors.textMuted, fontSize: 10)),
+      ]),
+    );
+  }
 }
 
-class _StatusViewSheetState extends State<_StatusViewSheet> {
-  int _idx = 0;
-  // FIX 3: Initialised from parent's persistent map
-  final Map<String, bool> _reacted = {};
+class _ChatBubble extends StatelessWidget {
+  final ChatMessage msg;
+  final bool compact;
+  const _ChatBubble({required this.msg, this.compact = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final isUser = msg.role == MessageRole.user;
+    final padding = compact ? 6.0 : 12.0;
+
+    if (isUser) {
+      return Align(
+        alignment: Alignment.centerRight,
+        child: Container(
+          margin: EdgeInsets.fromLTRB(48, padding / 2, 8, padding / 2),
+          padding: EdgeInsets.all(padding),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(colors: [Color(0xFFFF6B00), AppColors.primary]),
+            borderRadius: const BorderRadius.only(
+              topLeft: Radius.circular(18), topRight: Radius.circular(4),
+              bottomLeft: Radius.circular(18), bottomRight: Radius.circular(18)),
+          ),
+          child: Text(msg.text, style: TextStyle(color: Colors.white, fontSize: compact ? 13 : 15)),
+        ),
+      ).animate().fadeIn(duration: 200.ms).slideX(begin: 0.1);
+    }
+
+    // RiseUp message
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        if (!compact) Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 0, 2),
+          child: Row(children: [
+            Container(width: 20, height: 20,
+              decoration: const BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: LinearGradient(colors: [Color(0xFFFF6B00), AppColors.primary])),
+              child: const Center(child: Text('R', style: TextStyle(color: Colors.white,
+                  fontSize: 10, fontWeight: FontWeight.bold)))),
+            const SizedBox(width: 6),
+            const Text('RiseUp', style: TextStyle(color: AppColors.textMuted, fontSize: 12)),
+          ]),
+        ),
+        Container(
+          margin: EdgeInsets.fromLTRB(8, 2, 48, padding / 2),
+          padding: EdgeInsets.all(padding),
+          decoration: BoxDecoration(
+            color: AppColors.bgCard,
+            borderRadius: const BorderRadius.only(
+              topLeft: Radius.circular(4), topRight: Radius.circular(18),
+              bottomLeft: Radius.circular(18), bottomRight: Radius.circular(18)),
+            border: Border.all(color: AppColors.bgSurface),
+          ),
+          child: msg.isStreaming
+              ? _TypingIndicator()
+              : MarkdownBody(
+                  data: msg.text,
+                  styleSheet: MarkdownStyleSheet(
+                    p:         TextStyle(color: Colors.white, fontSize: compact ? 13 : 15, height: 1.5),
+                    h2:        const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w700),
+                    h3:        const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
+                    strong:    const TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+                    em:        TextStyle(color: AppColors.primary),
+                    blockquoteDecoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(0.1),
+                      border: Border(left: BorderSide(color: AppColors.primary, width: 3)),
+                    ),
+                    code:      const TextStyle(color: Color(0xFF00CEC9), fontFamily: 'monospace', fontSize: 13),
+                    codeblockDecoration: BoxDecoration(
+                      color: AppColors.bgSurface,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    listBullet: TextStyle(color: AppColors.primary),
+                  ),
+                  onTapLink: (text, href, title) {
+                    if (href != null) {}
+                  },
+                ),
+        ),
+      ]),
+    ).animate().fadeIn(duration: 250.ms).slideX(begin: -0.05);
+  }
+}
+
+class _TypingIndicator extends StatefulWidget {
+  @override
+  State<_TypingIndicator> createState() => _TypingIndicatorState();
+}
+
+class _TypingIndicatorState extends State<_TypingIndicator>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
 
   @override
   void initState() {
     super.initState();
-    // FIX 3: Restore saved reactions so they survive close/reopen
-    _reacted.addAll(widget.reactedStatuses);
-    _markViewed();
-  }
-
-  void _markViewed() {
-    final items = _items;
-    if (items.isEmpty) return;
-    final id = items[_idx]['id']?.toString();
-    if (id != null) api.post('/posts/status/$id/view', {}).catchError((_) => <String, dynamic>{});
-  }
-
-  List<Map<String, dynamic>> get _items =>
-      (widget.user['items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
-  Map<String, dynamic> get _profile =>
-      (widget.user['profile'] as Map?)?.cast<String, dynamic>() ?? {};
-
-  void _next() {
-    if (_idx < _items.length - 1) { setState(() { _idx++; _markViewed(); }); }
-    else { Navigator.pop(context); }
-  }
-  void _prev() { if (_idx > 0) setState(() { _idx--; _markViewed(); }); }
-
-  Future<void> _openLink(String link) async {
-    final uri = Uri.parse(link.startsWith('http') ? link : 'https://$link');
-    if (kIsWeb) { try { await launchUrl(uri, mode: LaunchMode.externalApplication); } catch (_) {} return; }
-    try { if (await canLaunchUrl(uri)) { await launchUrl(uri, mode: LaunchMode.inAppWebView); return; } } catch (_) {}
-    try { await launchUrl(uri, mode: LaunchMode.externalApplication); } catch (_) {}
+    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))..repeat();
   }
 
   @override
-  Widget build(BuildContext ctx) {
-    final items = _items;
-    final prof  = _profile;
-    if (items.isEmpty) return const SizedBox.shrink();
+  void dispose() { _ctrl.dispose(); super.dispose(); }
 
-    final sz       = MediaQuery.of(ctx).size;
-    final h        = sz.height * 0.92;
-    final sw       = sz.width;
-    final name     = prof['full_name']?.toString() ?? 'User';
-    final av       = prof['avatar_url']?.toString() ?? '';
-    final item     = items[_idx];
-    final media    = item['media_url']?.toString();
-    final mType    = item['media_type']?.toString() ?? 'image';
-    final text     = item['content']?.toString() ?? '';
-    final bg       = item['background_color']?.toString() ?? '#6C5CE7';
-    final link     = item['link_url']?.toString();
-    final ltitle   = item['link_title']?.toString();
-    final views    = (item['views_count'] as num?)?.toInt() ?? 0;
-    final statusId = item['id']?.toString() ?? '';
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(animation: _ctrl, builder: (_, __) {
+      return Row(mainAxisSize: MainAxisSize.min, children: List.generate(3, (i) {
+        final delay = i * 0.33;
+        final t = (_ctrl.value - delay).clamp(0.0, 1.0);
+        final y = sin(t * pi) * 4;
+        return Transform.translate(
+          offset: Offset(0, -y),
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 2),
+            width: 6, height: 6,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppColors.primary.withOpacity(0.5 + t * 0.5),
+            ),
+          ),
+        );
+      }));
+    });
+  }
+}
 
-    // FIX 3: read from local map (which was populated from parent's persistent map)
-    final isReacted = _reacted[statusId] ?? false;
+class _ApexStatusBar extends StatelessWidget {
+  final ApexStatus status;
+  final AnimationController pulse;
+  final VoidCallback onStop;
+  const _ApexStatusBar({required this.status, required this.pulse, required this.onStop});
 
-    Color bgc = AppColors.primary;
-    try { bgc = Color(int.parse(bg.replaceFirst('#', '0xFF'))); } catch (_) {}
+  @override
+  Widget build(BuildContext context) {
+    final (label, color) = switch (status) {
+      ApexStatus.thinking => ('APEX · Thinking...', AppColors.warning),
+      ApexStatus.browsing => ('APEX · Browsing',    AppColors.primary),
+      ApexStatus.paused   => ('APEX · Waiting',     AppColors.info),
+      ApexStatus.done     => ('APEX · Done ✓',      AppColors.success),
+      ApexStatus.error    => ('APEX · Error',        AppColors.error),
+      ApexStatus.idle     => ('APEX · Ready',        AppColors.textMuted),
+    };
 
     return Container(
-      height: h,
-      decoration: BoxDecoration(
-        color: media != null ? Colors.black : bgc,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      child: Stack(children: [
-
-        if (media != null && mType == 'image')
-          Positioned.fill(child: GestureDetector(
-            onTap: () => Navigator.push(ctx, MaterialPageRoute(fullscreenDialog: true, builder: (_) => _ImgView(url: media))),
-            child: ClipRRect(
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-              child: CachedNetworkImage(imageUrl: media, fit: BoxFit.cover, width: sw, height: h, errorWidget: (_, __, ___) => const Center(child: Icon(Icons.broken_image, color: Colors.white54, size: 48))),
-            ),
-          ))
-        else if (media != null && mType == 'video')
-          Positioned.fill(child: ClipRRect(
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-            child: kIsWeb ? _WebVideoPlaceholder(url: media, isDark: true) : _StatusVid(key: ValueKey('${_idx}_$media'), url: media),
-          ))
-        else if (text.isNotEmpty)
-          Positioned.fill(child: Center(child: Padding(
-            padding: const EdgeInsets.all(32),
-            child: Text(text, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w600, height: 1.5)),
-          ))),
-
-        // Progress bar
-        Positioned(
-          top: 12, left: 12, right: 12,
-          child: Row(children: List.generate(items.length, (i) => Expanded(child: Container(
-            height: 3, margin: const EdgeInsets.symmetric(horizontal: 2),
-            decoration: BoxDecoration(
-              color: i <= _idx ? Colors.white : Colors.white.withOpacity(0.3),
-              borderRadius: BorderRadius.circular(2),
-            ),
-          )))),
-        ),
-
-        if (media != null && text.isNotEmpty)
-          Positioned(
-            bottom: link != null ? 200 : 140, left: 0, right: 0,
-            child: Container(
-              color: Colors.black.withOpacity(0.5),
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-              child: Text(text, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500, height: 1.5)),
-            ),
-          ),
-
-        Positioned(top: 0, bottom: 0, left: 0, width: sw * 0.3, child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: _prev, child: const ColoredBox(color: Colors.transparent))),
-        Positioned(top: 0, bottom: 0, right: 0, width: sw * 0.3, child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: _next, child: const ColoredBox(color: Colors.transparent))),
-
-        if (link != null)
-          Positioned(
-            bottom: 130, left: 16, right: 16,
-            child: GestureDetector(
-              onTap: () => _openLink(link),
-              child: Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.white.withOpacity(0.3))),
-                child: Row(children: [
-                  const Icon(Icons.link_rounded, color: Colors.white, size: 18),
-                  const SizedBox(width: 8),
-                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    if (ltitle != null && ltitle.isNotEmpty) Text(ltitle, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
-                    Text(link, style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 11), maxLines: 1, overflow: TextOverflow.ellipsis),
-                  ])),
-                  const SizedBox(width: 6),
-                  const Icon(Icons.open_in_new_rounded, color: Colors.white70, size: 16),
-                ]),
-              ),
-            ),
-          ),
-
-        // Bottom bar — Love toggles, Reply, Views
-        Positioned(
-          bottom: 0, left: 0, right: 0,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      color: color.withOpacity(0.08),
+      child: Row(children: [
+        AnimatedBuilder(animation: pulse, builder: (_, __) =>
+            Icon(Iconsax.cpu, size: 14,
+                color: color.withOpacity(0.6 + pulse.value * 0.4))),
+        const SizedBox(width: 6),
+        Text(label, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600)),
+        const Spacer(),
+        GestureDetector(
+          onTap: onStop,
           child: Container(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 30),
-            decoration: BoxDecoration(gradient: LinearGradient(
-              begin: Alignment.bottomCenter, end: Alignment.topCenter,
-              colors: [Colors.black.withOpacity(0.72), Colors.transparent],
-            )),
-            child: Row(children: [
-
-              // ❤️ Love — toggles red/white
-              GestureDetector(
-                onTap: () async {
-                  SoundService.like();
-                  final newState = !isReacted;
-                  // FIX 3: update local display immediately
-                  setState(() => _reacted[statusId] = newState);
-                  if (newState) {
-                    // FIX 3: delegate to parent so it persists
-                    await widget.onReact(statusId, '❤️');
-                  }
-                },
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: isReacted ? Colors.red.withOpacity(0.22) : Colors.white.withOpacity(0.18),
-                    borderRadius: BorderRadius.circular(22),
-                    border: Border.all(color: isReacted ? Colors.red.withOpacity(0.55) : Colors.white.withOpacity(0.3)),
-                  ),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(
-                      isReacted ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-                      color: isReacted ? Colors.red : Colors.white,
-                      size: 21,
-                    ),
-                    const SizedBox(width: 5),
-                    Text('Love', style: TextStyle(color: isReacted ? Colors.red : Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
-                  ]),
-                ),
-              ),
-
-              const SizedBox(width: 8),
-
-              // 💬 Reply
-              GestureDetector(
-                onTap: () {
-                  final userId = prof['id']?.toString() ?? '';
-                  if (userId.isNotEmpty) {
-                    Navigator.pop(ctx);
-                    ctx.push('/conversation/$userId?name=${Uri.encodeComponent(name)}');
-                  }
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
-                  decoration: BoxDecoration(color: Colors.white.withOpacity(0.18), borderRadius: BorderRadius.circular(22), border: Border.all(color: Colors.white.withOpacity(0.3))),
-                  child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(Iconsax.message, color: Colors.white, size: 21),
-                    SizedBox(width: 5),
-                    Text('Reply', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
-                  ]),
-                ),
-              ),
-
-              const Spacer(),
-
-              // 👁 Views
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
-                decoration: BoxDecoration(color: Colors.black.withOpacity(0.45), borderRadius: BorderRadius.circular(22)),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  const Icon(Icons.visibility_outlined, color: Colors.white70, size: 21),
-                  const SizedBox(width: 5),
-                  Text('$views', style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
-                ]),
-              ),
-            ]),
-          ),
-        ),
-
-        // Header
-        Positioned(
-          top: 24, left: 16, right: 16,
-          child: Row(children: [
-            _Avatar(url: av, fallback: name.isNotEmpty ? name[0].toUpperCase() : '?', size: 36),
-            const SizedBox(width: 8),
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13)),
-              Text(items.length == 1 ? '1 status' : '${items.length} statuses', style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 11)),
-            ])),
-            IconButton(icon: const Icon(Icons.close_rounded, color: Colors.white), onPressed: () => Navigator.pop(ctx)),
-          ]),
-        ),
-      ]),
-    );
-  }
-}
-
-// =============================================================================
-// STATUS VIDEO PLAYER
-// =============================================================================
-class _StatusVid extends StatefulWidget {
-  final String url;
-  const _StatusVid({super.key, required this.url});
-  @override State<_StatusVid> createState() => _StatusVidState();
-}
-
-class _StatusVidState extends State<_StatusVid> {
-  VideoPlayerController? _c;
-  bool _ready = false, _err = false;
-
-  @override void initState() { super.initState(); if (!kIsWeb) _init(); }
-
-  Future<void> _init() async {
-    try {
-      final c = VideoPlayerController.networkUrl(Uri.parse(widget.url));
-      await c.initialize(); if (!mounted) { c.dispose(); return; }
-      await c.setVolume(0); await c.play();
-      await Future.delayed(const Duration(milliseconds: 500));
-      if (!mounted) { c.dispose(); return; }
-      await c.pause(); await c.seekTo(Duration.zero);
-      await c.setVolume(1); await c.setLooping(true); await c.play();
-      if (!mounted) { c.dispose(); return; }
-      setState(() { _c = c; _ready = true; });
-    } catch (_) { if (mounted) setState(() => _err = true); }
-  }
-
-  @override void dispose() { _c?.dispose(); super.dispose(); }
-
-  @override
-  Widget build(BuildContext ctx) {
-    if (_err)             return const Center(child: Icon(Icons.error_outline, color: Colors.white54, size: 48));
-    if (!_ready || _c == null) return const Center(child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2));
-    return GestureDetector(
-      onTap: () { _c!.value.isPlaying ? _c!.pause() : _c!.play(); setState(() {}); },
-      child: Stack(alignment: Alignment.center, children: [
-        SizedBox.expand(child: FittedBox(fit: BoxFit.cover, child: SizedBox(width: _c!.value.size.width, height: _c!.value.size.height, child: VideoPlayer(_c!)))),
-        if (!_c!.value.isPlaying) Container(width: 56, height: 56, decoration: BoxDecoration(color: Colors.black.withOpacity(0.6), shape: BoxShape.circle), child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 36)),
-        Positioned(bottom: 0, left: 0, right: 0, child: VideoProgressIndicator(_c!, allowScrubbing: true, colors: VideoProgressColors(playedColor: AppColors.primary, bufferedColor: AppColors.primary.withOpacity(0.3), backgroundColor: Colors.white24))),
-      ]),
-    );
-  }
-}
-
-// =============================================================================
-// APP DRAWER
-// =============================================================================
-class _AppDrawer extends StatelessWidget {
-  final Map<String, dynamic> profile; final bool isDark;
-  const _AppDrawer({required this.profile, required this.isDark});
-
-  @override
-  Widget build(BuildContext ctx) {
-    final bg    = isDark ? Colors.black : Colors.white;
-    final bdr   = isDark ? AppColors.bgSurface : Colors.grey.shade200;
-    final sub   = isDark ? Colors.white.withOpacity(0.54) : Colors.black45;
-    final name  = profile['full_name']?.toString() ?? 'User';
-    final si    = StageInfo.get(profile['stage']?.toString() ?? 'survival');
-    final isPro = profile['subscription_tier'] == 'premium';
-    final av    = profile['avatar_url']?.toString() ?? '';
-
-    return Drawer(
-      backgroundColor: bg,
-      width: MediaQuery.of(ctx).size.width * 0.82,
-      child: SafeArea(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
-          child: Row(children: [
-            GestureDetector(onTap: () { Navigator.pop(ctx); ctx.go('/profile'); }, child: _Avatar(url: av, fallback: name.isNotEmpty ? name[0].toUpperCase() : 'U', size: 48)),
-            const SizedBox(width: 12),
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(name, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: isDark ? Colors.white : Colors.black87), maxLines: 1, overflow: TextOverflow.ellipsis),
-              const SizedBox(height: 3),
-              Row(children: [
-                Container(padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2), decoration: BoxDecoration(color: (si['color'] as Color).withOpacity(0.15), borderRadius: BorderRadius.circular(8)), child: Text('${si['emoji']} ${si['label']}', style: TextStyle(fontSize: 10, color: si['color'] as Color, fontWeight: FontWeight.w600))),
-                if (isPro) ...[const SizedBox(width: 6), Container(padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2), decoration: BoxDecoration(color: AppColors.gold.withOpacity(0.15), borderRadius: BorderRadius.circular(8)), child: const Text('PRO', style: TextStyle(fontSize: 10, color: AppColors.gold, fontWeight: FontWeight.w700)))],
-              ]),
-            ])),
-            IconButton(icon: Icon(Icons.close_rounded, color: sub, size: 20), onPressed: () => Navigator.of(ctx).pop()),
-          ]),
-        ),
-        Divider(color: bdr, height: 1),
-
-        Expanded(child: ListView(padding: const EdgeInsets.symmetric(vertical: 4), children: [
-          _DS('INCOME TOOLS', sub),
-          _DI(Iconsax.chart,             'Dashboard',          'Earnings, stats & tasks',       isDark, onTap: () { Navigator.pop(ctx); ctx.go('/dashboard'); }),
-          _DI(Icons.auto_awesome_rounded,'Agentic AI',          'Execute ANY income task',       isDark, badge: 'HEAVY', bc: AppColors.accent,            onTap: () { Navigator.pop(ctx); ctx.push('/agent'); }),
-          _DI(Iconsax.flash,             'Workflow Engine',     'AI-powered income execution',   isDark, badge: 'NEW',   bc: AppColors.success,           onTap: () { Navigator.pop(ctx); ctx.push('/workflow'); }),
-          _DI(Iconsax.chart_3,           'Market Pulse',        'What pays right now',           isDark, badge: 'LIVE',  bc: const Color(0xFFFF6B35),     onTap: () { Navigator.pop(ctx); ctx.push('/pulse'); }),
-          _DI(Icons.emoji_events_rounded,'Challenges',          '30-day income sprints',         isDark,                                                  onTap: () { Navigator.pop(ctx); ctx.push('/challenges'); }),
-          _DI(Iconsax.briefcase,         'Client CRM',          'Track prospects & clients',     isDark,                                                  onTap: () { Navigator.pop(ctx); ctx.push('/crm'); }),
-          _DI(Iconsax.document_text,     'Contracts & Invoices','Pro contract generation',       isDark,                                                  onTap: () { Navigator.pop(ctx); ctx.push('/contracts'); }),
-          _DI(Icons.psychology_rounded,  'Income Memory',       'Your income DNA',               isDark,                                                  onTap: () { Navigator.pop(ctx); ctx.push('/memory'); }),
-          _DI(Iconsax.gallery,           'My Portfolio',        'Shareable project showcase',    isDark,                                                  onTap: () { Navigator.pop(ctx); ctx.push('/portfolio'); }),
-          _DI(Iconsax.task_square,       'My Tasks',            'Daily income tasks',            isDark,                                                  onTap: () { Navigator.pop(ctx); ctx.go('/tasks'); }),
-          _DI(Iconsax.map_1,             'Wealth Roadmap',      '3-stage wealth plan',           isDark,                                                  onTap: () { Navigator.pop(ctx); ctx.go('/roadmap'); }),
-          _DI(Iconsax.book,              'Skills',              'Earn-while-learning',           isDark,                                                  onTap: () { Navigator.pop(ctx); ctx.go('/skills'); }),
-          Divider(color: bdr, height: 1),
-          _DS('SOCIAL', sub),
-          _DI(Iconsax.people,                 'Collaboration', 'Build bigger goals together', isDark, badge: 'NEW', bc: AppColors.primary, onTap: () { Navigator.pop(ctx); ctx.push('/collaboration'); }),
-          _DI(Iconsax.message,                'Messages',      'DMs & group chats',          isDark,                                    onTap: () { Navigator.pop(ctx); ctx.go('/messages'); }),
-          _DI(Icons.radio_button_checked_rounded,'Go Live',    'Stream to your community',   isDark,                                    onTap: () { Navigator.pop(ctx); ctx.go('/live'); }),
-          _DI(Iconsax.people,                 'Groups',        'Wealth-building groups',     isDark,                                    onTap: () { Navigator.pop(ctx); ctx.go('/groups'); }),
-          Divider(color: bdr, height: 1),
-          _DS('FINANCE', sub),
-          _DI(Iconsax.money_recive, 'Earnings',  'Income tracker',    isDark, onTap: () { Navigator.pop(ctx); ctx.go('/earnings'); }),
-          _DI(Iconsax.chart_2,      'Analytics', 'Growth stats',      isDark, onTap: () { Navigator.pop(ctx); ctx.go('/analytics'); }),
-          _DI(Iconsax.wallet_minus, 'Expenses',  'Budget tracking',   isDark, onTap: () { Navigator.pop(ctx); ctx.go('/expenses'); }),
-          _DI(Iconsax.flag,         'Goals',     'Set & track targets',isDark, onTap: () { Navigator.pop(ctx); ctx.go('/goals'); }),
-          Divider(color: bdr, height: 1),
-          _DS('ACCOUNT', sub),
-          _DI(Iconsax.award,      'Achievements', 'Badges & milestones',  isDark, onTap: () { Navigator.pop(ctx); ctx.go('/achievements'); }),
-          _DI(Iconsax.user_tag,   'Referrals',    'Invite & earn',        isDark, onTap: () { Navigator.pop(ctx); ctx.go('/referrals'); }),
-          _DI(Iconsax.setting_2,  'Settings',     'Account preferences',  isDark, onTap: () { Navigator.pop(ctx); ctx.go('/settings'); }),
-        ])),
-
-        if (!isPro)
-          Padding(
-            padding: const EdgeInsets.all(14),
-            child: GestureDetector(
-              onTap: () { Navigator.pop(ctx); ctx.push('/premium'); },
-              child: Container(
-                padding: const EdgeInsets.all(13),
-                decoration: BoxDecoration(color: AppColors.primary.withOpacity(isDark ? 0.12 : 0.07), borderRadius: BorderRadius.circular(12), border: Border.all(color: AppColors.primary.withOpacity(0.25))),
-                child: Row(children: [
-                  const SizedBox(width: 2),
-                  const Icon(Icons.workspace_premium_rounded, color: AppColors.gold, size: 22),
-                  const SizedBox(width: 10),
-                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    const Text('Upgrade to Premium', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.primary)),
-                    Text('Unlimited AI + all features', style: TextStyle(fontSize: 11, color: sub)),
-                  ])),
-                  const Icon(Icons.arrow_forward_ios_rounded, size: 13, color: AppColors.primary),
-                ]),
-              ),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: AppColors.error.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: AppColors.error.withOpacity(0.3)),
             ),
+            child: const Text('Stop', style: TextStyle(color: AppColors.error, fontSize: 11)),
           ),
-      ])),
+        ),
+      ]),
     );
   }
 }
 
-class _DS extends StatelessWidget {
-  final String l; final Color c;
-  const _DS(this.l, this.c);
-  @override
-  Widget build(BuildContext ctx) => Padding(
-    padding: const EdgeInsets.fromLTRB(18, 12, 18, 4),
-    child: Text(l, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: c, letterSpacing: 1.1)),
-  );
-}
-
-class _DI extends StatelessWidget {
-  final IconData icon; final String label, sub; final bool isDark;
-  final VoidCallback onTap; final String? badge; final Color? bc;
-  const _DI(this.icon, this.label, this.sub, this.isDark, {required this.onTap, this.badge, this.bc});
+class _SidebarNavItem extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final String? badge;
+  const _SidebarNavItem({required this.icon, required this.label, required this.onTap, this.badge});
 
   @override
-  Widget build(BuildContext ctx) {
-    final tc = isDark ? Colors.white : Colors.black87;
-    final sc = isDark ? Colors.white.withOpacity(0.54) : Colors.black45;
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: () { HapticFeedback.lightImpact(); onTap(); },
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-          child: Row(children: [
-            Container(width: 36, height: 36, decoration: BoxDecoration(color: isDark ? AppColors.bgSurface : Colors.grey.shade100, borderRadius: BorderRadius.circular(9)), child: Icon(icon, size: 17, color: isDark ? Colors.white.withOpacity(0.7) : Colors.black54)),
-            const SizedBox(width: 13),
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(children: [
-                Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: tc)),
-                if (badge != null) ...[
-                  const SizedBox(width: 6),
-                  Container(padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2), decoration: BoxDecoration(color: (bc ?? AppColors.primary).withOpacity(0.15), borderRadius: BorderRadius.circular(5)), child: Text(badge!, style: TextStyle(fontSize: 9, color: bc ?? AppColors.primary, fontWeight: FontWeight.w700))),
-                ],
-              ]),
-              Text(sub, style: TextStyle(fontSize: 11, color: sc)),
-            ])),
-            Icon(Icons.chevron_right_rounded, size: 15, color: isDark ? Colors.white.withOpacity(0.24) : Colors.black.withOpacity(0.26)),
-          ]),
+  Widget build(BuildContext context) {
+    return ListTile(
+      dense: true,
+      leading: Icon(icon, color: AppColors.textSecondary, size: 20),
+      title: Text(label, style: const TextStyle(color: AppColors.textSecondary, fontSize: 14)),
+      trailing: badge != null ? Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: AppColors.primary.withOpacity(0.15),
+          borderRadius: BorderRadius.circular(6),
         ),
-      ),
+        child: Text(badge!, style: const TextStyle(color: AppColors.primary, fontSize: 10)),
+      ) : null,
+      onTap: () { HapticFeedback.selectionClick(); onTap(); },
     );
   }
 }

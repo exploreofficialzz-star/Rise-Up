@@ -1518,3 +1518,42 @@ async def list_workflow_templates(user: dict = Depends(get_current_user)):
         ]
     }
 
+
+
+# ═══════════════════════════════════════════════════════════════════
+# v3.0: NEW TOKEN ENDPOINTS (record-ad + claim-redemption)
+# ═══════════════════════════════════════════════════════════════════
+
+@router.post("/tokens/record-ad")
+async def record_ad_watch(user: dict = Depends(get_current_user)):
+    """Record one ad watched. Returns progress toward next redemption."""
+    if user.get("is_premium", False):
+        return {"recorded": False, "is_premium": True, "message": "Premium users have unlimited tokens 🎉"}
+    return await token_service.record_ad_watch(user["id"])
+
+
+@router.post("/tokens/claim-redemption")
+async def claim_redemption(user: dict = Depends(get_current_user)):
+    """Claim tokens after watching required number of ads."""
+    if user.get("is_premium", False):
+        return {"granted": False, "is_premium": True}
+    return await token_service.claim_ad_redemption(user["id"])
+
+
+@router.post("/classify")
+@limiter.limit(FREE_TIER_LIMIT)
+async def classify_task_endpoint(
+    body: dict,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Classify a task and return the best workflow template + preflight questions."""
+    task = body.get("task", "")
+    template_key = await classify_task(task, ai_service)
+    template     = get_template(template_key) if template_key else {}
+    questions    = template.get("preflight_questions", []) if template else []
+    return {
+        "template":            template_key,
+        "template_details":    template,
+        "preflight_questions": questions,
+    }
