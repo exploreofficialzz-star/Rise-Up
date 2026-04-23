@@ -30,6 +30,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../config/app_constants.dart';
 import '../../services/ad_service.dart';
 import '../../services/api_service.dart';
+import '../../services/api_service_stream.dart';
 import '../../services/auth_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -451,7 +452,7 @@ class _HomeScreenState extends State<HomeScreen>
       final stream = api.streamPost('/agent/browser/run', body);
       _apexSub?.cancel();
       _apexSub = stream.listen(
-        (event) => _onApexEvent(event),
+        (event) => _onApexEvent(event.data),
         onError: (_) => setState(() => _apexStatus = ApexStatus.error),
         onDone:  () => _onApexDone(),
       );
@@ -981,7 +982,7 @@ class _HomeScreenState extends State<HomeScreen>
 
         // Bottom nav items
         _SidebarNavItem(icon: Iconsax.chart_2,  label: 'Income',     onTap: () { Navigator.pop(context); context.push('/earnings'); }),
-        _SidebarNavItem(icon: Iconsax.target,   label: 'Goals',      onTap: () { Navigator.pop(context); context.push('/goals'); }),
+        _SidebarNavItem(icon: Iconsax.location,   label: 'Goals',      onTap: () { Navigator.pop(context); context.push('/goals'); }),
         _SidebarNavItem(icon: Iconsax.book,     label: 'Skills',     onTap: () { Navigator.pop(context); context.push('/skills'); }),
         _SidebarNavItem(icon: Iconsax.crown_1,  label: 'Premium',    onTap: () { Navigator.pop(context); context.push('/premium'); },
             badge: _tokens.isPremium ? null : 'Upgrade'),
