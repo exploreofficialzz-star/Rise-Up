@@ -65,7 +65,9 @@ final router = GoRouter(
 
     // ── Full-screen modals (no shell) ──────────────────────────────────────
     GoRoute(path: '/premium',         builder: (_, __) => const PremiumScreen()),
-    GoRoute(path: '/payment',         builder: (_, __) => const PaymentScreen()),
+    GoRoute(path: '/payment',
+        builder: (_, s) => PaymentScreen(
+            plan: s.uri.queryParameters['plan'] ?? 'pro')),
 
     // ── Main app — Home IS the shell ───────────────────────────────────────
     GoRoute(
