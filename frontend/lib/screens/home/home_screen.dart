@@ -292,8 +292,8 @@ class _HomeScreenState extends State<HomeScreen>
   void _addWelcomeMission() {
     final welcome = Mission(
       id:       _uuid(),
-      title:    'Start Here',
-      emoji:    '🚀',
+      title:    'RiseUp',
+      emoji:    '🔥',
       platform: '',
       status:   MissionStatus.active,
       createdAt: DateTime.now(),
@@ -301,7 +301,7 @@ class _HomeScreenState extends State<HomeScreen>
         ChatMessage(
           id:   _uuid(),
           role: MessageRole.riseup,
-          text: '**do your best hustle with\nRiseUp** 💪',
+          text: 'do your best hustle with RiseUp 💪',
           ts:   DateTime.now(),
         ),
       ],
@@ -613,7 +613,7 @@ class _HomeScreenState extends State<HomeScreen>
     return Scaffold(
       key: _globalKey,
       backgroundColor: Theme.of(context).brightness == Brightness.dark
-          ? Colors.black : Colors.white,
+          ? Colors.black : const Color(0xFFFAFAFA),
       drawer: _buildSidebar(context),
       body: SafeArea(
         child: Stack(
@@ -633,49 +633,68 @@ class _HomeScreenState extends State<HomeScreen>
 
   // ── Top bar ────────────────────────────────────────────────────────────────
   Widget _buildTopBar(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bg     = isDark ? Colors.black : Colors.white;
-    final border = isDark ? const Color(0xFF1A1A1A) : const Color(0xFFE8E8E8);
-    final iconClr= isDark ? Colors.white70 : Colors.black54;
+    final isDark  = Theme.of(context).brightness == Brightness.dark;
+    final bg      = isDark ? Colors.black : const Color(0xFFFAFAFA);
+    final border  = isDark ? const Color(0xFF1C1C1C) : const Color(0xFFEAEAEA);
+    final iconClr = isDark ? Colors.white70 : Colors.black54;
 
     return Container(
       height: 56,
       padding: const EdgeInsets.symmetric(horizontal: 16),
       decoration: BoxDecoration(
         color: bg,
-        border: Border(bottom: BorderSide(color: border, width: 0.8)),
+        border: Border(bottom: BorderSide(color: border, width: 0.6)),
       ),
       child: Row(children: [
         // ≡ Menu — left
         GestureDetector(
           onTap: () { _Sound.tap(); _globalKey.currentState?.openDrawer(); },
-          child: Icon(Iconsax.menu_1, color: iconClr, size: 24),
+          child: Icon(Iconsax.menu_1, color: iconClr, size: 22),
         ),
 
-        // Center — RiseUp + floating token badge
-        Expanded(child: Center(child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            RichText(text: const TextSpan(children: [
-              TextSpan(text: 'Rise', style: TextStyle(fontSize: 21,
-                  fontWeight: FontWeight.w800, color: Color(0xFFFF6B00))),
-              TextSpan(text: 'Up', style: TextStyle(fontSize: 21,
-                  fontWeight: FontWeight.w800, color: Color(0xFF6C5CE7))),
-            ])),
-            const SizedBox(width: 6),
-            _TokenBadge(tokens: _tokens, pulse: _tokenPulse, isDark: isDark),
-          ],
-        ))),
+        // Center — RiseUp logo with token badge as superscript
+        Expanded(child: Center(
+          child: Stack(
+            clipBehavior: Clip.none,
+            alignment: Alignment.center,
+            children: [
+              // Shift slightly right so token badge doesn't overlap menu
+              Transform.translate(
+                offset: const Offset(16, 0),
+                child: ShaderMask(
+                  shaderCallback: (bounds) => const LinearGradient(
+                    colors: [Color(0xFFFF6B00), Color(0xFFFFD700), Color(0xFF6C5CE7)],
+                    stops:  [0.0, 0.45, 1.0],
+                  ).createShader(bounds),
+                  child: const Text('RiseUp',
+                    style: TextStyle(
+                      fontSize:      22,
+                      fontWeight:    FontWeight.w900,
+                      color:         Colors.white,
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                ),
+              ),
+              // Token badge — top-right of RiseUp, raised up
+              Positioned(
+                right: 18,
+                top:   -2,
+                child: _TokenBadge(tokens: _tokens, pulse: _tokenPulse, isDark: isDark),
+              ),
+            ],
+          ),
+        )),
 
         // Right — search + notifications
         GestureDetector(
           onTap: () => _Sound.tap(),
-          child: Icon(Iconsax.search_normal, color: iconClr, size: 22),
+          child: Icon(Iconsax.search_normal, color: iconClr, size: 21),
         ),
         const SizedBox(width: 20),
         GestureDetector(
           onTap: () { _Sound.tap(); context.push('/notifications'); },
-          child: Icon(Iconsax.notification, color: iconClr, size: 22),
+          child: Icon(Iconsax.notification, color: iconClr, size: 21),
         ),
       ]),
     );
@@ -686,7 +705,7 @@ class _HomeScreenState extends State<HomeScreen>
     final isDarkMc = Theme.of(context).brightness == Brightness.dark;
     return Container(
       height: 88,
-      color: isDarkMc ? Colors.black : Colors.white,
+      color: isDarkMc ? Colors.black : const Color(0xFFFAFAFA),
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -709,13 +728,43 @@ class _HomeScreenState extends State<HomeScreen>
   // ── Chat area ──────────────────────────────────────────────────────────────
   Widget _buildChatArea() {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bg     = isDark ? Colors.black : Colors.white;
+    final bg     = isDark ? Colors.black : const Color(0xFFFAFAFA);
     final msgs   = _activeMessages;
+
     if (msgs.isEmpty) {
       return Container(color: bg,
-        child: Center(child: Text('Select a mission or start a new one',
+        child: Center(child: Text('Start or select a mission',
             style: TextStyle(color: isDark ? Colors.white38 : Colors.black38))));
     }
+
+    // Welcome-only state: single RiseUp welcome message → render as hero
+    final isWelcomeOnly = msgs.length == 1 &&
+        msgs.first.role == MessageRole.riseup &&
+        msgs.first.text.contains('do your best hustle');
+
+    if (isWelcomeOnly) {
+      return Container(
+        color: bg,
+        width: double.infinity,
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Text(
+              'DO YOUR BEST\nHUSTLE WITH\nRiseUp',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize:      36,
+                fontWeight:    FontWeight.w900,
+                color:         isDark ? Colors.white : Colors.black,
+                height:        1.15,
+                letterSpacing: -0.5,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
     return Container(
       color: bg,
       child: ListView.builder(
@@ -793,7 +842,6 @@ class _HomeScreenState extends State<HomeScreen>
   // ── Input bar — Claude-style ──────────────────────────────────────────────
   Widget _buildInputBar() {
     final isDark   = Theme.of(context).brightness == Brightness.dark;
-    final outerBg  = isDark ? Colors.black       : Colors.white;
     final fieldBg  = isDark ? const Color(0xFF1C1C1E) : const Color(0xFFF2F2F7);
     final hintClr  = isDark ? Colors.white38     : Colors.black38;
     final textClr  = isDark ? Colors.white       : Colors.black87;
@@ -806,13 +854,22 @@ class _HomeScreenState extends State<HomeScreen>
         ? (isDark ? Colors.black : Colors.white)
         : (isDark ? Colors.white38 : Colors.black38);
 
-    return Container(
-      color: outerBg,
+    return Padding(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
       child: Container(
         decoration: BoxDecoration(
           color: fieldBg,
           borderRadius: BorderRadius.circular(26),
+          boxShadow: [
+            BoxShadow(
+              color:       isDark
+                  ? Colors.black.withOpacity(0.4)
+                  : Colors.black.withOpacity(0.08),
+              blurRadius:  16,
+              spreadRadius: 0,
+              offset:      const Offset(0, 2),
+            ),
+          ],
         ),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           // ── Text field ────────────────────────────────────────────────────
@@ -825,7 +882,9 @@ class _HomeScreenState extends State<HomeScreen>
             decoration: InputDecoration(
               hintText: 'Chat with RiseUp...',
               hintStyle: TextStyle(color: hintClr, fontSize: 16),
-              border: InputBorder.none,
+              border:        InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
               contentPadding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
             ),
             onChanged: (_) => setState(() {}),
@@ -978,8 +1037,9 @@ class _HomeScreenState extends State<HomeScreen>
   // ── Sidebar ────────────────────────────────────────────────────────────────
   Widget _buildSidebar(BuildContext context) {
     final stageInfo = _stageInfo(_userStage);
+    final isDarkSb = Theme.of(context).brightness == Brightness.dark;
     return Drawer(
-      backgroundColor: AppColors.bgCard,
+      backgroundColor: isDarkSb ? const Color(0xFF0D0D0D) : const Color(0xFFF5F5F5),
       child: SafeArea(child: Column(children: [
         // Profile header
         GestureDetector(
@@ -1044,7 +1104,9 @@ class _HomeScreenState extends State<HomeScreen>
               dense: true,
               leading: Text(m.emoji, style: const TextStyle(fontSize: 20)),
               title: Text(m.title, style: TextStyle(
-                  color: isActive ? Colors.white : AppColors.textSecondary,
+                  color: isActive
+                  ? (isDarkSb ? Colors.white : Colors.black87)
+                  : (isDarkSb ? AppColors.textSecondary : Colors.black45),
                   fontWeight: isActive ? FontWeight.w600 : FontWeight.w400,
                   fontSize: 14),
                   maxLines: 1, overflow: TextOverflow.ellipsis),
@@ -1059,12 +1121,9 @@ class _HomeScreenState extends State<HomeScreen>
         Divider(color: AppColors.bgSurface, height: 1),
 
         // Bottom nav items
-        _SidebarNavItem(icon: Iconsax.chart_2,  label: 'Income',     onTap: () { Navigator.pop(context); context.push('/earnings'); }),
-        _SidebarNavItem(icon: Iconsax.location,   label: 'Goals',      onTap: () { Navigator.pop(context); context.push('/goals'); }),
-        _SidebarNavItem(icon: Iconsax.book,     label: 'Skills',     onTap: () { Navigator.pop(context); context.push('/skills'); }),
         _SidebarNavItem(icon: Iconsax.crown_1,  label: 'Premium',    onTap: () { Navigator.pop(context); context.push('/premium'); },
             badge: _tokens.isPremium ? null : 'Upgrade'),
-        _SidebarNavItem(icon: Iconsax.setting_2,label: 'Settings',   onTap: () { Navigator.pop(context); context.push('/settings'); }),
+        _SidebarNavItem(icon: Iconsax.setting_2, label: 'Settings',  onTap: () { Navigator.pop(context); context.push('/settings'); }),
         const SizedBox(height: 8),
       ])),
     );
@@ -1098,22 +1157,22 @@ class _TokenBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final badgeBg = isDark ? const Color(0xFF2C2C2E) : const Color(0xFFEEEEEE);
-    final textClr = isDark ? Colors.white70 : Colors.black54;
+    final badgeBg = isDark ? const Color(0xFF2A2A2A) : const Color(0xFFF0F0F0);
+    final textClr = isDark ? Colors.white60 : Colors.black45;
 
-    return AnimatedBuilder(animation: pulse, builder: (_, __) => Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
       decoration: BoxDecoration(
         color: badgeBg,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(10),
       ),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(Iconsax.flash_1, color: textClr, size: 11),
-        const SizedBox(width: 4),
-        Text('${tokens.remaining} tokens', style: TextStyle(color: textClr,
-            fontSize: 11, fontWeight: FontWeight.w600)),
+        Icon(Icons.flash_on_rounded, color: textClr, size: 10),
+        const SizedBox(width: 3),
+        Text('${tokens.remaining}', style: TextStyle(color: textClr,
+            fontSize: 10, fontWeight: FontWeight.w600)),
       ]),
-    ));
+    );
   }
 }
 
@@ -1133,10 +1192,19 @@ class _MissionCircle extends StatelessWidget {
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             gradient: isActive ? const LinearGradient(
-                colors: [Color(0xFFFF6B00), AppColors.primary]) : null,
-            color: isActive ? null : AppColors.bgSurface,
+                colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)]) : null,
+            color: isActive ? null : const Color(0xFF1C1C1E),
           ),
-          child: Center(child: Text(mission.emoji, style: const TextStyle(fontSize: 22))),
+          child: Center(
+            child: mission.emoji == '🔥'
+                ? ClipOval(child: Image.asset(
+                    'assets/images/riseup_logo.png',
+                    width: 36, height: 36, fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Text(mission.emoji,
+                        style: const TextStyle(fontSize: 22)),
+                  ))
+                : Text(mission.emoji, style: const TextStyle(fontSize: 22)),
+          ),
         ),
         const SizedBox(height: 4),
         SizedBox(width: 56, child: Text(mission.title,
@@ -1155,14 +1223,18 @@ class _NewMissionCircle extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Container(
-          width: 52, height: 52,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(color: AppColors.primary, width: 2, style: BorderStyle.solid),
-          ),
-          child: const Center(child: Icon(Iconsax.add, color: AppColors.primary, size: 22)),
-        ),
+        Builder(builder: (ctx) {
+          final isDarkNc = Theme.of(ctx).brightness == Brightness.dark;
+          return Container(
+            width: 52, height: 52,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: const Color(0xFF6C5CE7), width: 2),
+              color: isDarkNc ? const Color(0xFF111111) : Colors.white,
+            ),
+            child: const Center(child: Icon(Iconsax.add, color: Color(0xFF6C5CE7), size: 22)),
+          );
+        }),
         const SizedBox(height: 4),
         const Text('New', style: TextStyle(color: AppColors.textMuted, fontSize: 10)),
       ]),
@@ -1181,7 +1253,7 @@ class _ChatBubble extends StatelessWidget {
     final isUser   = msg.role == MessageRole.user;
     final padding  = compact ? 6.0 : 12.0;
     final textClr  = isDark ? Colors.white : Colors.black87;
-    final bubbleBg = isDark ? const Color(0xFF1C1C1E) : const Color(0xFFF2F2F7);
+    final bubbleBg = isDark ? const Color(0xFF1C1C1E) : const Color(0xFFEDEDED);
 
     // ── User bubble ───────────────────────────────────────────────────────────
     if (isUser) {
