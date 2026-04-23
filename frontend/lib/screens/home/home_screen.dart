@@ -351,7 +351,7 @@ class _HomeScreenState extends State<HomeScreen>
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-            Divider(color: isDark ? Colors.white10 : Colors.black08, height: 1),
+            Divider(color: isDark ? Colors.white10 : Colors.black.withOpacity(0.08), height: 1),
             const SizedBox(height: 4),
             ListTile(
               dense: true,
@@ -384,7 +384,7 @@ class _HomeScreenState extends State<HomeScreen>
               },
             ),
             const SizedBox(height: 4),
-            Divider(color: isDark ? Colors.white10 : Colors.black08, height: 1),
+            Divider(color: isDark ? Colors.white10 : Colors.black.withOpacity(0.08), height: 1),
             const SizedBox(height: 4),
             ListTile(
               dense: true,
