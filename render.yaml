@@ -5,8 +5,7 @@ services:
     env: docker
     region: oregon
     plan: free
-    dockerfilePath: ./backend/Dockerfile   # Dockerfile lives in backend/
-    dockerContext: ./backend               # Build context = backend/ so COPY requirements.txt works
+    dockerfilePath: ./Dockerfile    # root-level Dockerfile — context is always repo root
     envVars:
       - key: APP_ENV
         value: production
