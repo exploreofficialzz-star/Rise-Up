@@ -2,11 +2,10 @@ services:
   # ── Backend API (FastAPI · Docker on Render) ──────────────────
   - type: web
     name: riseup-api
-    env: docker                        # ← was "python"; Docker runtime
+    env: docker                  # Docker runtime
     region: oregon
     plan: free
-    rootDir: backend                   # build context = repo/backend/
-    dockerfilePath: ./Dockerfile       # relative to rootDir
+    dockerfilePath: ./Dockerfile # root-level Dockerfile (no rootDir — build context = repo root)
     envVars:
       - key: APP_ENV
         value: production
