@@ -10,7 +10,7 @@
 //  • Sidebar trimmed to: Profile header · Missions list · Settings
 //  • Income / Goals / Skills / Premium moved into the [+] button inside input bar
 //  • Welcome hero "DO YOUR BEST HUSTLE WITH RISEUP" shown before first conversation
-//  • Input bar redesigned: [+] · [Chat with RiseUp field] · [mic] · [waveform]
+//  • Input bar redesigned: [+] · [Chat with RiseUp field] · [Send]
 // ignore_for_file: deprecated_member_use
 
 import 'dart:async';
@@ -1003,12 +1003,11 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   // ── Input bar ──────────────────────────────────────────────────────────────
-  // Layout: [+]  [Chat with RiseUp ...]  [mic]  [waveform / send]
+  // Layout: [+]  [Chat with RiseUp ...]  [Send]
   Widget _buildInputBar(BuildContext context) {
-    final fieldBg    = _bgSurface(context);
-    final hintColor  = _textMuted(context);
-    final iconColor  = _textSecondary(context);
-    final textColor  = _textPrimary(context);
+    final fieldBg   = _bgSurface(context);
+    final hintColor = _textMuted(context);
+    final textColor = _textPrimary(context);
 
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
@@ -1017,10 +1016,10 @@ class _HomeScreenState extends State<HomeScreen>
         border: Border(top: BorderSide(color: _border(context), width: 0.8)),
       ),
       child: Column(
-        mainAxisSize: MainAxisSize.min,
+        mainAxisSize:      MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // "Chat with RiseUp" label — visible above input row when field is empty
+          // "Chat with RiseUp" label — shown above input when field is idle
           if (_inputCtrl.text.isEmpty && !_inputFocus.hasFocus)
             Padding(
               padding: const EdgeInsets.only(left: 50, bottom: 4),
@@ -1047,7 +1046,7 @@ class _HomeScreenState extends State<HomeScreen>
                   shape:  BoxShape.circle,
                   border: Border.all(color: _border(context)),
                 ),
-                child: Icon(Icons.add, color: AppColors.primary, size: 20),
+                child: const Icon(Icons.add, color: AppColors.primary, size: 20),
               ),
             ),
 
@@ -1066,10 +1065,10 @@ class _HomeScreenState extends State<HomeScreen>
                   maxLines:        null,
                   style:           TextStyle(color: textColor, fontSize: 15),
                   decoration: InputDecoration(
-                    hintText:        'Message RiseUp...',
-                    hintStyle:       TextStyle(color: hintColor),
-                    border:          InputBorder.none,
-                    contentPadding:  const EdgeInsets.symmetric(
+                    hintText:       'Message RiseUp...',
+                    hintStyle:      TextStyle(color: hintColor),
+                    border:         InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(
                         horizontal: 14, vertical: 10),
                   ),
                   onSubmitted:     (_) => _sendMessage(),
@@ -1081,24 +1080,7 @@ class _HomeScreenState extends State<HomeScreen>
 
             const SizedBox(width: 8),
 
-            // Mic icon
-            GestureDetector(
-              onTap: () => _Sound.tap(), // voice hook
-              child: Container(
-                width:  38,
-                height: 38,
-                decoration: BoxDecoration(
-                  color:  fieldBg,
-                  shape:  BoxShape.circle,
-                  border: Border.all(color: _border(context)),
-                ),
-                child: Icon(Iconsax.microphone, color: iconColor, size: 18),
-              ),
-            ),
-
-            const SizedBox(width: 8),
-
-            // Send / waveform button
+            // Send button
             GestureDetector(
               onTap: _isSending ? null : _sendMessage,
               child: Container(
@@ -1416,7 +1398,7 @@ class _NavMenuSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bg      = isDark ? const Color(0xFF1A1A2E) : Colors.white;
-    final textClr = isDark ? Colors.white87 : Colors.black87;
+    final textClr = isDark ? Colors.white.withOpacity(0.87) : Colors.black87;
     final subClr  = isDark ? Colors.white54 : Colors.black45;
 
     Widget item({
