@@ -1,13 +1,12 @@
 services:
-  # ── Backend API (FastAPI on Render) ──────────────────────────
+  # ── Backend API (FastAPI · Docker on Render) ──────────────────
   - type: web
     name: riseup-api
-    env: python
+    env: docker                        # ← was "python"; Docker runtime
     region: oregon
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 2
-    rootDir: backend
+    rootDir: backend                   # build context = repo/backend/
+    dockerfilePath: ./Dockerfile       # relative to rootDir
     envVars:
       - key: APP_ENV
         value: production
@@ -69,10 +68,6 @@ services:
         sync: false
       - key: FIREBASE_SERVICE_ACCOUNT_JSON
         sync: false
-      - key: OPENROUTER_API_KEY
-        sync: false
-      - key: OPENROUTER_MODEL
-        value: mistralai/mistral-7b-instruct:free
     healthCheckPath: /health
     autoDeploy: true
 
