@@ -13,11 +13,10 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy app
+# Copy app source
 COPY . .
 
-# Expose default port (Render overrides via $PORT env var)
 EXPOSE 8000
 
-# Shell form so $PORT is expanded at runtime
+# Shell form so Render's $PORT env var expands at runtime
 CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1
