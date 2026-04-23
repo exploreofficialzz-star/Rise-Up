@@ -16,7 +16,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:audioplayers/audioplayers.dart';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -146,18 +146,13 @@ class TokenState {
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _Sound {
-  static final _player = AudioPlayer();
-
-  static Future<void> _play(String asset) async {
-    try { await _player.play(AssetSource(asset)); } catch (_) {}
-  }
-
-  static void tap()     => HapticFeedback.selectionClick();
-  static void send()    { HapticFeedback.mediumImpact(); _play('sounds/send.mp3'); }
-  static void receive() { HapticFeedback.lightImpact();  _play('sounds/receive.mp3'); }
-  static void apexStart(){ HapticFeedback.heavyImpact(); _play('sounds/apex_start.mp3'); }
-  static void success() { HapticFeedback.heavyImpact();  _play('sounds/success.mp3'); }
-  static void token()   { HapticFeedback.lightImpact();  _play('sounds/token.mp3'); }
+  // Uses device system haptics only — no asset files needed
+  static void tap()      => HapticFeedback.selectionClick();
+  static void send()     => HapticFeedback.mediumImpact();
+  static void receive()  => HapticFeedback.lightImpact();
+  static void apexStart()=> HapticFeedback.heavyImpact();
+  static void success()  => HapticFeedback.heavyImpact();
+  static void token()    => HapticFeedback.lightImpact();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -305,7 +300,7 @@ class _HomeScreenState extends State<HomeScreen>
         ChatMessage(
           id:   _uuid(),
           role: MessageRole.riseup,
-          text: '## Do your best hustle with RiseUp 💪\n\nI\'m your AI income partner. I know **10,000+ ways** people make money — from freelancing to trading to building businesses.\n\nTell me where you are right now:\n- Do you have any skills or experience?\n- How much time can you dedicate daily?\n- Do you have any starting capital?\n\nOr just say **"surprise me"** and I\'ll pick the best path for you.',
+          text: 'Do your best hustle with RiseUp 💪',
           ts:   DateTime.now(),
         ),
       ],
