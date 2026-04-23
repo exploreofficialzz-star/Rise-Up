@@ -9,14 +9,14 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python deps first (better layer caching)
+# Install Python deps â€” path is explicit because context is repo root
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy backend source
+# Copy backend source into /app
 COPY backend/ .
 
 EXPOSE 8000
 
-# Shell form so Render's $PORT env var is expanded at runtime
+# Shell form so Render's $PORT env var expands at runtime
 CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1
