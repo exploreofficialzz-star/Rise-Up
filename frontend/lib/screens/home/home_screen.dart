@@ -182,9 +182,9 @@ const LinearGradient _kRiseUpGradient = LinearGradient(
 );
 
 bool   _isDark(BuildContext ctx) => Theme.of(ctx).brightness == Brightness.dark;
-Color  _bgScaffold(BuildContext ctx) => _isDark(ctx) ? const Color(0xFF0F0F1A) : Colors.white;
-Color  _bgCard(BuildContext ctx)     => _isDark(ctx) ? const Color(0xFF1A1A2E) : const Color(0xFFF5F5FA);
-Color  _bgSurface(BuildContext ctx)  => _isDark(ctx) ? const Color(0xFF252540) : const Color(0xFFEAEAF4);
+Color  _bgScaffold(BuildContext ctx) => _isDark(ctx) ? Colors.black : Colors.white;
+Color  _bgCard(BuildContext ctx)     => _isDark(ctx) ? const Color(0xFF1A1A1A) : const Color(0xFFF5F5FA);
+Color  _bgSurface(BuildContext ctx)  => _isDark(ctx) ? const Color(0xFF2A2A2A) : const Color(0xFFEAEAF4);
 Color  _border(BuildContext ctx)     => _isDark(ctx) ? Colors.white10 : Colors.black.withOpacity(0.08);
 Color  _textPrimary(BuildContext ctx)   => _isDark(ctx) ? Colors.white   : Colors.black87;
 Color  _textSecondary(BuildContext ctx) => _isDark(ctx) ? Colors.white60 : Colors.black54;
@@ -1080,30 +1080,26 @@ class _HomeScreenState extends State<HomeScreen>
 
             const SizedBox(width: 8),
 
-            // Send button
+            // Send button — thick arrow, no background
             GestureDetector(
               onTap: _isSending ? null : _sendMessage,
               child: Container(
                 width:  38,
                 height: 38,
-                decoration: BoxDecoration(
-                  gradient: _isSending
-                      ? null
-                      : const LinearGradient(
-                          colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)]),
-                  color: _isSending ? fieldBg : null,
-                  shape: BoxShape.circle,
-                ),
                 child: _isSending
                     ? const Center(
                         child: SizedBox(
                           width:  18,
                           height: 18,
                           child: CircularProgressIndicator(
-                              strokeWidth: 2, color: Colors.white),
+                              strokeWidth: 2, color: AppColors.primary),
                         ),
                       )
-                    : const Icon(Iconsax.send_1, color: Colors.white, size: 18),
+                    : const Icon(
+                        Icons.arrow_upward,
+                        color: AppColors.primary,
+                        size: 22,
+                      ),
               ),
             ),
           ]),
@@ -1397,7 +1393,7 @@ class _NavMenuSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bg      = isDark ? const Color(0xFF1A1A2E) : Colors.white;
+    final bg      = isDark ? const Color(0xFF1A1A1A) : Colors.white;
     final textClr = isDark ? Colors.white.withOpacity(0.87) : Colors.black87;
     final subClr  = isDark ? Colors.white54 : Colors.black45;
 
