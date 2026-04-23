@@ -119,7 +119,7 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
       setState(() => _uploading = true);
       final file  = File(img.path);
       final bytes = await file.readAsBytes();
-      await api.uploadAvatar(bytes, img.name);
+      await api.uploadAvatarBytes(bytes: bytes, filename: img.name);
       await _load();
     } catch (e) {
       if (mounted) {
@@ -150,7 +150,7 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
       ),
     );
     if (confirm == true) {
-      await authService.signOut();
+      await authService.onLogout();
       if (mounted) context.go('/login');
     }
   }
