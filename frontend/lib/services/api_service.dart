@@ -230,8 +230,37 @@ class ApiService {
       await storageService.write(
           key: 'user_id', value: data['user_id'] as String);
       authService.onLoginSuccess();
+      // ── Background profile cache ──────────────────────────────────────────
+      // Fire-and-forget: fetch /auth/me and cache it so HomeScreen can read
+      // instantly on first load — no spinner, no blank name flash.
+      _backgroundCacheProfile();
       return data;
     } catch (e) { throw _handleError(e); }
+  }
+
+  /// Fetches /auth/me after login and writes the result to the profile cache.
+  /// Called fire-and-forget — never throws, never blocks the caller.
+  void _backgroundCacheProfile() {
+    Future.delayed(const Duration(milliseconds: 400), () async {
+      try {
+        final res = await _dio.get('/auth/me');
+        if (res.data is Map) {
+          await storageService.cacheProfile(
+              Map<String, dynamic>.from(res.data as Map));
+        }
+      } catch (_) {}
+    });
+  }
+
+  /// Public wrapper so register / onboarding can also prime the cache.
+  Future<void> fetchAndCacheProfile() async {
+    try {
+      final res = await _dio.get('/auth/me');
+      if (res.data is Map) {
+        await storageService.cacheProfile(
+            Map<String, dynamic>.from(res.data as Map));
+      }
+    } catch (_) {}
   }
 
   Future<void> signOut() async {

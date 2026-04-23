@@ -79,6 +79,8 @@ class _OnboardingChatScreenState extends State<OnboardingChatScreen> {
       if (isComplete) {
         await storageService.write(
             key: 'onboarding_completed', value: 'true');
+        // Prime the profile cache so HomeScreen greets correctly
+        await api.fetchAndCacheProfile();
         await Future.delayed(const Duration(seconds: 2));
         if (mounted) context.go('/home');
       }

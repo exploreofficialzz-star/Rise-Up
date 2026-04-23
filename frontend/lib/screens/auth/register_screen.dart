@@ -3,6 +3,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
+import '../../utils/storage_service.dart';
 import '../../widgets/gradient_button.dart';
 
 class RegisterScreen extends StatefulWidget {
@@ -57,6 +58,17 @@ class _RegisterScreenState extends State<RegisterScreen> {
     try {
       await api.signUp(email, pass, name);
       if (!mounted) return;
+
+      // Seed a minimal profile cache from the name they just entered.
+      // Even before email verification + first login, this primes the
+      // HomeScreen greeting so it never flashes a blank name.
+      await storageService.cacheProfile({
+        'full_name':  name,
+        'username':   name,
+        'stage':      'survival',
+        'avatar_url': null,
+      });
+
       context.go(
           '/verify-email?email=${Uri.encodeComponent(email)}');
     } catch (e) {

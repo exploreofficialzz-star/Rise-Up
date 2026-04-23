@@ -7,6 +7,7 @@ import 'package:iconsax/iconsax.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
+import '../../utils/storage_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Country → ISO 4217 currency mapping (global, 80+ countries)
@@ -297,6 +298,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         'short_term_goal': _goalCtrl.text.trim(),
         'stage':          _stage,
       });
+
+      // Immediately refresh the profile cache so HomeScreen / Sidebar
+      // reflect the new name, stage, and avatar without any stale flash.
+      api.fetchAndCacheProfile();
 
       if (mounted) {
         _showSnackBar('Profile saved ✓', isError: false);

@@ -38,6 +38,9 @@ class _SplashScreenState extends State<SplashScreen>
   late final AnimationController _dotsCtrl;
   late final Animation<double>   _fadeIn;
 
+  String? _cachedFirstName;   // populated from profile cache for returning users
+  bool    _hasTokens = false;
+
   @override
   void initState() {
     super.initState();
@@ -55,6 +58,7 @@ class _SplashScreenState extends State<SplashScreen>
       curve: Curves.easeOut,
     );
 
+    _loadCachedName();
     _navigate();
   }
 
@@ -62,6 +66,25 @@ class _SplashScreenState extends State<SplashScreen>
   void dispose() {
     _dotsCtrl.dispose();
     super.dispose();
+  }
+
+  /// Reads the profile cache so we can show "Welcome back, [name]" instantly.
+  Future<void> _loadCachedName() async {
+    final refresh = await storageService.read(key: 'refresh_token');
+    final access  = await storageService.read(key: 'access_token');
+    if (refresh == null && access == null) return; // new user — no greeting
+
+    final profile = await storageService.getCachedProfile();
+    if (profile == null) return;
+
+    final name = (profile['full_name'] as String? ?? profile['username'] as String? ?? '').trim();
+    final first = name.split(' ').first.trim();
+    if (first.isNotEmpty && mounted) {
+      setState(() {
+        _cachedFirstName = first;
+        _hasTokens = true;
+      });
+    }
   }
 
   Future<void> _navigate() async {
@@ -143,7 +166,7 @@ class _SplashScreenState extends State<SplashScreen>
     );
   }
 
-  // ── UI (unchanged from v3) ─────────────────────────────────────────────────
+  // ── UI ─────────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     final isDark      = Theme.of(context).brightness == Brightness.dark;
@@ -199,6 +222,24 @@ class _SplashScreenState extends State<SplashScreen>
                       ),
                     ),
                   ),
+
+                  // ── Personalised welcome-back for returning users ──────
+                  if (_cachedFirstName != null) ...[
+                    const SizedBox(height: 14),
+                    AnimatedOpacity(
+                      opacity: _cachedFirstName != null ? 1.0 : 0.0,
+                      duration: const Duration(milliseconds: 500),
+                      child: Text(
+                        'Welcome back, $_cachedFirstName 👋',
+                        style: TextStyle(
+                          color:      isDark ? Colors.white54 : Colors.black45,
+                          fontSize:   15,
+                          fontWeight: FontWeight.w500,
+                          letterSpacing: 0.1,
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
