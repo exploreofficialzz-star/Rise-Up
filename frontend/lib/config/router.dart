@@ -13,7 +13,6 @@ import '../screens/auth/verify_email_screen.dart';
 import '../screens/home/home_screen.dart';
 import '../screens/profile/profile_screen.dart';
 import '../screens/profile/edit_profile_screen.dart';
-import '../screens/profile/user_profile_screen.dart';
 import '../screens/notifications/notifications_screen.dart';
 import '../screens/premium/premium_screen.dart';
 import '../screens/settings/settings_screen.dart';
@@ -79,8 +78,6 @@ final router = GoRouter(
     // ── Sub-screens (pushed on top of home) ───────────────────────────────
     GoRoute(path: '/profile',         builder: (_, __) => const ProfileScreen()),
     GoRoute(path: '/edit-profile',    builder: (_, __) => const EditProfileScreen()),
-    GoRoute(path: '/user-profile/:id',
-        builder: (_, s) => UserProfileScreen(userId: s.pathParameters['id']!)),
     GoRoute(path: '/notifications',   builder: (_, __) => const NotificationsScreen()),
     GoRoute(path: '/settings',        builder: (_, __) => const SettingsScreen()),
     GoRoute(path: '/earnings',        builder: (_, __) => const EarningsScreen()),
