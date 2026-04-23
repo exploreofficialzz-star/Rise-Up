@@ -1,5 +1,5 @@
 // frontend/lib/screens/home/home_screen.dart
-// RiseUp v3.0 — The Mission Command Center
+// RiseUp v3.1 — The Mission Command Center
 //
 // Architecture:
 //   • One screen. No bottom nav.
@@ -94,9 +94,11 @@ class Mission {
     required this.createdAt,
   });
 
-  Mission copyWith({List<ChatMessage>? messages, MissionStatus? status, int? incomeEarned}) =>
+  Mission copyWith({List<ChatMessage>? messages, MissionStatus? status,
+      int? incomeEarned, String? title}) =>
       Mission(
-        id: id, title: title, emoji: emoji, platform: platform, createdAt: createdAt,
+        id: id, emoji: emoji, platform: platform, createdAt: createdAt,
+        title:         title         ?? this.title,
         status:        status        ?? this.status,
         messages:      messages      ?? this.messages,
         incomeEarned:  incomeEarned  ?? this.incomeEarned,
@@ -147,7 +149,6 @@ class TokenState {
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _Sound {
-  // Uses device system haptics only — no asset files needed
   static void tap()      => HapticFeedback.selectionClick();
   static void send()     => HapticFeedback.mediumImpact();
   static void receive()  => HapticFeedback.lightImpact();
@@ -181,7 +182,7 @@ class _HomeScreenState extends State<HomeScreen>
   String?        _activeMissionId;
   TokenState     _tokens         = const TokenState();
   ApexStatus     _apexStatus     = ApexStatus.idle;
-  bool           _apexMode       = false; // split-panel active
+  bool           _apexMode       = false;
   String         _apexThought    = '';
   Uint8List?     _apexScreenshot;
   bool           _isLoading      = false;
@@ -190,7 +191,7 @@ class _HomeScreenState extends State<HomeScreen>
   String?        _userName;
   String         _userStage      = 'survival';
   bool           _showAdGate     = false;
-  int            _adWatchCount   = 0;   // ads watched in current cycle
+  int            _adWatchCount   = 0;
   StreamSubscription? _apexSub;
 
   late final AnimationController _tokenPulse;
@@ -231,11 +232,10 @@ class _HomeScreenState extends State<HomeScreen>
 
     if (widget.openMissionId != null) {
       _selectMission(widget.openMissionId!);
-    } else if (_missions.isEmpty) {
-      _addWelcomeMission();
-    } else {
+    } else if (_missions.isNotEmpty) {
       _activeMissionId = _missions.first.id;
     }
+    // If no missions, _activeMissionId stays null → hero welcome shown
 
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
   }
@@ -289,29 +289,6 @@ class _HomeScreenState extends State<HomeScreen>
     )).toList();
   }
 
-  void _addWelcomeMission() {
-    final welcome = Mission(
-      id:       _uuid(),
-      title:    'RiseUp',
-      emoji:    '🔥',
-      platform: '',
-      status:   MissionStatus.active,
-      createdAt: DateTime.now(),
-      messages: [
-        ChatMessage(
-          id:   _uuid(),
-          role: MessageRole.riseup,
-          text: 'do your best hustle with RiseUp 💪',
-          ts:   DateTime.now(),
-        ),
-      ],
-    );
-    setState(() {
-      _missions.add(welcome);
-      _activeMissionId = welcome.id;
-    });
-  }
-
   // ── Active mission helpers ──────────────────────────────────────────────────
   Mission? get _activeMission =>
       _missions.where((m) => m.id == _activeMissionId).firstOrNull;
@@ -339,11 +316,276 @@ class _HomeScreenState extends State<HomeScreen>
     _scrollToBottom();
   }
 
+  // ── Mission actions ─────────────────────────────────────────────────────────
+  void _showMissionOptions(BuildContext context, Mission mission) {
+    _Sound.tap();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: isDark ? const Color(0xFF1C1C1E) : Colors.white,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Container(
+              width: 36, height: 4,
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                color: isDark ? Colors.white24 : Colors.black12,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            // Mission title preview
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Text(
+                mission.title,
+                style: TextStyle(
+                  color: isDark ? Colors.white : Colors.black87,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            Divider(color: isDark ? Colors.white10 : Colors.black08, height: 1),
+            const SizedBox(height: 4),
+            ListTile(
+              dense: true,
+              leading: Icon(Iconsax.edit_2,
+                  color: isDark ? Colors.white70 : Colors.black54, size: 20),
+              title: Text('Edit title',
+                  style: TextStyle(
+                    color: isDark ? Colors.white : Colors.black87,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                  )),
+              onTap: () {
+                Navigator.pop(context);
+                _editMissionTitle(mission);
+              },
+            ),
+            ListTile(
+              dense: true,
+              leading: Icon(Iconsax.message_question,
+                  color: isDark ? Colors.white70 : Colors.black54, size: 20),
+              title: Text('Send feedback',
+                  style: TextStyle(
+                    color: isDark ? Colors.white : Colors.black87,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                  )),
+              onTap: () {
+                Navigator.pop(context);
+                _sendMissionFeedback(mission);
+              },
+            ),
+            const SizedBox(height: 4),
+            Divider(color: isDark ? Colors.white10 : Colors.black08, height: 1),
+            const SizedBox(height: 4),
+            ListTile(
+              dense: true,
+              leading: const Icon(Iconsax.trash, color: AppColors.error, size: 20),
+              title: const Text('Delete mission',
+                  style: TextStyle(color: AppColors.error, fontSize: 15, fontWeight: FontWeight.w500)),
+              onTap: () {
+                Navigator.pop(context);
+                _deleteMission(mission);
+              },
+            ),
+            const SizedBox(height: 8),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  void _editMissionTitle(Mission mission) {
+    final ctrl = TextEditingController(text: mission.title);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF1C1C1E) : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text('Edit title',
+            style: TextStyle(
+              color: isDark ? Colors.white : Colors.black87,
+              fontWeight: FontWeight.w700,
+            )),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          style: TextStyle(color: isDark ? Colors.white : Colors.black87),
+          decoration: InputDecoration(
+            hintText: 'Mission title',
+            hintStyle: TextStyle(color: isDark ? Colors.white38 : Colors.black38),
+            filled: true,
+            fillColor: isDark ? const Color(0xFF2C2C2E) : const Color(0xFFF2F2F7),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: BorderSide.none,
+            ),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancel', style: TextStyle(color: isDark ? Colors.white54 : Colors.black45)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () {
+              Navigator.pop(context);
+              final newTitle = ctrl.text.trim();
+              if (newTitle.isNotEmpty) {
+                _updateMissionTitle(mission.id, newTitle);
+                api.post('/mentor/sessions/${mission.id}/rename', {'title': newTitle})
+                    .catchError((_) {});
+              }
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _deleteMission(Mission mission) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF1C1C1E) : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text('Delete mission?',
+            style: TextStyle(
+              color: isDark ? Colors.white : Colors.black87,
+              fontWeight: FontWeight.w700,
+            )),
+        content: Text(
+          'This will permanently delete "${mission.title}" and all its messages.',
+          style: TextStyle(color: isDark ? Colors.white60 : Colors.black54, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancel', style: TextStyle(color: isDark ? Colors.white54 : Colors.black45)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.error,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () {
+              Navigator.pop(context);
+              setState(() {
+                _missions.removeWhere((m) => m.id == mission.id);
+                if (_activeMissionId == mission.id) {
+                  _activeMissionId = _missions.isNotEmpty ? _missions.first.id : null;
+                }
+              });
+              api.post('/mentor/sessions/${mission.id}/delete', {}).catchError((_) {});
+            },
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _sendMissionFeedback(Mission mission) {
+    final ctrl = TextEditingController();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF1C1C1E) : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text('Send feedback',
+            style: TextStyle(
+              color: isDark ? Colors.white : Colors.black87,
+              fontWeight: FontWeight.w700,
+            )),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('For: ${mission.title}',
+                style: TextStyle(color: isDark ? Colors.white38 : Colors.black38, fontSize: 12)),
+            const SizedBox(height: 10),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              maxLines: 4,
+              style: TextStyle(color: isDark ? Colors.white : Colors.black87),
+              decoration: InputDecoration(
+                hintText: 'What would you like us to know?',
+                hintStyle: TextStyle(color: isDark ? Colors.white38 : Colors.black38),
+                filled: true,
+                fillColor: isDark ? const Color(0xFF2C2C2E) : const Color(0xFFF2F2F7),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide.none,
+                ),
+                contentPadding: const EdgeInsets.all(12),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancel', style: TextStyle(color: isDark ? Colors.white54 : Colors.black45)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () {
+              Navigator.pop(context);
+              if (ctrl.text.trim().isNotEmpty) {
+                api.post('/feedback', {
+                  'mission_id': mission.id,
+                  'message': ctrl.text.trim(),
+                }).catchError((_) {});
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('Feedback sent. Thank you! 🙏'),
+                    backgroundColor: AppColors.success,
+                  ));
+                }
+              }
+            },
+            child: const Text('Send'),
+          ),
+        ],
+      ),
+    );
+  }
+
   // ── Send message ──────────────────────────────────────────────────────────
   Future<void> _sendMessage([String? override]) async {
     final text = (override ?? _inputCtrl.text).trim();
     if (text.isEmpty || _isSending) return;
     if (_tokens.exhausted) { _showTokenGate(); return; }
+
+    // Auto-create mission if none active
+    if (_activeMissionId == null) {
+      _newMission();
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
 
     _Sound.send();
     _inputCtrl.clear();
@@ -353,10 +595,7 @@ class _HomeScreenState extends State<HomeScreen>
     _appendMsg(userMsg);
     _scrollToBottom();
 
-    // Check if this is an APEX request
     final isApex = _detectApex(text);
-
-    // Placeholder RiseUp response
     final placeholder = ChatMessage(id: _uuid(), role: MessageRole.riseup,
         text: '', ts: DateTime.now(), isStreaming: true);
     _appendMsg(placeholder);
@@ -395,12 +634,10 @@ class _HomeScreenState extends State<HomeScreen>
         _updateMsg(placeholderId, reply);
         _Sound.receive();
 
-        // Update session title if returned
         if (res['session_title'] != null && _activeMission != null) {
           _updateMissionTitle(_activeMissionId!, res['session_title']);
         }
 
-        // Check if mentor wants to hand off to APEX
         if (res['escalate_to_apex'] == true) {
           await Future.delayed(const Duration(milliseconds: 800));
           _launchApex(res['apex_task']?.toString() ?? text, res['apex_template']);
@@ -416,15 +653,13 @@ class _HomeScreenState extends State<HomeScreen>
     setState(() { _apexStatus = ApexStatus.thinking; _apexMode = true; });
     _updateMsg(placeholderId, '🤖 **APEX activated.** Analysing your request...');
 
-    // Classify task and get template
     try {
       final classify = await api.post('/agent/classify', {'task': text});
       if (classify is Map) {
-        final template = classify['template']?.toString() ?? 'general';
+        final template  = classify['template']?.toString() ?? 'general';
         final questions = (classify['preflight_questions'] as List?)?.cast<Map>() ?? [];
 
         if (questions.isNotEmpty) {
-          // Ask preflight questions before starting
           _updateMsg(placeholderId,
               '🤖 **APEX** needs a few details before I start:\n\n' +
               questions.asMap().entries.map((e) => '**${e.key + 1}.** ${e.value['question']}').join('\n'));
@@ -448,7 +683,6 @@ class _HomeScreenState extends State<HomeScreen>
         'stream':   true,
       };
 
-      // Stream APEX events via SSE
       final stream = api.streamPost('/agent/browser/run', body);
       _apexSub?.cancel();
       _apexSub = stream.listen(
@@ -539,8 +773,7 @@ class _HomeScreenState extends State<HomeScreen>
   void _updateMissionTitle(String id, String title) {
     setState(() {
       _missions = _missions.map((m) => m.id == id
-          ? Mission(id: m.id, title: title, emoji: m.emoji, platform: m.platform,
-                    status: m.status, messages: m.messages, createdAt: m.createdAt)
+          ? m.copyWith(title: title)
           : m).toList();
     });
   }
@@ -557,7 +790,6 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> _watchAd() async {
     try {
-      // Record ad watch on backend
       final r = await api.post('/agent/tokens/record-ad', {});
       if (r is Map && r['day_locked'] == true) {
         _showDayLockedDialog();
@@ -608,8 +840,6 @@ class _HomeScreenState extends State<HomeScreen>
   // ── Build ──────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     return Scaffold(
       key: _globalKey,
       backgroundColor: Theme.of(context).brightness == Brightness.dark
@@ -646,40 +876,36 @@ class _HomeScreenState extends State<HomeScreen>
         border: Border(bottom: BorderSide(color: border, width: 0.6)),
       ),
       child: Row(children: [
-        // ≡ Menu — left
+        // ≡ Menu
         GestureDetector(
           onTap: () { _Sound.tap(); _globalKey.currentState?.openDrawer(); },
           child: Icon(Iconsax.menu_1, color: iconClr, size: 22),
         ),
 
-        // Center — RiseUp logo with token badge as superscript
+        // Center — RiseUp logo with token badge as inline superscript
         Expanded(child: Center(
-          child: Stack(
-            clipBehavior: Clip.none,
-            alignment: Alignment.center,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Shift slightly right so token badge doesn't overlap menu
-              Transform.translate(
-                offset: const Offset(16, 0),
-                child: ShaderMask(
-                  shaderCallback: (bounds) => const LinearGradient(
-                    colors: [Color(0xFFFF6B00), Color(0xFFFFD700), Color(0xFF6C5CE7)],
-                    stops:  [0.0, 0.45, 1.0],
-                  ).createShader(bounds),
-                  child: const Text('RiseUp',
-                    style: TextStyle(
-                      fontSize:      22,
-                      fontWeight:    FontWeight.w900,
-                      color:         Colors.white,
-                      letterSpacing: -0.5,
-                    ),
+              ShaderMask(
+                shaderCallback: (bounds) => const LinearGradient(
+                  colors: [Color(0xFFFF6B00), Color(0xFFFFD700), Color(0xFF6C5CE7)],
+                  stops:  [0.0, 0.45, 1.0],
+                ).createShader(bounds),
+                child: const Text(
+                  'RiseUp',
+                  style: TextStyle(
+                    fontSize:      28,
+                    fontWeight:    FontWeight.w900,
+                    color:         Colors.white,
+                    letterSpacing: -0.8,
                   ),
                 ),
               ),
-              // Token badge — top-right of RiseUp, raised up
-              Positioned(
-                right: 18,
-                top:   -2,
+              // Token badge — superscript beside the 'p', raised high
+              Transform.translate(
+                offset: const Offset(1, -6),
                 child: _TokenBadge(tokens: _tokens, pulse: _tokenPulse, isDark: isDark),
               ),
             ],
@@ -702,13 +928,17 @@ class _HomeScreenState extends State<HomeScreen>
 
   // ── Mission circles ────────────────────────────────────────────────────────
   Widget _buildMissionCircles() {
-    final isDarkMc = Theme.of(context).brightness == Brightness.dark;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    // Only show the row if there are missions, or always show for the + button
     return Container(
       height: 88,
-      color: isDarkMc ? Colors.black : const Color(0xFFFAFAFA),
+      color: isDark ? Colors.black : const Color(0xFFFAFAFA),
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        // Only show missions that have been given a real title (not "New Mission" placeholders
+        // that haven't been chatted in yet), plus the + button
         itemCount: _missions.length + 1,
         separatorBuilder: (_, __) => const SizedBox(width: 12),
         itemBuilder: (ctx, i) {
@@ -716,9 +946,11 @@ class _HomeScreenState extends State<HomeScreen>
           final m = _missions[i - 1];
           final isActive = m.id == _activeMissionId;
           return _MissionCircle(
-            mission: m,
-            isActive: isActive,
-            onTap: () { _Sound.tap(); _selectMission(m.id); },
+            mission:     m,
+            isActive:    isActive,
+            userAvatar:  _userAvatar,
+            userName:    _userName,
+            onTap:       () { _Sound.tap(); _selectMission(m.id); },
           );
         },
       ),
@@ -729,49 +961,70 @@ class _HomeScreenState extends State<HomeScreen>
   Widget _buildChatArea() {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final bg     = isDark ? Colors.black : const Color(0xFFFAFAFA);
-    final msgs   = _activeMessages;
 
-    if (msgs.isEmpty) {
-      return Container(color: bg,
-        child: Center(child: Text('Start or select a mission',
-            style: TextStyle(color: isDark ? Colors.white38 : Colors.black38))));
+    // No active mission → show hero welcome
+    if (_activeMissionId == null) {
+      return _buildHeroWelcome(isDark, bg);
     }
 
-    // Welcome-only state: single RiseUp welcome message → render as hero
-    final isWelcomeOnly = msgs.length == 1 &&
-        msgs.first.role == MessageRole.riseup &&
-        msgs.first.text.contains('do your best hustle');
-
-    if (isWelcomeOnly) {
-      return Container(
-        color: bg,
-        width: double.infinity,
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            child: Text(
-              'DO YOUR BEST\nHUSTLE WITH\nRiseUp',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize:      36,
-                fontWeight:    FontWeight.w900,
-                color:         isDark ? Colors.white : Colors.black,
-                height:        1.15,
-                letterSpacing: -0.5,
-              ),
-            ),
-          ),
-        ),
-      );
+    final msgs = _activeMessages;
+    if (msgs.isEmpty) {
+      return _buildHeroWelcome(isDark, bg);
     }
 
     return Container(
       color: bg,
       child: ListView.builder(
         controller: _scrollCtrl,
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
         itemCount: msgs.length,
         itemBuilder: (ctx, i) => _ChatBubble(msg: msgs[i]),
+      ),
+    );
+  }
+
+  // ── Hero welcome view ──────────────────────────────────────────────────────
+  Widget _buildHeroWelcome(bool isDark, Color bg) {
+    return Container(
+      color: bg,
+      width: double.infinity,
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'do your best\nhustle with',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize:      38,
+                  fontWeight:    FontWeight.w900,
+                  color:         isDark ? Colors.white : Colors.black87,
+                  height:        1.18,
+                  letterSpacing: -1.0,
+                ),
+              ),
+              ShaderMask(
+                shaderCallback: (bounds) => const LinearGradient(
+                  colors: [Color(0xFFFF6B00), Color(0xFFFFD700), Color(0xFF6C5CE7)],
+                  stops:  [0.0, 0.45, 1.0],
+                ).createShader(bounds),
+                child: const Text(
+                  'RiseUp',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize:      46,
+                    fontWeight:    FontWeight.w900,
+                    color:         Colors.white,
+                    letterSpacing: -1.5,
+                    height:        1.1,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -779,7 +1032,6 @@ class _HomeScreenState extends State<HomeScreen>
   // ── APEX split panel ───────────────────────────────────────────────────────
   Widget _buildApexSplitPanel() {
     return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      // LEFT — Thought process (40%)
       Expanded(flex: 40, child: Container(
         color: AppColors.bgCard,
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -789,9 +1041,7 @@ class _HomeScreenState extends State<HomeScreen>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Chat history
                 ..._activeMessages.map((m) => _ChatBubble(msg: m, compact: true)),
-                // Current thought
                 if (_apexThought.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Container(
@@ -817,10 +1067,8 @@ class _HomeScreenState extends State<HomeScreen>
         ]),
       )),
 
-      // Divider
       Container(width: 1, color: AppColors.bgSurface),
 
-      // RIGHT — Browser screenshot (60%)
       Expanded(flex: 60, child: Container(
         color: AppColors.bgDark,
         child: _apexScreenshot != null
@@ -839,70 +1087,81 @@ class _HomeScreenState extends State<HomeScreen>
     ]);
   }
 
-  // ── Input bar — Claude-style ──────────────────────────────────────────────
+  // ── Input bar — Claude-style floating ─────────────────────────────────────
   Widget _buildInputBar() {
-    final isDark   = Theme.of(context).brightness == Brightness.dark;
-    final fieldBg  = isDark ? const Color(0xFF1C1C1E) : const Color(0xFFF2F2F7);
-    final hintClr  = isDark ? Colors.white38     : Colors.black38;
-    final textClr  = isDark ? Colors.white       : Colors.black87;
-    final iconClr  = isDark ? Colors.white60     : Colors.black45;
+    final isDark     = Theme.of(context).brightness == Brightness.dark;
+    final fieldBg    = isDark ? const Color(0xFF1C1C1E) : const Color(0xFFF2F2F7);
+    final hintClr    = isDark ? Colors.white38         : Colors.black38;
+    final textClr    = isDark ? Colors.white           : Colors.black87;
+    final iconClr    = isDark ? Colors.white60         : Colors.black45;
     final sendActive = _inputCtrl.text.trim().isNotEmpty && !_isSending;
-    final sendBg   = sendActive
+    final sendBg     = sendActive
         ? (isDark ? Colors.white : Colors.black)
-        : (isDark ? const Color(0xFF2C2C2E) : const Color(0xFFE0E0E0));
-    final sendIcon = sendActive
+        : (isDark ? const Color(0xFF2C2C2E) : const Color(0xFFDDDDDD));
+    final sendIcon   = sendActive
         ? (isDark ? Colors.black : Colors.white)
         : (isDark ? Colors.white38 : Colors.black38);
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+      padding: const EdgeInsets.fromLTRB(14, 6, 14, 18),
       child: Container(
         decoration: BoxDecoration(
-          color: fieldBg,
-          borderRadius: BorderRadius.circular(26),
+          color:        fieldBg,
+          borderRadius: BorderRadius.circular(28),
           boxShadow: [
             BoxShadow(
               color:       isDark
-                  ? Colors.black.withOpacity(0.4)
-                  : Colors.black.withOpacity(0.08),
-              blurRadius:  16,
+                  ? Colors.black.withOpacity(0.55)
+                  : Colors.black.withOpacity(0.12),
+              blurRadius:  24,
               spreadRadius: 0,
-              offset:      const Offset(0, 2),
+              offset:      const Offset(0, 4),
+            ),
+            BoxShadow(
+              color:       isDark
+                  ? Colors.black.withOpacity(0.3)
+                  : Colors.black.withOpacity(0.06),
+              blurRadius:  8,
+              spreadRadius: -2,
+              offset:      const Offset(0, 1),
             ),
           ],
         ),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          // ── Text field ────────────────────────────────────────────────────
+          // ── Text field ─────────────────────────────────────────────────────
           TextField(
             controller: _inputCtrl,
-            focusNode: _inputFocus,
-            maxLines: null,
-            minLines: 1,
+            focusNode:  _inputFocus,
+            maxLines:   null,
+            minLines:   1,
             style: TextStyle(color: textClr, fontSize: 16, height: 1.4),
             decoration: InputDecoration(
-              hintText: 'Chat with RiseUp...',
+              hintText:  'Chat with RiseUp...',
               hintStyle: TextStyle(color: hintClr, fontSize: 16),
-              border:        InputBorder.none,
-              enabledBorder: InputBorder.none,
-              focusedBorder: InputBorder.none,
-              contentPadding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+              border:         InputBorder.none,
+              enabledBorder:  InputBorder.none,
+              focusedBorder:  InputBorder.none,
+              contentPadding: const EdgeInsets.fromLTRB(20, 14, 20, 4),
             ),
             onChanged: (_) => setState(() {}),
             textInputAction: TextInputAction.newline,
           ),
 
-          // ── Bottom row: + | send ──────────────────────────────────────────
+          // ── Bottom row: + | send ───────────────────────────────────────────
           Padding(
-            padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
             child: Row(children: [
               // + quick actions
               GestureDetector(
                 onTap: () => _showQuickMenu(context),
                 child: Container(
-                  width: 32, height: 32,
+                  width:  34,
+                  height: 34,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: isDark ? const Color(0xFF2C2C2E) : const Color(0xFFE0E0E0),
+                    color: isDark
+                        ? const Color(0xFF2C2C2E)
+                        : const Color(0xFFE4E4E6),
                   ),
                   child: Icon(Icons.add, color: iconClr, size: 20),
                 ),
@@ -910,18 +1169,19 @@ class _HomeScreenState extends State<HomeScreen>
 
               const Spacer(),
 
-              // Send arrow (Claude-style)
+              // Send arrow
               GestureDetector(
                 onTap: sendActive ? _sendMessage : null,
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 150),
-                  width: 32, height: 32,
+                  width:  34,
+                  height: 34,
                   decoration: BoxDecoration(shape: BoxShape.circle, color: sendBg),
                   child: _isSending
                       ? Center(child: SizedBox(width: 16, height: 16,
                           child: CircularProgressIndicator(strokeWidth: 2,
                               color: isDark ? Colors.black : Colors.white)))
-                      : Icon(Icons.arrow_upward_rounded, color: sendIcon, size: 18),
+                      : Icon(Icons.arrow_upward_rounded, color: sendIcon, size: 19),
                 ),
               ),
             ]),
@@ -931,7 +1191,7 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  // ── Quick menu (+ button) ─────────────────────────────────────────────────
+  // ── Quick menu (+ button) ──────────────────────────────────────────────────
   void _showQuickMenu(BuildContext context) {
     _Sound.tap();
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -949,17 +1209,17 @@ class _HomeScreenState extends State<HomeScreen>
                 decoration: BoxDecoration(
                     color: isDark ? Colors.white24 : Colors.black12,
                     borderRadius: BorderRadius.circular(2))),
-            _QuickItem(icon: Iconsax.receipt_2,    label: 'Income Log',   isDark: isDark,
+            _QuickItem(icon: Iconsax.receipt_2,   label: 'Income Log', isDark: isDark,
                 onTap: () { Navigator.pop(context); context.push('/memory'); }),
-            _QuickItem(icon: Iconsax.chart_2,      label: 'Earnings',     isDark: isDark,
+            _QuickItem(icon: Iconsax.chart_2,     label: 'Earnings',   isDark: isDark,
                 onTap: () { Navigator.pop(context); context.push('/earnings'); }),
-            _QuickItem(icon: Iconsax.book_1,       label: 'Skills',       isDark: isDark,
+            _QuickItem(icon: Iconsax.book_1,      label: 'Skills',     isDark: isDark,
                 onTap: () { Navigator.pop(context); context.push('/skills'); }),
-            _QuickItem(icon: Iconsax.task_square,  label: 'Tasks',        isDark: isDark,
+            _QuickItem(icon: Iconsax.task_square, label: 'Tasks',      isDark: isDark,
                 onTap: () { Navigator.pop(context); context.push('/tasks'); }),
-            _QuickItem(icon: Iconsax.location,     label: 'Goals',        isDark: isDark,
+            _QuickItem(icon: Iconsax.location,    label: 'Goals',      isDark: isDark,
                 onTap: () { Navigator.pop(context); context.push('/goals'); }),
-            _QuickItem(icon: Iconsax.crown_1,      label: 'Premium',      isDark: isDark,
+            _QuickItem(icon: Iconsax.crown_1,     label: 'Premium',    isDark: isDark,
                 onTap: () { Navigator.pop(context); context.push('/premium'); }),
             const SizedBox(height: 8),
           ]),
@@ -987,7 +1247,8 @@ class _HomeScreenState extends State<HomeScreen>
         Row(children: [
           const Icon(Iconsax.flash, color: AppColors.gold, size: 20),
           const SizedBox(width: 8),
-          const Expanded(child: Text('Tokens used up', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600))),
+          const Expanded(child: Text('Tokens used up',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600))),
           TextButton(
             onPressed: () { setState(() => _showAdGate = false); context.push('/premium'); },
             child: const Text('Go Premium', style: TextStyle(color: AppColors.primary)),
@@ -997,8 +1258,6 @@ class _HomeScreenState extends State<HomeScreen>
         Text('Watch $_adWatchCount/2 ads to earn +$reward tokens',
             style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)),
         const SizedBox(height: 12),
-
-        // Progress dots
         Row(mainAxisAlignment: MainAxisAlignment.center, children: List.generate(2, (i) =>
           Container(margin: const EdgeInsets.symmetric(horizontal: 4),
             width: 32, height: 6,
@@ -1007,7 +1266,6 @@ class _HomeScreenState extends State<HomeScreen>
               color: i < _adWatchCount ? AppColors.success : AppColors.bgSurface,
             )))),
         const SizedBox(height: 12),
-
         Row(children: [
           Expanded(child: OutlinedButton(
             onPressed: () => setState(() => _showAdGate = false),
@@ -1037,9 +1295,10 @@ class _HomeScreenState extends State<HomeScreen>
   // ── Sidebar ────────────────────────────────────────────────────────────────
   Widget _buildSidebar(BuildContext context) {
     final stageInfo = _stageInfo(_userStage);
-    final isDarkSb = Theme.of(context).brightness == Brightness.dark;
+    final isDark    = Theme.of(context).brightness == Brightness.dark;
+
     return Drawer(
-      backgroundColor: isDarkSb ? const Color(0xFF0D0D0D) : const Color(0xFFF5F5F5),
+      backgroundColor: isDark ? const Color(0xFF0D0D0D) : const Color(0xFFF5F5F5),
       child: SafeArea(child: Column(children: [
         // Profile header
         GestureDetector(
@@ -1050,22 +1309,32 @@ class _HomeScreenState extends State<HomeScreen>
               CircleAvatar(
                 radius: 28,
                 backgroundColor: AppColors.primary,
-                backgroundImage: _userAvatar != null ? CachedNetworkImageProvider(_userAvatar!) : null,
-                child: _userAvatar == null ? Text((_userName ?? 'R')[0].toUpperCase(),
-                    style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)) : null,
+                backgroundImage: _userAvatar != null
+                    ? CachedNetworkImageProvider(_userAvatar!) : null,
+                child: _userAvatar == null
+                    ? Text((_userName ?? 'R')[0].toUpperCase(),
+                        style: const TextStyle(color: Colors.white,
+                            fontSize: 20, fontWeight: FontWeight.bold))
+                    : null,
               ),
               const SizedBox(width: 12),
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(_userName ?? 'Hustler', style: const TextStyle(color: Colors.white,
-                    fontSize: 16, fontWeight: FontWeight.w700)),
+                Text(_userName ?? 'Hustler',
+                    style: TextStyle(
+                      color: isDark ? Colors.white : Colors.black87,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    )),
                 const SizedBox(height: 2),
                 Row(children: [
                   Text(stageInfo['emoji']!, style: const TextStyle(fontSize: 12)),
                   const SizedBox(width: 4),
-                  Text(stageInfo['label']!, style: TextStyle(color: stageInfo['color']! as Color, fontSize: 12)),
+                  Text(stageInfo['label']!,
+                      style: TextStyle(color: stageInfo['color']! as Color, fontSize: 12)),
                 ]),
               ])),
-              const Icon(Iconsax.arrow_right_2, color: AppColors.textMuted, size: 16),
+              Icon(Iconsax.arrow_right_2,
+                  color: isDark ? AppColors.textMuted : Colors.black26, size: 16),
             ]),
           ),
         ),
@@ -1089,41 +1358,101 @@ class _HomeScreenState extends State<HomeScreen>
         ),
         const SizedBox(height: 12),
 
-        // Missions list
-        const Padding(padding: EdgeInsets.symmetric(horizontal: 16),
+        // Missions label
+        Padding(padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Align(alignment: Alignment.centerLeft,
-            child: Text('MISSIONS', style: TextStyle(color: AppColors.textMuted,
-                fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1.2)))),
+            child: Text('MISSIONS',
+                style: TextStyle(
+                  color: isDark ? AppColors.textMuted : Colors.black38,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.2,
+                )))),
         const SizedBox(height: 6),
+
+        // Missions list with edit/delete/feedback
         Expanded(child: ListView.builder(
           itemCount: _missions.length,
           itemBuilder: (ctx, i) {
-            final m = _missions[i];
+            final m        = _missions[i];
             final isActive = m.id == _activeMissionId;
+
             return ListTile(
-              dense: true,
-              leading: Text(m.emoji, style: const TextStyle(fontSize: 20)),
-              title: Text(m.title, style: TextStyle(
+              dense:   true,
+              // Use user avatar instead of emoji
+              leading: CircleAvatar(
+                radius: 18,
+                backgroundColor: isActive
+                    ? AppColors.primary
+                    : (isDark ? const Color(0xFF2C2C2E) : const Color(0xFFE0E0E0)),
+                backgroundImage: _userAvatar != null
+                    ? CachedNetworkImageProvider(_userAvatar!) : null,
+                child: _userAvatar == null
+                    ? Text(
+                        (_userName ?? 'R')[0].toUpperCase(),
+                        style: TextStyle(
+                          color: isActive ? Colors.white
+                              : (isDark ? Colors.white60 : Colors.black45),
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      )
+                    : null,
+              ),
+              title: Text(
+                m.title,
+                style: TextStyle(
                   color: isActive
-                  ? (isDarkSb ? Colors.white : Colors.black87)
-                  : (isDarkSb ? AppColors.textSecondary : Colors.black45),
+                      ? (isDark ? Colors.white : Colors.black87)
+                      : (isDark ? AppColors.textSecondary : Colors.black54),
                   fontWeight: isActive ? FontWeight.w600 : FontWeight.w400,
-                  fontSize: 14),
-                  maxLines: 1, overflow: TextOverflow.ellipsis),
-              selected: isActive,
+                  fontSize: 14,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: m.messages.isNotEmpty
+                  ? Text(
+                      m.messages.last.text
+                          .replaceAll(RegExp(r'[#*_\[\]`]'), '')
+                          .trim(),
+                      style: TextStyle(
+                        color: isDark ? Colors.white24 : Colors.black26,
+                        fontSize: 11,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    )
+                  : null,
+              selected:          isActive,
               selectedTileColor: AppColors.primary.withOpacity(0.1),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              onTap: () { _Sound.tap(); Navigator.pop(context); _selectMission(m.id); },
+              // Trailing: 3-dot options menu
+              trailing: GestureDetector(
+                onTap: () => _showMissionOptions(ctx, m),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                  child: Icon(
+                    Icons.more_horiz,
+                    color: isDark ? Colors.white24 : Colors.black26,
+                    size: 18,
+                  ),
+                ),
+              ),
+              onTap: () {
+                _Sound.tap();
+                Navigator.pop(context);
+                _selectMission(m.id);
+              },
             );
           },
         )),
 
         Divider(color: AppColors.bgSurface, height: 1),
 
-        // Bottom nav items
-        _SidebarNavItem(icon: Iconsax.crown_1,  label: 'Premium',    onTap: () { Navigator.pop(context); context.push('/premium'); },
+        _SidebarNavItem(icon: Iconsax.crown_1,   label: 'Premium',  onTap: () { Navigator.pop(context); context.push('/premium'); },
             badge: _tokens.isPremium ? null : 'Upgrade'),
-        _SidebarNavItem(icon: Iconsax.setting_2, label: 'Settings',  onTap: () { Navigator.pop(context); context.push('/settings'); }),
+        _SidebarNavItem(icon: Iconsax.setting_2, label: 'Settings', onTap: () { Navigator.pop(context); context.push('/settings'); }),
         const SizedBox(height: 8),
       ])),
     );
@@ -1132,10 +1461,10 @@ class _HomeScreenState extends State<HomeScreen>
   // ── Helpers ────────────────────────────────────────────────────────────────
   static Map<String, dynamic> _stageInfo(String stage) {
     const s = <String, Map<String, dynamic>>{
-      'survival': {'emoji': '🆘', 'label': 'Survival',   'color': Color(0xFFE17055)},
-      'earning':  {'emoji': '💪', 'label': 'Earning',    'color': Color(0xFF0984E3)},
-      'growing':  {'emoji': '🚀', 'label': 'Growing',    'color': Color(0xFF00B894)},
-      'wealth':   {'emoji': '💎', 'label': 'Wealth',     'color': Color(0xFF6C5CE7)},
+      'survival': {'emoji': '🆘', 'label': 'Survival', 'color': Color(0xFFE17055)},
+      'earning':  {'emoji': '💪', 'label': 'Earning',  'color': Color(0xFF0984E3)},
+      'growing':  {'emoji': '🚀', 'label': 'Growing',  'color': Color(0xFF00B894)},
+      'wealth':   {'emoji': '💎', 'label': 'Wealth',   'color': Color(0xFF6C5CE7)},
     };
     return s[stage] ?? s['survival']!;
   }
@@ -1157,84 +1486,122 @@ class _TokenBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final badgeBg = isDark ? const Color(0xFF2A2A2A) : const Color(0xFFF0F0F0);
+    final badgeBg = isDark ? const Color(0xFF2A2A2A) : const Color(0xFFEAEAEA);
     final textClr = isDark ? Colors.white60 : Colors.black45;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
       decoration: BoxDecoration(
-        color: badgeBg,
+        color:        badgeBg,
         borderRadius: BorderRadius.circular(10),
       ),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         Icon(Icons.flash_on_rounded, color: textClr, size: 10),
         const SizedBox(width: 3),
-        Text('${tokens.remaining}', style: TextStyle(color: textClr,
-            fontSize: 10, fontWeight: FontWeight.w600)),
+        Text('${tokens.remaining}',
+            style: TextStyle(color: textClr, fontSize: 10, fontWeight: FontWeight.w600)),
       ]),
     );
   }
 }
 
 class _MissionCircle extends StatelessWidget {
-  final Mission mission;
-  final bool    isActive;
+  final Mission      mission;
+  final bool         isActive;
   final VoidCallback onTap;
-  const _MissionCircle({required this.mission, required this.isActive, required this.onTap});
+  final String?      userAvatar;
+  final String?      userName;
+
+  const _MissionCircle({
+    required this.mission,
+    required this.isActive,
+    required this.onTap,
+    this.userAvatar,
+    this.userName,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final initial = (userName ?? 'R')[0].toUpperCase();
+
     return GestureDetector(
       onTap: onTap,
       child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
         Container(
-          width: 52, height: 52,
+          width:  54,
+          height: 54,
           decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: isActive ? const LinearGradient(
-                colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)]) : null,
+            shape:    BoxShape.circle,
+            gradient: isActive
+                ? const LinearGradient(
+                    colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)])
+                : null,
             color: isActive ? null : const Color(0xFF1C1C1E),
           ),
-          child: Center(
-            child: mission.emoji == '🔥'
-                ? ClipOval(child: Image.asset(
-                    'assets/images/riseup_logo.png',
-                    width: 36, height: 36, fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => Text(mission.emoji,
-                        style: const TextStyle(fontSize: 22)),
-                  ))
-                : Text(mission.emoji, style: const TextStyle(fontSize: 22)),
+          child: Padding(
+            // Inner padding creates the ring effect when active
+            padding: EdgeInsets.all(isActive ? 2.5 : 0),
+            child: ClipOval(
+              child: userAvatar != null
+                  ? CachedNetworkImage(
+                      imageUrl:    userAvatar!,
+                      fit:         BoxFit.cover,
+                      errorWidget: (_, __, ___) => _fallback(initial),
+                    )
+                  : _fallback(initial),
+            ),
           ),
         ),
         const SizedBox(height: 4),
-        SizedBox(width: 56, child: Text(mission.title,
-            textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: isActive ? Colors.white : AppColors.textMuted, fontSize: 10))),
+        SizedBox(
+          width: 58,
+          child: Text(
+            mission.title,
+            textAlign: TextAlign.center,
+            maxLines:  1,
+            overflow:  TextOverflow.ellipsis,
+            style: TextStyle(
+              color:    isActive ? Colors.white : AppColors.textMuted,
+              fontSize: 10,
+              fontWeight: isActive ? FontWeight.w600 : FontWeight.w400,
+            ),
+          ),
+        ),
       ]),
     );
   }
+
+  Widget _fallback(String initial) => Container(
+    color:  const Color(0xFF2C2C2E),
+    child: Center(
+      child: Text(initial,
+          style: const TextStyle(color: Colors.white, fontSize: 18,
+              fontWeight: FontWeight.bold)),
+    ),
+  );
 }
 
 class _NewMissionCircle extends StatelessWidget {
   final VoidCallback onTap;
   const _NewMissionCircle({required this.onTap});
+
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return GestureDetector(
       onTap: onTap,
       child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Builder(builder: (ctx) {
-          final isDarkNc = Theme.of(ctx).brightness == Brightness.dark;
-          return Container(
-            width: 52, height: 52,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: const Color(0xFF6C5CE7), width: 2),
-              color: isDarkNc ? const Color(0xFF111111) : Colors.white,
-            ),
-            child: const Center(child: Icon(Iconsax.add, color: Color(0xFF6C5CE7), size: 22)),
-          );
-        }),
+        Container(
+          width: 54, height: 54,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: const Color(0xFF6C5CE7), width: 1.8),
+            color: isDark ? const Color(0xFF111111) : Colors.white,
+          ),
+          child: const Center(
+            child: Icon(Iconsax.add, color: Color(0xFF6C5CE7), size: 22),
+          ),
+        ),
         const SizedBox(height: 4),
         const Text('New', style: TextStyle(color: AppColors.textMuted, fontSize: 10)),
       ]),
@@ -1251,17 +1618,16 @@ class _ChatBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDark   = Theme.of(context).brightness == Brightness.dark;
     final isUser   = msg.role == MessageRole.user;
-    final padding  = compact ? 6.0 : 12.0;
+    final vPad     = compact ? 6.0 : 12.0;
     final textClr  = isDark ? Colors.white : Colors.black87;
     final bubbleBg = isDark ? const Color(0xFF1C1C1E) : const Color(0xFFEDEDED);
 
-    // ── User bubble ───────────────────────────────────────────────────────────
     if (isUser) {
       return Align(
         alignment: Alignment.centerRight,
         child: Container(
-          margin: EdgeInsets.fromLTRB(48, padding / 2, 8, padding / 2),
-          padding: EdgeInsets.all(padding),
+          margin: EdgeInsets.fromLTRB(48, vPad / 2, 8, vPad / 2),
+          padding: EdgeInsets.all(vPad),
           decoration: const BoxDecoration(
             gradient: LinearGradient(colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)]),
             borderRadius: BorderRadius.only(
@@ -1271,15 +1637,12 @@ class _ChatBubble extends StatelessWidget {
               bottomRight: Radius.circular(18),
             ),
           ),
-          child: Text(
-            msg.text,
-            style: TextStyle(color: Colors.white, fontSize: compact ? 13 : 15),
-          ),
+          child: Text(msg.text,
+              style: TextStyle(color: Colors.white, fontSize: compact ? 13 : 15)),
         ),
       ).animate().fadeIn(duration: 200.ms).slideX(begin: 0.1);
     }
 
-    // ── RiseUp bubble ─────────────────────────────────────────────────────────
     final header = compact ? const SizedBox.shrink() : Padding(
       padding: const EdgeInsets.fromLTRB(12, 8, 0, 2),
       child: Row(children: [
@@ -1301,8 +1664,8 @@ class _ChatBubble extends StatelessWidget {
     );
 
     final bubble = Container(
-      margin: EdgeInsets.fromLTRB(8, 2, 48, padding / 2),
-      padding: EdgeInsets.all(padding),
+      margin: EdgeInsets.fromLTRB(8, 2, 48, vPad / 2),
+      padding: EdgeInsets.all(vPad),
       decoration: BoxDecoration(
         color: bubbleBg,
         borderRadius: const BorderRadius.only(
@@ -1317,28 +1680,20 @@ class _ChatBubble extends StatelessWidget {
           : MarkdownBody(
               data: msg.text,
               styleSheet: MarkdownStyleSheet(
-                p:         TextStyle(color: textClr,
-                    fontSize: compact ? 13 : 15, height: 1.5),
-                h2:        TextStyle(color: textClr,
-                    fontSize: 17, fontWeight: FontWeight.w700),
-                h3:        TextStyle(color: textClr,
-                    fontSize: 15, fontWeight: FontWeight.w600),
-                strong:    TextStyle(color: textClr,
-                    fontWeight: FontWeight.w800),
-                em:        const TextStyle(color: Color(0xFF6C5CE7)),
+                p:      TextStyle(color: textClr, fontSize: compact ? 13 : 15, height: 1.5),
+                h2:     TextStyle(color: textClr, fontSize: 17, fontWeight: FontWeight.w700),
+                h3:     TextStyle(color: textClr, fontSize: 15, fontWeight: FontWeight.w600),
+                strong: TextStyle(color: textClr, fontWeight: FontWeight.w800),
+                em:     const TextStyle(color: Color(0xFF6C5CE7)),
                 blockquoteDecoration: BoxDecoration(
                   color: const Color(0xFF6C5CE7).withOpacity(0.1),
                   border: const Border(left: BorderSide(
                       color: Color(0xFF6C5CE7), width: 3)),
                 ),
-                code: const TextStyle(
-                    color: Color(0xFF00CEC9),
-                    fontFamily: 'monospace',
-                    fontSize: 13),
+                code: const TextStyle(color: Color(0xFF00CEC9),
+                    fontFamily: 'monospace', fontSize: 13),
                 codeblockDecoration: BoxDecoration(
-                  color: isDark
-                      ? const Color(0xFF1A1A1A)
-                      : const Color(0xFFE8E8E8),
+                  color: isDark ? const Color(0xFF1A1A1A) : const Color(0xFFE8E8E8),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 listBullet: const TextStyle(color: Color(0xFF6C5CE7)),
@@ -1369,7 +1724,8 @@ class _TypingIndicatorState extends State<_TypingIndicator>
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))..repeat();
+    _ctrl = AnimationController(vsync: this,
+        duration: const Duration(milliseconds: 1200))..repeat();
   }
 
   @override
@@ -1380,8 +1736,8 @@ class _TypingIndicatorState extends State<_TypingIndicator>
     return AnimatedBuilder(animation: _ctrl, builder: (_, __) {
       return Row(mainAxisSize: MainAxisSize.min, children: List.generate(3, (i) {
         final delay = i * 0.33;
-        final t = (_ctrl.value - delay).clamp(0.0, 1.0);
-        final y = sin(t * pi) * 4;
+        final t     = (_ctrl.value - delay).clamp(0.0, 1.0);
+        final y     = sin(t * pi) * 4;
         return Transform.translate(
           offset: Offset(0, -y),
           child: Container(
@@ -1423,18 +1779,20 @@ class _ApexStatusBar extends StatelessWidget {
             Icon(Iconsax.cpu, size: 14,
                 color: color.withOpacity(0.6 + pulse.value * 0.4))),
         const SizedBox(width: 6),
-        Text(label, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600)),
+        Text(label,
+            style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600)),
         const Spacer(),
         GestureDetector(
           onTap: onStop,
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
             decoration: BoxDecoration(
-              color: AppColors.error.withOpacity(0.15),
+              color:  AppColors.error.withOpacity(0.15),
               borderRadius: BorderRadius.circular(6),
               border: Border.all(color: AppColors.error.withOpacity(0.3)),
             ),
-            child: const Text('Stop', style: TextStyle(color: AppColors.error, fontSize: 11)),
+            child: const Text('Stop',
+                style: TextStyle(color: AppColors.error, fontSize: 11)),
           ),
         ),
       ]),
@@ -1443,34 +1801,34 @@ class _ApexStatusBar extends StatelessWidget {
 }
 
 class _SidebarNavItem extends StatelessWidget {
-  final IconData icon;
-  final String label;
+  final IconData     icon;
+  final String       label;
   final VoidCallback onTap;
-  final String? badge;
-  const _SidebarNavItem({required this.icon, required this.label, required this.onTap, this.badge});
+  final String?      badge;
+  const _SidebarNavItem({required this.icon, required this.label,
+      required this.onTap, this.badge});
 
   @override
   Widget build(BuildContext context) {
     return ListTile(
       dense: true,
       leading: Icon(icon, color: AppColors.textSecondary, size: 20),
-      title: Text(label, style: const TextStyle(color: AppColors.textSecondary, fontSize: 14)),
+      title: Text(label,
+          style: const TextStyle(color: AppColors.textSecondary, fontSize: 14)),
       trailing: badge != null ? Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         decoration: BoxDecoration(
           color: AppColors.primary.withOpacity(0.15),
           borderRadius: BorderRadius.circular(6),
         ),
-        child: Text(badge!, style: const TextStyle(color: AppColors.primary, fontSize: 10)),
+        child: Text(badge!,
+            style: const TextStyle(color: AppColors.primary, fontSize: 10)),
       ) : null,
       onTap: () { HapticFeedback.selectionClick(); onTap(); },
     );
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// QUICK MENU ITEM
-// ─────────────────────────────────────────────────────────────────────────────
 class _QuickItem extends StatelessWidget {
   final IconData     icon;
   final String       label;
@@ -1486,13 +1844,13 @@ class _QuickItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListTile(
-      dense: true,
+      dense:   true,
       leading: Icon(icon,
           color: isDark ? Colors.white70 : Colors.black54, size: 22),
       title: Text(label,
           style: TextStyle(
-            color: isDark ? Colors.white : Colors.black87,
-            fontSize: 15,
+            color:      isDark ? Colors.white : Colors.black87,
+            fontSize:   15,
             fontWeight: FontWeight.w500,
           )),
       onTap: () { HapticFeedback.selectionClick(); onTap(); },
