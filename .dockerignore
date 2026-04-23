@@ -1,0 +1,23 @@
+# Exclude everything that isn't the backend
+frontend/
+supabase/
+.github/
+.git/
+
+# Misc
+*.md
+*.sh
+docker-compose.yml
+render.yaml
+
+# Python cache (in case backend/ has any)
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+**/*.egg-info/
+
+# Local env files — never bake secrets into the image
+backend/.env
+backend/.env.*
+!backend/.env.example
