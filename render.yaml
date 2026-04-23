@@ -2,10 +2,11 @@ services:
   # ── Backend API (FastAPI · Docker on Render) ──────────────────
   - type: web
     name: riseup-api
-    env: docker                  # Docker runtime
+    env: docker
     region: oregon
     plan: free
-    dockerfilePath: ./Dockerfile # root-level Dockerfile (no rootDir — build context = repo root)
+    dockerfilePath: ./backend/Dockerfile   # Dockerfile lives in backend/
+    dockerContext: ./backend               # Build context = backend/ so COPY requirements.txt works
     envVars:
       - key: APP_ENV
         value: production
