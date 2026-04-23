@@ -1177,81 +1177,111 @@ class _ChatBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isUser = msg.role == MessageRole.user;
-    final padding = compact ? 6.0 : 12.0;
+    final isDark   = Theme.of(context).brightness == Brightness.dark;
+    final isUser   = msg.role == MessageRole.user;
+    final padding  = compact ? 6.0 : 12.0;
+    final textClr  = isDark ? Colors.white : Colors.black87;
+    final bubbleBg = isDark ? const Color(0xFF1C1C1E) : const Color(0xFFF2F2F7);
 
+    // ── User bubble ───────────────────────────────────────────────────────────
     if (isUser) {
       return Align(
         alignment: Alignment.centerRight,
         child: Container(
           margin: EdgeInsets.fromLTRB(48, padding / 2, 8, padding / 2),
           padding: EdgeInsets.all(padding),
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(colors: [Color(0xFFFF6B00), AppColors.primary]),
-            borderRadius: const BorderRadius.only(
-              topLeft: Radius.circular(18), topRight: Radius.circular(4),
-              bottomLeft: Radius.circular(18), bottomRight: Radius.circular(18)),
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)]),
+            borderRadius: BorderRadius.only(
+              topLeft:     Radius.circular(18),
+              topRight:    Radius.circular(4),
+              bottomLeft:  Radius.circular(18),
+              bottomRight: Radius.circular(18),
+            ),
           ),
-          child: Text(msg.text, style: TextStyle(color: Colors.white, fontSize: compact ? 13 : 15)),
+          child: Text(
+            msg.text,
+            style: TextStyle(color: Colors.white, fontSize: compact ? 13 : 15),
+          ),
         ),
       ).animate().fadeIn(duration: 200.ms).slideX(begin: 0.1);
     }
 
-    // RiseUp message
+    // ── RiseUp bubble ─────────────────────────────────────────────────────────
+    final header = compact ? const SizedBox.shrink() : Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 0, 2),
+      child: Row(children: [
+        Container(
+          width: 20, height: 20,
+          decoration: const BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: LinearGradient(colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)]),
+          ),
+          child: const Center(
+            child: Text('R', style: TextStyle(color: Colors.white,
+                fontSize: 10, fontWeight: FontWeight.bold)),
+          ),
+        ),
+        const SizedBox(width: 6),
+        Text('RiseUp', style: TextStyle(
+            color: isDark ? Colors.white38 : Colors.black38, fontSize: 12)),
+      ]),
+    );
+
+    final bubble = Container(
+      margin: EdgeInsets.fromLTRB(8, 2, 48, padding / 2),
+      padding: EdgeInsets.all(padding),
+      decoration: BoxDecoration(
+        color: bubbleBg,
+        borderRadius: const BorderRadius.only(
+          topLeft:     Radius.circular(4),
+          topRight:    Radius.circular(18),
+          bottomLeft:  Radius.circular(18),
+          bottomRight: Radius.circular(18),
+        ),
+      ),
+      child: msg.isStreaming
+          ? _TypingIndicator()
+          : MarkdownBody(
+              data: msg.text,
+              styleSheet: MarkdownStyleSheet(
+                p:         TextStyle(color: textClr,
+                    fontSize: compact ? 13 : 15, height: 1.5),
+                h2:        TextStyle(color: textClr,
+                    fontSize: 17, fontWeight: FontWeight.w700),
+                h3:        TextStyle(color: textClr,
+                    fontSize: 15, fontWeight: FontWeight.w600),
+                strong:    TextStyle(color: textClr,
+                    fontWeight: FontWeight.w800),
+                em:        const TextStyle(color: Color(0xFF6C5CE7)),
+                blockquoteDecoration: BoxDecoration(
+                  color: const Color(0xFF6C5CE7).withOpacity(0.1),
+                  border: const Border(left: BorderSide(
+                      color: Color(0xFF6C5CE7), width: 3)),
+                ),
+                code: const TextStyle(
+                    color: Color(0xFF00CEC9),
+                    fontFamily: 'monospace',
+                    fontSize: 13),
+                codeblockDecoration: BoxDecoration(
+                  color: isDark
+                      ? const Color(0xFF1A1A1A)
+                      : const Color(0xFFE8E8E8),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                listBullet: const TextStyle(color: Color(0xFF6C5CE7)),
+              ),
+              onTapLink: (_, href, __) {},
+            ),
+    );
+
     return Align(
       alignment: Alignment.centerLeft,
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        if (!compact) Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 0, 2),
-          child: Row(children: [
-            Container(width: 20, height: 20,
-              decoration: const BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: LinearGradient(colors: [Color(0xFFFF6B00), AppColors.primary])),
-              child: const Center(child: Text('R', style: TextStyle(color: Colors.white,
-                  fontSize: 10, fontWeight: FontWeight.bold)))),
-            const SizedBox(width: 6),
-            const Text('RiseUp', style: TextStyle(color: AppColors.textMuted, fontSize: 12)),
-          ]),
-        ),
-        Builder(builder: (ctx) {
-          final isDark2 = Theme.of(ctx).brightness == Brightness.dark;
-          final bubbleBg = isDark2 ? const Color(0xFF1C1C1E) : const Color(0xFFF2F2F7);
-          return Container(
-          margin: EdgeInsets.fromLTRB(8, 2, 48, padding / 2),
-          padding: EdgeInsets.all(padding),
-          decoration: BoxDecoration(
-            color: bubbleBg,
-            borderRadius: const BorderRadius.only(
-              topLeft: Radius.circular(4), topRight: Radius.circular(18),
-              bottomLeft: Radius.circular(18), bottomRight: Radius.circular(18)),
-          ),
-          child: msg.isStreaming
-              ? _TypingIndicator()
-              : MarkdownBody(
-                  data: msg.text,
-                  styleSheet: MarkdownStyleSheet(
-                    p:         TextStyle(color: isDark2 ? Colors.white : Colors.black87, fontSize: compact ? 13 : 15, height: 1.5),
-                    h2:        TextStyle(color: isDark2 ? Colors.white : Colors.black87, fontSize: 17, fontWeight: FontWeight.w700),
-                    h3:        TextStyle(color: isDark2 ? Colors.white : Colors.black87, fontSize: 15, fontWeight: FontWeight.w600),
-                    strong:    TextStyle(color: isDark2 ? Colors.white : Colors.black87, fontWeight: FontWeight.w700),
-                    em:        TextStyle(color: AppColors.primary),
-                    blockquoteDecoration: BoxDecoration(
-                      color: AppColors.primary.withOpacity(0.1),
-                      border: Border(left: BorderSide(color: AppColors.primary, width: 3)),
-                    ),
-                    code:      const TextStyle(color: Color(0xFF00CEC9), fontFamily: 'monospace', fontSize: 13),
-                    codeblockDecoration: BoxDecoration(
-                      color: AppColors.bgSurface,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    listBullet: TextStyle(color: AppColors.primary),
-                  ),
-                  onTapLink: (text, href, title) {
-                    if (href != null) {}
-                  },
-                ),
-        );}).animate().fadeIn(duration: 250.ms).slideX(begin: -0.05);
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [header, bubble],
+      ),
+    ).animate().fadeIn(duration: 250.ms).slideX(begin: -0.05);
   }
 }
 
@@ -1361,6 +1391,38 @@ class _SidebarNavItem extends StatelessWidget {
         ),
         child: Text(badge!, style: const TextStyle(color: AppColors.primary, fontSize: 10)),
       ) : null,
+      onTap: () { HapticFeedback.selectionClick(); onTap(); },
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QUICK MENU ITEM
+// ─────────────────────────────────────────────────────────────────────────────
+class _QuickItem extends StatelessWidget {
+  final IconData     icon;
+  final String       label;
+  final VoidCallback onTap;
+  final bool         isDark;
+  const _QuickItem({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    required this.isDark,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      dense: true,
+      leading: Icon(icon,
+          color: isDark ? Colors.white70 : Colors.black54, size: 22),
+      title: Text(label,
+          style: TextStyle(
+            color: isDark ? Colors.white : Colors.black87,
+            fontSize: 15,
+            fontWeight: FontWeight.w500,
+          )),
       onTap: () { HapticFeedback.selectionClick(); onTap(); },
     );
   }
