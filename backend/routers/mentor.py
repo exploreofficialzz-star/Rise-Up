@@ -39,6 +39,7 @@ from pydantic import BaseModel, Field
 
 from middleware.rate_limit import limiter, AI_LIMIT, FREE_TIER_LIMIT
 from services.ai_service import ai_service, RISEUP_MENTOR_PROMPT, SmartOnboardingManager
+from services.intent_classifier import classify_with_context, should_include_market_pulse
 from services.supabase_service import supabase_service
 from utils.auth import get_current_user
 
@@ -55,45 +56,42 @@ except Exception:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# APEX / WORKFLOW TRIGGER DETECTION
+# INTENT ROUTING (powered by intent_classifier.py)
 # ═════════════════════════════════════════════════════════════════════════════
 
-_APEX_PHRASES = [
-    "do it for me", "handle it", "set it up", "automate this",
-    "apply for me", "go ahead", "take care of it", "build this for me",
-    "run it", "make it happen", "execute", "just do it",
-    "find me clients", "send the emails", "post this",
-    "create the account", "create my profile", "open my store",
-    "set up my", "create my fiverr", "create my upwork",
-    "start my channel", "sign me up", "register me",
-    "activating apex", "use apex", "use the agent",
-]
+def _detect_delegation(
+    message: str,
+    profile: Optional[Dict] = None,
+    history: Optional[List[Dict]] = None,
+) -> Optional[str]:
+    """
+    Uses the smart intent classifier to route messages.
+    Returns: 'apex' | 'workflow' | 'market_pulse' | 'code_sandbox' | 'search' | None
+    """
+    result = classify_with_context(message, profile, history)
+    intent     = result.get("intent", "mentor_chat")
+    confidence = result.get("confidence", 0.0)
 
-_WORKFLOW_PHRASES = [
-    "create a workflow", "build a workflow", "make a plan for",
-    "income plan", "start earning from", "i want to earn",
-    "how do i start", "step by step plan", "full plan",
-    "set up income", "side hustle plan", "make me a roadmap",
-    "help me get started", "guide me through",
-]
+    if intent == "mentor_chat" or confidence < 0.15:
+        return None
 
-_SEARCH_PHRASES = [
-    "find me", "search for", "look up", "what is the price of",
-    "who sells", "suppliers of", "contact for", "phone number of",
-    "latest news", "current price", "best deals",
-]
+    # Map classifier intents to delegation keys
+    mapping = {
+        "apex":         "apex",
+        "workflow":     "workflow",
+        "market_pulse": "market_pulse",
+        "code_sandbox": "code_sandbox",
+    }
+    return mapping.get(intent)
 
 
-def _detect_delegation(message: str) -> Optional[str]:
-    """Returns 'apex', 'workflow', 'search', or None."""
-    lower = message.lower()
-    if any(p in lower for p in _APEX_PHRASES):
-        return "apex"
-    if any(p in lower for p in _WORKFLOW_PHRASES):
-        return "workflow"
-    if any(p in lower for p in _SEARCH_PHRASES):
-        return "search"
-    return None
+def _get_intent_details(
+    message: str,
+    profile: Optional[Dict] = None,
+    history: Optional[List[Dict]] = None,
+) -> Dict:
+    """Returns full classification dict for rich routing decisions."""
+    return classify_with_context(message, profile, history)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -279,36 +277,113 @@ async def mentor_chat(
     if req.include_brain:
         brain_ctx = await _get_brain_context(req.message, user_id, country)
 
-    # Delegation detection
-    delegation      = _detect_delegation(req.message)
+    # ── Smart intent routing ─────────────────────────────────────────────────
+    intent_result  = _get_intent_details(req.message, profile, history)
+    delegation     = _detect_delegation(req.message, profile, history)
     delegation_payload: Optional[Dict] = None
+    platform       = intent_result.get("platform")
+    sub_intent     = intent_result.get("sub_intent")
 
     if delegation == "apex":
+        apex_msg = (
+            f"🤖 **APEX activated.** I'll handle this end-to-end for you"
+            + (f" on **{platform.title()}**" if platform else "")
+            + f".\n\nHere's what I'm about to do:"
+        )
         delegation_payload = {
             "type":       "apex",
             "task":       req.message,
+            "platform":   platform,
+            "sub_intent": sub_intent,
             "session_id": session_id,
-            "message":    "Activating APEX to handle this for you. 🤖⚡",
+            "message":    apex_msg,
+            "escalate_to_apex": True,
+            "apex_task":  req.message,
         }
+        # Let AI describe what APEX will do, then signal Flutter to launch it
+        brain_ctx += (
+            f"\n\n[APEX INSTRUCTION] The user wants APEX to execute this task. "
+            f"Platform detected: {platform or 'general'}. Sub-intent: {sub_intent or 'general_execution'}. "
+            f"In your response: briefly describe what APEX will do step by step (3-5 bullet points). "
+            f"End with: 'Activating APEX to handle this end-to-end for you. 🤖⚡' — this triggers the agent."
+        )
+
     elif delegation == "workflow":
         delegation_payload = {
-            "type":    "workflow",
-            "goal":    req.message,
-            "message": "Opening the Workflow Engine to build your plan. ⚡",
+            "type":       "workflow",
+            "goal":       req.message,
+            "platform":   platform,
+            "sub_intent": sub_intent,
+            "message":    "Building your income workflow... ⚡",
         }
-    elif delegation == "search":
+        # Enrich context so AI builds a proper workflow response
+        brain_ctx += (
+            f"\n\n[WORKFLOW INSTRUCTION] User wants a concrete income plan. "
+            f"Platform: {platform or 'any'}. Sub-intent: {sub_intent or 'income_plan'}. "
+            f"Build a structured step-by-step workflow. Use the 90-day sprint framework. "
+            f"Include: daily actions, weekly milestones, first income estimate, tools needed. "
+            f"Format with clear sections. End by offering APEX execution for the first step."
+        )
+
+    elif delegation == "market_pulse":
+        # Trigger live market scan
         try:
-            from services.web_search_service import web_search_service
-            results   = await web_search_service.search(req.message, num=5)
-            brain_ctx += (
-                "\n\n[LIVE SEARCH RESULTS]\n" +
-                "\n".join(
-                    f"- {r.get('title', '')}: {r.get('snippet', '')}"
-                    for r in results[:4]
-                )
+            from services.market_pulse_service import market_pulse_service
+            market_data = await market_pulse_service.scan_opportunities(
+                user_id=user_id,
+                country=country,
+                skills=profile.get("skills", []),
+                limit=5,
             )
+            if market_data:
+                brain_ctx += (
+                    "\n\n[LIVE MARKET DATA]\n" +
+                    "\n".join(f"• {o.get('title','')} — {o.get('ai_summary','')}"
+                               for o in market_data[:4])
+                )
         except Exception:
-            pass
+            # Fallback to web search
+            try:
+                from services.web_search_service import web_search_service
+                results   = await web_search_service.search(
+                    f"{req.message} opportunities {country}", num=5)
+                brain_ctx += (
+                    "\n\n[LIVE SEARCH]\n" +
+                    "\n".join(f"- {r.get('title','')}: {r.get('snippet','')}"
+                               for r in results[:4])
+                )
+            except Exception:
+                pass
+        brain_ctx += (
+            "\n\n[MARKET PULSE INSTRUCTION] Use the live data above to give "
+            "specific, actionable opportunities with real numbers and links. "
+            "Always include: platform, niche, income potential, and first step."
+        )
+
+    elif delegation == "code_sandbox":
+        brain_ctx += (
+            "\n\n[CODE SANDBOX INSTRUCTION] User wants code built. "
+            "Write complete, working code. No placeholders. "
+            "For web pages: write full HTML/CSS/JS in one file. "
+            "For Python: include all imports and a working main() function. "
+            "After the code, offer APEX to deploy or run it automatically."
+        )
+
+    else:
+        # Pure mentor chat — check if we should add a search enrichment
+        search_triggers = ["find", "price", "contact", "supplier", "number",
+                           "latest", "current", "news", "best", "compare"]
+        if any(t in req.message.lower() for t in search_triggers):
+            try:
+                from services.web_search_service import web_search_service
+                results   = await web_search_service.search(req.message, num=4)
+                brain_ctx += (
+                    "\n\n[WEB SEARCH]\n" +
+                    "\n".join(f"- {r.get('title','')}: {r.get('snippet','')}"
+                               for r in results[:3])
+                )
+            except Exception:
+                pass
 
     system   = _build_system_prompt(profile, brain_ctx, language, is_first_message)
     messages = history + [{"role": "user", "content": req.message}]
