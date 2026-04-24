@@ -1,30 +1,20 @@
 """
 backend/routers/mentor.py
-RiseUp AI Mentor — Production v1.1
+RiseUp AI Mentor — Production v1.2
+
+v1.2 fixes:
+  • Table names corrected: chat_messages → mentor_messages,
+    chat_sessions → mentor_sessions
+  • Null guards on every .execute() call — eliminates
+    "get_state: 'NoneType' object has no attribute 'data'" errors
+  • Response now includes both `reply` AND `content` keys so the
+    Flutter _handleMentorChat finds the reply regardless of which key
+    it checks first
+  • _ensure_session null-guarded; falls back to temp id gracefully
 
 v1.1 fix: removed `from __future__ import annotations`.
-  Pydantic v2 cannot resolve forward-reference strings created by that import
-  when the model classes are used as FastAPI endpoint parameters, raising
-  "name 'MentorChatRequest' is not defined" at startup.
-
-The Mentor is the user's personal wealth coach.
-It automatically detects when tasks should delegate to:
-  • APEX Agent     — "do it for me" tasks
-  • Workflow Engine — "build me a plan" tasks
-  • Web search     — "find me X" tasks
-
-All AI providers used in fallback chain (matching ai_service.py order):
-  Free:    Groq (Llama-3.3-70b) → Gemini 2.0 Flash
-  Premium: GPT-4o-mini → Claude 3.5 Haiku → Gemini 1.5 Pro → Groq
-
-Endpoints:
-  POST /mentor/chat          — main conversational endpoint
-  POST /mentor/chat/stream   — SSE streaming version
-  GET  /mentor/session/{id}  — session message history
-  GET  /mentor/sessions      — list user's sessions
-  POST /mentor/daily-checkin — proactive daily coaching
-  GET  /mentor/profile-status — profile completeness
-  POST /mentor/feedback      — session rating
+  Pydantic v2 cannot resolve forward-reference strings created by that
+  import when the model classes are used as FastAPI endpoint parameters.
 """
 
 import asyncio
@@ -123,6 +113,17 @@ class MentorFeedbackRequest(BaseModel):
 # HELPERS
 # ═════════════════════════════════════════════════════════════════════════════
 
+def _safe_data(result: Any) -> list:
+    """
+    Null-safe accessor for Supabase execute() results.
+    Eliminates 'NoneType object has no attribute data' across the board.
+    """
+    if result is None:
+        return []
+    data = getattr(result, "data", None)
+    return data if isinstance(data, list) else []
+
+
 async def _get_profile(user_id: str) -> Dict[str, Any]:
     try:
         return await supabase_service.get_profile(user_id) or {}
@@ -153,24 +154,30 @@ async def _get_brain_context(query: str, user_id: str, country: str) -> str:
 
 
 async def _load_history(session_id: str, user_id: str, limit: int = 20) -> List[Dict]:
+    """
+    Load prior messages for a session.
+    Table: mentor_messages (was incorrectly chat_messages).
+    Null-guarded so a missing table or empty result never raises.
+    """
     try:
-        sb   = supabase_service.client
-        msgs = (
-            sb.table("chat_messages")
+        sb     = supabase_service.client
+        result = (
+            sb.table("mentor_messages")          # ← FIXED table name
             .select("role,content")
             .eq("session_id", session_id)
             .eq("user_id", user_id)
             .order("created_at", desc=True)
             .limit(limit)
             .execute()
-            .data or []
         )
+        msgs = _safe_data(result)                # ← null guard
         return [
             {"role": m["role"], "content": m["content"]}
             for m in reversed(msgs)
-            if m["role"] in ("user", "assistant")
+            if m.get("role") in ("user", "assistant")
         ]
-    except Exception:
+    except Exception as e:
+        logger.warning("_load_history: %s", e)
         return []
 
 
@@ -181,9 +188,14 @@ async def _save_message(
     content: str,
     model: str = "",
 ) -> None:
+    """
+    Persist a single message.
+    Table: mentor_messages (was incorrectly chat_messages).
+    Also updates mentor_sessions.updated_at (was chat_sessions).
+    """
     try:
         sb = supabase_service.client
-        sb.table("chat_messages").insert({
+        sb.table("mentor_messages").insert({    # ← FIXED table name
             "session_id": session_id,
             "user_id":    user_id,
             "role":       role,
@@ -191,7 +203,7 @@ async def _save_message(
             "model_used": model,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }).execute()
-        sb.table("chat_sessions").update({
+        sb.table("mentor_sessions").update({    # ← FIXED table name
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", session_id).execute()
     except Exception as e:
@@ -199,17 +211,25 @@ async def _save_message(
 
 
 async def _ensure_session(user_id: str, title: str = "") -> str:
+    """
+    Create a new mentor session row.
+    Table: mentor_sessions (was incorrectly chat_sessions).
+    Null-guarded — returns a temp id if insert fails.
+    """
     try:
         sb  = supabase_service.client
         now = datetime.now(timezone.utc).isoformat()
-        res = sb.table("chat_sessions").insert({
+        res = sb.table("mentor_sessions").insert({    # ← FIXED table name
             "user_id":    user_id,
             "title":      title or f"Mentor Chat {datetime.now().strftime('%H:%M')}",
             "is_active":  True,
             "created_at": now,
             "updated_at": now,
         }).execute()
-        return res.data[0]["id"]
+        rows = _safe_data(res)                        # ← null guard
+        if rows:
+            return rows[0]["id"]
+        raise ValueError("Empty insert result")
     except Exception as e:
         logger.error("_ensure_session: %s", e)
         return f"temp_{int(datetime.now().timestamp())}"
@@ -234,6 +254,31 @@ def _sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {payload}\n\n"
 
 
+def _make_reply_payload(
+    content: str,
+    session_id: str,
+    model_used: str,
+    delegation_payload: Optional[Dict],
+    brain_ctx: str,
+    language: str,
+) -> Dict[str, Any]:
+    """
+    Build the response dict.
+    Both `reply` AND `content` keys are included so the Flutter client
+    finds the message regardless of which key it checks first.
+    """
+    return {
+        "reply":        content,      # ← Flutter checks this first
+        "content":      content,      # ← fallback key
+        "message":      content,      # ← second fallback
+        "session_id":   session_id,
+        "model_used":   model_used,
+        "delegation":   delegation_payload,
+        "brain_used":   bool(brain_ctx),
+        "language":     language,
+    }
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # MAIN CHAT ENDPOINT
 # ═════════════════════════════════════════════════════════════════════════════
@@ -250,20 +295,16 @@ async def mentor_chat(
     language = req.language or profile.get("language", "en")
     country  = profile.get("country", "US")
 
-    # Ensure / reuse session
     session_id = req.session_id
     if not session_id:
         session_id = await _ensure_session(user_id, title=req.message[:40])
 
-    # Load prior history so the mentor has context
     history = await _load_history(session_id, user_id)
 
-    # Brain context (non-blocking failure)
     brain_ctx = ""
     if req.include_brain:
         brain_ctx = await _get_brain_context(req.message, user_id, country)
 
-    # Delegation detection
     delegation      = _detect_delegation(req.message)
     delegation_payload: Optional[Dict] = None
 
@@ -309,7 +350,6 @@ async def mentor_chat(
     await _save_message(session_id, user_id, "user",      req.message)
     await _save_message(session_id, user_id, "assistant", content, model_used)
 
-    # Extract profile signals and persist them silently
     signals = SmartOnboardingManager.extract_profile_signals(req.message, profile)
     if signals:
         try:
@@ -319,14 +359,9 @@ async def mentor_chat(
         except Exception:
             pass
 
-    return {
-        "content":    content,
-        "session_id": session_id,
-        "model_used": model_used,
-        "delegation": delegation_payload,
-        "brain_used": bool(brain_ctx),
-        "language":   language,
-    }
+    return _make_reply_payload(
+        content, session_id, model_used, delegation_payload, brain_ctx, language
+    )
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -353,6 +388,7 @@ async def mentor_chat_stream(
         yield _sse("session_id", {"session_id": session_id})
 
         delegation = _detect_delegation(req.message)
+        brain_ctx  = ""
 
         if delegation == "apex":
             yield _sse("delegation", {
@@ -381,7 +417,6 @@ async def mentor_chat_stream(
             )
 
         else:
-            brain_ctx = ""
             if req.include_brain:
                 brain_ctx = await _get_brain_context(req.message, user_id, country)
                 if brain_ctx:
@@ -415,7 +450,6 @@ async def mentor_chat_stream(
             content    = result.get("content", "")
             model_used = result.get("model", "unknown")
 
-            # Stream word-by-word for live typing effect
             words = content.split()
             for i, word in enumerate(words):
                 chunk = word + (" " if i < len(words) - 1 else "")
@@ -436,7 +470,9 @@ async def mentor_chat_stream(
 
         brain_used = bool(brain_ctx) if delegation not in ("apex", "workflow") else False
         yield _sse("complete", {
+            "reply":      content,      # Flutter checks this first
             "content":    content,
+            "message":    content,
             "session_id": session_id,
             "delegation": delegation,
             "brain_used": brain_used,
@@ -447,7 +483,7 @@ async def mentor_chat_stream(
         generate(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control":    "no-cache",
+            "Cache-Control":     "no-cache",
             "X-Accel-Buffering": "no",
         },
     )
@@ -476,20 +512,26 @@ async def list_mentor_sessions(
     limit: int  = 20,
     user:  dict = Depends(get_current_user),
 ):
+    """
+    List the current user's mentor sessions.
+    Table: mentor_sessions (was incorrectly chat_sessions).
+    Null-guarded on execute() result.
+    """
     try:
-        sb   = supabase_service.client
-        data = (
-            sb.table("chat_sessions")
+        sb     = supabase_service.client
+        result = (
+            sb.table("mentor_sessions")          # ← FIXED table name
             .select("id,title,updated_at,created_at")
             .eq("user_id", user["id"])
             .eq("is_active", True)
             .order("updated_at", desc=True)
             .limit(limit)
             .execute()
-            .data or []
         )
+        data = _safe_data(result)                # ← null guard
         return {"sessions": data}
     except Exception as e:
+        logger.error("list_mentor_sessions: %s", e)
         raise HTTPException(500, f"Failed to list sessions: {e}")
 
 
