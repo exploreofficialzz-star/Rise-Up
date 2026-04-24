@@ -254,30 +254,61 @@ class _HomeScreenState extends State<HomeScreen>
     final cached = await storageService.getCachedProfile();
     if (cached != null && mounted) {
       setState(() {
-        _userName   = cached['full_name'] as String?
-                   ?? cached['username']  as String?
-                   ?? 'Hustler';
+        _userName   = (cached['full_name']  as String? ?? '').isNotEmpty
+                    ? cached['full_name']  as String
+                    : cached['username']   as String? ?? 'Hustler';
         _userAvatar = cached['avatar_url'] as String?;
         _userStage  = cached['stage']      as String? ?? 'survival';
       });
     }
 
-    // ── 2. Background refresh from API ─────────────────────────────────────
+    // ── 2. Refresh from /auth/me (now returns flat full profile) ──────────
     try {
-      final r = await api.get('/auth/me');
+      final r = await api.get('/auth/me')
+          .timeout(const Duration(seconds: 10));
+
       if (r is Map && mounted) {
-        final profile = Map<String, dynamic>.from(r as Map);
-        setState(() {
-          _userName   = profile['full_name'] as String?
-                     ?? profile['username']  as String?
-                     ?? 'Hustler';
-          _userAvatar = profile['avatar_url'] as String?;
-          _userStage  = profile['stage']      as String? ?? 'survival';
-        });
-        // Write fresh data back to cache for next cold start
+        // /auth/me → flat map.  /progress/profile → {"profile": {...}}
+        final raw = r as Map;
+        final profile = raw.containsKey('profile') && raw['profile'] is Map
+            ? Map<String, dynamic>.from(raw['profile'] as Map)
+            : Map<String, dynamic>.from(raw);
+
+        final name = (profile['full_name'] as String? ?? '').isNotEmpty
+            ? profile['full_name'] as String
+            : (profile['username'] as String? ?? '');
+
+        if (mounted) {
+          setState(() {
+            _userName   = name.isNotEmpty ? name : (_userName ?? 'Hustler');
+            _userAvatar = profile['avatar_url'] as String?;
+            _userStage  = profile['stage']      as String? ?? 'survival';
+          });
+        }
         await storageService.cacheProfile(profile);
       }
-    } catch (_) {}
+    } catch (_) {
+      // /auth/me failed — try /progress/profile as fallback
+      try {
+        final r2 = await api.get('/progress/profile')
+            .timeout(const Duration(seconds: 10));
+        if (r2 is Map && mounted) {
+          final p = (r2['profile'] as Map?) ?? {};
+          final profile = Map<String, dynamic>.from(p);
+          final name = (profile['full_name'] as String? ?? '').isNotEmpty
+              ? profile['full_name'] as String
+              : (profile['username'] as String? ?? '');
+          if (mounted) {
+            setState(() {
+              _userName   = name.isNotEmpty ? name : (_userName ?? 'Hustler');
+              _userAvatar = profile['avatar_url'] as String?;
+              _userStage  = profile['stage']      as String? ?? 'survival';
+            });
+          }
+          await storageService.cacheProfile(profile);
+        }
+      } catch (_) {}
+    }
   }
 
   Future<void> _fetchTokens() async {
