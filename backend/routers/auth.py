@@ -299,22 +299,89 @@ async def version_check(app_version: str = "1.0.0"):
 async def get_current_user_info(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
-    """Get current user info from token."""
+    """
+    Get current user info + profile.
+
+    FIX: Old code called set_session(token, "") which corrupted the Supabase
+    auth client state, causing get_user() to always return 401 regardless of
+    token validity → infinite refresh loop on the client.
+
+    Correct call is get_user(jwt_string) which validates the token directly.
+    Also returns flat profile fields so Flutter can read full_name / stage /
+    avatar_url at the top level without parsing nested metadata.
+    """
     if not credentials:
         raise HTTPException(401, "Authentication required")
 
+    token = credentials.credentials
+
     try:
         client = get_supabase_auth_client()
-        client.auth.set_session(credentials.credentials, "")
-        user = client.auth.get_user()
 
-        if not user or not user.user:
+        # ── 1. Validate JWT — pass it directly, no set_session ───────────
+        user_response = client.auth.get_user(token)
+        if not user_response or not user_response.user:
             raise HTTPException(401, "Invalid token")
 
+        user       = user_response.user
+        metadata   = user.user_metadata or {}
+        user_id    = user.id
+
+        # ── 2. Pull real profile row from DB (stage, avatar_url, etc.) ───
+        profile_row: dict = {}
+        try:
+            svc_client = get_supabase_client()   # service role — no RLS
+            res = (
+                svc_client.table("profiles")
+                .select(
+                    "full_name, username, stage, avatar_url, country, "
+                    "currency, bio, subscription_tier, is_premium"
+                )
+                .eq("id", user_id)
+                .maybe_single()
+                .execute()
+            )
+            profile_row = res.data or {}
+        except Exception as db_err:
+            logger.warning(f"/auth/me profile DB lookup failed (non-fatal): {db_err}")
+
+        # ── 3. Merge: DB row wins, fall back to JWT metadata ─────────────
+        full_name  = (profile_row.get("full_name")
+                      or metadata.get("full_name")
+                      or "")
+        username   = (profile_row.get("username")
+                      or metadata.get("username")
+                      or "")
+        stage      = profile_row.get("stage")      or "survival"
+        avatar_url = profile_row.get("avatar_url") or metadata.get("avatar_url")
+        country    = profile_row.get("country")    or metadata.get("country_code", "")
+        currency   = profile_row.get("currency")   or metadata.get("currency", "USD")
+        bio        = profile_row.get("bio", "")
+        is_premium = (profile_row.get("is_premium")
+                      or profile_row.get("subscription_tier") == "premium"
+                      or False)
+
+        logger.info(f"/auth/me OK: {user_id}")
+
         return {
-            "user_id":  user.user.id,
-            "email":    user.user.email,
-            "metadata": user.user.user_metadata or {},
+            # Identity
+            "user_id":    user_id,
+            "id":         user_id,          # alias for convenience
+            "email":      user.email,
+
+            # Profile fields Flutter reads at top level
+            "full_name":  full_name,
+            "username":   username,
+            "stage":      stage,
+            "avatar_url": avatar_url,
+            "country":    country,
+            "currency":   currency,
+            "bio":        bio,
+            "is_premium": is_premium,
+            "subscription_tier": profile_row.get("subscription_tier", "free"),
+
+            # Raw metadata still available
+            "metadata":   metadata,
         }
 
     except HTTPException:
