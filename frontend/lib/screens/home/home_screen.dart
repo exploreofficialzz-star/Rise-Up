@@ -1,5 +1,12 @@
 // frontend/lib/screens/home/home_screen.dart
-// RiseUp v3.1 — The Mission Command Center
+// RiseUp v3.2 — The Mission Command Center
+//
+// Changelog v3.2:
+//   • Hero welcome: greeting (top-left, below mission circles) — no logo/tagline in hero
+//   • Input bar hint text: "Do your best hustle with RiseUp"
+//   • _RiseUpSpinIcon: larger (36×36), no glow/blur background
+//   • _handleMentorChat: fixed stuck-loading bug (non-Map response now resolves placeholder)
+//                        + 30 s timeout guard
 //
 // Architecture:
 //   • One screen. No bottom nav.
@@ -229,11 +236,9 @@ class _HomeScreenState extends State<HomeScreen>
   Future<void> _boot() async {
     setState(() => _isLoading = true);
 
-    // Load profile from cache first → dismiss spinner immediately if available
     await _fetchProfile();
     if (mounted) setState(() => _isLoading = false);
 
-    // Fetch tokens + missions in background (no spinner, they update quietly)
     await Future.wait([
       _fetchTokens().timeout(const Duration(seconds: 12), onTimeout: () {}),
       _fetchMissions().timeout(const Duration(seconds: 12), onTimeout: () {}),
@@ -244,13 +249,11 @@ class _HomeScreenState extends State<HomeScreen>
     } else if (_missions.isNotEmpty) {
       _activeMissionId = _missions.first.id;
     }
-    // If no missions, _activeMissionId stays null → hero welcome shown
 
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
   }
 
   Future<void> _fetchProfile() async {
-    // ── 1. Serve from cache immediately (zero-wait, no spinner) ───────────
     final cached = await storageService.getCachedProfile();
     if (cached != null && mounted) {
       setState(() {
@@ -262,13 +265,11 @@ class _HomeScreenState extends State<HomeScreen>
       });
     }
 
-    // ── 2. Refresh from /auth/me (now returns flat full profile) ──────────
     try {
       final r = await api.get('/auth/me')
           .timeout(const Duration(seconds: 10));
 
       if (r is Map && mounted) {
-        // /auth/me → flat map.  /progress/profile → {"profile": {...}}
         final raw = r as Map;
         final profile = raw.containsKey('profile') && raw['profile'] is Map
             ? Map<String, dynamic>.from(raw['profile'] as Map)
@@ -288,7 +289,6 @@ class _HomeScreenState extends State<HomeScreen>
         await storageService.cacheProfile(profile);
       }
     } catch (_) {
-      // /auth/me failed — try /progress/profile as fallback
       try {
         final r2 = await api.get('/progress/profile')
             .timeout(const Duration(seconds: 10));
@@ -347,7 +347,7 @@ class _HomeScreenState extends State<HomeScreen>
     )).toList();
   }
 
-  // ── Active mission helpers ──────────────────────────────────────────────────
+  // ── Active mission helpers ─────────────────────────────────────────────────
   Mission? get _activeMission =>
       _missions.where((m) => m.id == _activeMissionId).firstOrNull;
 
@@ -374,7 +374,7 @@ class _HomeScreenState extends State<HomeScreen>
     _scrollToBottom();
   }
 
-  // ── Mission actions ─────────────────────────────────────────────────────────
+  // ── Mission actions ────────────────────────────────────────────────────────
   void _showMissionOptions(BuildContext context, Mission mission) {
     _Sound.tap();
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -395,7 +395,6 @@ class _HomeScreenState extends State<HomeScreen>
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
-            // Mission title preview
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
               child: Text(
@@ -633,13 +632,12 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  // ── Send message ──────────────────────────────────────────────────────────
+  // ── Send message ───────────────────────────────────────────────────────────
   Future<void> _sendMessage([String? override]) async {
     final text = (override ?? _inputCtrl.text).trim();
     if (text.isEmpty || _isSending) return;
     if (_tokens.exhausted) { _showTokenGate(); return; }
 
-    // Auto-create mission if none active
     if (_activeMissionId == null) {
       _newMission();
       await Future.delayed(const Duration(milliseconds: 50));
@@ -680,29 +678,56 @@ class _HomeScreenState extends State<HomeScreen>
     return triggers.any((t) => lower.contains(t));
   }
 
+  // ── FIX: resolved stuck-loading bug ───────────────────────────────────────
+  // Previously, if `res` was not a Map (e.g. null, String, or unexpected type),
+  // _updateMsg was never called and the placeholder stayed isStreaming forever.
+  // Now we always resolve the placeholder, and add a 30 s timeout guard.
   Future<void> _handleMentorChat(String text, String placeholderId) async {
     try {
       final sessionId = _activeMission?.id;
       final res = await api.post('/mentor/chat', {
         'message':    text,
         'session_id': sessionId,
-      });
+      }).timeout(
+        const Duration(seconds: 30),
+        onTimeout: () => throw TimeoutException('Request timed out'),
+      );
+
       if (res is Map) {
-        final reply = res['reply']?.toString() ?? res['message']?.toString() ?? '...';
+        // Try all common reply keys the backend might return
+        final reply = (res['reply']   as String?)?.trim().isNotEmpty == true
+            ? res['reply']   as String
+            : (res['message'] as String?)?.trim().isNotEmpty == true
+                ? res['message'] as String
+                : (res['content'] as String?)?.trim().isNotEmpty == true
+                    ? res['content'] as String
+                    : '...';
         _updateMsg(placeholderId, reply);
         _Sound.receive();
 
         if (res['session_title'] != null && _activeMission != null) {
-          _updateMissionTitle(_activeMissionId!, res['session_title']);
+          _updateMissionTitle(_activeMissionId!, res['session_title'].toString());
         }
 
         if (res['escalate_to_apex'] == true) {
           await Future.delayed(const Duration(milliseconds: 800));
-          _launchApex(res['apex_task']?.toString() ?? text, res['apex_template']);
+          _launchApex(res['apex_task']?.toString() ?? text, res['apex_template'] as Map<String, dynamic>?);
         }
+      } else {
+        // Non-Map response (String, null, etc.) — resolve placeholder so it
+        // never stays stuck in the loading state.
+        final fallback = res?.toString().trim().isNotEmpty == true
+            ? res.toString()
+            : 'Something went wrong. Please try again.';
+        _updateMsg(placeholderId, fallback);
+        _Sound.receive();
       }
+    } on TimeoutException {
+      _updateMsg(placeholderId,
+          '⏱️ Request timed out. Check your connection and try again.');
     } catch (e) {
-      _updateMsg(placeholderId, 'I\'m having trouble connecting right now. Try again in a moment.');
+      _updateMsg(placeholderId,
+          'I\'m having trouble connecting right now. Try again in a moment.');
     }
   }
 
@@ -934,13 +959,11 @@ class _HomeScreenState extends State<HomeScreen>
         border: Border(bottom: BorderSide(color: border, width: 0.6)),
       ),
       child: Row(children: [
-        // ≡ Menu — slightly larger + heavier
         GestureDetector(
           onTap: () { _Sound.tap(); _globalKey.currentState?.openDrawer(); },
           child: Icon(Icons.menu_rounded, color: iconClr, size: 26),
         ),
 
-        // Center — RiseUp gradient wordmark (thicker stroke via font weight)
         Expanded(child: Center(
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -958,7 +981,6 @@ class _HomeScreenState extends State<HomeScreen>
                     fontWeight:    FontWeight.w900,
                     color:         Colors.white,
                     letterSpacing: -0.5,
-                    // Simulate stroke thickness via shadows
                     shadows: [
                       Shadow(blurRadius: 0, offset: Offset(0.4, 0)),
                       Shadow(blurRadius: 0, offset: Offset(-0.2, 0)),
@@ -966,7 +988,6 @@ class _HomeScreenState extends State<HomeScreen>
                   ),
                 ),
               ),
-              // Token badge
               Transform.translate(
                 offset: const Offset(1, -6),
                 child: _TokenBadge(tokens: _tokens, pulse: _tokenPulse, isDark: isDark),
@@ -975,13 +996,11 @@ class _HomeScreenState extends State<HomeScreen>
           ),
         )),
 
-        // Search — filled magnifier (more realistic)
         GestureDetector(
           onTap: () => _Sound.tap(),
           child: Icon(Icons.search_rounded, color: iconClr, size: 26),
         ),
         const SizedBox(width: 24),
-        // Notification — bell (restored)
         GestureDetector(
           onTap: () { _Sound.tap(); context.push('/notifications'); },
           child: Icon(Icons.notifications_rounded, color: iconClr, size: 26),
@@ -994,15 +1013,12 @@ class _HomeScreenState extends State<HomeScreen>
   Widget _buildMissionCircles() {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    // Only show the row if there are missions, or always show for the + button
     return Container(
       height: 88,
       color: isDark ? Colors.black : const Color(0xFFFAFAFA),
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        // Only show missions that have been given a real title (not "New Mission" placeholders
-        // that haven't been chatted in yet), plus the + button
         itemCount: _missions.length + 1,
         separatorBuilder: (_, __) => const SizedBox(width: 12),
         itemBuilder: (ctx, i) {
@@ -1026,7 +1042,6 @@ class _HomeScreenState extends State<HomeScreen>
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final bg     = isDark ? Colors.black : const Color(0xFFFAFAFA);
 
-    // No active mission → show hero welcome
     if (_activeMissionId == null) {
       return _buildHeroWelcome(isDark, bg);
     }
@@ -1047,7 +1062,10 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  // ── Hero welcome view ──────────────────────────────────────────────────────
+  // ── Hero welcome — CHANGED ─────────────────────────────────────────────────
+  // Greeting is now top-left aligned right below the mission circles.
+  // The RiseUp logo, "do your best hustle with", and gradient "RiseUp"
+  // tagline are removed from this view entirely.
   Widget _buildHeroWelcome(bool isDark, Color bg) {
     final firstName = (_userName ?? '').split(' ').first.trim();
     final showName  = firstName.isNotEmpty && firstName.toLowerCase() != 'hustler';
@@ -1056,86 +1074,44 @@ class _HomeScreenState extends State<HomeScreen>
     return Container(
       color: bg,
       width: double.infinity,
-      child: Center(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // ── Personalised greeting ─────────────────────────────────
-              if (showName) ...[
-                Text(
-                  '$greeting,',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 16,
-                    color: isDark ? Colors.white38 : Colors.black38,
-                    fontWeight: FontWeight.w400,
-                  ),
-                ).animate().fadeIn(duration: 300.ms),
-                const SizedBox(height: 2),
-                Text(
-                  firstName,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 30,
-                    fontWeight: FontWeight.w900,
-                    color: isDark ? Colors.white : Colors.black87,
-                    letterSpacing: -0.5,
-                  ),
-                ).animate().fadeIn(delay: 80.ms, duration: 300.ms),
-                const SizedBox(height: 22),
-              ],
-
-              // ── RiseUp logo ───────────────────────────────────────────
-              Image.asset(
-                'assets/images/riseup_logo.png',
-                width:  72,
-                height: 72,
-                fit:    BoxFit.contain,
-                errorBuilder: (_, __, ___) => const Icon(
-                  Icons.trending_up_rounded,
-                  color: Color(0xFFFF6B00),
-                  size: 56,
-                ),
-              ).animate().fadeIn(delay: 100.ms).scale(
-                begin: const Offset(0.85, 0.85),
-                curve: Curves.easeOutBack,
-              ),
-              const SizedBox(height: 16),
-
-              // ── Brand line ────────────────────────────────────────────
+      alignment: Alignment.topLeft,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (showName) ...[
               Text(
-                'do your best\nhustle with',
-                textAlign: TextAlign.center,
+                '$greeting,',
                 style: TextStyle(
-                  fontSize:      30,
-                  fontWeight:    FontWeight.w900,
-                  color:         isDark ? Colors.white : Colors.black87,
-                  height:        1.2,
-                  letterSpacing: -0.8,
+                  fontSize: 15,
+                  color: isDark ? Colors.white38 : Colors.black38,
+                  fontWeight: FontWeight.w400,
                 ),
-              ).animate().fadeIn(delay: 150.ms),
-
-              ShaderMask(
-                shaderCallback: (bounds) => const LinearGradient(
-                  colors: [Color(0xFFFF6B00), Color(0xFFFFD700), Color(0xFF6C5CE7)],
-                  stops: [0.0, 0.45, 1.0],
-                ).createShader(bounds),
-                child: const Text(
-                  'RiseUp',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize:      38,
-                    fontWeight:    FontWeight.w900,
-                    color:         Colors.white,
-                    letterSpacing: -1.2,
-                    height:        1.1,
-                  ),
+              ).animate().fadeIn(duration: 300.ms),
+              const SizedBox(height: 2),
+              Text(
+                firstName,
+                style: TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w900,
+                  color: isDark ? Colors.white : Colors.black87,
+                  letterSpacing: -0.5,
                 ),
-              ).animate().fadeIn(delay: 200.ms),
+              ).animate().fadeIn(delay: 80.ms, duration: 300.ms),
+            ] else ...[
+              // No name available — show a minimal greeting line
+              Text(
+                greeting,
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  color: isDark ? Colors.white70 : Colors.black54,
+                ),
+              ).animate().fadeIn(duration: 300.ms),
             ],
-          ),
+          ],
         ),
       ),
     );
@@ -1207,7 +1183,7 @@ class _HomeScreenState extends State<HomeScreen>
     ]);
   }
 
-  // ── Input bar — Claude-style floating ─────────────────────────────────────
+  // ── Input bar — CHANGED hint text ─────────────────────────────────────────
   Widget _buildInputBar() {
     final isDark     = Theme.of(context).brightness == Brightness.dark;
     final fieldBg    = isDark ? const Color(0xFF1C1C1E) : const Color(0xFFF2F2F7);
@@ -1256,8 +1232,9 @@ class _HomeScreenState extends State<HomeScreen>
             minLines:   1,
             style: TextStyle(color: textClr, fontSize: 16, height: 1.4),
             decoration: InputDecoration(
-              hintText:  'Chat with RiseUp...',
-              hintStyle: TextStyle(color: hintClr, fontSize: 16),
+              // CHANGED: new placeholder copy
+              hintText:  'Do your best hustle with RiseUp',
+              hintStyle: TextStyle(color: hintClr, fontSize: 15),
               border:         InputBorder.none,
               enabledBorder:  InputBorder.none,
               focusedBorder:  InputBorder.none,
@@ -1271,7 +1248,6 @@ class _HomeScreenState extends State<HomeScreen>
           Padding(
             padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
             child: Row(children: [
-              // + quick actions
               GestureDetector(
                 onTap: () => _showQuickMenu(context),
                 child: Container(
@@ -1289,7 +1265,6 @@ class _HomeScreenState extends State<HomeScreen>
 
               const Spacer(),
 
-              // Send arrow
               GestureDetector(
                 onTap: sendActive ? _sendMessage : null,
                 child: AnimatedContainer(
@@ -1420,7 +1395,6 @@ class _HomeScreenState extends State<HomeScreen>
     return Drawer(
       backgroundColor: isDark ? const Color(0xFF0D0D0D) : const Color(0xFFF5F5F5),
       child: SafeArea(child: Column(children: [
-        // Profile header
         GestureDetector(
           onTap: () { _Sound.tap(); context.push('/profile'); Navigator.pop(context); },
           child: Container(
@@ -1462,7 +1436,6 @@ class _HomeScreenState extends State<HomeScreen>
         Divider(color: AppColors.bgSurface, height: 1),
         const SizedBox(height: 8),
 
-        // New mission button
         Padding(padding: const EdgeInsets.symmetric(horizontal: 12),
           child: ElevatedButton.icon(
             icon: const Icon(Iconsax.add, size: 18),
@@ -1478,7 +1451,6 @@ class _HomeScreenState extends State<HomeScreen>
         ),
         const SizedBox(height: 12),
 
-        // Missions label
         Padding(padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Align(alignment: Alignment.centerLeft,
             child: Text('MISSIONS',
@@ -1490,7 +1462,6 @@ class _HomeScreenState extends State<HomeScreen>
                 )))),
         const SizedBox(height: 6),
 
-        // Missions list with edit/delete/feedback
         Expanded(child: ListView.builder(
           itemCount: _missions.length,
           itemBuilder: (ctx, i) {
@@ -1499,7 +1470,6 @@ class _HomeScreenState extends State<HomeScreen>
 
             return ListTile(
               dense:   true,
-              // Use user avatar instead of emoji
               leading: CircleAvatar(
                 radius: 18,
                 backgroundColor: isActive
@@ -1547,7 +1517,6 @@ class _HomeScreenState extends State<HomeScreen>
               selected:          isActive,
               selectedTileColor: AppColors.primary.withOpacity(0.1),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              // Trailing: 3-dot options menu
               trailing: GestureDetector(
                 onTap: () => _showMissionOptions(ctx, m),
                 child: Padding(
@@ -1659,7 +1628,6 @@ class _MissionCircle extends StatelessWidget {
             color: isActive ? null : const Color(0xFF1C1C1E),
           ),
           child: Padding(
-            // Inner padding creates the ring effect when active
             padding: EdgeInsets.all(isActive ? 2.5 : 0),
             child: ClipOval(
               child: userAvatar != null
@@ -1964,7 +1932,7 @@ class _QuickItem extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Animated RiseUp icon shown as AI chat header
+// Animated RiseUp icon — CHANGED: larger (36×36), no glow/blur background
 // ─────────────────────────────────────────────────────────────────────────────
 class _RiseUpSpinIcon extends StatefulWidget {
   const _RiseUpSpinIcon();
@@ -1976,7 +1944,6 @@ class _RiseUpSpinIconState extends State<_RiseUpSpinIcon>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ctrl;
   late final Animation<double>   _spin;
-  late final Animation<double>   _glow;
 
   @override
   void initState() {
@@ -1989,12 +1956,6 @@ class _RiseUpSpinIconState extends State<_RiseUpSpinIcon>
     // Slow, smooth rotation — 0 → 2π
     _spin = Tween<double>(begin: 0, end: 2 * pi)
         .animate(CurvedAnimation(parent: _ctrl, curve: Curves.linear));
-
-    // Gentle glow pulse  0.6 → 1.0 → 0.6
-    _glow = TweenSequence([
-      TweenSequenceItem(tween: Tween(begin: 0.6, end: 1.0), weight: 50),
-      TweenSequenceItem(tween: Tween(begin: 1.0, end: 0.6), weight: 50),
-    ]).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut));
   }
 
   @override
@@ -2006,19 +1967,11 @@ class _RiseUpSpinIconState extends State<_RiseUpSpinIcon>
       animation: _ctrl,
       builder: (_, __) => Transform.rotate(
         angle: _spin.value,
-        child: Container(
-          width:  26,
-          height: 26,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            boxShadow: [
-              BoxShadow(
-                color: const Color(0xFF6C5CE7).withOpacity(_glow.value * 0.55),
-                blurRadius:   10,
-                spreadRadius: 1,
-              ),
-            ],
-          ),
+        child: SizedBox(
+          // CHANGED: 36×36 (was 26×26), transparent — no Container background,
+          // no boxShadow, no glow. Pure logo, no blur.
+          width:  36,
+          height: 36,
           child: ClipOval(
             child: Image.asset(
               'assets/images/riseup_logo.png',
@@ -2032,7 +1985,7 @@ class _RiseUpSpinIconState extends State<_RiseUpSpinIcon>
                 child: const Center(
                   child: Text('R',
                       style: TextStyle(color: Colors.white,
-                          fontSize: 12, fontWeight: FontWeight.bold)),
+                          fontSize: 14, fontWeight: FontWeight.bold)),
                 ),
               ),
             ),
