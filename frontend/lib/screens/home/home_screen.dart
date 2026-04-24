@@ -903,13 +903,13 @@ class _HomeScreenState extends State<HomeScreen>
         border: Border(bottom: BorderSide(color: border, width: 0.6)),
       ),
       child: Row(children: [
-        // ≡ Menu
+        // ≡ Menu — slightly larger + heavier
         GestureDetector(
           onTap: () { _Sound.tap(); _globalKey.currentState?.openDrawer(); },
-          child: Icon(Iconsax.menu_1, color: iconClr, size: 22),
+          child: Icon(Icons.menu_rounded, color: iconClr, size: 26),
         ),
 
-        // Center — RiseUp logo with token badge as inline superscript
+        // Center — RiseUp gradient wordmark (thicker stroke via font weight)
         Expanded(child: Center(
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -926,11 +926,16 @@ class _HomeScreenState extends State<HomeScreen>
                     fontSize:      28,
                     fontWeight:    FontWeight.w900,
                     color:         Colors.white,
-                    letterSpacing: -0.8,
+                    letterSpacing: -0.5,
+                    // Simulate stroke thickness via shadows
+                    shadows: [
+                      Shadow(blurRadius: 0, offset: Offset(0.4, 0)),
+                      Shadow(blurRadius: 0, offset: Offset(-0.2, 0)),
+                    ],
                   ),
                 ),
               ),
-              // Token badge — superscript beside the 'p', raised high
+              // Token badge
               Transform.translate(
                 offset: const Offset(1, -6),
                 child: _TokenBadge(tokens: _tokens, pulse: _tokenPulse, isDark: isDark),
@@ -939,15 +944,16 @@ class _HomeScreenState extends State<HomeScreen>
           ),
         )),
 
-        // Right — search + notifications
+        // Search — filled magnifier (more realistic)
         GestureDetector(
           onTap: () => _Sound.tap(),
-          child: Icon(Iconsax.search_normal_1, color: iconClr, size: 22),
+          child: Icon(Icons.search_rounded, color: iconClr, size: 26),
         ),
-        const SizedBox(width: 28),
+        const SizedBox(width: 24),
+        // Notification — bell (restored)
         GestureDetector(
           onTap: () { _Sound.tap(); context.push('/notifications'); },
-          child: Icon(Iconsax.notification_1, color: iconClr, size: 22),
+          child: Icon(Icons.notifications_rounded, color: iconClr, size: 26),
         ),
       ]),
     );
@@ -1049,6 +1055,23 @@ class _HomeScreenState extends State<HomeScreen>
                 ).animate().fadeIn(delay: 80.ms, duration: 300.ms),
                 const SizedBox(height: 22),
               ],
+
+              // ── RiseUp logo ───────────────────────────────────────────
+              Image.asset(
+                'assets/images/riseup_logo.png',
+                width:  72,
+                height: 72,
+                fit:    BoxFit.contain,
+                errorBuilder: (_, __, ___) => const Icon(
+                  Icons.trending_up_rounded,
+                  color: Color(0xFFFF6B00),
+                  size: 56,
+                ),
+              ).animate().fadeIn(delay: 100.ms).scale(
+                begin: const Offset(0.85, 0.85),
+                curve: Curves.easeOutBack,
+              ),
+              const SizedBox(height: 16),
 
               // ── Brand line ────────────────────────────────────────────
               Text(
@@ -1709,24 +1732,9 @@ class _ChatBubble extends StatelessWidget {
       ).animate().fadeIn(duration: 200.ms).slideX(begin: 0.1);
     }
 
-    final header = compact ? const SizedBox.shrink() : Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 0, 2),
-      child: Row(children: [
-        Container(
-          width: 20, height: 20,
-          decoration: const BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: LinearGradient(colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)]),
-          ),
-          child: const Center(
-            child: Text('R', style: TextStyle(color: Colors.white,
-                fontSize: 10, fontWeight: FontWeight.bold)),
-          ),
-        ),
-        const SizedBox(width: 6),
-        Text('RiseUp', style: TextStyle(
-            color: isDark ? Colors.white38 : Colors.black38, fontSize: 12)),
-      ]),
+    final header = compact ? const SizedBox.shrink() : const Padding(
+      padding: EdgeInsets.fromLTRB(12, 8, 0, 4),
+      child: _RiseUpSpinIcon(),
     );
 
     final bubble = Container(
@@ -1920,6 +1928,86 @@ class _QuickItem extends StatelessWidget {
             fontWeight: FontWeight.w500,
           )),
       onTap: () { HapticFeedback.selectionClick(); onTap(); },
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Animated RiseUp icon shown as AI chat header
+// ─────────────────────────────────────────────────────────────────────────────
+class _RiseUpSpinIcon extends StatefulWidget {
+  const _RiseUpSpinIcon();
+  @override
+  State<_RiseUpSpinIcon> createState() => _RiseUpSpinIconState();
+}
+
+class _RiseUpSpinIconState extends State<_RiseUpSpinIcon>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double>   _spin;
+  late final Animation<double>   _glow;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync:    this,
+      duration: const Duration(seconds: 3),
+    )..repeat();
+
+    // Slow, smooth rotation — 0 → 2π
+    _spin = Tween<double>(begin: 0, end: 2 * pi)
+        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.linear));
+
+    // Gentle glow pulse  0.6 → 1.0 → 0.6
+    _glow = TweenSequence([
+      TweenSequenceItem(tween: Tween(begin: 0.6, end: 1.0), weight: 50),
+      TweenSequenceItem(tween: Tween(begin: 1.0, end: 0.6), weight: 50),
+    ]).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut));
+  }
+
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (_, __) => Transform.rotate(
+        angle: _spin.value,
+        child: Container(
+          width:  26,
+          height: 26,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF6C5CE7).withOpacity(_glow.value * 0.55),
+                blurRadius:   10,
+                spreadRadius: 1,
+              ),
+            ],
+          ),
+          child: ClipOval(
+            child: Image.asset(
+              'assets/images/riseup_logo.png',
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => Container(
+                decoration: const BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                      colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)]),
+                ),
+                child: const Center(
+                  child: Text('R',
+                      style: TextStyle(color: Colors.white,
+                          fontSize: 12, fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
