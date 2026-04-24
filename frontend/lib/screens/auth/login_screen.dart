@@ -43,6 +43,9 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
 
+      // ── Fetch & cache profile BEFORE navigating so HomeScreen
+      // greets the user by name immediately (no "Hustler" flash).
+      await api.fetchAndCacheProfile();
       if (!mounted) return;
       context.go('/home');
     } catch (e) {
