@@ -59,7 +59,7 @@ class TokenService:
         try:
             row = (TokenService._db().table("apex_token_quota").select("*")
                    .eq("user_id", user_id).eq("quota_date", today).maybe_single().execute())
-            data        = row.data or {}
+            data        = (row.data if row is not None else None) or {}
             used        = int(data.get("tokens_used", 0))
             ad_bonus    = int(data.get("ad_bonus_tokens", 0))
             ad_watches  = int(data.get("ad_watches_today", 0))
@@ -108,7 +108,7 @@ class TokenService:
             try:
                 row = (TokenService._db().table("apex_token_quota").select("tokens_used")
                        .eq("user_id", user_id).eq("quota_date", today).maybe_single().execute())
-                used = int((row.data or {}).get("tokens_used", 0))
+                used = int(((row.data if row is not None else None) or {}).get("tokens_used", 0))
                 TokenService._db().table("apex_token_quota").upsert(
                     {"user_id": user_id, "quota_date": today, "tokens_used": used + cost,
                      "daily_limit": daily_limit, "updated_at": datetime.now(timezone.utc).isoformat()},
@@ -121,7 +121,7 @@ class TokenService:
             row = (TokenService._db().table("apex_token_quota")
                    .select("tokens_used,ad_bonus_tokens,ad_watches_today,ad_redemptions_today")
                    .eq("user_id", user_id).eq("quota_date", today).maybe_single().execute())
-            data        = row.data or {}
+            data        = (row.data if row is not None else None) or {}
             used        = int(data.get("tokens_used", 0))
             ad_bonus    = int(data.get("ad_bonus_tokens", 0))
             ad_watches  = int(data.get("ad_watches_today", 0))
@@ -158,7 +158,7 @@ class TokenService:
         try:
             row = (TokenService._db().table("apex_token_quota").select("*")
                    .eq("user_id", user_id).eq("quota_date", today).maybe_single().execute())
-            data        = row.data or {}
+            data        = (row.data if row is not None else None) or {}
             ad_watches  = int(data.get("ad_watches_today", 0))
             redemptions = int(data.get("ad_redemptions_today", 0))
             if ad_watches >= MAX_AD_WATCHES_DAY:
@@ -188,7 +188,7 @@ class TokenService:
         try:
             row = (TokenService._db().table("apex_token_quota").select("*")
                    .eq("user_id", user_id).eq("quota_date", today).maybe_single().execute())
-            data        = row.data or {}
+            data        = (row.data if row is not None else None) or {}
             ad_watches  = int(data.get("ad_watches_today", 0))
             redemptions = int(data.get("ad_redemptions_today", 0))
             ad_bonus    = int(data.get("ad_bonus_tokens", 0))
