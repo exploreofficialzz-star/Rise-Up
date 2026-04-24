@@ -1,7 +1,12 @@
 // frontend/lib/screens/profile/profile_screen.dart
-// RiseUp v3.0 — Income Profile
-// No posts. No followers. No social.
-// Shows: avatar, stage, total earned, missions, skills, goals, settings.
+// RiseUp — Professional Profile v4.0
+//
+// Design:
+//   • No "RiseUp" title in app bar — just back + settings
+//   • Collapsing gradient header with centered avatar + gradient ring
+//   • Glassmorphic stats banner
+//   • Clean section cards with subtle separators
+//   • Account actions at bottom
 // ignore_for_file: deprecated_member_use
 
 import 'dart:io';
@@ -17,49 +22,47 @@ import 'package:image_picker/image_picker.dart';
 import '../../config/app_constants.dart';
 import '../../services/api_service.dart';
 import '../../services/auth_service.dart';
+import '../../utils/storage_service.dart';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Stage helper
 // ─────────────────────────────────────────────────────────────────────────────
 class StageInfo {
   static Map<String, dynamic> get(String stage) {
     const map = <String, Map<String, dynamic>>{
-      'survival':  {'emoji': '🆘', 'label': 'Survival',  'color': Color(0xFFE17055)},
-      'earning':   {'emoji': '💪', 'label': 'Earning',   'color': Color(0xFF0984E3)},
-      'growing':   {'emoji': '🚀', 'label': 'Growing',   'color': Color(0xFF00B894)},
-      'wealth':    {'emoji': '💎', 'label': 'Wealth',    'color': Color(0xFF6C5CE7)},
-      'legacy':    {'emoji': '🏛️', 'label': 'Legacy',   'color': Color(0xFF9B59B6)},
+      'survival': {'emoji': '🆘', 'label': 'Survival', 'color': Color(0xFFE17055)},
+      'earning':  {'emoji': '💪', 'label': 'Earning',  'color': Color(0xFF0984E3)},
+      'growing':  {'emoji': '🚀', 'label': 'Growing',  'color': Color(0xFF00B894)},
+      'wealth':   {'emoji': '💎', 'label': 'Wealth',   'color': Color(0xFF6C5CE7)},
+      'legacy':   {'emoji': '🏛️', 'label': 'Legacy',  'color': Color(0xFF9B59B6)},
     };
     return map[stage.toLowerCase()] ?? map['survival']!;
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ProfileScreen
-// ─────────────────────────────────────────────────────────────────────────────
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
-
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
 }
 
-class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserver {
+class _ProfileScreenState extends State<ProfileScreen>
+    with WidgetsBindingObserver {
 
-  Map<String, dynamic> _profile      = {};
-  List<dynamic>        _missions     = [];
-  List<dynamic>        _goals        = [];
-  bool                 _loading      = true;
-  bool                 _uploading    = false;
-  int                  _totalEarned  = 0;
+  Map<String, dynamic> _profile       = {};
+  List<dynamic>        _missions      = [];
+  List<dynamic>        _goals         = [];
+  bool                 _loading       = true;
+  bool                 _uploading     = false;
+  int                  _totalEarned   = 0;
   int                  _activeMissions = 0;
-  int                  _tokensToday  = 0;
-  bool                 _isPremium    = false;
+  int                  _tokensLeft    = 0;
+  bool                 _isPremium     = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _loadFromCache();
     _load();
   }
 
@@ -74,37 +77,46 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
     if (s == AppLifecycleState.resumed) _load();
   }
 
-  Future<void> _load() async {
-    setState(() => _loading = true);
-    try {
-      final results = await Future.wait([
-        api.get('/auth/me'),
-        api.get('/mentor/sessions'),
-        api.get('/goals'),
-        api.get('/agent/tokens'),
-        api.get('/income_memory/summary'),
-      ], eagerError: false);
+  Future<void> _loadFromCache() async {
+    final cached = await storageService.getCachedProfile();
+    if (cached != null && mounted) {
+      setState(() { _profile = cached; _loading = false; });
+    }
+  }
 
-      final profile  = results[0] as Map<String, dynamic>? ?? {};
-      final sessions = (results[1] as Map?)?['sessions'] as List? ?? [];
-      final goals    = (results[2] as Map?)?['goals']    as List? ?? [];
-      final tokens   = results[3] as Map<String, dynamic>? ?? {};
-      final income   = results[4] as Map<String, dynamic>? ?? {};
+  Future<void> _load() async {
+    try {
+      final futures = await Future.wait([
+        api.get('/auth/me').timeout(const Duration(seconds: 12)),
+        api.get('/mentor/sessions').timeout(const Duration(seconds: 12)),
+        api.get('/goals').timeout(const Duration(seconds: 12)),
+        api.get('/agent/tokens').timeout(const Duration(seconds: 12)),
+        api.get('/income_memory/summary').timeout(const Duration(seconds: 12)),
+      ], eagerError: false).catchError((_) =>
+          <dynamic>[null, null, null, null, null]);
+
+      if (!mounted) return;
+      final profile  = futures[0] as Map<String, dynamic>? ?? {};
+      final sessions = (futures[1] as Map?)?['sessions'] as List? ?? [];
+      final goals    = (futures[2] as Map?)?['goals']    as List? ?? [];
+      final tokens   = futures[3] as Map<String, dynamic>? ?? {};
+      final income   = futures[4] as Map<String, dynamic>? ?? {};
+
+      if (profile.isNotEmpty) storageService.cacheProfile(profile);
 
       setState(() {
-        _profile        = profile;
+        _profile        = profile.isNotEmpty ? profile : _profile;
         _missions       = sessions;
         _goals          = goals.take(3).toList();
         _isPremium      = profile['is_premium'] == true ||
                           profile['subscription_tier'] == 'premium';
         _totalEarned    = (income['total_earned'] as num?)?.toInt() ?? 0;
-        _activeMissions = sessions.where((s) =>
-            s['status'] == 'active').length;
-        _tokensToday    = tokens['tokens_remaining'] as int? ?? 0;
+        _activeMissions = sessions.where((s) => s['status'] == 'active').length;
+        _tokensLeft     = tokens['tokens_remaining'] as int? ?? 0;
         _loading        = false;
       });
     } catch (_) {
-      setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 
@@ -115,17 +127,15 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
       final img    = await picker.pickImage(
           source: ImageSource.gallery, imageQuality: 80, maxWidth: 800);
       if (img == null || !mounted) return;
-
       setState(() => _uploading = true);
-      final file  = File(img.path);
-      final bytes = await file.readAsBytes();
-      await api.uploadAvatarBytes(bytes: bytes, filename: img.name);
+      if (!kIsWeb) {
+        final bytes = await File(img.path).readAsBytes();
+        await api.uploadAvatarBytes(bytes: bytes, filename: img.name);
+      }
       await _load();
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Upload failed: $e'), backgroundColor: AppColors.error));
-      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Upload failed: $e'), backgroundColor: AppColors.error));
     } finally {
       if (mounted) setState(() => _uploading = false);
     }
@@ -136,15 +146,21 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
     final confirm = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: AppColors.bgCard,
-        title: const Text('Sign out?', style: TextStyle(color: Colors.white)),
+        backgroundColor: const Color(0xFF1C1C1E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Sign out?',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+        content: const Text('You can sign back in anytime.',
+            style: TextStyle(color: Colors.white54)),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel')),
+              child: const Text('Cancel', style: TextStyle(color: Colors.white54))),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Sign Out', style: TextStyle(color: Colors.white)),
+            child: const Text('Sign Out'),
           ),
         ],
       ),
@@ -161,468 +177,520 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
     return '\$$n';
   }
 
-  // ── Build ─────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    final isDark    = Theme.of(context).brightness == Brightness.dark;
-    final name      = _profile['full_name']?.toString()       ??
-                      _profile['username']?.toString()        ?? 'Hustler';
-    final stage     = _profile['stage']?.toString()           ?? 'survival';
-    final bio       = _profile['bio']?.toString()             ?? '';
+    final name      = _profile['full_name']?.toString()
+                   ?? _profile['username']?.toString() ?? 'Hustler';
+    final stage     = _profile['stage']?.toString()    ?? 'survival';
+    final bio       = _profile['bio']?.toString()      ?? '';
     final avatarUrl = _profile['avatar_url']?.toString();
+    final country   = _profile['country']?.toString()  ?? '';
     final stageInfo = StageInfo.get(stage);
-    final stageColor= stageInfo['color'] as Color;
+    final stageColor = stageInfo['color'] as Color;
 
     return Scaffold(
-      backgroundColor: AppColors.bgDark,
-      appBar: AppBar(
-        backgroundColor: AppColors.bgCard,
-        elevation: 0,
-        title: RichText(text: const TextSpan(children: [
-          TextSpan(text: 'Rise', style: TextStyle(fontSize: 20,
-              fontWeight: FontWeight.w800, color: Color(0xFFFF6B00))),
-          TextSpan(text: 'Up', style: TextStyle(fontSize: 20,
-              fontWeight: FontWeight.w800, color: AppColors.primary)),
-        ])),
-        centerTitle: false,
-        actions: [
-          IconButton(icon: const Icon(Iconsax.edit_2, color: Colors.white70),
-              tooltip: 'Edit profile',
-              onPressed: () async {
-                await context.push('/edit-profile');
-                _load();
-              }),
-          IconButton(icon: const Icon(Iconsax.setting_2, color: Colors.white70),
-              onPressed: () => context.push('/settings')),
-        ],
-      ),
-      body: _loading
+      backgroundColor: Colors.black,
+      body: _loading && _profile.isEmpty
           ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
           : RefreshIndicator(
               color: AppColors.primary,
               onRefresh: _load,
-              child: SingleChildScrollView(
+              child: CustomScrollView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                child: Column(children: [
+                slivers: [
+                  // ── Collapsing header ──────────────────────────────────
+                  SliverAppBar(
+                    expandedHeight: 290,
+                    pinned: true,
+                    backgroundColor: const Color(0xFF0D0D0D),
+                    elevation: 0,
+                    leading: IconButton(
+                      icon: const Icon(Icons.arrow_back_ios_new_rounded,
+                          color: Colors.white, size: 20),
+                      onPressed: () => context.pop(),
+                    ),
+                    actions: [
+                      IconButton(
+                        icon: const Icon(Iconsax.setting_2,
+                            color: Colors.white70, size: 22),
+                        onPressed: () => context.push('/settings'),
+                      ),
+                      const SizedBox(width: 4),
+                    ],
+                    flexibleSpace: FlexibleSpaceBar(
+                      collapseMode: CollapseMode.pin,
+                      background: _buildHeroHeader(
+                          name, bio, country, avatarUrl, stageColor, stageInfo),
+                    ),
+                  ),
 
-                  // ── Header card ──────────────────────────────────────────
-                  _buildHeader(name, stage, bio, avatarUrl, stageColor, stageInfo),
+                  SliverToBoxAdapter(child: _buildStatsBanner()
+                      .animate().fadeIn(duration: 300.ms, delay: 50.ms)),
 
-                  const SizedBox(height: 8),
+                  if (!_isPremium)
+                    SliverToBoxAdapter(child: _buildPremiumBanner()
+                        .animate().fadeIn(duration: 300.ms, delay: 100.ms)),
 
-                  // ── Income stats ─────────────────────────────────────────
-                  _buildIncomeStats(),
+                  SliverToBoxAdapter(child: _buildMissionsSection()
+                      .animate().fadeIn(duration: 300.ms, delay: 150.ms)),
 
-                  const SizedBox(height: 8),
+                  if (_goals.isNotEmpty)
+                    SliverToBoxAdapter(child: _buildGoalsSection()
+                        .animate().fadeIn(duration: 300.ms, delay: 200.ms)),
 
-                  // ── Active missions ───────────────────────────────────────
-                  _buildMissionsCard(),
+                  SliverToBoxAdapter(child: _buildQuickAccess()
+                      .animate().fadeIn(duration: 300.ms, delay: 250.ms)),
 
-                  const SizedBox(height: 8),
+                  SliverToBoxAdapter(child: _buildAccountSection()
+                      .animate().fadeIn(duration: 300.ms, delay: 300.ms)),
 
-                  // ── Goals snapshot ────────────────────────────────────────
-                  if (_goals.isNotEmpty) _buildGoalsCard(),
-
-                  const SizedBox(height: 8),
-
-                  // ── Quick links ───────────────────────────────────────────
-                  _buildQuickLinks(),
-
-                  const SizedBox(height: 8),
-
-                  // ── Account ───────────────────────────────────────────────
-                  _buildAccountCard(),
-
-                  const SizedBox(height: 32),
-                ]),
+                  const SliverToBoxAdapter(child: SizedBox(height: 48)),
+                ],
               ),
             ),
     );
   }
 
-  // ── Header ────────────────────────────────────────────────────────────────
-  Widget _buildHeader(String name, String stage, String bio,
-      String? avatarUrl, Color stageColor, Map stageInfo) {
+  Widget _buildHeroHeader(String name, String bio, String country,
+      String? avatarUrl, Color stageColor, Map<String, dynamic> stageInfo) {
     return Container(
-      padding: const EdgeInsets.all(20),
-      color: AppColors.bgCard,
-      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-
-        // Avatar
-        GestureDetector(
-          onTap: _pickAvatar,
-          child: Stack(children: [
-            CircleAvatar(
-              radius: 40,
-              backgroundColor: AppColors.primary,
-              backgroundImage: avatarUrl != null && avatarUrl.isNotEmpty
-                  ? CachedNetworkImageProvider(avatarUrl) : null,
-              child: avatarUrl == null || avatarUrl.isEmpty
-                  ? Text(name.isNotEmpty ? name[0].toUpperCase() : 'R',
-                      style: const TextStyle(fontSize: 28, color: Colors.white,
-                          fontWeight: FontWeight.bold))
-                  : null,
-            ),
-            if (_uploading)
-              Positioned.fill(child: Container(
-                decoration: BoxDecoration(
-                    color: Colors.black45, shape: BoxShape.circle),
-                child: const Center(child: CircularProgressIndicator(
-                    strokeWidth: 2, color: Colors.white)),
-              )),
-            Positioned(bottom: 0, right: 0,
-              child: Container(
-                width: 24, height: 24,
-                decoration: BoxDecoration(
-                  color: AppColors.primary, shape: BoxShape.circle,
-                  border: Border.all(color: AppColors.bgCard, width: 2)),
-                child: const Icon(Iconsax.camera, size: 12, color: Colors.white),
-              )),
-          ]),
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft, end: Alignment.bottomRight,
+          colors: [Color(0xFF0D0D0D), Color(0xFF16101E), Color(0xFF0D0D0D)],
         ),
-
-        const SizedBox(width: 16),
-
-        // Name + stage + bio
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800,
-              color: Colors.white)),
-          const SizedBox(height: 4),
-          Row(children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                color: stageColor.withOpacity(0.15),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: stageColor.withOpacity(0.4)),
+      ),
+      child: Stack(children: [
+        // Glow
+        Positioned(top: 60, left: 0, right: 0,
+          child: Center(child: Container(width: 150, height: 150,
+            decoration: BoxDecoration(shape: BoxShape.circle, boxShadow: [
+              BoxShadow(color: AppColors.primary.withOpacity(0.18),
+                  blurRadius: 70, spreadRadius: 12),
+            ])))),
+        // Content
+        Positioned.fill(
+          child: Column(mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const SizedBox(height: 48),
+              // Avatar with gradient ring
+              GestureDetector(
+                onTap: _pickAvatar,
+                child: Stack(alignment: Alignment.center, children: [
+                  Container(width: 96, height: 96,
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: LinearGradient(
+                          colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)]),
+                    )),
+                  Container(width: 88, height: 88,
+                    decoration: const BoxDecoration(
+                        shape: BoxShape.circle, color: Color(0xFF1C1C1E)),
+                    child: ClipOval(
+                      child: avatarUrl != null && avatarUrl.isNotEmpty
+                          ? CachedNetworkImage(imageUrl: avatarUrl,
+                              fit: BoxFit.cover,
+                              placeholder: (_, __) => _fallback(name),
+                              errorWidget: (_, __, ___) => _fallback(name))
+                          : _fallback(name),
+                    )),
+                  if (_uploading)
+                    Container(width: 88, height: 88,
+                      decoration: const BoxDecoration(
+                          shape: BoxShape.circle, color: Colors.black54),
+                      child: const Center(child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white))),
+                  Positioned(bottom: 2, right: 2,
+                    child: Container(width: 26, height: 26,
+                      decoration: BoxDecoration(
+                        color: AppColors.primary, shape: BoxShape.circle,
+                        border: Border.all(color: Colors.black, width: 2)),
+                      child: const Icon(Iconsax.camera, size: 13,
+                          color: Colors.white))),
+                ]),
               ),
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Text(stageInfo['emoji'] as String,
-                    style: const TextStyle(fontSize: 12)),
-                const SizedBox(width: 4),
-                Text(stageInfo['label'] as String,
-                    style: TextStyle(color: stageColor, fontSize: 12,
-                        fontWeight: FontWeight.w600)),
+              const SizedBox(height: 12),
+              Text(name, style: const TextStyle(color: Colors.white,
+                  fontSize: 22, fontWeight: FontWeight.w800,
+                  letterSpacing: -0.3)),
+              const SizedBox(height: 6),
+              Row(mainAxisSize: MainAxisSize.min, children: [
+                _StagePill(stageInfo: stageInfo, color: stageColor),
+                if (_isPremium) ...[const SizedBox(width: 8), _PremiumPill()],
               ]),
-            ),
-            if (_isPremium) ...[
-              const SizedBox(width: 6),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                      colors: [Color(0xFFFFD700), Color(0xFFFF8C00)]),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Text('⭐ Premium', style: TextStyle(
-                    color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
-              ),
-            ],
-          ]),
-          if (bio.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(bio, style: const TextStyle(color: AppColors.textSecondary,
-                fontSize: 13, height: 1.4), maxLines: 3, overflow: TextOverflow.ellipsis),
-          ],
-        ])),
+              if (country.isNotEmpty) ...[
+                const SizedBox(height: 5),
+                Text(country, style: const TextStyle(
+                    color: Colors.white38, fontSize: 12)),
+              ],
+              if (bio.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Padding(padding: const EdgeInsets.symmetric(horizontal: 36),
+                  child: Text(bio, textAlign: TextAlign.center,
+                    maxLines: 2, overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white54,
+                        fontSize: 13, height: 1.4))),
+              ],
+            ]),
+        ),
       ]),
-    ).animate().fadeIn(duration: 300.ms);
+    );
   }
 
-  // ── Income stats ──────────────────────────────────────────────────────────
-  Widget _buildIncomeStats() {
+  Widget _fallback(String name) => Container(
+    color: const Color(0xFF2C2C2E),
+    child: Center(child: Text(name.isNotEmpty ? name[0].toUpperCase() : 'R',
+        style: const TextStyle(color: Colors.white, fontSize: 32,
+            fontWeight: FontWeight.bold))));
+
+  Widget _buildStatsBanner() {
     return Container(
-      color: AppColors.bgCard,
-      padding: const EdgeInsets.all(16),
-      child: Row(children: [
-        _StatTile(label: 'Total Earned', value: _fmt(_totalEarned),
-            icon: Iconsax.money_recive, color: AppColors.success,
+      margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      decoration: BoxDecoration(
+        color: const Color(0xFF111111),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.06)),
+      ),
+      child: IntrinsicHeight(child: Row(children: [
+        _StatCell(icon: Iconsax.money_recive, color: AppColors.success,
+            value: _fmt(_totalEarned), label: 'Total Earned',
             onTap: () => context.push('/earnings')),
         _vDivider(),
-        _StatTile(label: 'Active Missions', value: '$_activeMissions',
-            icon: Iconsax.flash, color: AppColors.primary,
+        _StatCell(icon: Iconsax.flash, color: AppColors.primary,
+            value: '$_activeMissions', label: 'Missions',
             onTap: () => context.go('/home')),
         _vDivider(),
-        _StatTile(label: 'Tokens Left', value: '$_tokensToday',
-            icon: Iconsax.flash_1, color: AppColors.gold,
+        _StatCell(icon: Iconsax.flash_1, color: AppColors.gold,
+            value: '$_tokensLeft', label: 'Tokens',
             onTap: _isPremium ? null : () => context.push('/premium')),
-      ]),
-    ).animate().fadeIn(duration: 350.ms, delay: 50.ms);
+      ])),
+    );
   }
 
-  Widget _vDivider() => Container(width: 1, height: 48, color: AppColors.bgSurface);
+  Widget _vDivider() => Container(width: 1,
+      margin: const EdgeInsets.symmetric(vertical: 16),
+      color: Colors.white.withOpacity(0.06));
 
-  // ── Missions card ─────────────────────────────────────────────────────────
-  Widget _buildMissionsCard() {
-    final active = _missions
-        .where((m) => m['status'] != 'completed')
-        .take(3)
-        .toList();
+  Widget _buildPremiumBanner() {
+    return GestureDetector(
+      onTap: () { HapticFeedback.selectionClick(); context.push('/premium'); },
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+              colors: [Color(0xFF1A1200), Color(0xFF1A0D00)]),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFFFD700).withOpacity(0.22)),
+        ),
+        child: Row(children: [
+          Container(width: 40, height: 40,
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                  colors: [Color(0xFFFFD700), Color(0xFFFF8C00)]),
+              borderRadius: BorderRadius.circular(10)),
+            child: const Icon(Iconsax.crown_1, color: Colors.white, size: 20)),
+          const SizedBox(width: 12),
+          const Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Upgrade to Premium', style: TextStyle(color: Colors.white,
+                  fontWeight: FontWeight.w700, fontSize: 14)),
+              SizedBox(height: 2),
+              Text('Unlimited tokens · All features · No ads',
+                  style: TextStyle(color: Colors.white38, fontSize: 12)),
+            ])),
+          const Icon(Iconsax.arrow_right_2, color: Color(0xFFFFD700), size: 18),
+        ]),
+      ),
+    );
+  }
 
-    return _Card(
+  Widget _buildMissionsSection() {
+    final active = _missions.where((m) => m['status'] != 'completed')
+        .take(3).toList();
+    return _Section(
       title: 'My Missions',
-      action: 'See All',
-      onAction: () => context.go('/home'),
+      trailing: GestureDetector(onTap: () => context.go('/home'),
+        child: const Text('See All', style: TextStyle(
+            color: AppColors.primary, fontSize: 13, fontWeight: FontWeight.w600))),
       child: active.isEmpty
-          ? _EmptyState(icon: Iconsax.flash, message: 'No active missions yet.\nTap below to start one.',
-              actionLabel: 'Start a Mission', onAction: () => context.go('/home'))
-          : Column(children: active.map<Widget>((m) {
-              final emoji   = m['emoji']?.toString()    ?? '🎯';
-              final title   = m['title']?.toString()    ?? 'Mission';
-              final status  = m['status']?.toString()   ?? 'active';
-              final earned  = (m['income_earned'] as num?)?.toInt() ?? 0;
-              return ListTile(
-                dense: true,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 0, vertical: 2),
-                leading: Container(width: 36, height: 36,
-                  decoration: BoxDecoration(
-                    color: AppColors.primary.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(8)),
-                  child: Center(child: Text(emoji, style: const TextStyle(fontSize: 18)))),
-                title: Text(title, style: const TextStyle(color: Colors.white,
-                    fontWeight: FontWeight.w600, fontSize: 14)),
-                subtitle: Text(status == 'active' ? '⚡ Active' : '⏸ Paused',
-                    style: TextStyle(color: status == 'active'
-                        ? AppColors.success : AppColors.warning, fontSize: 12)),
-                trailing: earned > 0
-                    ? Text(_fmt(earned), style: const TextStyle(color: AppColors.success,
-                        fontWeight: FontWeight.w700))
-                    : const Icon(Iconsax.arrow_right_2, color: AppColors.textMuted, size: 16),
-                onTap: () => context.go('/home?missionId=${m['id']}'),
-              );
-            }).toList()),
-    ).animate().fadeIn(duration: 350.ms, delay: 100.ms);
+          ? _EmptyMissions(onTap: () => context.go('/home'))
+          : Column(children: active.map<Widget>((m) => _MissionRow(
+              emoji:  m['emoji']?.toString()  ?? '🎯',
+              title:  m['title']?.toString()  ?? 'Mission',
+              status: m['status']?.toString() ?? 'active',
+              earned: (m['income_earned'] as num?)?.toInt() is int &&
+                      ((m['income_earned'] as num?)?.toInt() ?? 0) > 0
+                  ? _fmt((m['income_earned'] as num).toInt()) : null,
+              onTap: () => context.go('/home?missionId=${m['id']}'),
+            )).toList()),
+    );
   }
 
-  // ── Goals card ────────────────────────────────────────────────────────────
-  Widget _buildGoalsCard() {
-    return _Card(
+  Widget _buildGoalsSection() {
+    return _Section(
       title: 'Goals',
-      action: 'All Goals',
-      onAction: () => context.push('/goals'),
+      trailing: GestureDetector(onTap: () => context.push('/goals'),
+        child: const Text('All Goals', style: TextStyle(
+            color: AppColors.primary, fontSize: 13, fontWeight: FontWeight.w600))),
       child: Column(children: _goals.map<Widget>((g) {
-        final title    = g['title']?.toString()       ?? 'Goal';
-        final target   = (g['target_amount'] as num?) ?? 0;
-        final current  = (g['current_amount'] as num?)?.toDouble() ?? 0;
-        final progress = target > 0 ? (current / target.toDouble()).clamp(0.0, 1.0) : 0.0;
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 12),
+        final title  = g['title']?.toString()         ?? 'Goal';
+        final target = (g['target_amount']   as num?) ?? 0;
+        final curr   = (g['current_amount']  as num?)?.toDouble() ?? 0;
+        final pct    = target > 0 ? (curr / target.toDouble()).clamp(0.0, 1.0) : 0.0;
+        return Padding(padding: const EdgeInsets.only(bottom: 14),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
               Expanded(child: Text(title, style: const TextStyle(
                   color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13))),
-              Text('${(progress * 100).toInt()}%',
-                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+              Text('${(pct * 100).toInt()}%', style: const TextStyle(
+                  color: AppColors.textSecondary, fontSize: 12)),
             ]),
             const SizedBox(height: 6),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                value: progress.toDouble(),
-                minHeight: 6,
-                backgroundColor: AppColors.bgSurface,
-                color: progress >= 1.0 ? AppColors.success : AppColors.primary,
-              ),
-            ),
-          ]),
-        );
+            ClipRRect(borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(value: pct.toDouble(),
+                minHeight: 5, backgroundColor: const Color(0xFF1E1E1E),
+                color: pct >= 1.0 ? AppColors.success : AppColors.primary)),
+          ]));
       }).toList()),
-    ).animate().fadeIn(duration: 350.ms, delay: 150.ms);
+    );
   }
 
-  // ── Quick links ───────────────────────────────────────────────────────────
-  Widget _buildQuickLinks() {
+  Widget _buildQuickAccess() {
     final items = [
-      (Iconsax.chart_2,   'Earnings',      '/earnings',   AppColors.success),
-      (Iconsax.book_1,    'Skills',        '/skills',     AppColors.primary),
-      (Iconsax.task_square,'Tasks',        '/tasks',      AppColors.info),
-      (Iconsax.receipt_2, 'Income Log',    '/memory',     AppColors.gold),
+      (Iconsax.chart_2,     'Earnings',   '/earnings', AppColors.success),
+      (Iconsax.book_1,      'Skills',     '/skills',   AppColors.primary),
+      (Iconsax.task_square, 'Tasks',      '/tasks',    AppColors.info),
+      (Iconsax.receipt_2,   'Income Log', '/memory',   AppColors.gold),
     ];
-    return Container(
-      color: AppColors.bgCard,
-      padding: const EdgeInsets.all(16),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Quick Access', style: TextStyle(color: AppColors.textSecondary,
-            fontSize: 12, fontWeight: FontWeight.w700, letterSpacing: 0.8)),
-        const SizedBox(height: 12),
-        GridView.count(
-          crossAxisCount: 4,
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          mainAxisSpacing: 8,
-          crossAxisSpacing: 8,
-          children: items.map((item) => GestureDetector(
-            onTap: () { HapticFeedback.selectionClick(); context.push(item.$3); },
-            child: Container(
-              decoration: BoxDecoration(
-                color: (item.$4).withOpacity(0.08),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: (item.$4).withOpacity(0.2)),
-              ),
-              child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+    return _Section(
+      title: 'Quick Access',
+      child: GridView.count(
+        crossAxisCount: 4, shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        mainAxisSpacing: 10, crossAxisSpacing: 10,
+        children: items.map((item) => GestureDetector(
+          onTap: () { HapticFeedback.selectionClick(); context.push(item.$3); },
+          child: Container(
+            decoration: BoxDecoration(
+              color: (item.$4).withOpacity(0.08),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: (item.$4).withOpacity(0.18)),
+            ),
+            child: Column(mainAxisAlignment: MainAxisAlignment.center,
+              children: [
                 Icon(item.$1, color: item.$4, size: 22),
-                const SizedBox(height: 4),
+                const SizedBox(height: 5),
                 Text(item.$2, style: TextStyle(color: item.$4,
                     fontSize: 10, fontWeight: FontWeight.w600),
                     textAlign: TextAlign.center),
               ]),
-            ),
-          )).toList(),
-        ),
-      ]),
-    ).animate().fadeIn(duration: 350.ms, delay: 200.ms);
+          ),
+        )).toList()),
+    );
   }
 
-  // ── Account card ──────────────────────────────────────────────────────────
-  Widget _buildAccountCard() {
+  Widget _buildAccountSection() {
     return Container(
-      color: AppColors.bgCard,
+      margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      decoration: BoxDecoration(
+        color: const Color(0xFF111111),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.06)),
+      ),
       child: Column(children: [
-        if (!_isPremium)
-          ListTile(
-            leading: Container(width: 36, height: 36,
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                    colors: [Color(0xFFFFD700), Color(0xFFFF8C00)]),
-                borderRadius: BorderRadius.circular(8)),
-              child: const Icon(Iconsax.crown_1, color: Colors.white, size: 18)),
-            title: const Text('Upgrade to Premium',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
-            subtitle: const Text('Unlimited tokens · All features · No ads',
-                style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
-            trailing: const Icon(Iconsax.arrow_right_2, color: AppColors.gold, size: 16),
-            onTap: () => context.push('/premium'),
-          ),
-        _NavTile(icon: Iconsax.edit_2,      label: 'Edit Profile',
+        _ActionRow(icon: Iconsax.edit_2, label: 'Edit Profile',
             onTap: () async { await context.push('/edit-profile'); _load(); }),
-        _NavTile(icon: Iconsax.setting_2,   label: 'Settings',
-            onTap: () => context.push('/settings')),
-        _NavTile(icon: Iconsax.shield_tick, label: 'Privacy Policy',
+        _rowDiv(),
+        _ActionRow(icon: Iconsax.shield_tick, label: 'Privacy Policy',
             onTap: () => context.push('/privacy')),
-        _NavTile(icon: Iconsax.document,    label: 'Terms of Service',
+        _rowDiv(),
+        _ActionRow(icon: Iconsax.document, label: 'Terms of Service',
             onTap: () => context.push('/terms')),
-        Divider(color: AppColors.bgSurface, height: 1),
-        _NavTile(
-          icon: Iconsax.logout,
-          label: 'Sign Out',
-          color: AppColors.error,
-          onTap: _signOut,
-        ),
-        const SizedBox(height: 8),
+        _rowDiv(),
+        _ActionRow(icon: Iconsax.logout, label: 'Sign Out',
+            color: AppColors.error, showArrow: false, onTap: _signOut),
       ]),
-    ).animate().fadeIn(duration: 350.ms, delay: 250.ms);
+    );
   }
+
+  Widget _rowDiv() => Container(height: 1,
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      color: Colors.white.withOpacity(0.05));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Reusable widgets
+// Widgets
 // ─────────────────────────────────────────────────────────────────────────────
 
-class _Card extends StatelessWidget {
-  final String title, action;
-  final VoidCallback onAction;
-  final Widget child;
-  const _Card({required this.title, required this.action,
-      required this.onAction, required this.child});
-
+class _StagePill extends StatelessWidget {
+  final Map<String, dynamic> stageInfo;
+  final Color color;
+  const _StagePill({required this.stageInfo, required this.color});
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: AppColors.bgCard,
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Text(title, style: const TextStyle(color: Colors.white,
-              fontSize: 15, fontWeight: FontWeight.w700)),
-          const Spacer(),
-          GestureDetector(
-            onTap: () { HapticFeedback.selectionClick(); onAction(); },
-            child: Text(action, style: const TextStyle(
-                color: AppColors.primary, fontSize: 13, fontWeight: FontWeight.w600)),
-          ),
-        ]),
-        const SizedBox(height: 12),
-        child,
-        const SizedBox(height: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withOpacity(0.35)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Text(stageInfo['emoji'] as String, style: const TextStyle(fontSize: 12)),
+        const SizedBox(width: 4),
+        Text(stageInfo['label'] as String,
+            style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600)),
       ]),
     );
   }
 }
 
-class _StatTile extends StatelessWidget {
-  final String label, value;
-  final IconData icon;
-  final Color color;
-  final VoidCallback? onTap;
-  const _StatTile({required this.label, required this.value,
-      required this.icon, required this.color, this.onTap});
-
+class _PremiumPill extends StatelessWidget {
   @override
-  Widget build(BuildContext context) {
-    return Expanded(child: GestureDetector(
-      onTap: onTap != null ? () { HapticFeedback.selectionClick(); onTap!(); } : null,
-      child: Column(children: [
-        Icon(icon, color: color, size: 20),
-        const SizedBox(height: 6),
-        Text(value, style: TextStyle(color: color,
-            fontSize: 17, fontWeight: FontWeight.w800)),
-        const SizedBox(height: 2),
-        Text(label, style: const TextStyle(color: AppColors.textMuted, fontSize: 10),
-            textAlign: TextAlign.center),
-      ]),
-    ));
-  }
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+    decoration: BoxDecoration(
+      gradient: const LinearGradient(colors: [Color(0xFFFFD700), Color(0xFFFF8C00)]),
+      borderRadius: BorderRadius.circular(20),
+    ),
+    child: const Text('⭐ Premium', style: TextStyle(
+        color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
+  );
 }
 
-class _NavTile extends StatelessWidget {
-  final IconData icon;
-  final String   label;
-  final VoidCallback onTap;
-  final Color?   color;
-  const _NavTile({required this.icon, required this.label,
-      required this.onTap, this.color});
+class _StatCell extends StatelessWidget {
+  final IconData icon; final Color color;
+  final String value, label; final VoidCallback? onTap;
+  const _StatCell({required this.icon, required this.color,
+      required this.value, required this.label, this.onTap});
+  @override
+  Widget build(BuildContext context) => Expanded(
+    child: GestureDetector(
+      onTap: onTap != null ? () { HapticFeedback.selectionClick(); onTap!(); } : null,
+      child: Padding(padding: const EdgeInsets.symmetric(vertical: 18),
+        child: Column(children: [
+          Icon(icon, color: color, size: 20),
+          const SizedBox(height: 6),
+          Text(value, style: TextStyle(color: color, fontSize: 16,
+              fontWeight: FontWeight.w800)),
+          const SizedBox(height: 2),
+          Text(label, style: const TextStyle(
+              color: AppColors.textMuted, fontSize: 10),
+              textAlign: TextAlign.center),
+        ])),
+    ),
+  );
+}
 
+class _Section extends StatelessWidget {
+  final String title; final Widget? trailing; final Widget child;
+  const _Section({required this.title, this.trailing, required this.child});
+  @override
+  Widget build(BuildContext context) => Container(
+    margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: const Color(0xFF111111),
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: Colors.white.withOpacity(0.06)),
+    ),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Text(title, style: const TextStyle(color: Colors.white,
+            fontSize: 14, fontWeight: FontWeight.w700)),
+        const Spacer(),
+        if (trailing != null) trailing!,
+      ]),
+      const SizedBox(height: 14),
+      child,
+    ]),
+  );
+}
+
+class _MissionRow extends StatelessWidget {
+  final String emoji, title, status; final String? earned;
+  final VoidCallback onTap;
+  const _MissionRow({required this.emoji, required this.title,
+      required this.status, this.earned, required this.onTap});
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: () { HapticFeedback.selectionClick(); onTap(); },
+    child: Padding(padding: const EdgeInsets.only(bottom: 10),
+      child: Row(children: [
+        Container(width: 38, height: 38,
+          decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(10)),
+          child: Center(child: Text(emoji, style: const TextStyle(fontSize: 18)))),
+        const SizedBox(width: 12),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: const TextStyle(color: Colors.white,
+                fontSize: 13, fontWeight: FontWeight.w600),
+                maxLines: 1, overflow: TextOverflow.ellipsis),
+            const SizedBox(height: 2),
+            Text(status == 'active' ? '⚡ Active' : '⏸ Paused',
+                style: TextStyle(fontSize: 11,
+                  color: status == 'active' ? AppColors.success : AppColors.warning)),
+          ])),
+        if (earned != null)
+          Text(earned!, style: const TextStyle(color: AppColors.success,
+              fontWeight: FontWeight.w700, fontSize: 13))
+        else
+          const Icon(Iconsax.arrow_right_2, color: AppColors.textMuted, size: 16),
+      ])),
+  );
+}
+
+class _EmptyMissions extends StatelessWidget {
+  final VoidCallback onTap;
+  const _EmptyMissions({required this.onTap});
+  @override
+  Widget build(BuildContext context) => Column(children: [
+    const Icon(Iconsax.flash, color: AppColors.textMuted, size: 32),
+    const SizedBox(height: 8),
+    const Text('No active missions yet',
+        style: TextStyle(color: AppColors.textMuted, fontSize: 13)),
+    const SizedBox(height: 12),
+    GestureDetector(
+      onTap: () { HapticFeedback.mediumImpact(); onTap(); },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+        decoration: BoxDecoration(
+          color: AppColors.primary.withOpacity(0.12),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: AppColors.primary.withOpacity(0.3)),
+        ),
+        child: const Text('Start a Mission', style: TextStyle(
+            color: AppColors.primary, fontSize: 13, fontWeight: FontWeight.w600)),
+      ),
+    ),
+    const SizedBox(height: 4),
+  ]);
+}
+
+class _ActionRow extends StatelessWidget {
+  final IconData icon; final String label;
+  final VoidCallback onTap; final Color? color; final bool showArrow;
+  const _ActionRow({required this.icon, required this.label,
+      required this.onTap, this.color, this.showArrow = true});
   @override
   Widget build(BuildContext context) {
     final c = color ?? Colors.white70;
-    return ListTile(
-      dense: true,
-      leading: Icon(icon, color: c, size: 20),
-      title: Text(label, style: TextStyle(color: c, fontSize: 14)),
-      trailing: color == null
-          ? const Icon(Iconsax.arrow_right_2, color: AppColors.textMuted, size: 16)
-          : null,
+    return GestureDetector(
       onTap: () { HapticFeedback.selectionClick(); onTap(); },
-    );
-  }
-}
-
-class _EmptyState extends StatelessWidget {
-  final IconData icon;
-  final String   message, actionLabel;
-  final VoidCallback onAction;
-  const _EmptyState({required this.icon, required this.message,
-      required this.actionLabel, required this.onAction});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 16),
-      child: Column(children: [
-        Icon(icon, color: AppColors.textMuted, size: 36),
-        const SizedBox(height: 10),
-        Text(message, textAlign: TextAlign.center,
-            style: const TextStyle(color: AppColors.textMuted, fontSize: 13, height: 1.5)),
-        const SizedBox(height: 14),
-        ElevatedButton(
-          style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
-          onPressed: () { HapticFeedback.mediumImpact(); onAction(); },
-          child: Text(actionLabel),
-        ),
-      ]),
+      behavior: HitTestBehavior.opaque,
+      child: Padding(padding: const EdgeInsets.symmetric(
+          horizontal: 16, vertical: 14),
+        child: Row(children: [
+          Icon(icon, color: c, size: 20),
+          const SizedBox(width: 12),
+          Expanded(child: Text(label, style: TextStyle(color: c,
+              fontSize: 14, fontWeight: FontWeight.w500))),
+          if (showArrow) const Icon(Iconsax.arrow_right_2,
+              color: AppColors.textMuted, size: 16),
+        ])),
     );
   }
 }

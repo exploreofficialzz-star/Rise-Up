@@ -228,8 +228,16 @@ class _HomeScreenState extends State<HomeScreen>
   // ── Boot ───────────────────────────────────────────────────────────────────
   Future<void> _boot() async {
     setState(() => _isLoading = true);
-    await Future.wait([_fetchProfile(), _fetchTokens(), _fetchMissions()]);
-    setState(() => _isLoading = false);
+
+    // Load profile from cache first → dismiss spinner immediately if available
+    await _fetchProfile();
+    if (mounted) setState(() => _isLoading = false);
+
+    // Fetch tokens + missions in background (no spinner, they update quietly)
+    await Future.wait([
+      _fetchTokens().timeout(const Duration(seconds: 12), onTimeout: () {}),
+      _fetchMissions().timeout(const Duration(seconds: 12), onTimeout: () {}),
+    ]);
 
     if (widget.openMissionId != null) {
       _selectMission(widget.openMissionId!);
@@ -934,12 +942,12 @@ class _HomeScreenState extends State<HomeScreen>
         // Right — search + notifications
         GestureDetector(
           onTap: () => _Sound.tap(),
-          child: Icon(Iconsax.search_normal, color: iconClr, size: 21),
+          child: Icon(Iconsax.search_normal_1, color: iconClr, size: 22),
         ),
-        const SizedBox(width: 20),
+        const SizedBox(width: 28),
         GestureDetector(
           onTap: () { _Sound.tap(); context.push('/notifications'); },
-          child: Icon(Iconsax.notification, color: iconClr, size: 21),
+          child: Icon(Iconsax.notification_1, color: iconClr, size: 22),
         ),
       ]),
     );
@@ -1007,27 +1015,25 @@ class _HomeScreenState extends State<HomeScreen>
     final firstName = (_userName ?? '').split(' ').first.trim();
     final showName  = firstName.isNotEmpty && firstName.toLowerCase() != 'hustler';
     final greeting  = _timeGreeting();
-    final stageInfo = _stageInfo(_userStage);
 
     return Container(
       color: bg,
       width: double.infinity,
       child: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // ── Time greeting + name ──────────────────────────────────
+              // ── Personalised greeting ─────────────────────────────────
               if (showName) ...[
                 Text(
                   '$greeting,',
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    fontSize: 18,
+                    fontSize: 16,
                     color: isDark ? Colors.white38 : Colors.black38,
                     fontWeight: FontWeight.w400,
-                    letterSpacing: 0.2,
                   ),
                 ).animate().fadeIn(duration: 300.ms),
                 const SizedBox(height: 2),
@@ -1035,14 +1041,13 @@ class _HomeScreenState extends State<HomeScreen>
                   firstName,
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    fontSize: 34,
+                    fontSize: 30,
                     fontWeight: FontWeight.w900,
                     color: isDark ? Colors.white : Colors.black87,
-                    letterSpacing: -0.8,
-                    height: 1.1,
+                    letterSpacing: -0.5,
                   ),
-                ).animate().fadeIn(delay: 100.ms, duration: 300.ms),
-                const SizedBox(height: 20),
+                ).animate().fadeIn(delay: 80.ms, duration: 300.ms),
+                const SizedBox(height: 22),
               ],
 
               // ── Brand line ────────────────────────────────────────────
@@ -1050,11 +1055,11 @@ class _HomeScreenState extends State<HomeScreen>
                 'do your best\nhustle with',
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  fontSize: 38,
-                  fontWeight: FontWeight.w900,
-                  color: isDark ? Colors.white : Colors.black87,
-                  height: 1.18,
-                  letterSpacing: -1.0,
+                  fontSize:      30,
+                  fontWeight:    FontWeight.w900,
+                  color:         isDark ? Colors.white : Colors.black87,
+                  height:        1.2,
+                  letterSpacing: -0.8,
                 ),
               ).animate().fadeIn(delay: 150.ms),
 
@@ -1067,96 +1072,14 @@ class _HomeScreenState extends State<HomeScreen>
                   'RiseUp',
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    fontSize: 46,
-                    fontWeight: FontWeight.w900,
-                    color: Colors.white,
-                    letterSpacing: -1.5,
-                    height: 1.1,
+                    fontSize:      38,
+                    fontWeight:    FontWeight.w900,
+                    color:         Colors.white,
+                    letterSpacing: -1.2,
+                    height:        1.1,
                   ),
                 ),
               ).animate().fadeIn(delay: 200.ms),
-
-              const SizedBox(height: 28),
-
-              // ── Stage badge ───────────────────────────────────────────
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                decoration: BoxDecoration(
-                  color: (stageInfo['color']! as Color).withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: (stageInfo['color']! as Color).withOpacity(0.35),
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(stageInfo['emoji']! as String,
-                        style: const TextStyle(fontSize: 14)),
-                    const SizedBox(width: 6),
-                    Text(
-                      '${stageInfo['label']} Stage',
-                      style: TextStyle(
-                        color: stageInfo['color']! as Color,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
-              ).animate().fadeIn(delay: 250.ms).scale(begin: const Offset(0.92, 0.92)),
-
-              const SizedBox(height: 32),
-
-              // ── Start mission CTA ─────────────────────────────────────
-              GestureDetector(
-                onTap: _newMission,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)],
-                    ),
-                    borderRadius: BorderRadius.circular(30),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFF6C5CE7).withOpacity(0.35),
-                        blurRadius: 16,
-                        offset: const Offset(0, 6),
-                      ),
-                    ],
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.rocket_launch_rounded,
-                          color: Colors.white, size: 18),
-                      SizedBox(width: 10),
-                      Text(
-                        'Start a Mission',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: 0.2,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ).animate().fadeIn(delay: 300.ms).slideY(begin: 0.15),
-
-              const SizedBox(height: 16),
-
-              // ── Hint text ─────────────────────────────────────────────
-              Text(
-                'Or tap + above to pick up where you left off',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: isDark ? Colors.white24 : Colors.black26,
-                ),
-              ).animate().fadeIn(delay: 400.ms),
             ],
           ),
         ),
