@@ -110,21 +110,38 @@ class ApiService {
       },
       onResponse: (response, handler) => handler.next(response),
       onError: (error, handler) async {
-        if (error.response?.statusCode == 401 && !_isRefreshing) {
+        // Only attempt refresh once per cycle and skip refresh/signout calls
+        final path = error.requestOptions.path;
+        final isAuthCall = path.contains('/auth/refresh') ||
+                           path.contains('/auth/signin') ||
+                           path.contains('/auth/signout');
+
+        if (error.response?.statusCode == 401 &&
+            !_isRefreshing &&
+            !isAuthCall) {
           _isRefreshing = true;
           final refreshed = await _refreshToken();
           _isRefreshing = false;
 
           if (refreshed) {
             final token = await storageService.read(key: 'access_token');
-            error.requestOptions.headers['Authorization'] = 'Bearer $token';
+            // Clone options and inject the new token
+            final opts = error.requestOptions;
+            opts.headers['Authorization'] = 'Bearer $token';
             try {
-              final retry = await dio.fetch(error.requestOptions);
+              // Use _retryDio (no interceptor) to avoid triggering refresh again
+              final retryDio = Dio(BaseOptions(
+                baseUrl:        _dio.options.baseUrl,
+                connectTimeout: _dio.options.connectTimeout,
+                receiveTimeout: _dio.options.receiveTimeout,
+              ));
+              final retry = await retryDio.fetch(opts);
               return handler.resolve(retry);
             } catch (_) {
               return handler.next(error);
             }
           } else {
+            // Refresh failed — log out cleanly
             await authService.onLogout();
             return handler.next(error);
           }
@@ -137,13 +154,31 @@ class ApiService {
   Future<bool> _refreshToken() async {
     try {
       final refresh = await storageService.read(key: 'refresh_token');
-      if (refresh == null) return false;
-      final res = await _dio.post('/auth/refresh',
-          data: {'refresh_token': refresh});
-      await storageService.write(
-          key: 'access_token', value: res.data['access_token'] as String);
-      await storageService.write(
-          key: 'refresh_token', value: res.data['refresh_token'] as String);
+      if (refresh == null || refresh.isEmpty) return false;
+
+      // Use a bare Dio instance (no auth interceptor) so this call
+      // never triggers another 401 → refresh loop.
+      final bare = Dio(BaseOptions(
+        baseUrl:        _dio.options.baseUrl,
+        connectTimeout: const Duration(seconds: 15),
+        receiveTimeout: const Duration(seconds: 15),
+        headers:        {'Content-Type': 'application/json'},
+      ));
+
+      final res = await bare.post(
+        '/auth/refresh',
+        data: {'refresh_token': refresh},
+      );
+
+      final newAccess  = res.data['access_token']  as String?;
+      final newRefresh = res.data['refresh_token'] as String?;
+
+      if (newAccess == null || newAccess.isEmpty) return false;
+
+      await storageService.write(key: 'access_token',  value: newAccess);
+      if (newRefresh != null && newRefresh.isNotEmpty) {
+        await storageService.write(key: 'refresh_token', value: newRefresh);
+      }
       return true;
     } catch (_) {
       return false;
@@ -238,29 +273,41 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
-  /// Fetches /auth/me after login and writes the result to the profile cache.
-  /// Called fire-and-forget — never throws, never blocks the caller.
-  void _backgroundCacheProfile() {
-    Future.delayed(const Duration(milliseconds: 400), () async {
-      try {
-        final res = await _dio.get('/auth/me');
-        if (res.data is Map) {
-          await storageService.cacheProfile(
-              Map<String, dynamic>.from(res.data as Map));
-        }
-      } catch (_) {}
-    });
-  }
-
-  /// Public wrapper so register / onboarding can also prime the cache.
+  /// Fetches fresh profile data and writes it to the local cache.
+  /// Tries /auth/me first (fast, single round-trip).
+  /// Falls back to /progress/profile if /auth/me returns no name
+  /// (e.g. first login before DB row is fully populated).
   Future<void> fetchAndCacheProfile() async {
     try {
+      // ── Primary: /auth/me (now returns full flat profile) ────────────
       final res = await _dio.get('/auth/me');
       if (res.data is Map) {
-        await storageService.cacheProfile(
-            Map<String, dynamic>.from(res.data as Map));
+        final data = Map<String, dynamic>.from(res.data as Map);
+        // If full_name came back non-empty, we're done.
+        if ((data['full_name'] as String? ?? '').isNotEmpty) {
+          await storageService.cacheProfile(data);
+          return;
+        }
       }
     } catch (_) {}
+
+    // ── Fallback: /progress/profile (DB row, always has the name) ────
+    try {
+      final res = await _dio.get('/progress/profile');
+      if (res.data is Map) {
+        final wrapper = res.data as Map;
+        final profile = wrapper['profile'];
+        if (profile is Map) {
+          await storageService.cacheProfile(
+              Map<String, dynamic>.from(profile));
+        }
+      }
+    } catch (_) {}
+  }
+
+  /// Same as fetchAndCacheProfile but fire-and-forget after login.
+  void _backgroundCacheProfile() {
+    Future.delayed(const Duration(milliseconds: 300), fetchAndCacheProfile);
   }
 
   Future<void> signOut() async {
