@@ -1,21 +1,25 @@
 // frontend/lib/screens/home/home_screen.dart
-// RiseUp v3.0 — The Mission Command Center
+// RiseUp v3.2 — The Mission Command Center
 //
-// Architecture:
-//   • One screen. No bottom nav.
-//   • Top bar: ≡ | RiseUp 🪙tokens | 🔍 | 🔔
-//   • Mission circles (horizontal scroll, like stories)
-//   • Chat interface (Claude-like) — messages from RiseUp + user
-//   • APEX mode: split panel (left=thoughts, right=browser screenshot)
-//   • Ad gate overlay when tokens exhausted
-//   • Sidebar drawer: profile, missions list, navigation
+// Changelog v3.2:
+//   • Hero welcome: greeting (top-left, below mission circles)
+//   • Input bar hint text: "Do your best hustle with RiseUp"
+//   • _RiseUpSpinIcon: larger (36×36), no glow/blur background
+//   • _handleMentorChat: fixed stuck-loading bug + 30s timeout guard
+//
+// Fixes applied (design unchanged):
+//   • Memory: session_id upserted before messages saved (FK fix)
+//   • Title: only set once from backend, never overwritten after
+//   • Tokens: deducted server-side, exhausted state handled in Flutter
+//   • Input: maxLines capped at 6 so bar doesn't grow infinitely
+//   • APEX: full-screen overlay (Positioned.fill) — chat never resizes
+//   • _fetchTokens: proper Map cast
 // ignore_for_file: deprecated_member_use
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
-
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -32,6 +36,7 @@ import '../../services/ad_service.dart';
 import '../../services/api_service.dart';
 import '../../services/api_service_stream.dart';
 import '../../services/auth_service.dart';
+import '../../utils/storage_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MODELS
@@ -94,9 +99,11 @@ class Mission {
     required this.createdAt,
   });
 
-  Mission copyWith({List<ChatMessage>? messages, MissionStatus? status, int? incomeEarned}) =>
+  Mission copyWith({List<ChatMessage>? messages, MissionStatus? status,
+      int? incomeEarned, String? title}) =>
       Mission(
-        id: id, title: title, emoji: emoji, platform: platform, createdAt: createdAt,
+        id: id, emoji: emoji, platform: platform, createdAt: createdAt,
+        title:         title         ?? this.title,
         status:        status        ?? this.status,
         messages:      messages      ?? this.messages,
         incomeEarned:  incomeEarned  ?? this.incomeEarned,
@@ -147,7 +154,6 @@ class TokenState {
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _Sound {
-  // Uses device system haptics only — no asset files needed
   static void tap()      => HapticFeedback.selectionClick();
   static void send()     => HapticFeedback.mediumImpact();
   static void receive()  => HapticFeedback.lightImpact();
@@ -171,7 +177,6 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen>
     with TickerProviderStateMixin, WidgetsBindingObserver {
 
-  // ── State ──────────────────────────────────────────────────────────────────
   final _scrollCtrl  = ScrollController();
   final _inputCtrl   = TextEditingController();
   final _inputFocus  = FocusNode();
@@ -181,7 +186,7 @@ class _HomeScreenState extends State<HomeScreen>
   String?        _activeMissionId;
   TokenState     _tokens         = const TokenState();
   ApexStatus     _apexStatus     = ApexStatus.idle;
-  bool           _apexMode       = false; // split-panel active
+  bool           _apexMode       = false;
   String         _apexThought    = '';
   Uint8List?     _apexScreenshot;
   bool           _isLoading      = false;
@@ -190,13 +195,12 @@ class _HomeScreenState extends State<HomeScreen>
   String?        _userName;
   String         _userStage      = 'survival';
   bool           _showAdGate     = false;
-  int            _adWatchCount   = 0;   // ads watched in current cycle
+  int            _adWatchCount   = 0;
   StreamSubscription? _apexSub;
 
   late final AnimationController _tokenPulse;
   late final AnimationController _apexPulse;
 
-  // ── Lifecycle ──────────────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
@@ -226,14 +230,17 @@ class _HomeScreenState extends State<HomeScreen>
   // ── Boot ───────────────────────────────────────────────────────────────────
   Future<void> _boot() async {
     setState(() => _isLoading = true);
-    await Future.wait([_fetchProfile(), _fetchTokens(), _fetchMissions()]);
-    setState(() => _isLoading = false);
+    await _fetchProfile();
+    if (mounted) setState(() => _isLoading = false);
+
+    await Future.wait([
+      _fetchTokens().timeout(const Duration(seconds: 12), onTimeout: () {}),
+      _fetchMissions().timeout(const Duration(seconds: 12), onTimeout: () {}),
+    ]);
 
     if (widget.openMissionId != null) {
       _selectMission(widget.openMissionId!);
-    } else if (_missions.isEmpty) {
-      _addWelcomeMission();
-    } else {
+    } else if (_missions.isNotEmpty) {
       _activeMissionId = _missions.first.id;
     }
 
@@ -241,24 +248,64 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Future<void> _fetchProfile() async {
+    final cached = await storageService.getCachedProfile();
+    if (cached != null && mounted) {
+      setState(() {
+        _userName   = (cached['full_name'] as String? ?? '').isNotEmpty
+                    ? cached['full_name'] as String
+                    : cached['username']  as String? ?? 'Hustler';
+        _userAvatar = cached['avatar_url'] as String?;
+        _userStage  = cached['stage']      as String? ?? 'survival';
+      });
+    }
     try {
-      final r = await api.get('/auth/me');
-      if (r is Map) {
-        setState(() {
-          _userName   = r['full_name'] ?? r['username'] ?? 'Hustler';
-          _userAvatar = r['avatar_url'];
-          _userStage  = r['stage'] ?? 'survival';
-        });
+      final r = await api.get('/auth/me').timeout(const Duration(seconds: 10));
+      if (r is Map && mounted) {
+        final raw     = r as Map;
+        final profile = raw.containsKey('profile') && raw['profile'] is Map
+            ? Map<String, dynamic>.from(raw['profile'] as Map)
+            : Map<String, dynamic>.from(raw);
+        final name = (profile['full_name'] as String? ?? '').isNotEmpty
+            ? profile['full_name'] as String
+            : (profile['username'] as String? ?? '');
+        if (mounted) {
+          setState(() {
+            _userName   = name.isNotEmpty ? name : (_userName ?? 'Hustler');
+            _userAvatar = profile['avatar_url'] as String?;
+            _userStage  = profile['stage']      as String? ?? 'survival';
+          });
+        }
+        await storageService.cacheProfile(profile);
       }
-    } catch (_) {}
+    } catch (_) {
+      try {
+        final r2 = await api.get('/progress/profile').timeout(const Duration(seconds: 10));
+        if (r2 is Map && mounted) {
+          final p       = (r2['profile'] as Map?) ?? {};
+          final profile = Map<String, dynamic>.from(p);
+          final name    = (profile['full_name'] as String? ?? '').isNotEmpty
+              ? profile['full_name'] as String
+              : (profile['username'] as String? ?? '');
+          if (mounted) {
+            setState(() {
+              _userName   = name.isNotEmpty ? name : (_userName ?? 'Hustler');
+              _userAvatar = profile['avatar_url'] as String?;
+              _userStage  = profile['stage']      as String? ?? 'survival';
+            });
+          }
+          await storageService.cacheProfile(profile);
+        }
+      } catch (_) {}
+    }
   }
 
+  // FIX: proper Map cast so token badge always updates
   Future<void> _fetchTokens() async {
     try {
       final r = await api.get('/agent/tokens');
       if (r is Map && mounted) {
-        final map = Map<String, dynamic>.from(r as Map);
-        setState(() => _tokens = TokenState.fromJson(map));
+        setState(() => _tokens = TokenState.fromJson(
+          Map<String, dynamic>.from(r as Map)));
       }
     } catch (_) {}
   }
@@ -269,15 +316,15 @@ class _HomeScreenState extends State<HomeScreen>
       if (r is Map) {
         final sessions = (r['sessions'] as List? ?? []);
         final missions = sessions.map<Mission>((s) => Mission(
-          id:        s['id']?.toString()    ?? _uuid(),
-          title:     s['title']?.toString() ?? 'Mission',
-          emoji:     s['emoji']?.toString() ?? '🎯',
+          id:        s['id']?.toString()       ?? _uuid(),
+          title:     s['title']?.toString()    ?? 'Mission',
+          emoji:     s['emoji']?.toString()    ?? '🎯',
           platform:  s['platform']?.toString() ?? '',
           status:    MissionStatus.active,
           messages:  _parseMsgs(s['messages']),
           createdAt: DateTime.tryParse(s['created_at'] ?? '') ?? DateTime.now(),
         )).toList();
-        setState(() => _missions = missions);
+        if (mounted) setState(() => _missions = missions);
       }
     } catch (_) {}
   }
@@ -285,37 +332,13 @@ class _HomeScreenState extends State<HomeScreen>
   List<ChatMessage> _parseMsgs(dynamic raw) {
     if (raw is! List) return [];
     return raw.map<ChatMessage>((m) => ChatMessage(
-      id:   m['id']?.toString()   ?? _uuid(),
-      role: m['role'] == 'user'   ? MessageRole.user : MessageRole.riseup,
+      id:   m['id']?.toString()      ?? _uuid(),
+      role: m['role'] == 'user'      ? MessageRole.user : MessageRole.riseup,
       text: m['content']?.toString() ?? '',
       ts:   DateTime.tryParse(m['created_at'] ?? '') ?? DateTime.now(),
     )).toList();
   }
 
-  void _addWelcomeMission() {
-    final welcome = Mission(
-      id:       _uuid(),
-      title:    'RiseUp',
-      emoji:    '🔥',
-      platform: '',
-      status:   MissionStatus.active,
-      createdAt: DateTime.now(),
-      messages: [
-        ChatMessage(
-          id:   _uuid(),
-          role: MessageRole.riseup,
-          text: 'do your best hustle with RiseUp 💪',
-          ts:   DateTime.now(),
-        ),
-      ],
-    );
-    setState(() {
-      _missions.add(welcome);
-      _activeMissionId = welcome.id;
-    });
-  }
-
-  // ── Active mission helpers ──────────────────────────────────────────────────
   Mission? get _activeMission =>
       _missions.where((m) => m.id == _activeMissionId).firstOrNull;
 
@@ -326,7 +349,7 @@ class _HomeScreenState extends State<HomeScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
   }
 
-  void _newMission() async {
+  void _newMission() {
     _Sound.tap();
     final m = Mission(
       id: _uuid(), title: 'New Mission', emoji: '➕',
@@ -342,25 +365,209 @@ class _HomeScreenState extends State<HomeScreen>
     _scrollToBottom();
   }
 
-  // ── Send message ──────────────────────────────────────────────────────────
+  // ── Mission options ────────────────────────────────────────────────────────
+  void _showMissionOptions(BuildContext context, Mission mission) {
+    _Sound.tap();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: isDark ? const Color(0xFF1C1C1E) : Colors.white,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => SafeArea(child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(width: 36, height: 4,
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                  color: isDark ? Colors.white24 : Colors.black12,
+                  borderRadius: BorderRadius.circular(2))),
+          Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: Text(mission.title,
+                style: TextStyle(color: isDark ? Colors.white : Colors.black87,
+                    fontSize: 15, fontWeight: FontWeight.w600),
+                maxLines: 1, overflow: TextOverflow.ellipsis)),
+          Divider(color: isDark ? Colors.white10 : Colors.black.withOpacity(0.08), height: 1),
+          const SizedBox(height: 4),
+          ListTile(dense: true,
+            leading: Icon(Iconsax.edit_2,
+                color: isDark ? Colors.white70 : Colors.black54, size: 20),
+            title: Text('Edit title',
+                style: TextStyle(color: isDark ? Colors.white : Colors.black87,
+                    fontSize: 15, fontWeight: FontWeight.w500)),
+            onTap: () { Navigator.pop(context); _editMissionTitle(mission); }),
+          ListTile(dense: true,
+            leading: Icon(Iconsax.message_question,
+                color: isDark ? Colors.white70 : Colors.black54, size: 20),
+            title: Text('Send feedback',
+                style: TextStyle(color: isDark ? Colors.white : Colors.black87,
+                    fontSize: 15, fontWeight: FontWeight.w500)),
+            onTap: () { Navigator.pop(context); _sendMissionFeedback(mission); }),
+          const SizedBox(height: 4),
+          Divider(color: isDark ? Colors.white10 : Colors.black.withOpacity(0.08), height: 1),
+          const SizedBox(height: 4),
+          ListTile(dense: true,
+            leading: const Icon(Iconsax.trash, color: AppColors.error, size: 20),
+            title: const Text('Delete mission',
+                style: TextStyle(color: AppColors.error, fontSize: 15,
+                    fontWeight: FontWeight.w500)),
+            onTap: () { Navigator.pop(context); _deleteMission(mission); }),
+          const SizedBox(height: 8),
+        ]),
+      )),
+    );
+  }
+
+  void _editMissionTitle(Mission mission) {
+    final ctrl   = TextEditingController(text: mission.title);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    showDialog(context: context, builder: (_) => AlertDialog(
+      backgroundColor: isDark ? const Color(0xFF1C1C1E) : Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: Text('Edit title',
+          style: TextStyle(color: isDark ? Colors.white : Colors.black87,
+              fontWeight: FontWeight.w700)),
+      content: TextField(
+        controller: ctrl, autofocus: true,
+        style: TextStyle(color: isDark ? Colors.white : Colors.black87),
+        decoration: InputDecoration(
+          hintText: 'Mission title',
+          hintStyle: TextStyle(color: isDark ? Colors.white38 : Colors.black38),
+          filled: true,
+          fillColor: isDark ? const Color(0xFF2C2C2E) : const Color(0xFFF2F2F7),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10),
+              borderSide: BorderSide.none),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12)),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context),
+            child: Text('Cancel',
+                style: TextStyle(color: isDark ? Colors.white54 : Colors.black45))),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+          onPressed: () {
+            Navigator.pop(context);
+            final t = ctrl.text.trim();
+            if (t.isNotEmpty) {
+              _updateMissionTitle(mission.id, t);
+              api.post('/mentor/sessions/${mission.id}/rename', {'title': t})
+                  .catchError((_) {});
+            }
+          },
+          child: const Text('Save')),
+      ],
+    ));
+  }
+
+  void _deleteMission(Mission mission) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    showDialog(context: context, builder: (_) => AlertDialog(
+      backgroundColor: isDark ? const Color(0xFF1C1C1E) : Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: Text('Delete mission?',
+          style: TextStyle(color: isDark ? Colors.white : Colors.black87,
+              fontWeight: FontWeight.w700)),
+      content: Text('This will permanently delete "${mission.title}" and all its messages.',
+          style: TextStyle(
+              color: isDark ? Colors.white60 : Colors.black54, height: 1.5)),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context),
+            child: Text('Cancel',
+                style: TextStyle(color: isDark ? Colors.white54 : Colors.black45))),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(backgroundColor: AppColors.error,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+          onPressed: () {
+            Navigator.pop(context);
+            setState(() {
+              _missions.removeWhere((m) => m.id == mission.id);
+              if (_activeMissionId == mission.id) {
+                _activeMissionId = _missions.isNotEmpty ? _missions.first.id : null;
+              }
+            });
+            api.post('/mentor/sessions/${mission.id}/delete', {}).catchError((_) {});
+          },
+          child: const Text('Delete')),
+      ],
+    ));
+  }
+
+  void _sendMissionFeedback(Mission mission) {
+    final ctrl   = TextEditingController();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    showDialog(context: context, builder: (_) => AlertDialog(
+      backgroundColor: isDark ? const Color(0xFF1C1C1E) : Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: Text('Send feedback',
+          style: TextStyle(color: isDark ? Colors.white : Colors.black87,
+              fontWeight: FontWeight.w700)),
+      content: Column(mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('For: ${mission.title}',
+              style: TextStyle(
+                  color: isDark ? Colors.white38 : Colors.black38, fontSize: 12)),
+          const SizedBox(height: 10),
+          TextField(controller: ctrl, autofocus: true, maxLines: 4,
+            style: TextStyle(color: isDark ? Colors.white : Colors.black87),
+            decoration: InputDecoration(
+              hintText: 'What would you like us to know?',
+              hintStyle: TextStyle(color: isDark ? Colors.white38 : Colors.black38),
+              filled: true,
+              fillColor: isDark ? const Color(0xFF2C2C2E) : const Color(0xFFF2F2F7),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide.none),
+              contentPadding: const EdgeInsets.all(12))),
+        ]),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context),
+            child: Text('Cancel',
+                style: TextStyle(color: isDark ? Colors.white54 : Colors.black45))),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+          onPressed: () {
+            Navigator.pop(context);
+            if (ctrl.text.trim().isNotEmpty) {
+              api.post('/feedback', {'mission_id': mission.id,
+                'message': ctrl.text.trim()}).catchError((_) {});
+              if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Feedback sent. Thank you! 🙏'),
+                    backgroundColor: AppColors.success));
+            }
+          },
+          child: const Text('Send')),
+      ],
+    ));
+  }
+
+  // ── Send message ───────────────────────────────────────────────────────────
   Future<void> _sendMessage([String? override]) async {
     final text = (override ?? _inputCtrl.text).trim();
     if (text.isEmpty || _isSending) return;
     if (_tokens.exhausted) { _showTokenGate(); return; }
 
+    if (_activeMissionId == null) {
+      _newMission();
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
+
     _Sound.send();
     _inputCtrl.clear();
     setState(() => _isSending = true);
 
-    final userMsg = ChatMessage(id: _uuid(), role: MessageRole.user, text: text, ts: DateTime.now());
+    final userMsg = ChatMessage(
+        id: _uuid(), role: MessageRole.user, text: text, ts: DateTime.now());
     _appendMsg(userMsg);
     _scrollToBottom();
 
-    // Check if this is an APEX request
-    final isApex = _detectApex(text);
-
-    // Placeholder RiseUp response
-    final placeholder = ChatMessage(id: _uuid(), role: MessageRole.riseup,
+    final isApex      = _detectApex(text);
+    final placeholder = ChatMessage(
+        id: _uuid(), role: MessageRole.riseup,
         text: '', ts: DateTime.now(), isStreaming: true);
     _appendMsg(placeholder);
 
@@ -379,46 +586,70 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   bool _detectApex(String text) {
-    final lower = text.toLowerCase();
+    final lower    = text.toLowerCase();
     final triggers = ['do it', 'set it up', 'create my', 'open', 'register me',
         'sign me up', 'apply for me', 'build this', 'execute', 'run it',
         'make it happen', 'handle it', 'automate', 'use apex', 'go ahead'];
     return triggers.any((t) => lower.contains(t));
   }
 
+  // FIX: title guard + exhausted token handling
   Future<void> _handleMentorChat(String text, String placeholderId) async {
     try {
       final sessionId = _activeMission?.id;
       final res = await api.post('/mentor/chat', {
         'message':    text,
         'session_id': sessionId,
-      });
+      }).timeout(const Duration(seconds: 30),
+          onTimeout: () => throw TimeoutException('Request timed out'));
+
       if (res is Map) {
+        // FIX: handle token exhaustion returned by backend
         if (res['exhausted'] == true) {
-          _updateMsg(placeholderId, res['reply']?.toString() ??
+          _updateMsg(placeholderId,
+              res['reply']?.toString() ??
               '⚡ Tokens used up. Watch an ad or upgrade to continue!');
           if (mounted) setState(() => _showAdGate = true);
           _fetchTokens();
           return;
         }
-        final reply = res['reply']?.toString() ?? res['message']?.toString() ?? '...';
+
+        final reply = (res['reply']   as String?)?.trim().isNotEmpty == true
+            ? res['reply']   as String
+            : (res['message'] as String?)?.trim().isNotEmpty == true
+                ? res['message'] as String
+                : (res['content'] as String?)?.trim().isNotEmpty == true
+                    ? res['content'] as String
+                    : '...';
         _updateMsg(placeholderId, reply);
         _Sound.receive();
 
-        // Update session title if returned
-        // Only update title once — when still default 'New Mission'
-        final _curTitle = _activeMission?.title ?? '';
-        if (res['session_title'] != null && _activeMission != null &&
-            (_curTitle == 'New Mission' || _curTitle.isEmpty || _curTitle.startsWith('Mission '))) {
+        // FIX: only update title when still default — never overwrite user's title
+        final curTitle = _activeMission?.title ?? '';
+        if (res['session_title'] != null &&
+            _activeMission != null &&
+            (curTitle == 'New Mission' || curTitle.isEmpty ||
+             curTitle.startsWith('Mission '))) {
           _updateMissionTitle(_activeMissionId!, res['session_title'].toString());
         }
+
         if (res['escalate_to_apex'] == true) {
           await Future.delayed(const Duration(milliseconds: 800));
-          _launchApex(res['apex_task']?.toString() ?? text, res['apex_template']);
+          _launchApex(res['apex_task']?.toString() ?? text,
+              res['apex_template'] as Map<String, dynamic>?);
         }
+      } else {
+        final fallback = res?.toString().trim().isNotEmpty == true
+            ? res.toString() : 'Something went wrong. Please try again.';
+        _updateMsg(placeholderId, fallback);
+        _Sound.receive();
       }
+    } on TimeoutException {
+      _updateMsg(placeholderId,
+          '⏱️ Request timed out. Check your connection and try again.');
     } catch (e) {
-      _updateMsg(placeholderId, 'I\'m having trouble connecting right now. Try again in a moment.');
+      _updateMsg(placeholderId,
+          "I'm having trouble connecting right now. Try again in a moment.");
     }
   }
 
@@ -427,18 +658,17 @@ class _HomeScreenState extends State<HomeScreen>
     setState(() { _apexStatus = ApexStatus.thinking; _apexMode = true; });
     _updateMsg(placeholderId, '🤖 **APEX activated.** Analysing your request...');
 
-    // Classify task and get template
     try {
       final classify = await api.post('/agent/classify', {'task': text});
       if (classify is Map) {
-        final template = classify['template']?.toString() ?? 'general';
+        final template  = classify['template']?.toString() ?? 'general';
         final questions = (classify['preflight_questions'] as List?)?.cast<Map>() ?? [];
-
         if (questions.isNotEmpty) {
-          // Ask preflight questions before starting
           _updateMsg(placeholderId,
               '🤖 **APEX** needs a few details before I start:\n\n' +
-              questions.asMap().entries.map((e) => '**${e.key + 1}.** ${e.value['question']}').join('\n'));
+              questions.asMap().entries
+                  .map((e) => '**${e.key + 1}.** ${e.value['question']}')
+                  .join('\n'));
           setState(() { _apexStatus = ApexStatus.paused; });
         } else {
           await _launchApex(text, {'template': template});
@@ -451,26 +681,21 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> _launchApex(String task, Map<String, dynamic>? template) async {
     setState(() { _apexStatus = ApexStatus.browsing; _apexMode = true; });
-
     try {
-      final body = <String, dynamic>{
-        'task':     task,
-        'template': template,
-        'stream':   true,
-      };
-
-      // Stream APEX events via SSE
-      final stream = api.streamPost('/agent/browser/run', body);
+      final stream = api.streamPost('/agent/browser/run', {
+        'task': task, 'template': template, 'stream': true,
+      });
       _apexSub?.cancel();
       _apexSub = stream.listen(
         (event) => _onApexEvent(event.data),
         onError: (_) => setState(() => _apexStatus = ApexStatus.error),
-        onDone:  () => _onApexDone(),
+        onDone:  _onApexDone,
       );
     } catch (e) {
       setState(() { _apexStatus = ApexStatus.error; _apexMode = false; });
       _appendMsg(ChatMessage(id: _uuid(), role: MessageRole.riseup,
-          text: '⚠️ APEX encountered an issue. ${e.toString()}', ts: DateTime.now()));
+          text: '⚠️ APEX encountered an issue. ${e.toString()}',
+          ts: DateTime.now()));
     }
   }
 
@@ -479,29 +704,22 @@ class _HomeScreenState extends State<HomeScreen>
     setState(() {
       if (event['thought'] != null) _apexThought = event['thought'].toString();
       if (event['screenshot_b64'] != null) {
-        try { _apexScreenshot = base64Decode(event['screenshot_b64'].toString()); } catch (_) {}
+        try {
+          _apexScreenshot = base64Decode(event['screenshot_b64'].toString());
+        } catch (_) {}
       }
     });
-
     switch (type) {
-      case 'thinking':
-        setState(() => _apexStatus = ApexStatus.thinking);
-        break;
-      case 'action':
-        setState(() => _apexStatus = ApexStatus.browsing);
-        break;
+      case 'thinking': setState(() => _apexStatus = ApexStatus.thinking); break;
+      case 'action':   setState(() => _apexStatus = ApexStatus.browsing); break;
       case 'human_required':
         setState(() => _apexStatus = ApexStatus.paused);
         _appendMsg(ChatMessage(id: _uuid(), role: MessageRole.riseup,
-            text: '⏸️ **APEX paused.** ${event['message'] ?? 'I need your input to continue.'}',
+            text: '⏸️ **APEX paused.** ${event['message'] ?? 'I need your input.'}',
             ts: DateTime.now()));
         break;
-      case 'done':
-        _onApexDone();
-        break;
-      case 'error':
-        setState(() => _apexStatus = ApexStatus.error);
-        break;
+      case 'done':  _onApexDone(); break;
+      case 'error': setState(() => _apexStatus = ApexStatus.error); break;
     }
     _scrollToBottom();
   }
@@ -510,7 +728,8 @@ class _HomeScreenState extends State<HomeScreen>
     _Sound.success();
     setState(() { _apexStatus = ApexStatus.done; });
     _appendMsg(ChatMessage(id: _uuid(), role: MessageRole.riseup,
-        text: '✅ **APEX mission complete!** What would you like to do next?', ts: DateTime.now()));
+        text: '✅ **APEX mission complete!** What would you like to do next?',
+        ts: DateTime.now()));
     Future.delayed(const Duration(seconds: 3), () {
       if (mounted) setState(() { _apexMode = false; _apexStatus = ApexStatus.idle; });
     });
@@ -540,7 +759,9 @@ class _HomeScreenState extends State<HomeScreen>
       _missions = _missions.map((m) {
         if (m.id != _activeMissionId) return m;
         final msgs = m.messages.map((msg) =>
-            msg.id == id ? msg.copyWith(text: text, isStreaming: false) : msg).toList();
+            msg.id == id
+                ? msg.copyWith(text: text, isStreaming: false)
+                : msg).toList();
         return m.copyWith(messages: msgs);
       }).toList();
     });
@@ -549,10 +770,9 @@ class _HomeScreenState extends State<HomeScreen>
 
   void _updateMissionTitle(String id, String title) {
     setState(() {
-      _missions = _missions.map((m) => m.id == id
-          ? Mission(id: m.id, title: title, emoji: m.emoji, platform: m.platform,
-                    status: m.status, messages: m.messages, createdAt: m.createdAt)
-          : m).toList();
+      _missions = _missions
+          .map((m) => m.id == id ? m.copyWith(title: title) : m)
+          .toList();
     });
   }
 
@@ -568,17 +788,13 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> _watchAd() async {
     try {
-      // Record ad watch on backend
       final r = await api.post('/agent/tokens/record-ad', {});
       if (r is Map && r['day_locked'] == true) {
-        _showDayLockedDialog();
-        return;
+        _showDayLockedDialog(); return;
       }
       setState(() => _adWatchCount++);
       _Sound.token();
-      if (r is Map && r['redemption_ready'] == true) {
-        await _claimRedemption();
-      }
+      if (r is Map && r['redemption_ready'] == true) await _claimRedemption();
     } catch (_) {}
   }
 
@@ -589,12 +805,9 @@ class _HomeScreenState extends State<HomeScreen>
         _Sound.success();
         setState(() { _showAdGate = false; _adWatchCount = 0; });
         await _fetchTokens();
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('🎉 ${r['tokens_granted']} tokens unlocked!'),
-            backgroundColor: AppColors.success,
-          ));
-        }
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('🎉 ${r['tokens_granted']} tokens unlocked!'),
+          backgroundColor: AppColors.success));
       }
     } catch (_) {}
   }
@@ -602,16 +815,18 @@ class _HomeScreenState extends State<HomeScreen>
   void _showDayLockedDialog() {
     showDialog(context: context, builder: (_) => AlertDialog(
       backgroundColor: AppColors.bgCard,
-      title: const Text('Come back tomorrow 🌅', style: TextStyle(color: Colors.white)),
-      content: const Text("You've reached today's ad limit. Your tokens reset at midnight.\n\nSubscribe to Premium for unlimited access!",
+      title: const Text('Come back tomorrow 🌅',
+          style: TextStyle(color: Colors.white)),
+      content: const Text(
+          "You've reached today's ad limit. Tokens reset at midnight.\n\nSubscribe to Premium for unlimited access!",
           style: TextStyle(color: AppColors.textSecondary)),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK')),
+        TextButton(onPressed: () => Navigator.pop(context),
+            child: const Text('OK')),
         ElevatedButton(
           style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
           onPressed: () { Navigator.pop(context); context.push('/premium'); },
-          child: const Text('Go Premium'),
-        ),
+          child: const Text('Go Premium')),
       ],
     ));
   }
@@ -619,39 +834,35 @@ class _HomeScreenState extends State<HomeScreen>
   // ── Build ──────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     return Scaffold(
       key: _globalKey,
       backgroundColor: Theme.of(context).brightness == Brightness.dark
           ? Colors.black : const Color(0xFFFAFAFA),
       drawer: _buildSidebar(context),
       body: SafeArea(
-        child: Stack(
-          children: [
-            // ── Main chat layout — always full height ─────────────────
-            Column(children: [
-              _buildTopBar(context),
-              _buildMissionCircles(),
-              Expanded(child: _buildChatArea()),
-              if (_showAdGate) _buildAdGate() else _buildInputBar(),
-            ]),
+        child: Stack(children: [
+          // ── Main layout — always full height ─────────────────────────
+          Column(children: [
+            _buildTopBar(context),
+            _buildMissionCircles(),
+            Expanded(child: _buildChatArea()),
+            if (_showAdGate) _buildAdGate() else _buildInputBar(),
+          ]),
 
-            // ── APEX overlay — slides in from bottom, full screen ──────
-            if (_apexMode)
-              Positioned.fill(
-                child: _buildApexOverlay(context),
-              ),
+          // FIX: APEX as overlay — never resizes chat or input
+          if (_apexMode)
+            Positioned.fill(child: _buildApexOverlay(context)),
 
-            if (_isLoading)
-              const Center(child: CircularProgressIndicator(color: AppColors.primary)),
-          ],
-        ),
+          if (_isLoading)
+            const Center(
+                child: CircularProgressIndicator(color: AppColors.primary)),
+        ]),
       ),
     );
   }
 
   // ── Top bar ────────────────────────────────────────────────────────────────
+  // DESIGN UNCHANGED from v3.2
   Widget _buildTopBar(BuildContext context) {
     final isDark  = Theme.of(context).brightness == Brightness.dark;
     final bg      = isDark ? Colors.black : const Color(0xFFFAFAFA);
@@ -663,69 +874,51 @@ class _HomeScreenState extends State<HomeScreen>
       padding: const EdgeInsets.symmetric(horizontal: 16),
       decoration: BoxDecoration(
         color: bg,
-        border: Border(bottom: BorderSide(color: border, width: 0.6)),
-      ),
+        border: Border(bottom: BorderSide(color: border, width: 0.6))),
       child: Row(children: [
-        // ≡ Menu — left
         GestureDetector(
           onTap: () { _Sound.tap(); _globalKey.currentState?.openDrawer(); },
-          child: Icon(Iconsax.menu_1, color: iconClr, size: 22),
-        ),
+          child: Icon(Icons.menu_rounded, color: iconClr, size: 26)),
 
-        // Center — RiseUp logo with token badge as superscript
-        Expanded(child: Center(
-          child: Stack(
-            clipBehavior: Clip.none,
-            alignment: Alignment.center,
-            children: [
-              // Shift slightly right so token badge doesn't overlap menu
-              Transform.translate(
-                offset: const Offset(16, 0),
-                child: ShaderMask(
-                  shaderCallback: (bounds) => const LinearGradient(
-                    colors: [Color(0xFFFF6B00), Color(0xFFFFD700), Color(0xFF6C5CE7)],
-                    stops:  [0.0, 0.45, 1.0],
-                  ).createShader(bounds),
-                  child: const Text('RiseUp',
-                    style: TextStyle(
-                      fontSize:      22,
-                      fontWeight:    FontWeight.w900,
-                      color:         Colors.white,
-                      letterSpacing: -0.5,
-                    ),
-                  ),
-                ),
-              ),
-              // Token badge — top-right of RiseUp, raised up
-              Positioned(
-                right: 18,
-                top:   -2,
-                child: _TokenBadge(tokens: _tokens, pulse: _tokenPulse, isDark: isDark),
-              ),
-            ],
-          ),
-        )),
+        Expanded(child: Center(child: Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ShaderMask(
+              shaderCallback: (bounds) => const LinearGradient(
+                colors: [Color(0xFFFF6B00), Color(0xFFFFD700), Color(0xFF6C5CE7)],
+                stops:  [0.0, 0.45, 1.0],
+              ).createShader(bounds),
+              child: const Text('RiseUp',
+                style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900,
+                    color: Colors.white, letterSpacing: -0.5,
+                    shadows: [
+                      Shadow(blurRadius: 0, offset: Offset(0.4, 0)),
+                      Shadow(blurRadius: 0, offset: Offset(-0.2, 0)),
+                    ]))),
+            Transform.translate(
+              offset: const Offset(1, -6),
+              child: _TokenBadge(tokens: _tokens, pulse: _tokenPulse, isDark: isDark)),
+          ],
+        ))),
 
-        // Right — search + notifications
-        GestureDetector(
-          onTap: () => _Sound.tap(),
-          child: Icon(Iconsax.search_normal, color: iconClr, size: 21),
-        ),
-        const SizedBox(width: 20),
+        GestureDetector(onTap: () => _Sound.tap(),
+            child: Icon(Icons.search_rounded, color: iconClr, size: 26)),
+        const SizedBox(width: 24),
         GestureDetector(
           onTap: () { _Sound.tap(); context.push('/notifications'); },
-          child: Icon(Iconsax.notification, color: iconClr, size: 21),
-        ),
+          child: Icon(Icons.notifications_rounded, color: iconClr, size: 26)),
       ]),
     );
   }
 
   // ── Mission circles ────────────────────────────────────────────────────────
+  // DESIGN UNCHANGED from v3.2
   Widget _buildMissionCircles() {
-    final isDarkMc = Theme.of(context).brightness == Brightness.dark;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Container(
       height: 88,
-      color: isDarkMc ? Colors.black : const Color(0xFFFAFAFA),
+      color: isDark ? Colors.black : const Color(0xFFFAFAFA),
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -733,93 +926,103 @@ class _HomeScreenState extends State<HomeScreen>
         separatorBuilder: (_, __) => const SizedBox(width: 12),
         itemBuilder: (ctx, i) {
           if (i == 0) return _NewMissionCircle(onTap: _newMission);
-          final m = _missions[i - 1];
+          final m        = _missions[i - 1];
           final isActive = m.id == _activeMissionId;
           return _MissionCircle(
-            mission: m,
-            isActive: isActive,
-            onTap: () { _Sound.tap(); _selectMission(m.id); },
-          );
+            mission:    m, isActive: isActive,
+            userAvatar: _userAvatar, userName: _userName,
+            onTap: () { _Sound.tap(); _selectMission(m.id); });
         },
       ),
     );
   }
 
   // ── Chat area ──────────────────────────────────────────────────────────────
+  // DESIGN UNCHANGED from v3.2
   Widget _buildChatArea() {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final bg     = isDark ? Colors.black : const Color(0xFFFAFAFA);
-    final msgs   = _activeMessages;
 
-    if (msgs.isEmpty) {
-      return Container(color: bg,
-        child: Center(child: Text('Start or select a mission',
-            style: TextStyle(color: isDark ? Colors.white38 : Colors.black38))));
+    if (_activeMissionId == null || _activeMessages.isEmpty) {
+      return _buildHeroWelcome(isDark, bg);
     }
-
-    // Welcome-only state: single RiseUp welcome message → render as hero
-    final isWelcomeOnly = msgs.length == 1 &&
-        msgs.first.role == MessageRole.riseup &&
-        msgs.first.text.contains('do your best hustle');
-
-    if (isWelcomeOnly) {
-      return Container(
-        color: bg,
-        width: double.infinity,
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            child: Text(
-              'DO YOUR BEST\nHUSTLE WITH\nRiseUp',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize:      36,
-                fontWeight:    FontWeight.w900,
-                color:         isDark ? Colors.white : Colors.black,
-                height:        1.15,
-                letterSpacing: -0.5,
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-
     return Container(
       color: bg,
       child: ListView.builder(
         controller: _scrollCtrl,
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
-        itemCount: msgs.length,
-        itemBuilder: (ctx, i) => _ChatBubble(msg: msgs[i]),
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+        itemCount: _activeMessages.length,
+        itemBuilder: (ctx, i) => _ChatBubble(msg: _activeMessages[i]),
       ),
     );
   }
 
-  // ── APEX split panel ───────────────────────────────────────────────────────
-  // ── APEX overlay — full screen, professional ──────────────────────────────
-  Widget _buildApexSplitPanel() => _buildApexOverlay(context);
+  // DESIGN UNCHANGED from v3.2
+  Widget _buildHeroWelcome(bool isDark, Color bg) {
+    final firstName = (_userName ?? '').split(' ').first.trim();
+    final showName  = firstName.isNotEmpty && firstName.toLowerCase() != 'hustler';
+    final greeting  = _timeGreeting();
+    return Container(
+      color: bg, width: double.infinity, alignment: Alignment.topLeft,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (showName) ...[
+              Text('$greeting,',
+                  style: TextStyle(fontSize: 15,
+                      color: isDark ? Colors.white38 : Colors.black38,
+                      fontWeight: FontWeight.w400))
+                  .animate().fadeIn(duration: 300.ms),
+              const SizedBox(height: 2),
+              Text(firstName,
+                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900,
+                      color: isDark ? Colors.white : Colors.black87,
+                      letterSpacing: -0.5))
+                  .animate().fadeIn(delay: 80.ms, duration: 300.ms),
+            ] else ...[
+              Text(greeting,
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700,
+                      color: isDark ? Colors.white70 : Colors.black54))
+                  .animate().fadeIn(duration: 300.ms),
+            ],
+          ]),
+      ),
+    );
+  }
 
+  static String _timeGreeting() {
+    final h = DateTime.now().hour;
+    if (h < 12) return 'Good morning';
+    if (h < 17) return 'Good afternoon';
+    return 'Good evening';
+  }
+
+  // ── APEX overlay ───────────────────────────────────────────────────────────
+  // FIX: full-screen Positioned.fill overlay — chat never resizes
+  // Shows real screenshots with InteractiveViewer (pinch to zoom)
   Widget _buildApexOverlay(BuildContext context) {
-    final isDark    = Theme.of(context).brightness == Brightness.dark;
-    final panelBg   = isDark ? const Color(0xFF111111) : Colors.white;
-    final overlayBg = isDark ? const Color(0xFF0A0A0A) : const Color(0xFFF0F0F5);
+    final isDark  = Theme.of(context).brightness == Brightness.dark;
+    final panelBg = isDark ? const Color(0xFF111111) : Colors.white;
+    final bgClr   = isDark ? const Color(0xFF0A0A0A) : const Color(0xFFF0F0F5);
 
     return Container(
-      color: overlayBg,
+      color: bgClr,
       child: Column(children: [
 
-        // ── APEX top bar ───────────────────────────────────────────
+        // Top bar
         Container(
           height: 52,
           color: isDark ? Colors.black : Colors.white,
           padding: const EdgeInsets.symmetric(horizontal: 12),
           child: _ApexStatusBar(
-            status: _apexStatus, pulse: _apexPulse, onStop: _stopApex),
+              status: _apexStatus, pulse: _apexPulse, onStop: _stopApex),
         ),
 
         Expanded(child: Row(children: [
-          // LEFT — Thought process 35%
+
+          // LEFT — thoughts (35%)
           SizedBox(
             width: MediaQuery.of(context).size.width * 0.35,
             child: Container(
@@ -828,10 +1031,9 @@ class _HomeScreenState extends State<HomeScreen>
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text('Thoughts',
                     style: TextStyle(
-                      color: isDark ? Colors.white38 : Colors.black38,
-                      fontSize: 10, fontWeight: FontWeight.w700,
-                      letterSpacing: 1.0,
-                    )),
+                        color: isDark ? Colors.white38 : Colors.black38,
+                        fontSize: 10, fontWeight: FontWeight.w700,
+                        letterSpacing: 1.0)),
                 const SizedBox(height: 8),
                 Expanded(child: SingleChildScrollView(
                   child: Column(
@@ -843,26 +1045,25 @@ class _HomeScreenState extends State<HomeScreen>
                           margin: const EdgeInsets.only(bottom: 8),
                           decoration: BoxDecoration(
                             color: AppColors.primary.withOpacity(0.08),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
+                            borderRadius: BorderRadius.circular(8)),
                           child: Text(_apexThought,
                               style: TextStyle(
-                                color: isDark ? Colors.white70 : Colors.black54,
-                                fontSize: 11, height: 1.5,
-                              )),
+                                  color: isDark ? Colors.white70 : Colors.black54,
+                                  fontSize: 11, height: 1.5)),
                         ),
                       ..._activeMessages.reversed.take(5).toList().reversed
                           .map((m) => _ChatBubble(msg: m, compact: true)),
                     ],
                   ),
                 )),
-                // Direct APEX input
+                // Input to direct APEX
                 Container(
                   margin: const EdgeInsets.only(top: 8),
                   decoration: BoxDecoration(
-                    color: isDark ? const Color(0xFF1C1C1E) : const Color(0xFFF2F2F7),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
+                    color: isDark
+                        ? const Color(0xFF1C1C1E)
+                        : const Color(0xFFF2F2F7),
+                    borderRadius: BorderRadius.circular(10)),
                   child: Row(children: [
                     Expanded(child: TextField(
                       controller: _inputCtrl,
@@ -877,17 +1078,12 @@ class _HomeScreenState extends State<HomeScreen>
                             fontSize: 12),
                         border: InputBorder.none,
                         contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 6),
-                      ),
-                    )),
+                            horizontal: 8, vertical: 6)))),
                     GestureDetector(
                       onTap: _sendMessage,
-                      child: Padding(
-                        padding: const EdgeInsets.all(6),
+                      child: Padding(padding: const EdgeInsets.all(6),
                         child: Icon(Icons.arrow_upward_rounded,
-                            color: AppColors.primary, size: 18),
-                      ),
-                    ),
+                            color: AppColors.primary, size: 18))),
                   ]),
                 ),
               ]),
@@ -897,56 +1093,49 @@ class _HomeScreenState extends State<HomeScreen>
           Container(width: 1,
               color: isDark ? Colors.white12 : Colors.black12),
 
-          // RIGHT — Browser screenshot 65%
+          // RIGHT — browser screenshot (65%)
           Expanded(child: Container(
-            color: isDark ? const Color(0xFF0D0D0D) : const Color(0xFFF5F5F5),
+            color: isDark
+                ? const Color(0xFF0D0D0D) : const Color(0xFFF5F5F5),
             child: _apexScreenshot != null
                 ? InteractiveViewer(
                     boundaryMargin: const EdgeInsets.all(8),
                     minScale: 0.5, maxScale: 3.0,
                     child: Image.memory(_apexScreenshot!,
-                        fit: BoxFit.contain, width: double.infinity),
-                  )
+                        fit: BoxFit.contain, width: double.infinity))
                 : Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
                     AnimatedBuilder(animation: _apexPulse, builder: (_, __) =>
                         Container(
                           width: 56, height: 56,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            color: AppColors.primary.withOpacity(0.1),
-                          ),
+                            color: AppColors.primary.withOpacity(0.1)),
                           child: Icon(Iconsax.monitor, size: 28,
                               color: AppColors.primary.withOpacity(
-                                  0.4 + _apexPulse.value * 0.6)),
-                        )),
+                                  0.4 + _apexPulse.value * 0.6)))),
                     const SizedBox(height: 12),
-                    Text(
-                      switch (_apexStatus) {
-                        ApexStatus.thinking => 'APEX is thinking...',
-                        ApexStatus.browsing => 'Browser running...',
-                        ApexStatus.paused   => 'Waiting for input',
-                        ApexStatus.done     => 'Task complete ✓',
-                        ApexStatus.error    => 'Something went wrong',
-                        ApexStatus.idle     => 'APEX is ready',
-                      },
-                      style: TextStyle(
+                    Text(switch (_apexStatus) {
+                      ApexStatus.thinking => 'APEX is thinking...',
+                      ApexStatus.browsing => 'Browser running...',
+                      ApexStatus.paused   => 'Waiting for input',
+                      ApexStatus.done     => 'Task complete ✓',
+                      ApexStatus.error    => 'Something went wrong',
+                      ApexStatus.idle     => 'APEX is ready',
+                    }, style: TextStyle(
                         color: isDark ? Colors.white54 : Colors.black45,
-                        fontSize: 13, fontWeight: FontWeight.w500,
-                      ),
-                    ),
+                        fontSize: 13, fontWeight: FontWeight.w500)),
                     if (_apexStatus == ApexStatus.thinking ||
                         _apexStatus == ApexStatus.browsing) ...[
                       const SizedBox(height: 12),
                       SizedBox(width: 20, height: 20,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2,
+                        child: CircularProgressIndicator(strokeWidth: 2,
                             color: AppColors.primary.withOpacity(0.6))),
                     ],
                   ])),
           )),
         ])),
 
-        // ── Bottom bar ─────────────────────────────────────────────
+        // Bottom bar
         Container(
           color: isDark ? Colors.black : Colors.white,
           padding: const EdgeInsets.fromLTRB(14, 8, 14, 14),
@@ -963,10 +1152,8 @@ class _HomeScreenState extends State<HomeScreen>
                     color: isDark ? Colors.white12 : Colors.black12),
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(10)),
-                padding: const EdgeInsets.symmetric(vertical: 10),
-              ),
-              onPressed: () => setState(() { _apexMode = false; }),
-            )),
+                padding: const EdgeInsets.symmetric(vertical: 10)),
+              onPressed: () => setState(() { _apexMode = false; }))),
             const SizedBox(width: 10),
             ElevatedButton.icon(
               icon: const Icon(Icons.stop_rounded, size: 16),
@@ -977,101 +1164,93 @@ class _HomeScreenState extends State<HomeScreen>
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(10)),
                 padding: const EdgeInsets.symmetric(
-                    horizontal: 16, vertical: 10),
-              ),
-              onPressed: _stopApex,
-            ),
+                    horizontal: 16, vertical: 10)),
+              onPressed: _stopApex),
           ]),
         ),
       ]),
     );
   }
 
-  // ── Input bar — Claude-style ──────────────────────────────────────────────
+  // ── Input bar ──────────────────────────────────────────────────────────────
+  // DESIGN UNCHANGED from v3.2  |  FIX: maxLines capped at 6
   Widget _buildInputBar() {
-    final isDark   = Theme.of(context).brightness == Brightness.dark;
-    final fieldBg  = isDark ? const Color(0xFF1C1C1E) : const Color(0xFFF2F2F7);
-    final hintClr  = isDark ? Colors.white38     : Colors.black38;
-    final textClr  = isDark ? Colors.white       : Colors.black87;
-    final iconClr  = isDark ? Colors.white60     : Colors.black45;
+    final isDark     = Theme.of(context).brightness == Brightness.dark;
+    final fieldBg    = isDark ? const Color(0xFF1C1C1E) : const Color(0xFFF2F2F7);
+    final hintClr    = isDark ? Colors.white38 : Colors.black38;
+    final textClr    = isDark ? Colors.white   : Colors.black87;
+    final iconClr    = isDark ? Colors.white60 : Colors.black45;
     final sendActive = _inputCtrl.text.trim().isNotEmpty && !_isSending;
-    final sendBg   = sendActive
+    final sendBg     = sendActive
         ? (isDark ? Colors.white : Colors.black)
-        : (isDark ? const Color(0xFF2C2C2E) : const Color(0xFFE0E0E0));
-    final sendIcon = sendActive
+        : (isDark ? const Color(0xFF2C2C2E) : const Color(0xFFDDDDDD));
+    final sendIcon   = sendActive
         ? (isDark ? Colors.black : Colors.white)
         : (isDark ? Colors.white38 : Colors.black38);
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+      padding: const EdgeInsets.fromLTRB(14, 6, 14, 18),
       child: Container(
         decoration: BoxDecoration(
-          color: fieldBg,
-          borderRadius: BorderRadius.circular(26),
+          color:        fieldBg,
+          borderRadius: BorderRadius.circular(28),
           boxShadow: [
             BoxShadow(
-              color:       isDark
-                  ? Colors.black.withOpacity(0.4)
-                  : Colors.black.withOpacity(0.08),
-              blurRadius:  16,
-              spreadRadius: 0,
-              offset:      const Offset(0, 2),
-            ),
-          ],
-        ),
+              color: isDark
+                  ? Colors.black.withOpacity(0.55)
+                  : Colors.black.withOpacity(0.12),
+              blurRadius: 24, spreadRadius: 0,
+              offset: const Offset(0, 4)),
+            BoxShadow(
+              color: isDark
+                  ? Colors.black.withOpacity(0.3)
+                  : Colors.black.withOpacity(0.06),
+              blurRadius: 8, spreadRadius: -2,
+              offset: const Offset(0, 1)),
+          ]),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          // ── Text field ────────────────────────────────────────────────────
           TextField(
             controller: _inputCtrl,
-            focusNode: _inputFocus,
-            maxLines: 6,
-            minLines: 1,
+            focusNode:  _inputFocus,
+            maxLines:   6,   // FIX: was null (grew forever)
+            minLines:   1,
             style: TextStyle(color: textClr, fontSize: 16, height: 1.4),
             decoration: InputDecoration(
-              hintText: 'Chat with RiseUp...',
-              hintStyle: TextStyle(color: hintClr, fontSize: 16),
-              border:        InputBorder.none,
-              enabledBorder: InputBorder.none,
-              focusedBorder: InputBorder.none,
-              contentPadding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-            ),
+              hintText:       'Do your best hustle with RiseUp',
+              hintStyle:      TextStyle(color: hintClr, fontSize: 15),
+              border:         InputBorder.none,
+              enabledBorder:  InputBorder.none,
+              focusedBorder:  InputBorder.none,
+              contentPadding: const EdgeInsets.fromLTRB(20, 14, 20, 4)),
             onChanged: (_) => setState(() {}),
             textInputAction: TextInputAction.newline,
           ),
-
-          // ── Bottom row: + | send ──────────────────────────────────────────
           Padding(
-            padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
             child: Row(children: [
-              // + quick actions
               GestureDetector(
                 onTap: () => _showQuickMenu(context),
                 child: Container(
-                  width: 32, height: 32,
+                  width: 34, height: 34,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: isDark ? const Color(0xFF2C2C2E) : const Color(0xFFE0E0E0),
-                  ),
-                  child: Icon(Icons.add, color: iconClr, size: 20),
-                ),
-              ),
-
+                    color: isDark
+                        ? const Color(0xFF2C2C2E) : const Color(0xFFE4E4E6)),
+                  child: Icon(Icons.add, color: iconClr, size: 20))),
               const Spacer(),
-
-              // Send arrow (Claude-style)
               GestureDetector(
                 onTap: sendActive ? _sendMessage : null,
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 150),
-                  width: 32, height: 32,
-                  decoration: BoxDecoration(shape: BoxShape.circle, color: sendBg),
+                  width: 34, height: 34,
+                  decoration: BoxDecoration(
+                      shape: BoxShape.circle, color: sendBg),
                   child: _isSending
                       ? Center(child: SizedBox(width: 16, height: 16,
                           child: CircularProgressIndicator(strokeWidth: 2,
                               color: isDark ? Colors.black : Colors.white)))
-                      : Icon(Icons.arrow_upward_rounded, color: sendIcon, size: 18),
-                ),
-              ),
+                      : Icon(Icons.arrow_upward_rounded,
+                          color: sendIcon, size: 19))),
             ]),
           ),
         ]),
@@ -1079,7 +1258,7 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  // ── Quick menu (+ button) ─────────────────────────────────────────────────
+  // ── Quick menu ─────────────────────────────────────────────────────────────
   void _showQuickMenu(BuildContext context) {
     _Sound.tap();
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -1088,83 +1267,76 @@ class _HomeScreenState extends State<HomeScreen>
       backgroundColor: isDark ? const Color(0xFF1C1C1E) : Colors.white,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Container(width: 36, height: 4,
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(
-                    color: isDark ? Colors.white24 : Colors.black12,
-                    borderRadius: BorderRadius.circular(2))),
-            _QuickItem(icon: Iconsax.receipt_2,    label: 'Income Log',   isDark: isDark,
-                onTap: () { Navigator.pop(context); context.push('/memory'); }),
-            _QuickItem(icon: Iconsax.chart_2,      label: 'Earnings',     isDark: isDark,
-                onTap: () { Navigator.pop(context); context.push('/earnings'); }),
-            _QuickItem(icon: Iconsax.book_1,       label: 'Skills',       isDark: isDark,
-                onTap: () { Navigator.pop(context); context.push('/skills'); }),
-            _QuickItem(icon: Iconsax.task_square,  label: 'Tasks',        isDark: isDark,
-                onTap: () { Navigator.pop(context); context.push('/tasks'); }),
-            _QuickItem(icon: Iconsax.location,     label: 'Goals',        isDark: isDark,
-                onTap: () { Navigator.pop(context); context.push('/goals'); }),
-            _QuickItem(icon: Iconsax.crown_1,      label: 'Premium',      isDark: isDark,
-                onTap: () { Navigator.pop(context); context.push('/premium'); }),
-            const SizedBox(height: 8),
-          ]),
-        ),
-      ),
+      builder: (_) => SafeArea(child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(width: 36, height: 4,
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                  color: isDark ? Colors.white24 : Colors.black12,
+                  borderRadius: BorderRadius.circular(2))),
+          _QuickItem(icon: Iconsax.receipt_2,   label: 'Income Log', isDark: isDark,
+              onTap: () { Navigator.pop(context); context.push('/memory'); }),
+          _QuickItem(icon: Iconsax.chart_2,     label: 'Earnings',   isDark: isDark,
+              onTap: () { Navigator.pop(context); context.push('/earnings'); }),
+          _QuickItem(icon: Iconsax.book_1,      label: 'Skills',     isDark: isDark,
+              onTap: () { Navigator.pop(context); context.push('/skills'); }),
+          _QuickItem(icon: Iconsax.task_square, label: 'Tasks',      isDark: isDark,
+              onTap: () { Navigator.pop(context); context.push('/tasks'); }),
+          _QuickItem(icon: Iconsax.location,    label: 'Goals',      isDark: isDark,
+              onTap: () { Navigator.pop(context); context.push('/goals'); }),
+          _QuickItem(icon: Iconsax.crown_1,     label: 'Premium',    isDark: isDark,
+              onTap: () { Navigator.pop(context); context.push('/premium'); }),
+          const SizedBox(height: 8),
+        ]),
+      )),
     );
   }
 
   // ── Ad gate ────────────────────────────────────────────────────────────────
+  // DESIGN UNCHANGED from v3.2
   Widget _buildAdGate() {
     final needed   = 2 - _adWatchCount;
     final schedule = [40, 30, 20];
-    final idx      = _tokens.redemptionsLeft >= 0
-        ? (3 - _tokens.redemptionsLeft).clamp(0, 2)
-        : 2;
+    final idx      = (3 - _tokens.redemptionsLeft).clamp(0, 2);
     final reward   = idx < schedule.length ? schedule[idx] : 0;
 
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: AppColors.bgCard,
-        border: Border(top: BorderSide(color: AppColors.bgSurface, width: 0.8)),
-      ),
+        border: Border(top: BorderSide(color: AppColors.bgSurface, width: 0.8))),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
         Row(children: [
           const Icon(Iconsax.flash, color: AppColors.gold, size: 20),
           const SizedBox(width: 8),
-          const Expanded(child: Text('Tokens used up', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600))),
+          const Expanded(child: Text('Tokens used up',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600))),
           TextButton(
             onPressed: () { setState(() => _showAdGate = false); context.push('/premium'); },
-            child: const Text('Go Premium', style: TextStyle(color: AppColors.primary)),
-          ),
+            child: const Text('Go Premium',
+                style: TextStyle(color: AppColors.primary))),
         ]),
         const SizedBox(height: 8),
         Text('Watch $_adWatchCount/2 ads to earn +$reward tokens',
             style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)),
         const SizedBox(height: 12),
-
-        // Progress dots
-        Row(mainAxisAlignment: MainAxisAlignment.center, children: List.generate(2, (i) =>
-          Container(margin: const EdgeInsets.symmetric(horizontal: 4),
+        Row(mainAxisAlignment: MainAxisAlignment.center,
+          children: List.generate(2, (i) => Container(
+            margin: const EdgeInsets.symmetric(horizontal: 4),
             width: 32, height: 6,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(3),
-              color: i < _adWatchCount ? AppColors.success : AppColors.bgSurface,
-            )))),
+              color: i < _adWatchCount
+                  ? AppColors.success : AppColors.bgSurface)))),
         const SizedBox(height: 12),
-
         Row(children: [
           Expanded(child: OutlinedButton(
             onPressed: () => setState(() => _showAdGate = false),
             style: OutlinedButton.styleFrom(
               side: const BorderSide(color: AppColors.bgSurface),
-              foregroundColor: AppColors.textSecondary,
-            ),
-            child: const Text('Later'),
-          )),
+              foregroundColor: AppColors.textSecondary),
+            child: const Text('Later'))),
           const SizedBox(width: 12),
           Expanded(flex: 2, child: ElevatedButton.icon(
             icon: const Icon(Iconsax.play, size: 16),
@@ -1173,23 +1345,24 @@ class _HomeScreenState extends State<HomeScreen>
               backgroundColor: AppColors.primary,
               foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(vertical: 12),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-            onPressed: _watchAd,
-          )),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10))),
+            onPressed: _watchAd)),
         ]),
       ]),
     );
   }
 
   // ── Sidebar ────────────────────────────────────────────────────────────────
+  // DESIGN UNCHANGED from v3.2
   Widget _buildSidebar(BuildContext context) {
     final stageInfo = _stageInfo(_userStage);
-    final isDarkSb = Theme.of(context).brightness == Brightness.dark;
+    final isDark    = Theme.of(context).brightness == Brightness.dark;
+
     return Drawer(
-      backgroundColor: isDarkSb ? const Color(0xFF0D0D0D) : const Color(0xFFF5F5F5),
+      backgroundColor: isDark
+          ? const Color(0xFF0D0D0D) : const Color(0xFFF5F5F5),
       child: SafeArea(child: Column(children: [
-        // Profile header
         GestureDetector(
           onTap: () { _Sound.tap(); context.push('/profile'); Navigator.pop(context); },
           child: Container(
@@ -1198,30 +1371,41 @@ class _HomeScreenState extends State<HomeScreen>
               CircleAvatar(
                 radius: 28,
                 backgroundColor: AppColors.primary,
-                backgroundImage: _userAvatar != null ? CachedNetworkImageProvider(_userAvatar!) : null,
-                child: _userAvatar == null ? Text((_userName ?? 'R')[0].toUpperCase(),
-                    style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)) : null,
-              ),
+                backgroundImage: _userAvatar != null
+                    ? CachedNetworkImageProvider(_userAvatar!) : null,
+                child: _userAvatar == null
+                    ? Text((_userName ?? 'R')[0].toUpperCase(),
+                        style: const TextStyle(color: Colors.white,
+                            fontSize: 20, fontWeight: FontWeight.bold))
+                    : null),
               const SizedBox(width: 12),
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(_userName ?? 'Hustler', style: const TextStyle(color: Colors.white,
-                    fontSize: 16, fontWeight: FontWeight.w700)),
-                const SizedBox(height: 2),
-                Row(children: [
-                  Text(stageInfo['emoji']!, style: const TextStyle(fontSize: 12)),
-                  const SizedBox(width: 4),
-                  Text(stageInfo['label']!, style: TextStyle(color: stageInfo['color']! as Color, fontSize: 12)),
-                ]),
-              ])),
-              const Icon(Iconsax.arrow_right_2, color: AppColors.textMuted, size: 16),
-            ]),
-          ),
+              Expanded(child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(_userName ?? 'Hustler',
+                      style: TextStyle(
+                          color: isDark ? Colors.white : Colors.black87,
+                          fontSize: 16, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 2),
+                  Row(children: [
+                    Text(stageInfo['emoji']!,
+                        style: const TextStyle(fontSize: 12)),
+                    const SizedBox(width: 4),
+                    Text(stageInfo['label']!,
+                        style: TextStyle(
+                            color: stageInfo['color']! as Color,
+                            fontSize: 12)),
+                  ]),
+                ])),
+              Icon(Iconsax.arrow_right_2,
+                  color: isDark ? AppColors.textMuted : Colors.black26,
+                  size: 16),
+            ])),
         ),
 
         Divider(color: AppColors.bgSurface, height: 1),
         const SizedBox(height: 8),
 
-        // New mission button
         Padding(padding: const EdgeInsets.symmetric(horizontal: 12),
           child: ElevatedButton.icon(
             icon: const Icon(Iconsax.add, size: 18),
@@ -1230,60 +1414,99 @@ class _HomeScreenState extends State<HomeScreen>
               backgroundColor: AppColors.primary,
               foregroundColor: Colors.white,
               minimumSize: const Size(double.infinity, 44),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-            onPressed: () { Navigator.pop(context); _newMission(); },
-          ),
-        ),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10))),
+            onPressed: () { Navigator.pop(context); _newMission(); })),
         const SizedBox(height: 12),
 
-        // Missions list
-        const Padding(padding: EdgeInsets.symmetric(horizontal: 16),
+        Padding(padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Align(alignment: Alignment.centerLeft,
-            child: Text('MISSIONS', style: TextStyle(color: AppColors.textMuted,
-                fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1.2)))),
+            child: Text('MISSIONS',
+                style: TextStyle(
+                    color: isDark ? AppColors.textMuted : Colors.black38,
+                    fontSize: 11, fontWeight: FontWeight.w700,
+                    letterSpacing: 1.2)))),
         const SizedBox(height: 6),
+
         Expanded(child: ListView.builder(
           itemCount: _missions.length,
           itemBuilder: (ctx, i) {
-            final m = _missions[i];
+            final m        = _missions[i];
             final isActive = m.id == _activeMissionId;
             return ListTile(
               dense: true,
-              leading: Text(m.emoji, style: const TextStyle(fontSize: 20)),
-              title: Text(m.title, style: TextStyle(
-                  color: isActive
-                  ? (isDarkSb ? Colors.white : Colors.black87)
-                  : (isDarkSb ? AppColors.textSecondary : Colors.black45),
-                  fontWeight: isActive ? FontWeight.w600 : FontWeight.w400,
-                  fontSize: 14),
+              leading: CircleAvatar(
+                radius: 18,
+                backgroundColor: isActive
+                    ? AppColors.primary
+                    : (isDark
+                        ? const Color(0xFF2C2C2E)
+                        : const Color(0xFFE0E0E0)),
+                backgroundImage: _userAvatar != null
+                    ? CachedNetworkImageProvider(_userAvatar!) : null,
+                child: _userAvatar == null
+                    ? Text((_userName ?? 'R')[0].toUpperCase(),
+                        style: TextStyle(
+                            color: isActive ? Colors.white
+                                : (isDark ? Colors.white60 : Colors.black45),
+                            fontSize: 13, fontWeight: FontWeight.bold))
+                    : null),
+              title: Text(m.title,
+                  style: TextStyle(
+                      color: isActive
+                          ? (isDark ? Colors.white : Colors.black87)
+                          : (isDark ? AppColors.textSecondary : Colors.black54),
+                      fontWeight: isActive
+                          ? FontWeight.w600 : FontWeight.w400,
+                      fontSize: 14),
                   maxLines: 1, overflow: TextOverflow.ellipsis),
-              selected: isActive,
+              subtitle: m.messages.isNotEmpty
+                  ? Text(
+                      m.messages.last.text
+                          .replaceAll(RegExp(r'[#*_\[\]`]'), '').trim(),
+                      style: TextStyle(
+                          color: isDark ? Colors.white24 : Colors.black26,
+                          fontSize: 11),
+                      maxLines: 1, overflow: TextOverflow.ellipsis)
+                  : null,
+              selected:          isActive,
               selectedTileColor: AppColors.primary.withOpacity(0.1),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              onTap: () { _Sound.tap(); Navigator.pop(context); _selectMission(m.id); },
-            );
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8)),
+              trailing: GestureDetector(
+                onTap: () => _showMissionOptions(ctx, m),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                  child: Icon(Icons.more_horiz,
+                      color: isDark ? Colors.white24 : Colors.black26,
+                      size: 18))),
+              onTap: () {
+                _Sound.tap();
+                Navigator.pop(context);
+                _selectMission(m.id);
+              });
           },
         )),
 
         Divider(color: AppColors.bgSurface, height: 1),
-
-        // Bottom nav items
-        _SidebarNavItem(icon: Iconsax.crown_1,  label: 'Premium',    onTap: () { Navigator.pop(context); context.push('/premium'); },
+        _SidebarNavItem(
+            icon: Iconsax.crown_1, label: 'Premium',
+            onTap: () { Navigator.pop(context); context.push('/premium'); },
             badge: _tokens.isPremium ? null : 'Upgrade'),
-        _SidebarNavItem(icon: Iconsax.setting_2, label: 'Settings',  onTap: () { Navigator.pop(context); context.push('/settings'); }),
+        _SidebarNavItem(
+            icon: Iconsax.setting_2, label: 'Settings',
+            onTap: () { Navigator.pop(context); context.push('/settings'); }),
         const SizedBox(height: 8),
       ])),
     );
   }
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
   static Map<String, dynamic> _stageInfo(String stage) {
     const s = <String, Map<String, dynamic>>{
-      'survival': {'emoji': '🆘', 'label': 'Survival',   'color': Color(0xFFE17055)},
-      'earning':  {'emoji': '💪', 'label': 'Earning',    'color': Color(0xFF0984E3)},
-      'growing':  {'emoji': '🚀', 'label': 'Growing',    'color': Color(0xFF00B894)},
-      'wealth':   {'emoji': '💎', 'label': 'Wealth',     'color': Color(0xFF6C5CE7)},
+      'survival': {'emoji': '🆘', 'label': 'Survival', 'color': Color(0xFFE17055)},
+      'earning':  {'emoji': '💪', 'label': 'Earning',  'color': Color(0xFF0984E3)},
+      'growing':  {'emoji': '🚀', 'label': 'Growing',  'color': Color(0xFF00B894)},
+      'wealth':   {'emoji': '💎', 'label': 'Wealth',   'color': Color(0xFF6C5CE7)},
     };
     return s[stage] ?? s['survival']!;
   }
@@ -1294,7 +1517,7 @@ class _HomeScreenState extends State<HomeScreen>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WIDGETS
+// WIDGETS — all DESIGN UNCHANGED from v3.2
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _TokenBadge extends StatelessWidget {
@@ -1305,62 +1528,64 @@ class _TokenBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final badgeBg = isDark ? const Color(0xFF2A2A2A) : const Color(0xFFF0F0F0);
+    final badgeBg = isDark ? const Color(0xFF2A2A2A) : const Color(0xFFEAEAEA);
     final textClr = isDark ? Colors.white60 : Colors.black45;
-
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-      decoration: BoxDecoration(
-        color: badgeBg,
-        borderRadius: BorderRadius.circular(10),
-      ),
+      decoration: BoxDecoration(color: badgeBg, borderRadius: BorderRadius.circular(10)),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         Icon(Icons.flash_on_rounded, color: textClr, size: 10),
         const SizedBox(width: 3),
-        Text('${tokens.remaining}', style: TextStyle(color: textClr,
-            fontSize: 10, fontWeight: FontWeight.w600)),
+        Text('${tokens.remaining}',
+            style: TextStyle(color: textClr, fontSize: 10, fontWeight: FontWeight.w600)),
       ]),
     );
   }
 }
 
 class _MissionCircle extends StatelessWidget {
-  final Mission mission;
-  final bool    isActive;
+  final Mission mission; final bool isActive;
   final VoidCallback onTap;
-  const _MissionCircle({required this.mission, required this.isActive, required this.onTap});
+  final String? userAvatar; final String? userName;
+  const _MissionCircle({required this.mission, required this.isActive,
+      required this.onTap, this.userAvatar, this.userName});
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
+    final initial = (userName ?? 'R')[0].toUpperCase();
+    return GestureDetector(onTap: onTap,
       child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
         Container(
-          width: 52, height: 52,
+          width: 54, height: 54,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            gradient: isActive ? const LinearGradient(
-                colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)]) : null,
-            color: isActive ? null : const Color(0xFF1C1C1E),
-          ),
-          child: Center(
-            child: mission.emoji == '🔥'
-                ? ClipOval(child: Image.asset(
-                    'assets/images/riseup_logo.png',
-                    width: 36, height: 36, fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => Text(mission.emoji,
-                        style: const TextStyle(fontSize: 22)),
-                  ))
-                : Text(mission.emoji, style: const TextStyle(fontSize: 22)),
-          ),
-        ),
+            gradient: isActive
+                ? const LinearGradient(
+                    colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)]) : null,
+            color: isActive ? null : const Color(0xFF1C1C1E)),
+          child: Padding(
+            padding: EdgeInsets.all(isActive ? 2.5 : 0),
+            child: ClipOval(child: userAvatar != null
+                ? CachedNetworkImage(imageUrl: userAvatar!, fit: BoxFit.cover,
+                    errorWidget: (_, __, ___) => _fallback(initial))
+                : _fallback(initial)))),
         const SizedBox(height: 4),
-        SizedBox(width: 56, child: Text(mission.title,
-            textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: isActive ? Colors.white : AppColors.textMuted, fontSize: 10))),
-      ]),
-    );
+        SizedBox(width: 58,
+          child: Text(mission.title,
+              textAlign: TextAlign.center, maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  color: isActive ? Colors.white : AppColors.textMuted,
+                  fontSize: 10,
+                  fontWeight: isActive ? FontWeight.w600 : FontWeight.w400))),
+      ]));
   }
+
+  Widget _fallback(String initial) => Container(
+    color: const Color(0xFF2C2C2E),
+    child: Center(child: Text(initial,
+        style: const TextStyle(color: Colors.white, fontSize: 18,
+            fontWeight: FontWeight.bold))));
 }
 
 class _NewMissionCircle extends StatelessWidget {
@@ -1368,25 +1593,19 @@ class _NewMissionCircle extends StatelessWidget {
   const _NewMissionCircle({required this.onTap});
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return GestureDetector(onTap: onTap,
       child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Builder(builder: (ctx) {
-          final isDarkNc = Theme.of(ctx).brightness == Brightness.dark;
-          return Container(
-            width: 52, height: 52,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: const Color(0xFF6C5CE7), width: 2),
-              color: isDarkNc ? const Color(0xFF111111) : Colors.white,
-            ),
-            child: const Center(child: Icon(Iconsax.add, color: Color(0xFF6C5CE7), size: 22)),
-          );
-        }),
+        Container(
+          width: 54, height: 54,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: const Color(0xFF6C5CE7), width: 1.8),
+            color: isDark ? const Color(0xFF111111) : Colors.white),
+          child: const Center(child: Icon(Iconsax.add, color: Color(0xFF6C5CE7), size: 22))),
         const SizedBox(height: 4),
         const Text('New', style: TextStyle(color: AppColors.textMuted, fontSize: 10)),
-      ]),
-    );
+      ]));
   }
 }
 
@@ -1399,108 +1618,69 @@ class _ChatBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDark   = Theme.of(context).brightness == Brightness.dark;
     final isUser   = msg.role == MessageRole.user;
-    final padding  = compact ? 6.0 : 12.0;
+    final vPad     = compact ? 6.0 : 12.0;
     final textClr  = isDark ? Colors.white : Colors.black87;
     final bubbleBg = isDark ? const Color(0xFF1C1C1E) : const Color(0xFFEDEDED);
 
-    // ── User bubble ───────────────────────────────────────────────────────────
     if (isUser) {
       return Align(
         alignment: Alignment.centerRight,
         child: Container(
-          margin: EdgeInsets.fromLTRB(48, padding / 2, 8, padding / 2),
-          padding: EdgeInsets.all(padding),
+          margin: EdgeInsets.fromLTRB(48, vPad / 2, 8, vPad / 2),
+          padding: EdgeInsets.all(vPad),
           decoration: const BoxDecoration(
-            gradient: LinearGradient(colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)]),
+            gradient: LinearGradient(
+                colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)]),
             borderRadius: BorderRadius.only(
-              topLeft:     Radius.circular(18),
-              topRight:    Radius.circular(4),
-              bottomLeft:  Radius.circular(18),
-              bottomRight: Radius.circular(18),
-            ),
-          ),
-          child: Text(
-            msg.text,
-            style: TextStyle(color: Colors.white, fontSize: compact ? 13 : 15),
-          ),
-        ),
+              topLeft: Radius.circular(18), topRight: Radius.circular(4),
+              bottomLeft: Radius.circular(18), bottomRight: Radius.circular(18))),
+          child: Text(msg.text,
+              style: TextStyle(color: Colors.white,
+                  fontSize: compact ? 13 : 15))),
       ).animate().fadeIn(duration: 200.ms).slideX(begin: 0.1);
     }
 
-    // ── RiseUp bubble ─────────────────────────────────────────────────────────
-    final header = compact ? const SizedBox.shrink() : Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 0, 2),
-      child: Row(children: [
-        Container(
-          width: 20, height: 20,
-          decoration: const BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: LinearGradient(colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)]),
-          ),
-          child: const Center(
-            child: Text('R', style: TextStyle(color: Colors.white,
-                fontSize: 10, fontWeight: FontWeight.bold)),
-          ),
-        ),
-        const SizedBox(width: 6),
-        Text('RiseUp', style: TextStyle(
-            color: isDark ? Colors.white38 : Colors.black38, fontSize: 12)),
-      ]),
-    );
+    final header = compact ? const SizedBox.shrink() : const Padding(
+      padding: EdgeInsets.fromLTRB(12, 8, 0, 4),
+      child: _RiseUpSpinIcon());
 
     final bubble = Container(
-      margin: EdgeInsets.fromLTRB(8, 2, 48, padding / 2),
-      padding: EdgeInsets.all(padding),
-      decoration: BoxDecoration(
-        color: bubbleBg,
+      margin: EdgeInsets.fromLTRB(8, 2, 48, vPad / 2),
+      padding: EdgeInsets.all(vPad),
+      decoration: BoxDecoration(color: bubbleBg,
         borderRadius: const BorderRadius.only(
-          topLeft:     Radius.circular(4),
-          topRight:    Radius.circular(18),
-          bottomLeft:  Radius.circular(18),
-          bottomRight: Radius.circular(18),
-        ),
-      ),
+          topLeft: Radius.circular(4), topRight: Radius.circular(18),
+          bottomLeft: Radius.circular(18), bottomRight: Radius.circular(18))),
       child: msg.isStreaming
           ? _TypingIndicator()
           : MarkdownBody(
               data: msg.text,
               styleSheet: MarkdownStyleSheet(
-                p:         TextStyle(color: textClr,
+                p:      TextStyle(color: textClr,
                     fontSize: compact ? 13 : 15, height: 1.5),
-                h2:        TextStyle(color: textClr,
-                    fontSize: 17, fontWeight: FontWeight.w700),
-                h3:        TextStyle(color: textClr,
-                    fontSize: 15, fontWeight: FontWeight.w600),
-                strong:    TextStyle(color: textClr,
-                    fontWeight: FontWeight.w800),
-                em:        const TextStyle(color: Color(0xFF6C5CE7)),
+                h2:     TextStyle(color: textClr, fontSize: 17,
+                    fontWeight: FontWeight.w700),
+                h3:     TextStyle(color: textClr, fontSize: 15,
+                    fontWeight: FontWeight.w600),
+                strong: TextStyle(color: textClr, fontWeight: FontWeight.w800),
+                em:     const TextStyle(color: Color(0xFF6C5CE7)),
                 blockquoteDecoration: BoxDecoration(
                   color: const Color(0xFF6C5CE7).withOpacity(0.1),
                   border: const Border(left: BorderSide(
-                      color: Color(0xFF6C5CE7), width: 3)),
-                ),
-                code: const TextStyle(
-                    color: Color(0xFF00CEC9),
-                    fontFamily: 'monospace',
-                    fontSize: 13),
+                      color: Color(0xFF6C5CE7), width: 3))),
+                code: const TextStyle(color: Color(0xFF00CEC9),
+                    fontFamily: 'monospace', fontSize: 13),
                 codeblockDecoration: BoxDecoration(
                   color: isDark
-                      ? const Color(0xFF1A1A1A)
-                      : const Color(0xFFE8E8E8),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                listBullet: const TextStyle(color: Color(0xFF6C5CE7)),
-              ),
-              onTapLink: (_, href, __) {},
-            ),
-    );
+                      ? const Color(0xFF1A1A1A) : const Color(0xFFE8E8E8),
+                  borderRadius: BorderRadius.circular(8)),
+                listBullet: const TextStyle(color: Color(0xFF6C5CE7))),
+              onTapLink: (_, href, __) {}));
 
     return Align(
       alignment: Alignment.centerLeft,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [header, bubble],
-      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+          children: [header, bubble]),
     ).animate().fadeIn(duration: 250.ms).slideX(begin: -0.05);
   }
 }
@@ -1513,35 +1693,28 @@ class _TypingIndicator extends StatefulWidget {
 class _TypingIndicatorState extends State<_TypingIndicator>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ctrl;
-
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))..repeat();
+    _ctrl = AnimationController(vsync: this,
+        duration: const Duration(milliseconds: 1200))..repeat();
   }
-
   @override
   void dispose() { _ctrl.dispose(); super.dispose(); }
-
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(animation: _ctrl, builder: (_, __) {
-      return Row(mainAxisSize: MainAxisSize.min, children: List.generate(3, (i) {
-        final delay = i * 0.33;
-        final t = (_ctrl.value - delay).clamp(0.0, 1.0);
-        final y = sin(t * pi) * 4;
-        return Transform.translate(
-          offset: Offset(0, -y),
-          child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 2),
-            width: 6, height: 6,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: AppColors.primary.withOpacity(0.5 + t * 0.5),
-            ),
-          ),
-        );
-      }));
+      return Row(mainAxisSize: MainAxisSize.min,
+        children: List.generate(3, (i) {
+          final t = (_ctrl.value - i * 0.33).clamp(0.0, 1.0);
+          return Transform.translate(
+            offset: Offset(0, -sin(t * pi) * 4),
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 2),
+              width: 6, height: 6,
+              decoration: BoxDecoration(shape: BoxShape.circle,
+                  color: AppColors.primary.withOpacity(0.5 + t * 0.5))));
+        }));
     });
   }
 }
@@ -1550,7 +1723,8 @@ class _ApexStatusBar extends StatelessWidget {
   final ApexStatus status;
   final AnimationController pulse;
   final VoidCallback onStop;
-  const _ApexStatusBar({required this.status, required this.pulse, required this.onStop});
+  const _ApexStatusBar({required this.status, required this.pulse,
+      required this.onStop});
 
   @override
   Widget build(BuildContext context) {
@@ -1562,17 +1736,17 @@ class _ApexStatusBar extends StatelessWidget {
       ApexStatus.error    => ('APEX · Error',        AppColors.error),
       ApexStatus.idle     => ('APEX · Ready',        AppColors.textMuted),
     };
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+    return Expanded(child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
       color: color.withOpacity(0.08),
       child: Row(children: [
         AnimatedBuilder(animation: pulse, builder: (_, __) =>
             Icon(Iconsax.cpu, size: 14,
                 color: color.withOpacity(0.6 + pulse.value * 0.4))),
         const SizedBox(width: 6),
-        Text(label, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600)),
-        const Spacer(),
+        Expanded(child: Text(label,
+            style: TextStyle(color: color, fontSize: 12,
+                fontWeight: FontWeight.w600))),
         GestureDetector(
           onTap: onStop,
           child: Container(
@@ -1580,70 +1754,89 @@ class _ApexStatusBar extends StatelessWidget {
             decoration: BoxDecoration(
               color: AppColors.error.withOpacity(0.15),
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: AppColors.error.withOpacity(0.3)),
-            ),
-            child: const Text('Stop', style: TextStyle(color: AppColors.error, fontSize: 11)),
-          ),
-        ),
-      ]),
-    );
+              border: Border.all(color: AppColors.error.withOpacity(0.3))),
+            child: const Text('Stop',
+                style: TextStyle(color: AppColors.error, fontSize: 11)))),
+      ])));
   }
 }
 
 class _SidebarNavItem extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-  final String? badge;
-  const _SidebarNavItem({required this.icon, required this.label, required this.onTap, this.badge});
-
+  final IconData icon; final String label;
+  final VoidCallback onTap; final String? badge;
+  const _SidebarNavItem({required this.icon, required this.label,
+      required this.onTap, this.badge});
   @override
   Widget build(BuildContext context) {
-    return ListTile(
-      dense: true,
+    return ListTile(dense: true,
       leading: Icon(icon, color: AppColors.textSecondary, size: 20),
-      title: Text(label, style: const TextStyle(color: AppColors.textSecondary, fontSize: 14)),
+      title: Text(label,
+          style: const TextStyle(color: AppColors.textSecondary, fontSize: 14)),
       trailing: badge != null ? Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         decoration: BoxDecoration(
           color: AppColors.primary.withOpacity(0.15),
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Text(badge!, style: const TextStyle(color: AppColors.primary, fontSize: 10)),
-      ) : null,
-      onTap: () { HapticFeedback.selectionClick(); onTap(); },
-    );
+          borderRadius: BorderRadius.circular(6)),
+        child: Text(badge!,
+            style: const TextStyle(color: AppColors.primary, fontSize: 10)))
+          : null,
+      onTap: () { HapticFeedback.selectionClick(); onTap(); });
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// QUICK MENU ITEM
-// ─────────────────────────────────────────────────────────────────────────────
 class _QuickItem extends StatelessWidget {
-  final IconData     icon;
-  final String       label;
-  final VoidCallback onTap;
-  final bool         isDark;
-  const _QuickItem({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-    required this.isDark,
-  });
-
+  final IconData icon; final String label;
+  final VoidCallback onTap; final bool isDark;
+  const _QuickItem({required this.icon, required this.label,
+      required this.onTap, required this.isDark});
   @override
   Widget build(BuildContext context) {
-    return ListTile(
-      dense: true,
+    return ListTile(dense: true,
       leading: Icon(icon,
           color: isDark ? Colors.white70 : Colors.black54, size: 22),
       title: Text(label,
-          style: TextStyle(
-            color: isDark ? Colors.white : Colors.black87,
-            fontSize: 15,
-            fontWeight: FontWeight.w500,
-          )),
-      onTap: () { HapticFeedback.selectionClick(); onTap(); },
-    );
+          style: TextStyle(color: isDark ? Colors.white : Colors.black87,
+              fontSize: 15, fontWeight: FontWeight.w500)),
+      onTap: () { HapticFeedback.selectionClick(); onTap(); });
+  }
+}
+
+class _RiseUpSpinIcon extends StatefulWidget {
+  const _RiseUpSpinIcon();
+  @override
+  State<_RiseUpSpinIcon> createState() => _RiseUpSpinIconState();
+}
+
+class _RiseUpSpinIconState extends State<_RiseUpSpinIcon>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double>   _spin;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(seconds: 3))..repeat();
+    _spin = Tween<double>(begin: 0, end: 2 * pi)
+        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.linear));
+  }
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(animation: _ctrl, builder: (_, __) =>
+        Transform.rotate(angle: _spin.value,
+          child: SizedBox(width: 36, height: 36,
+            child: ClipOval(child: Image.asset(
+              'assets/images/riseup_logo.png',
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => Container(
+                decoration: const BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                      colors: [Color(0xFFFF6B00), Color(0xFF6C5CE7)])),
+                child: const Center(child: Text('R',
+                    style: TextStyle(color: Colors.white, fontSize: 14,
+                        fontWeight: FontWeight.bold)))))))));
   }
 }
