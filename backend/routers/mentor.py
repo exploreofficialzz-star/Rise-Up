@@ -214,51 +214,53 @@ async def _ensure_session(
 ) -> str:
     """
     Creates or validates a mentor session.
-    Uses upsert so Flutter-generated UUIDs become valid DB rows.
-    The session title is set ONCE on creation and never overwritten.
+    Plain INSERT with ON CONFLICT DO NOTHING — no invalid params.
+    Title is set ONCE on creation and never overwritten.
     """
     import uuid as _uuid
-    sb  = supabase_service.client
-    now = datetime.now(timezone.utc).isoformat()
-    sid = session_id or str(_uuid.uuid4())
+    sb          = supabase_service.client
+    now         = datetime.now(timezone.utc).isoformat()
+    sid         = session_id or str(_uuid.uuid4())
     final_title = title or f"Mission {datetime.now().strftime('%d %b, %H:%M')}"
 
+    # Step 1: check if session already exists
     try:
-        # Check existence first
-        try:
-            existing = (
-                sb.table("mentor_sessions")
-                .select("id, title")
-                .eq("id", sid)
-                .eq("user_id", user_id)
-                .maybe_single()
-                .execute()
-            )
-            row = (existing.data if existing is not None else None) or {}
-            if row:
-                return sid  # already exists — never touch its title
-        except Exception:
-            pass
+        existing = (
+            sb.table("mentor_sessions")
+            .select("id")
+            .eq("id", sid)
+            .eq("user_id", user_id)
+            .maybe_single()
+            .execute()
+        )
+        if existing is not None and existing.data:
+            return sid  # exists — never touch its title
+    except Exception:
+        pass  # if check fails, try to insert anyway
 
-        # Insert new session — use upsert so duplicate IDs don't error
-        sb.table("mentor_sessions").upsert(
+    # Step 2: insert — ignore if duplicate (race condition safety)
+    try:
+        sb.table("mentor_sessions").insert(
             {
                 "id":         sid,
                 "user_id":    user_id,
                 "title":      final_title,
                 "emoji":      "🎯",
                 "status":     "active",
+                "intro_sent": False,
                 "created_at": now,
                 "updated_at": now,
-            },
-            on_conflict="id",
-            ignore_duplicates=True,       # keep existing row if already present
+            }
         ).execute()
-        return sid
-
+        logger.info("_ensure_session: created %s", sid)
     except Exception as e:
-        logger.error("_ensure_session: %s", e)
-        return sid  # still return the sid so chat can proceed
+        err = str(e)
+        if "duplicate" in err.lower() or "23505" in err:
+            pass  # already exists — fine
+        else:
+            logger.error("_ensure_session insert failed: %s", err)
+
+    return sid
 
 
 def _build_system_prompt(
@@ -334,7 +336,7 @@ async def mentor_chat(
     history = await _load_history(session_id, user_id)
 
     # First message ever → inject intro instruction into system prompt
-    is_first_message = len(history) == 0
+    is_first_message = not intro_sent and len(history) == 0
 
     # Brain context (non-blocking failure)
     brain_ctx = ""
@@ -494,9 +496,18 @@ async def mentor_chat(
         except Exception:
             pass
 
+    # Mark intro_sent=True after first successful response
+    if is_first_message:
+        try:
+            supabase_service.client.table("mentor_sessions").update(
+                {"intro_sent": True, "updated_at": datetime.now(timezone.utc).isoformat()}
+            ).eq("id", session_id).execute()
+        except Exception:
+            pass
+
     return {
         "reply":            content,
-        "content":          content,      # backwards compat
+        "content":          content,
         "session_id":       session_id,
         "model_used":       model_used,
         "delegation":       delegation_payload,
@@ -658,19 +669,41 @@ async def list_mentor_sessions(
     user:  dict = Depends(get_current_user),
 ):
     try:
-        sb   = supabase_service.client
-        data = (
+        sb       = supabase_service.client
+        user_id  = user["id"]
+
+        # Load sessions with emoji and platform
+        sessions = (
             sb.table("mentor_sessions")
-            .select("id,title,updated_at,created_at")
-            .eq("user_id", user["id"])
+            .select("id,title,emoji,platform,updated_at,created_at,intro_sent")
+            .eq("user_id", user_id)
             .eq("status", "active")
             .order("updated_at", desc=True)
             .limit(limit)
             .execute()
             .data or []
         )
-        return {"sessions": data}
+
+        # Attach last 20 messages per session so Flutter can restore chats
+        for s in sessions:
+            try:
+                msgs = (
+                    sb.table("mentor_messages")
+                    .select("id,role,content,created_at")
+                    .eq("session_id", s["id"])
+                    .eq("user_id", user_id)
+                    .order("created_at", desc=False)
+                    .limit(20)
+                    .execute()
+                    .data or []
+                )
+                s["messages"] = msgs
+            except Exception:
+                s["messages"] = []
+
+        return {"sessions": sessions}
     except Exception as e:
+        logger.error("list_mentor_sessions: %s", e)
         raise HTTPException(500, f"Failed to list sessions: {e}")
 
 
