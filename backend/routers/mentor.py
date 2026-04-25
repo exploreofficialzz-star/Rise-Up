@@ -196,6 +196,17 @@ async def _save_message(
         logger.error("_save_message: %s", e)
 
 
+def _make_title(message: str) -> str:
+    """Generate a short mission title from the user's first message."""
+    import re
+    msg   = re.sub(r"[#*_`>]", "", message).strip()
+    words = msg.split()
+    if len(words) <= 6:
+        return msg.capitalize()
+    # Take first 6 meaningful words
+    return " ".join(words[:6]).capitalize() + "..."
+
+
 async def _ensure_session(
     user_id: str,
     title: str = "",
@@ -203,53 +214,51 @@ async def _ensure_session(
 ) -> str:
     """
     Creates or validates a mentor session.
-    If session_id is provided (from Flutter), upserts a row with that exact ID
-    so Flutter-generated UUIDs become valid DB sessions.
+    Uses upsert so Flutter-generated UUIDs become valid DB rows.
+    The session title is set ONCE on creation and never overwritten.
     """
-    try:
-        sb  = supabase_service.client
-        now = datetime.now(timezone.utc).isoformat()
+    import uuid as _uuid
+    sb  = supabase_service.client
+    now = datetime.now(timezone.utc).isoformat()
+    sid = session_id or str(_uuid.uuid4())
+    final_title = title or f"Mission {datetime.now().strftime('%d %b, %H:%M')}"
 
-        if session_id:
-            # Check if it already exists
+    try:
+        # Check existence first
+        try:
             existing = (
                 sb.table("mentor_sessions")
-                .select("id")
-                .eq("id", session_id)
+                .select("id, title")
+                .eq("id", sid)
                 .eq("user_id", user_id)
                 .maybe_single()
                 .execute()
             )
-            row_data = (existing.data if existing is not None else None) or {}
-            if row_data:
-                return session_id  # already valid
+            row = (existing.data if existing is not None else None) or {}
+            if row:
+                return sid  # already exists — never touch its title
+        except Exception:
+            pass
 
-            # Create session with the Flutter-provided ID
-            sb.table("mentor_sessions").insert({
-                "id":         session_id,
+        # Insert new session — use upsert so duplicate IDs don't error
+        sb.table("mentor_sessions").upsert(
+            {
+                "id":         sid,
                 "user_id":    user_id,
-                "title":      title or f"Mission {datetime.now().strftime('%H:%M')}",
+                "title":      final_title,
                 "emoji":      "🎯",
                 "status":     "active",
                 "created_at": now,
                 "updated_at": now,
-            }).execute()
-            return session_id
+            },
+            on_conflict="id",
+            ignore_duplicates=True,       # keep existing row if already present
+        ).execute()
+        return sid
 
-        # No session_id provided — generate a new one
-        res = sb.table("mentor_sessions").insert({
-            "user_id":    user_id,
-            "title":      title or f"Mission {datetime.now().strftime('%H:%M')}",
-            "emoji":      "🎯",
-            "status":     "active",
-            "created_at": now,
-            "updated_at": now,
-        }).execute()
-        return res.data[0]["id"]
     except Exception as e:
         logger.error("_ensure_session: %s", e)
-        import uuid
-        return str(uuid.uuid4())
+        return sid  # still return the sid so chat can proceed
 
 
 def _build_system_prompt(
@@ -313,11 +322,11 @@ async def mentor_chat(
     country  = profile.get("country", "US")
 
     # Ensure / reuse session
-    # Always call _ensure_session — it safely creates or validates the session row.
-    # This fixes the bug where Flutter sends a local UUID that doesn't exist in DB.
+    # Always call _ensure_session — creates or validates the session row.
+    # Title is set from first message and never overwritten after that.
     session_id = await _ensure_session(
         user_id,
-        title=req.message[:50],
+        title=_make_title(req.message),
         session_id=req.session_id or "",
     )
 
@@ -443,6 +452,26 @@ async def mentor_chat(
     system   = _build_system_prompt(profile, brain_ctx, language, is_first_message)
     messages = history + [{"role": "user", "content": req.message}]
 
+    # Deduct tokens before calling AI
+    try:
+        from services.token_service import token_service
+        tok = await token_service.deduct(
+            user_id   = user_id,
+            tool_name = "chat_message",
+            is_premium= profile.get("is_premium", False) or
+                        profile.get("subscription_tier", "free") != "free",
+        )
+        if not tok.get("allowed", True):
+            return {
+                "reply":      "⚡ You've used all your tokens for today. Watch an ad or upgrade to keep going!",
+                "content":    "⚡ You've used all your tokens for today. Watch an ad or upgrade to keep going!",
+                "session_id": session_id,
+                "exhausted":  True,
+                "can_redeem_ads": tok.get("can_redeem_ads", True),
+            }
+    except Exception as te:
+        logger.warning("token deduct error: %s", te)
+
     result     = await ai_service.mentor_chat(
         messages=messages,
         user_profile=profile,
@@ -473,7 +502,7 @@ async def mentor_chat(
         "delegation":       delegation_payload,
         "escalate_to_apex": delegation_payload.get("escalate_to_apex", False) if delegation_payload else False,
         "apex_task":        delegation_payload.get("apex_task") if delegation_payload else None,
-        "session_title":    req.message[:40] if is_first_message else None,
+        "session_title":    _make_title(req.message) if is_first_message else None,
         "brain_used":       bool(brain_ctx),
         "language":         language,
         "intent":           intent_result.get("intent"),
