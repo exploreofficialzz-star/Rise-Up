@@ -253,6 +253,61 @@ class ApiService {
     } catch (e) { throw _handleError(e); }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+// ADD THESE 3 METHODS to ApiService in api_service.dart
+// Place them directly after the existing resendVerification() method
+// (around line 248 in the Auth section)
+// ─────────────────────────────────────────────────────────────────────────────
+
+  /// Verify 6-digit OTP after signup.
+  /// Returns a full session → Flutter saves tokens and logs the user in.
+  Future<Map<String, dynamic>> verifyOtp(
+      String email, String token) async {
+    try {
+      final res = await _dio.post('/auth/verify-otp', data: {
+        'email': email,
+        'token': token,
+      });
+      return res.data as Map<String, dynamic>;
+    } catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  /// Verify 6-digit OTP from the forgot-password flow.
+  /// Returns a temporary { access_token, refresh_token, user_id } used
+  /// exclusively to call resetPassword() in the next step.
+  Future<Map<String, dynamic>> verifyResetOtp(
+      String email, String token) async {
+    try {
+      final res = await _dio.post('/auth/verify-reset-otp', data: {
+        'email': email,
+        'token': token,
+      });
+      return res.data as Map<String, dynamic>;
+    } catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  /// Set a new password using the temporary session from verifyResetOtp().
+  Future<Map<String, dynamic>> resetPassword({
+    required String accessToken,
+    required String refreshToken,
+    required String newPassword,
+  }) async {
+    try {
+      final res = await _dio.post('/auth/reset-password', data: {
+        'access_token':  accessToken,
+        'refresh_token': refreshToken,
+        'password':      newPassword,
+      });
+      return res.data as Map<String, dynamic>;
+    } catch (e) {
+      throw _handleError(e);
+    }
+  }
+
   Future<Map<String, dynamic>> signIn(String email, String password) async {
     try {
       final res = await _dio.post('/auth/signin',
