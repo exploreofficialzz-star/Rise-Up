@@ -196,13 +196,51 @@ async def _save_message(
         logger.error("_save_message: %s", e)
 
 
-async def _ensure_session(user_id: str, title: str = "") -> str:
+async def _ensure_session(
+    user_id: str,
+    title: str = "",
+    session_id: str = "",
+) -> str:
+    """
+    Creates or validates a mentor session.
+    If session_id is provided (from Flutter), upserts a row with that exact ID
+    so Flutter-generated UUIDs become valid DB sessions.
+    """
     try:
         sb  = supabase_service.client
         now = datetime.now(timezone.utc).isoformat()
+
+        if session_id:
+            # Check if it already exists
+            existing = (
+                sb.table("mentor_sessions")
+                .select("id")
+                .eq("id", session_id)
+                .eq("user_id", user_id)
+                .maybe_single()
+                .execute()
+            )
+            row_data = (existing.data if existing is not None else None) or {}
+            if row_data:
+                return session_id  # already valid
+
+            # Create session with the Flutter-provided ID
+            sb.table("mentor_sessions").insert({
+                "id":         session_id,
+                "user_id":    user_id,
+                "title":      title or f"Mission {datetime.now().strftime('%H:%M')}",
+                "emoji":      "🎯",
+                "status":     "active",
+                "created_at": now,
+                "updated_at": now,
+            }).execute()
+            return session_id
+
+        # No session_id provided — generate a new one
         res = sb.table("mentor_sessions").insert({
             "user_id":    user_id,
-            "title":      title or f"Mentor Chat {datetime.now().strftime('%H:%M')}",
+            "title":      title or f"Mission {datetime.now().strftime('%H:%M')}",
+            "emoji":      "🎯",
             "status":     "active",
             "created_at": now,
             "updated_at": now,
@@ -210,7 +248,8 @@ async def _ensure_session(user_id: str, title: str = "") -> str:
         return res.data[0]["id"]
     except Exception as e:
         logger.error("_ensure_session: %s", e)
-        return f"temp_{int(datetime.now().timestamp())}"
+        import uuid
+        return str(uuid.uuid4())
 
 
 def _build_system_prompt(
@@ -230,14 +269,26 @@ def _build_system_prompt(
     if is_first_message:
         name = profile.get("full_name") or profile.get("username") or "there"
         first_msg_note = (
-            f"\n\n[FIRST MESSAGE INSTRUCTION] This is the user's very first message to you. "
-            f"Start your reply by briefly introducing yourself as RiseUp AI — keep it to 1-2 short sentences, "
-            f"natural and warm, not a long pitch. For example: 'Hey {name}! I'm RiseUp — your AI that helps you make real money. "
-            f"Tell me about yourself and let's find your best income path.' "
-            f"Then immediately respond to what they said. Do NOT repeat the intro on any future message."
+            f"\n\n[FIRST MESSAGE INSTRUCTION] This is the user's very first message. "
+            f"In 1-2 short natural sentences, introduce yourself as RiseUp — an AI AGENT "
+            f"that doesn't just advise but actually executes tasks (sets up accounts, sends "
+            f"proposals, builds pages, finds clients) using APEX and other tools. "
+            f"Use the user's name ({name}) if known. Sound like a smart friend who shows up "
+            f"and actually does the work. Then immediately respond to what they said."
         )
 
-    return RISEUP_MENTOR_PROMPT + lang_note + brain_note + onboarding + first_msg_note
+    # Always inject agent-identity reminder so AI never slips back to advisor mode
+    agent_reminder = (
+        "\n\n[AGENT IDENTITY REMINDER] You are an execution agent, not just an advisor. "
+        "Every response should move the user closer to action. "
+        "If a task is executable → offer APEX. "
+        "If a plan is needed → trigger the Workflow Engine. "
+        "If live data is needed → use Market Pulse. "
+        "If code/pages are needed → use Code Sandbox. "
+        "NEVER just give advice when you can take action."
+    )
+
+    return RISEUP_MENTOR_PROMPT + lang_note + brain_note + onboarding + first_msg_note + agent_reminder
 
 
 def _sse(event: str, data: Any) -> str:
@@ -262,9 +313,13 @@ async def mentor_chat(
     country  = profile.get("country", "US")
 
     # Ensure / reuse session
-    session_id = req.session_id
-    if not session_id:
-        session_id = await _ensure_session(user_id, title=req.message[:40])
+    # Always call _ensure_session — it safely creates or validates the session row.
+    # This fixes the bug where Flutter sends a local UUID that doesn't exist in DB.
+    session_id = await _ensure_session(
+        user_id,
+        title=req.message[:50],
+        session_id=req.session_id or "",
+    )
 
     # Load prior history so the mentor has context
     history = await _load_history(session_id, user_id)
@@ -411,12 +466,18 @@ async def mentor_chat(
             pass
 
     return {
-        "content":    content,
-        "session_id": session_id,
-        "model_used": model_used,
-        "delegation": delegation_payload,
-        "brain_used": bool(brain_ctx),
-        "language":   language,
+        "reply":            content,
+        "content":          content,      # backwards compat
+        "session_id":       session_id,
+        "model_used":       model_used,
+        "delegation":       delegation_payload,
+        "escalate_to_apex": delegation_payload.get("escalate_to_apex", False) if delegation_payload else False,
+        "apex_task":        delegation_payload.get("apex_task") if delegation_payload else None,
+        "session_title":    req.message[:40] if is_first_message else None,
+        "brain_used":       bool(brain_ctx),
+        "language":         language,
+        "intent":           intent_result.get("intent"),
+        "platform":         intent_result.get("platform"),
     }
 
 
