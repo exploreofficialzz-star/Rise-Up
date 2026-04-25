@@ -1,13 +1,16 @@
 """
 RiseUp Auth Router — Production Ready (Pydantic v2)
 
-FIX: signup() crashed when res.session is None (Supabase requires email
-confirmation before issuing a session). Now returns a clean response with
-empty tokens and email_confirmed=False so Flutter can show "Check your email"
-instead of crashing with a 500.
+OTP Flow (v3 — merged):
+  • signup            → Supabase sends 6-digit OTP (enable_confirmations=true)
+  • verify-otp        → submit code → returns full session tokens
+  • forgot-password   → sends OTP via sign_in_with_otp (not a magic link)
+  • verify-reset-otp  → submit code → returns temp session for password change
+  • reset-password    → uses temp session to update_user password
+  • /auth/me          → validates JWT directly (no set_session corruption),
+                        merges DB profile row + JWT metadata into flat response
 """
 import logging
-from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -63,11 +66,13 @@ class MessageResponse(BaseModel):
 # ═════════════════════════════════════════════════════════════════════════════
 
 def get_supabase_client():
+    """Service-role client — bypasses RLS. Use only for trusted server ops."""
     from supabase import create_client
     return create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
 
 
 def get_supabase_auth_client():
+    """Anon-key client — respects RLS. Use for all user-facing auth calls."""
     from supabase import create_client
     return create_client(settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY)
 
@@ -80,22 +85,19 @@ def get_supabase_auth_client():
 async def signup(req: SignUpRequest, request: Request):
     """
     Register a new user.
-
-    FIX: Supabase returns session=None when email confirmation is enabled.
-    Old code did res.session.access_token → AttributeError → 500.
-    Now returns empty tokens + email_confirmed=False so Flutter shows
-    "Check your inbox" instead of crashing.
+    With enable_confirmations=true, Supabase sends a 6-digit OTP to the email.
+    Returns empty tokens + email_confirmed=False → Flutter shows OTP screen.
     """
     try:
         client = get_supabase_auth_client()
 
         user_metadata = {
             k: v for k, v in {
-                "full_name":    req.full_name or "",
-                "country_code": req.country_code,
-                "timezone":     req.timezone,
-                "currency":     req.currency,
-                "language":     req.language,
+                "full_name":     req.full_name or "",
+                "country_code":  req.country_code,
+                "timezone":      req.timezone,
+                "currency":      req.currency,
+                "language":      req.language,
                 "referral_code": req.referral_code,
             }.items() if v is not None
         }
@@ -107,29 +109,26 @@ async def signup(req: SignUpRequest, request: Request):
             "password": req.password,
             "options": {
                 "data": user_metadata,
-                "email_redirect_to": f"{settings.FRONTEND_URL}/auth/callback?type=signup",
             },
         })
 
         if not res.user:
             raise HTTPException(400, "Signup failed. Please try again.")
 
-        # FIX: session is None when Supabase requires email confirmation.
-        # Return safe empty values — Flutter handles email_confirmed=False.
-        has_session      = res.session is not None
-        email_confirmed  = res.user.email_confirmed_at is not None
+        has_session     = res.session is not None
+        email_confirmed = res.user.email_confirmed_at is not None
 
         logger.info(
-            f"Signup successful: {res.user.id} "
-            f"session={'yes' if has_session else 'pending email confirmation'}"
+            f"Signup: {res.user.id} — "
+            f"OTP sent={'yes' if not has_session else 'no (auto-confirmed)'}"
         )
 
         return {
-            "access_token":  res.session.access_token  if has_session else "",
-            "refresh_token": res.session.refresh_token if has_session else "",
-            "token_type":    "bearer",
-            "user_id":       res.user.id,
-            "email":         res.user.email,
+            "access_token":    res.session.access_token  if has_session else "",
+            "refresh_token":   res.session.refresh_token if has_session else "",
+            "token_type":      "bearer",
+            "user_id":         res.user.id,
+            "email":           res.user.email,
             "email_confirmed": email_confirmed,
         }
 
@@ -145,11 +144,57 @@ async def signup(req: SignUpRequest, request: Request):
         raise HTTPException(400, f"Registration failed: {str(e)}")
 
 
+@router.post("/verify-otp", response_model=AuthResponse)
+async def verify_email_otp(request: Request):
+    """
+    Verify the 6-digit OTP sent after signup.
+    On success returns a full session so Flutter logs the user in immediately.
+    """
+    try:
+        body  = await request.json()
+        email = body.get("email", "").lower().strip()
+        token = body.get("token", "").strip()
+
+        if not email or not token:
+            raise HTTPException(400, "Email and code are required")
+
+        if len(token) != 6 or not token.isdigit():
+            raise HTTPException(400, "Code must be exactly 6 digits")
+
+        client = get_supabase_auth_client()
+        res = client.auth.verify_otp({
+            "email": email,
+            "token": token,
+            "type":  "signup",
+        })
+
+        if not res.user or not res.session:
+            raise HTTPException(400, "Invalid or expired code. Please try again.")
+
+        logger.info(f"Email OTP verified for user: {res.user.id}")
+
+        return {
+            "access_token":    res.session.access_token,
+            "refresh_token":   res.session.refresh_token,
+            "token_type":      "bearer",
+            "user_id":         res.user.id,
+            "email":           res.user.email,
+            "email_confirmed": True,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e).lower()
+        if "token" in error_msg and ("invalid" in error_msg or "expired" in error_msg):
+            raise HTTPException(400, "Code is invalid or has expired. Request a new one.")
+        logger.error(f"OTP verify error: {e}")
+        raise HTTPException(400, "Verification failed. Please try again.")
+
+
 @router.post("/signin", response_model=AuthResponse)
 async def signin(req: SignInRequest, request: Request):
-    """
-    Sign in existing user.
-    """
+    """Sign in existing user."""
     try:
         client = get_supabase_auth_client()
         email  = req.email.lower().strip()
@@ -168,11 +213,11 @@ async def signin(req: SignInRequest, request: Request):
         logger.info(f"Signin successful: {res.user.id}")
 
         return {
-            "access_token":  res.session.access_token,
-            "refresh_token": res.session.refresh_token,
-            "token_type":    "bearer",
-            "user_id":       res.user.id,
-            "email":         res.user.email,
+            "access_token":    res.session.access_token,
+            "refresh_token":   res.session.refresh_token,
+            "token_type":      "bearer",
+            "user_id":         res.user.id,
+            "email":           res.user.email,
             "email_confirmed": email_confirmed,
         }
 
@@ -192,8 +237,8 @@ async def signin(req: SignInRequest, request: Request):
 async def refresh_token(request: Request):
     """Refresh access token."""
     try:
-        body          = await request.json()
-        refresh_tok   = body.get("refresh_token")
+        body        = await request.json()
+        refresh_tok = body.get("refresh_token")
 
         if not refresh_tok:
             raise HTTPException(400, "Refresh token required")
@@ -232,7 +277,11 @@ async def signout(request: Request):
 
 @router.post("/forgot-password", response_model=MessageResponse)
 async def forgot_password(request: Request):
-    """Send password reset email."""
+    """
+    Send a 6-digit OTP for password reset.
+    sign_in_with_otp delivers a code the user types in — not a magic link.
+    should_create_user=False — only existing accounts receive the code.
+    """
     try:
         body  = await request.json()
         email = body.get("email", "").lower().strip()
@@ -241,27 +290,117 @@ async def forgot_password(request: Request):
             raise HTTPException(400, "Email required")
 
         client = get_supabase_auth_client()
-        client.auth.reset_password_email(
-            email,
-            options={"redirect_to": f"{settings.FRONTEND_URL}/auth/callback?type=recovery"},
-        )
-        logger.info(f"Password reset requested for: {email}")
+        client.auth.sign_in_with_otp({
+            "email": email,
+            "options": {
+                "should_create_user": False,
+            },
+        })
+        logger.info(f"Password reset OTP dispatched for: {email}")
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning(f"Password reset error (non-fatal): {e}")
+        logger.warning(f"Password reset OTP dispatch error (non-fatal): {e}")
 
     # Always return success — prevents email enumeration
     return {
-        "message": "If an account exists with that email, you'll receive a reset link shortly.",
+        "message": "If an account exists for that email, a 6-digit code is on its way.",
         "success": True,
     }
 
 
+@router.post("/verify-reset-otp")
+async def verify_reset_otp(request: Request):
+    """
+    Verify the 6-digit OTP from the forgot-password flow.
+    Returns a temporary session the client uses to call /reset-password.
+    """
+    try:
+        body  = await request.json()
+        email = body.get("email", "").lower().strip()
+        token = body.get("token", "").strip()
+
+        if not email or not token:
+            raise HTTPException(400, "Email and code are required")
+
+        if len(token) != 6 or not token.isdigit():
+            raise HTTPException(400, "Code must be exactly 6 digits")
+
+        client = get_supabase_auth_client()
+        # type="email" for OTPs sent via sign_in_with_otp
+        res = client.auth.verify_otp({
+            "email": email,
+            "token": token,
+            "type":  "email",
+        })
+
+        if not res.user or not res.session:
+            raise HTTPException(400, "Invalid or expired code. Please request a new one.")
+
+        logger.info(f"Reset OTP verified for: {res.user.id}")
+
+        return {
+            "access_token":  res.session.access_token,
+            "refresh_token": res.session.refresh_token,
+            "user_id":       res.user.id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e).lower()
+        if "token" in error_msg and ("invalid" in error_msg or "expired" in error_msg):
+            raise HTTPException(400, "Code is invalid or has expired. Request a new one.")
+        logger.error(f"Reset OTP verify error: {e}")
+        raise HTTPException(400, "Verification failed. Please try again.")
+
+
+@router.post("/reset-password", response_model=MessageResponse)
+async def reset_password(request: Request):
+    """
+    Set a new password using the temp session from /verify-reset-otp.
+    Client sends access_token + refresh_token + new password.
+    """
+    try:
+        body             = await request.json()
+        access_token     = body.get("access_token",  "").strip()
+        refresh_token_v  = body.get("refresh_token", "").strip()
+        new_password     = body.get("password", "")
+
+        if not access_token or not new_password:
+            raise HTTPException(400, "Access token and new password are required")
+
+        if len(new_password) < 8:
+            raise HTTPException(400, "Password must be at least 8 characters")
+
+        if not any(c.isalpha() for c in new_password) or \
+           not any(c.isdigit() for c in new_password):
+            raise HTTPException(400, "Password must contain letters and numbers")
+
+        client = get_supabase_auth_client()
+        client.auth.set_session(access_token, refresh_token_v)
+        res = client.auth.update_user({"password": new_password})
+
+        if not res.user:
+            raise HTTPException(400, "Failed to reset password. Please try again.")
+
+        logger.info(f"Password reset successful for: {res.user.id}")
+        return {
+            "message": "Password reset successfully. You can now sign in.",
+            "success": True,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Reset password error: {e}")
+        raise HTTPException(400, "Failed to reset password. Please try again.")
+
+
 @router.post("/resend-verification", response_model=MessageResponse)
 async def resend_verification(request: Request):
-    """Resend email verification."""
+    """Resend the 6-digit signup OTP."""
     try:
         body  = await request.json()
         email = body.get("email", "").lower().strip()
@@ -271,15 +410,15 @@ async def resend_verification(request: Request):
 
         client = get_supabase_auth_client()
         client.auth.resend({"type": "signup", "email": email})
-        logger.info(f"Verification resent to: {email}")
+        logger.info(f"Signup OTP resent to: {email}")
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning(f"Resend verification error (non-fatal): {e}")
+        logger.warning(f"Resend OTP error (non-fatal): {e}")
 
     return {
-        "message": "Verification email sent if the account exists.",
+        "message": "A new 6-digit code has been sent if the account exists.",
         "success": True,
     }
 
@@ -302,13 +441,10 @@ async def get_current_user_info(
     """
     Get current user info + profile.
 
-    FIX: Old code called set_session(token, "") which corrupted the Supabase
-    auth client state, causing get_user() to always return 401 regardless of
-    token validity → infinite refresh loop on the client.
-
-    Correct call is get_user(jwt_string) which validates the token directly.
-    Also returns flat profile fields so Flutter can read full_name / stage /
-    avatar_url at the top level without parsing nested metadata.
+    FIX: Validates JWT directly via get_user(jwt) — never uses set_session()
+    which corrupts the auth client state causing endless 401 refresh loops.
+    Merges DB profile row with JWT metadata into a flat response so Flutter
+    can read full_name / stage / avatar_url at the top level.
     """
     if not credentials:
         raise HTTPException(401, "Authentication required")
@@ -318,19 +454,19 @@ async def get_current_user_info(
     try:
         client = get_supabase_auth_client()
 
-        # ── 1. Validate JWT — pass it directly, no set_session ───────────
+        # ── 1. Validate JWT directly — no set_session ────────────────────
         user_response = client.auth.get_user(token)
         if not user_response or not user_response.user:
             raise HTTPException(401, "Invalid token")
 
-        user       = user_response.user
-        metadata   = user.user_metadata or {}
-        user_id    = user.id
+        user      = user_response.user
+        metadata  = user.user_metadata or {}
+        user_id   = user.id
 
-        # ── 2. Pull real profile row from DB (stage, avatar_url, etc.) ───
+        # ── 2. Pull real profile row (service role bypasses RLS) ─────────
         profile_row: dict = {}
         try:
-            svc_client = get_supabase_client()   # service role — no RLS
+            svc_client = get_supabase_client()
             res = (
                 svc_client.table("profiles")
                 .select(
@@ -346,42 +482,35 @@ async def get_current_user_info(
             logger.warning(f"/auth/me profile DB lookup failed (non-fatal): {db_err}")
 
         # ── 3. Merge: DB row wins, fall back to JWT metadata ─────────────
-        full_name  = (profile_row.get("full_name")
-                      or metadata.get("full_name")
-                      or "")
-        username   = (profile_row.get("username")
-                      or metadata.get("username")
-                      or "")
+        full_name  = profile_row.get("full_name")  or metadata.get("full_name")  or ""
+        username   = profile_row.get("username")   or metadata.get("username")   or ""
         stage      = profile_row.get("stage")      or "survival"
         avatar_url = profile_row.get("avatar_url") or metadata.get("avatar_url")
         country    = profile_row.get("country")    or metadata.get("country_code", "")
         currency   = profile_row.get("currency")   or metadata.get("currency", "USD")
         bio        = profile_row.get("bio", "")
-        is_premium = (profile_row.get("is_premium")
-                      or profile_row.get("subscription_tier") == "premium"
-                      or False)
+        is_premium = (
+            profile_row.get("is_premium")
+            or profile_row.get("subscription_tier") == "premium"
+            or False
+        )
 
         logger.info(f"/auth/me OK: {user_id}")
 
         return {
-            # Identity
-            "user_id":    user_id,
-            "id":         user_id,          # alias for convenience
-            "email":      user.email,
-
-            # Profile fields Flutter reads at top level
-            "full_name":  full_name,
-            "username":   username,
-            "stage":      stage,
-            "avatar_url": avatar_url,
-            "country":    country,
-            "currency":   currency,
-            "bio":        bio,
-            "is_premium": is_premium,
+            "user_id":           user_id,
+            "id":                user_id,
+            "email":             user.email,
+            "full_name":         full_name,
+            "username":          username,
+            "stage":             stage,
+            "avatar_url":        avatar_url,
+            "country":           country,
+            "currency":          currency,
+            "bio":               bio,
+            "is_premium":        is_premium,
             "subscription_tier": profile_row.get("subscription_tier", "free"),
-
-            # Raw metadata still available
-            "metadata":   metadata,
+            "metadata":          metadata,
         }
 
     except HTTPException:
