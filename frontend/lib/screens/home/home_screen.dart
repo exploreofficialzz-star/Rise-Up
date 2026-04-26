@@ -565,18 +565,16 @@ class _HomeScreenState extends State<HomeScreen>
     _appendMsg(userMsg);
     _scrollToBottom();
 
-    final isApex      = _detectApex(text);
+    // Always route through mentor/chat — backend dispatcher handles routing.
+    // This prevents Flutter from hanging on ambiguous words like "open/do/build".
+    // escalate_to_apex in the response triggers APEX when appropriate.
     final placeholder = ChatMessage(
         id: _uuid(), role: MessageRole.riseup,
         text: '', ts: DateTime.now(), isStreaming: true);
     _appendMsg(placeholder);
 
     try {
-      if (isApex) {
-        await _handleApexRequest(text, placeholder.id);
-      } else {
-        await _handleMentorChat(text, placeholder.id);
-      }
+      await _handleMentorChat(text, placeholder.id);
     } catch (e) {
       _updateMsg(placeholder.id, '⚠️ Connection issue. Please try again.');
     } finally {
@@ -585,12 +583,41 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
+  /// Returns true only when the user clearly wants APEX to ACT.
+  /// Uses multi-word phrases — never single words like "open" or "do".
   bool _detectApex(String text) {
-    final lower    = text.toLowerCase();
-    final triggers = ['do it', 'set it up', 'create my', 'open', 'register me',
-        'sign me up', 'apply for me', 'build this', 'execute', 'run it',
-        'make it happen', 'handle it', 'automate', 'use apex', 'go ahead'];
-    return triggers.any((t) => lower.contains(t));
+    final t = text.toLowerCase().trim();
+
+    // Exact short confirmations after a prior APEX offer
+    const confirmations = {
+      'ok', 'yes', 'yeah', 'sure', 'go', 'do it', 'go ahead',
+      'sounds good', "let's go", 'perfect', 'alright', 'start',
+      'proceed', 'great', 'yep', 'yep go', 'let's do it',
+    };
+    if (confirmations.contains(t)) return true;
+
+    // Multi-word APEX triggers — never single words
+    const strongTriggers = [
+      'do it for me', 'handle it for me', 'set it up for me',
+      'take care of it', 'execute this', 'execute it',
+      'make it happen', 'run it for me',
+      'apply for me', 'sign me up', 'register me',
+      'create my account', 'create my profile', 'create my store',
+      'create my gig', 'create my channel', 'create my shop',
+      'open my account', 'open my store',
+      'start my channel', 'start my store', 'start my account',
+      'send the email for me', 'send the proposal for me',
+      'post this for me', 'publish this for me',
+      'fill the form', 'fill out the form', 'submit the form',
+      'submit the application', 'submit the proposal',
+      'build this for me', 'deploy this for me',
+      'find me clients now', 'find me clients automatically',
+      'upload my cv', 'upload my portfolio', 'upload my resume',
+      'use apex', 'activate apex', 'launch apex',
+      'automate this for me', 'automate it for me',
+    ];
+
+    return strongTriggers.any((trigger) => t.contains(trigger));
   }
 
   // FIX: title guard + exhausted token handling
@@ -633,10 +660,15 @@ class _HomeScreenState extends State<HomeScreen>
           _updateMissionTitle(_activeMissionId!, res['session_title'].toString());
         }
 
+        // Backend dispatcher may escalate to APEX, Workflow, or Market
         if (res['escalate_to_apex'] == true) {
-          await Future.delayed(const Duration(milliseconds: 800));
-          _launchApex(res['apex_task']?.toString() ?? text,
-              res['apex_template'] as Map<String, dynamic>?);
+          await Future.delayed(const Duration(milliseconds: 600));
+          _launchApex(
+            res['apex_task']?.toString() ?? text,
+            res['delegation'] is Map
+                ? Map<String, dynamic>.from(res['delegation'] as Map)
+                : null,
+          );
         }
       } else {
         final fallback = res?.toString().trim().isNotEmpty == true
