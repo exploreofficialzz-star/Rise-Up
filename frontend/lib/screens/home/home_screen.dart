@@ -592,7 +592,7 @@ class _HomeScreenState extends State<HomeScreen>
     const confirmations = {
       'ok', 'yes', 'yeah', 'sure', 'go', 'do it', 'go ahead',
       'sounds good', "let's go", 'perfect', 'alright', 'start',
-      'proceed', 'great', 'yep', 'yep go', 'let's do it',
+      'proceed', 'great', 'yep', 'yep go', "let's do it",
     };
     if (confirmations.contains(t)) return true;
 
