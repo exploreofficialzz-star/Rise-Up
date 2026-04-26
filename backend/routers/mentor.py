@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field
 from middleware.rate_limit import limiter, AI_LIMIT, FREE_TIER_LIMIT
 from services.ai_service import ai_service, RISEUP_MENTOR_PROMPT, SmartOnboardingManager
 from services.intent_classifier import classify_with_context, should_include_market_pulse
+from services.dispatcher import dispatcher
 from services.supabase_service import supabase_service
 from utils.auth import get_current_user
 
@@ -343,63 +344,27 @@ async def mentor_chat(
     if req.include_brain:
         brain_ctx = await _get_brain_context(req.message, user_id, country)
 
-    # ── Smart intent routing ─────────────────────────────────────────────────
-    intent_result  = _get_intent_details(req.message, profile, history)
-    delegation     = _detect_delegation(req.message, profile, history)
-    delegation_payload: Optional[Dict] = None
-    platform       = intent_result.get("platform")
-    sub_intent     = intent_result.get("sub_intent")
+    # ── Central dispatcher — routes to correct feature ──────────────────────
+    routing            = dispatcher.route(req.message, profile, history)
+    intent             = routing["intent"]
+    platform           = routing["platform"]
+    sub_intent         = routing["sub_intent"]
+    delegation_payload = routing.get("delegation")
 
-    if delegation == "apex":
-        apex_msg = (
-            f"🤖 **APEX activated.** I'll handle this end-to-end for you"
-            + (f" on **{platform.title()}**" if platform else "")
-            + f".\n\nHere's what I'm about to do:"
-        )
-        delegation_payload = {
-            "type":       "apex",
-            "task":       req.message,
-            "platform":   platform,
-            "sub_intent": sub_intent,
-            "session_id": session_id,
-            "message":    apex_msg,
-            "escalate_to_apex": True,
-            "apex_task":  req.message,
-        }
-        # Let AI describe what APEX will do, then signal Flutter to launch it
-        brain_ctx += (
-            f"\n\n[APEX INSTRUCTION] The user wants APEX to execute this task. "
-            f"Platform detected: {platform or 'general'}. Sub-intent: {sub_intent or 'general_execution'}. "
-            f"In your response: briefly describe what APEX will do step by step (3-5 bullet points). "
-            f"End with: 'Activating APEX to handle this end-to-end for you. 🤖⚡' — this triggers the agent."
-        )
+    # Add delegation session_id so Flutter knows which session spawned it
+    if delegation_payload:
+        delegation_payload["session_id"] = session_id
 
-    elif delegation == "workflow":
-        delegation_payload = {
-            "type":       "workflow",
-            "goal":       req.message,
-            "platform":   platform,
-            "sub_intent": sub_intent,
-            "message":    "Building your income workflow... ⚡",
-        }
-        # Enrich context so AI builds a proper workflow response
-        brain_ctx += (
-            f"\n\n[WORKFLOW INSTRUCTION] User wants a concrete income plan. "
-            f"Platform: {platform or 'any'}. Sub-intent: {sub_intent or 'income_plan'}. "
-            f"Build a structured step-by-step workflow. Use the 90-day sprint framework. "
-            f"Include: daily actions, weekly milestones, first income estimate, tools needed. "
-            f"Format with clear sections. End by offering APEX execution for the first step."
-        )
+    # Inject AI instruction into context
+    brain_ctx += "\n\n" + routing["ai_instruction"]
 
-    elif delegation == "market_pulse":
-        # Trigger live market scan
+    # ── Feature-specific enrichments ─────────────────────────────────────────
+    if intent == "market_pulse":
         try:
             from services.market_pulse_service import market_pulse_service
             market_data = await market_pulse_service.scan_opportunities(
-                user_id=user_id,
-                country=country,
-                skills=profile.get("skills", []),
-                limit=5,
+                user_id=user_id, country=country,
+                skills=profile.get("skills", []), limit=5,
             )
             if market_data:
                 brain_ctx += (
@@ -408,10 +373,9 @@ async def mentor_chat(
                                for o in market_data[:4])
                 )
         except Exception:
-            # Fallback to web search
             try:
                 from services.web_search_service import web_search_service
-                results   = await web_search_service.search(
+                results = await web_search_service.search(
                     f"{req.message} opportunities {country}", num=5)
                 brain_ctx += (
                     "\n\n[LIVE SEARCH]\n" +
@@ -420,29 +384,16 @@ async def mentor_chat(
                 )
             except Exception:
                 pass
-        brain_ctx += (
-            "\n\n[MARKET PULSE INSTRUCTION] Use the live data above to give "
-            "specific, actionable opportunities with real numbers and links. "
-            "Always include: platform, niche, income potential, and first step."
-        )
 
-    elif delegation == "code_sandbox":
-        brain_ctx += (
-            "\n\n[CODE SANDBOX INSTRUCTION] User wants code built. "
-            "Write complete, working code. No placeholders. "
-            "For web pages: write full HTML/CSS/JS in one file. "
-            "For Python: include all imports and a working main() function. "
-            "After the code, offer APEX to deploy or run it automatically."
-        )
-
-    else:
-        # Pure mentor chat — check if we should add a search enrichment
-        search_triggers = ["find", "price", "contact", "supplier", "number",
-                           "latest", "current", "news", "best", "compare"]
+    elif intent == "mentor_chat":
+        # Web search enrichment for factual queries
+        search_triggers = ["find","price","contact","supplier","latest",
+                           "current","news","best","compare","how much",
+                           "phone number","email","who sells"]
         if any(t in req.message.lower() for t in search_triggers):
             try:
                 from services.web_search_service import web_search_service
-                results   = await web_search_service.search(req.message, num=4)
+                results = await web_search_service.search(req.message, num=4)
                 brain_ctx += (
                     "\n\n[WEB SEARCH]\n" +
                     "\n".join(f"- {r.get('title','')}: {r.get('snippet','')}"
@@ -450,6 +401,9 @@ async def mentor_chat(
                 )
             except Exception:
                 pass
+
+    # Keep intent_result compatible with existing return block
+    intent_result = {"intent": intent, "platform": platform, "sub_intent": sub_intent}
 
     system   = _build_system_prompt(profile, brain_ctx, language, is_first_message)
     messages = history + [{"role": "user", "content": req.message}]
@@ -511,8 +465,8 @@ async def mentor_chat(
         "session_id":       session_id,
         "model_used":       model_used,
         "delegation":       delegation_payload,
-        "escalate_to_apex": delegation_payload.get("escalate_to_apex", False) if delegation_payload else False,
-        "apex_task":        delegation_payload.get("apex_task") if delegation_payload else None,
+        "escalate_to_apex": routing.get("escalate_to_apex", False),
+        "apex_task":        routing.get("apex_task"),
         "session_title":    _make_title(req.message) if is_first_message else None,
         "brain_used":       bool(brain_ctx),
         "language":         language,
